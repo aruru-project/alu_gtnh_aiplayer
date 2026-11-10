@@ -173,8 +173,11 @@ public final class WorldQueries {
         o.add("stats", stats);
         o.addProperty("liquidColumns", liquid);
         JsonArray tes = new JsonArray();
+        // Chests and machines at or near the surface matter to whoever reshapes it; things deep underground do not.
+        int floor = counted == 0 ? 0 : minY - 6;
         for (TileEntity te : tileEntities(w, x1, z1, x2, z2)) {
             if (tes.size() >= 64) break;
+            if (te.yCoord < floor) continue;
             JsonObject t = J.pos(te.xCoord, te.yCoord, te.zCoord);
             t.addProperty("id", Names.blockId(te.getBlockType()));
             tes.add(t);
@@ -331,6 +334,8 @@ public final class WorldQueries {
         for (Object e : w.getEntitiesWithinAABB(Entity.class, box)) {
             Entity en = (Entity) e;
             if (en.isDead || !loadedOnly.add(en.getEntityId())) continue;
+            // The search box is a cube; keep what is inside the sphere.
+            if (en.getDistanceSq(cx, cy, cz) > (double) radius * radius) continue;
             found.add(en);
         }
         final double fx = cx, fy = cy, fz = cz;

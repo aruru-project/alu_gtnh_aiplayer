@@ -105,17 +105,20 @@ def prepare(s):
     if have.get("minecraft:cobblestone", 0) < 128:
         rcon(f"give {BOT} minecraft:cobblestone 64")
         rcon(f"give {BOT} minecraft:cobblestone 64")
-    time.sleep(1.5)
+    # Given items appear at the bot's feet and are picked up a moment later.
+    deadline = time.time() + 8
+    while time.time() < deadline and s.counts().get("TConstruct:pickaxe", 0) < 1:
+        time.sleep(0.5)
     st = s.status()
     check("bot is online and carries a pickaxe", st["online"] and s.counts().get("TConstruct:pickaxe", 0) >= 1)
     return st["block"]
 
 
-def pick_site(s, origin, size, attempt):
-    """A size x size square of loaded dry land a short walk away, different on each attempt."""
+def pick_site(s, origin, size):
+    """A size x size square of loaded dry sloping land a short walk from the bot."""
     for ring in range(1, 12):
         for dx, dz in ((1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)):
-            x1 = origin["x"] + dx * ring * (size + 3) + attempt * 0
+            x1 = origin["x"] + dx * ring * (size + 3)
             z1 = origin["z"] + dz * ring * (size + 3)
             scan = s.heights(x1, z1, x1 + size - 1, z1 + size - 1)
             st = scan["stats"]
@@ -136,7 +139,7 @@ def scenario_goto(s, origin):
 
 def scenario_flatten(s, origin):
     size = 6
-    x1, z1, before = pick_site(s, origin, size, 0)
+    x1, z1, before = pick_site(s, origin, size)
     level = before["stats"]["modeY"]
     r = s.run({"type": "flatten", "x1": x1, "z1": z1, "x2": x1 + size - 1, "z2": z1 + size - 1, "y": level, "maxFillDepth": 8}, 900)
     after = s.heights(x1, z1, x1 + size - 1, z1 + size - 1)
@@ -212,19 +215,55 @@ def scenario_homes(s, pad):
     s.call("bot.command", {"bot": BOT, "command": "delhome scenario"})
 
 
-def scenario_no_tool(s, origin):
+def scenario_no_tool(s, pad):
     """Without a usable pickaxe, stone must not be pounded on bare-handed: the task says what is missing."""
-    s.call("bot.drop", {"bot": BOT, "items": [{"id": "TConstruct:pickaxe"}]})
-    time.sleep(0.3)
-    found = s.call("world.find", {"bot": BOT, "blocks": ["minecraft:stone"], "radius": 12, "limit": 1})["matches"]
-    if not found:
-        print("  skip  no stone nearby")
-        return
-    t = found[0]
-    r = s.run({"type": "dig", "blocks": [{"x": t["x"], "y": t["y"], "z": t["z"]}]}, 120)
-    ok = r["state"] == "failed" and r["error"]["code"] == "no_tool" and s.block(t["x"], t["y"], t["z"]) == "minecraft:stone"
+    x1, z1, level, size = pad
+    chest = (x1 + 2, level + 1, z1 + 2)
+    rcon(f"setblock {chest[0]} {chest[1]} {chest[2]} minecraft:chest")
+    rcon(f"setblock {x1} {level + 1} {z1} minecraft:stone")
+    time.sleep(0.5)
+    s.run({"type": "deposit", "container": dict(zip("xyz", chest)), "items": [{"id": "TConstruct:pickaxe"}]}, 60)
+    r = s.run({"type": "dig", "blocks": [{"x": x1, "y": level + 1, "z": z1}]}, 120)
+    ok = r["state"] == "failed" and r["error"]["code"] == "no_tool" and s.block(x1, level + 1, z1) == "minecraft:stone"
     check("digging stone without a pickaxe fails with no_tool and leaves the block", ok, json.dumps(r.get("error") or r.get("result")))
-    s.run({"type": "collect", "x": s.status()["block"]["x"], "y": s.status()["block"]["y"], "z": s.status()["block"]["z"], "radius": 6}, 60)
+    s.run({"type": "withdraw", "container": dict(zip("xyz", chest)), "items": [{"id": "TConstruct:pickaxe"}]}, 60)
+    r = s.run({"type": "dig", "blocks": [{"x": x1, "y": level + 1, "z": z1}]}, 120)
+    check("with the pickaxe back, the same dig succeeds", r["state"] == "done" and s.block(x1, level + 1, z1) == "minecraft:air", json.dumps(r.get("error") or r.get("result")))
+    rcon(f"setblock {chest[0]} {chest[1]} {chest[2]} minecraft:air")
+
+
+def scenario_safety(s, pad):
+    """Things a mistaken or manipulated brain must not be able to do through the bridge."""
+    for text in ("/sethome hacked1", "/ /sethome hacked2", "\u00a7/sethome hacked3", "x" * 100 + "/sethome hacked4"):
+        s.call("bot.chat", {"bot": BOT, "message": text})
+    time.sleep(6)
+    homes = " ".join(s.call("bot.command", {"bot": BOT, "command": "home list"})["output"])
+    check("chat text is never run as a command, however it is dressed up", "hacked" not in homes, homes)
+    for command in ("gamemode 1", "team leave", "op " + BOT):
+        try:
+            s.call("bot.command", {"bot": BOT, "command": command})
+            refused = False
+        except RuntimeError as exc:
+            refused = str(exc).startswith("denied")
+        check(f"command outside the allow list is refused: {command}", refused)
+    r = s.run({"type": "goto", "x": s.status()["block"]["x"] + 5000, "z": 0}, 30)
+    check("a destination kilometres away is refused instead of walked to",
+          r["state"] == "failed" and r["error"]["code"] == "unreachable", json.dumps(r.get("error") or r.get("result")))
+    try:
+        s.call("task.start", {"bot": BOT, "task": {"type": "clear", "x1": -1500000000, "y1": 60, "z1": 0, "x2": 1500000000, "y2": 60, "z2": 0}})
+        refused = False
+        s.call("task.cancel", {"bot": BOT})
+    except RuntimeError as exc:
+        refused = True
+    check("a box with absurd coordinates is rejected up front", refused)
+    try:
+        s.call("bot.spawn", {"name": "Skinny", "skin": {"value": "abc"}})
+        refused = False
+        s.call("bot.despawn", {"bot": "Skinny"})
+        s.call("bot.remove", {"bot": "Skinny"})
+    except RuntimeError as exc:
+        refused = True
+    check("a skin without a signature is rejected", refused)
 
 
 def main():
@@ -234,10 +273,10 @@ def main():
     origin = prepare(s)
     pad = None
     steps = [("goto", lambda: scenario_goto(s, origin)), ("flatten", None), ("build", None), ("items", None),
-             ("homes", None), ("no_tool", lambda: scenario_no_tool(s, origin))]
+             ("homes", None), ("no_tool", None), ("safety", None)]
     for name, fn in steps:
         needs_pad = fn is None
-        if only and only not in name and not (needs_pad and name == "flatten" and only in ("build", "items", "homes")):
+        if only and only not in name and not (name == "flatten" and only != "goto"):
             continue
         print(name)
         if name == "flatten":
@@ -248,6 +287,10 @@ def main():
             scenario_items(s, pad)
         elif name == "homes":
             scenario_homes(s, pad)
+        elif name == "no_tool":
+            scenario_no_tool(s, pad)
+        elif name == "safety":
+            scenario_safety(s, pad)
         else:
             fn()
     info = s.call("server.info")

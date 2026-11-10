@@ -33,6 +33,7 @@ public final class FlattenTask extends ClearTask {
     private List<int[]> deferred = new ArrayList<>();
     private boolean progressSinceDeferral;
     private int[] current;
+    private int rounds;
 
     public FlattenTask(JsonObject params) {
         super("flatten", params);
@@ -75,7 +76,7 @@ public final class FlattenTask extends ClearTask {
                 break;
             case 2:
                 if (!fill) {
-                    finish();
+                    stage = 4;
                     break;
                 }
                 phase = "filling";
@@ -88,6 +89,19 @@ public final class FlattenTask extends ClearTask {
             case 3:
                 fillTick();
                 break;
+            case 4:
+                if (tidying() || finished()) break;
+                // Working here may have left things above the level (fallen gravel, a block set down to stand on).
+                if (rounds < 2 && debrisAbove()) {
+                    rounds++;
+                    setBox(ax, level + 1, az, bx, Math.max(level + 1, highestBlock()), bz);
+                    restartClearing();
+                    phase = "clearing";
+                    stage = 1;
+                    break;
+                }
+                stage = 5;
+                break;
             default:
                 finish();
                 break;
@@ -95,12 +109,25 @@ public final class FlattenTask extends ClearTask {
     }
 
     private void finish() {
-        if (!dropoff.isEmpty() && removed > 0 && stage != 5) {
-            stage = 5;
+        if (!dropoff.isEmpty() && removed > 0 && stage != 6) {
+            stage = 6;
             startDropoff(null, null);
             return;
         }
         done();
+    }
+
+    private boolean debrisAbove() {
+        int top = highestBlock();
+        for (int y = level + 1; y <= top; y++) {
+            if (!cellsToDig(x1, y, z1, x2, z2).isEmpty()) return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected boolean keepsBlock(int x, int y, int z) {
+        return y <= level && x >= x1 && x <= x2 && z >= z1 && z <= z2;
     }
 
     private int highestBlock() {

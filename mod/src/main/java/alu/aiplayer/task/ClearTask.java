@@ -211,7 +211,18 @@ public class ClearTask extends AreaTask {
         return null;
     }
 
+    /** Starts clearing over from the top of the (possibly new) box. */
+    protected final void restartClearing() {
+        layer.clear();
+        current = null;
+        layerAbandoned = false;
+        retry.clear();
+        pass = 1;
+        layerY = y2;
+    }
+
     protected void afterClearing() {
+        if (tidying() || finished()) return;
         if (!dropoff.isEmpty() && removed > 0 && stage == 2) {
             stage = 3;
             startDropoff(null, null);

@@ -31,6 +31,7 @@ public final class Navigator {
     private int plans;
     private int airTicks;
     private boolean mayPillar = true;
+    private boolean gentle = true;
 
     /** unreachable, stuck, no_tool or no_material. */
     public String failCode;
@@ -53,6 +54,7 @@ public final class Navigator {
     public void go(Goal goal, NavWorld.BreakRule rule, boolean mayPillar) {
         stop();
         this.mayPillar = mayPillar;
+        this.gentle = true;
         this.goal = goal;
         this.rule = rule == null ? Rules.NATURAL_ONLY : rule;
         fruitless = 0;
@@ -110,13 +112,15 @@ public final class Navigator {
             if (!(p.onGround || p.isInWater()) && ++airTicks < 60) return Status.WORKING;
             airTicks = 0;
             if (++plans > MAX_PLANS) return fail("stuck", "could not get there after many attempts", null);
+            // First look for a way that leaves the terrain as it is. Digging through and stacking blocks to climb
+            // are the fallback, for when walking there is impossible.
             search = new PathSearch(
-                new NavWorld(p, rule),
+                new NavWorld(p, rule, gentle, bot.scaffoldCells()),
                 bot.blockX(),
                 bot.blockY(),
                 bot.blockZ(),
                 goal,
-                mayPillar && Rules.scaffold(p) != null,
+                !gentle && mayPillar && Rules.scaffold(p) != null,
                 MAX_NODES);
         }
 
@@ -124,8 +128,15 @@ public final class Navigator {
         if (st == PathSearch.Status.RUNNING) return Status.WORKING;
         PathSearch finished = search;
         search = null;
-        if (st == PathSearch.Status.NONE) return fail("unreachable", "no way to get there", null);
-        follower = new PathFollower(bot, finished.path(), bot.blockX(), bot.blockY(), bot.blockZ(), rule);
+        if (st == PathSearch.Status.NONE) {
+            if (gentle) {
+                gentle = false;
+                return Status.WORKING;
+            }
+            return fail("unreachable", "no way to get there", null);
+        }
+        follower = new PathFollower(bot, finished.path(), bot.blockX(), bot.blockY(), bot.blockZ(), rule, gentle);
+        gentle = true;
         return Status.WORKING;
     }
 

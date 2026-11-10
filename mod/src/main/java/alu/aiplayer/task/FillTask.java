@@ -95,6 +95,10 @@ public final class FillTask extends AreaTask {
             stage = 1;
             return;
         }
+        if (stage == 2) {
+            if (!tidying() && !finished()) done();
+            return;
+        }
         if (current != null) {
             Act a = placeCell(current[0], current[1], current[2], item);
             if (a == Act.BUSY || a == Act.FAILED) return;
@@ -121,11 +125,17 @@ public final class FillTask extends AreaTask {
                 progressSinceDeferral = false;
             } else {
                 for (int[] d : deferred) skip(d[0], d[1], d[2], "nothing to place against");
-                done();
+                deferred.clear();
+                stage = 2;
                 return;
             }
         }
         current = takeNearest(targets, true);
+    }
+
+    @Override
+    protected boolean keepsBlock(int x, int y, int z) {
+        return x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2 && inShape(x, y, z);
     }
 
     private List<int[]> findTargets() {

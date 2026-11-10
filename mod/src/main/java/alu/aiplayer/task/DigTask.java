@@ -40,6 +40,11 @@ public final class DigTask extends AreaTask {
             public boolean mayBreak(World w, int x, int y, int z, Block block) {
                 return listed.contains(key(x, y, z)) || Rules.isNatural(block);
             }
+
+            @Override
+            public boolean isJob(World w, int x, int y, int z, Block block) {
+                return listed.contains(key(x, y, z));
+            }
         };
     }
 

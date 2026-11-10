@@ -36,25 +36,55 @@ public final class NavWorld {
     /** Decides which blocks may be broken to make a path. */
     public interface BreakRule {
 
+        /** Whether the block may be broken to get through when there is no other way. */
         boolean mayBreak(World w, int x, int y, int z, Block block);
+
+        /**
+         * Whether breaking the block is the task's own work (it lies in the box being cleared). Such blocks may be
+         * broken freely; everything else is only touched once walking around has been tried and found impossible.
+         */
+        default boolean isJob(World w, int x, int y, int z, Block block) {
+            return false;
+        }
     }
 
     public final World world;
     private final EntityPlayerMP player;
     private final BreakRule rule;
+    private final boolean gentle;
+    private final java.util.Set<Long> ownScaffold;
     private final Map<Long, Byte> classes = new HashMap<>();
     private final Map<Long, Integer> breakCosts = new HashMap<>();
     private final Map<Integer, Integer> digTicks = new HashMap<>();
     public boolean sawUnloaded;
 
-    public NavWorld(EntityPlayerMP player, BreakRule rule) {
+    /**
+     * @param gentle      plan without altering terrain: only the task's own work and the bot's own leftover
+     *                    climbing blocks may be broken
+     * @param ownScaffold cells where this bot has put climbing blocks; taking those away again is always welcome
+     */
+    public NavWorld(EntityPlayerMP player, BreakRule rule, boolean gentle, java.util.Set<Long> ownScaffold) {
         this.world = player.worldObj;
         this.player = player;
         this.rule = rule;
+        this.gentle = gentle;
+        this.ownScaffold = ownScaffold;
     }
 
     public static long key(int x, int y, int z) {
         return ((long) (x + 30000000) << 38) | ((long) (z + 30000000) << 12) | (y & 0xFFFL);
+    }
+
+    public static int keyX(long key) {
+        return (int) (key >>> 38) - 30000000;
+    }
+
+    public static int keyY(long key) {
+        return (int) (key & 0xFFFL);
+    }
+
+    public static int keyZ(long key) {
+        return (int) ((key >>> 12) & 0x3FFFFFFL) - 30000000;
     }
 
     public byte cls(int x, int y, int z) {
@@ -125,7 +155,8 @@ public final class NavWorld {
         Block b = world.getBlock(x, y, z);
         if (b.getBlockHardness(world, x, y, z) < 0.0F) return -1;
         if (world.getTileEntity(x, y, z) != null) return -1;
-        if (!rule.mayBreak(world, x, y, z, b)) return -1;
+        boolean own = ownScaffold.contains(key(x, y, z)) && Rules.isFiller(b);
+        if (!own && !(gentle ? rule.isJob(world, x, y, z, b) : rule.mayBreak(world, x, y, z, b))) return -1;
         // Opening a cell next to lava, or under any liquid, lets it flow in.
         for (int[] d : SIDES) {
             byte n = cls(x + d[0], y + d[1], z + d[2]);
@@ -141,6 +172,8 @@ public final class NavWorld {
             known = ticks < 0 || ticks > 400 ? -1 : ticks + 6;
             digTicks.put(kind, known);
         }
+        // Priced low on purpose: coming down through its own pillar tidies up after the bot.
+        if (own && known > 0) return 1;
         return known;
     }
 

@@ -235,6 +235,33 @@ public final class Bot implements BotConnection.Listener {
         return o instanceof IChatComponent ? ((IChatComponent) o).getUnformattedText() : String.valueOf(o);
     }
 
+    // ---- climbing blocks ----------------------------------------------------------------------------------------
+
+    private static final int SCAFFOLD_MEMORY = 512;
+    private final java.util.LinkedHashSet<Long> scaffold = new java.util.LinkedHashSet<>();
+    private final java.util.Set<Long> scaffoldView = java.util.Collections.unmodifiableSet(scaffold);
+    private long scaffoldCount;
+
+    /** Remembers a block this bot put down only to stand on. */
+    public void noteScaffold(int x, int y, int z) {
+        scaffold.add(alu.aiplayer.nav.NavWorld.key(x, y, z));
+        scaffoldCount++;
+        if (scaffold.size() > SCAFFOLD_MEMORY) {
+            java.util.Iterator<Long> it = scaffold.iterator();
+            it.next();
+            it.remove();
+        }
+    }
+
+    /** Cells where this bot has placed climbing blocks that may still be standing. */
+    public java.util.Set<Long> scaffoldCells() {
+        return scaffoldView;
+    }
+
+    public void forgetScaffold(int x, int y, int z) {
+        scaffold.remove(alu.aiplayer.nav.NavWorld.key(x, y, z));
+    }
+
     // ---- interaction results ----------------------------------------------------------------------------------
 
     private int clickX, clickY, clickZ;

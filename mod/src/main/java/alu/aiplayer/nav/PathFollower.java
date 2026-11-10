@@ -32,6 +32,7 @@ public final class PathFollower {
     private final List<Step> steps;
     private final int ox, oy, oz;
     private final NavWorld.BreakRule rule;
+    private final boolean gentle;
     private final Digger digger;
     private int index;
     private int stepTicks;
@@ -42,7 +43,8 @@ public final class PathFollower {
     public String failMessage;
     public String failBlock;
 
-    public PathFollower(Bot bot, List<Step> steps, int ox, int oy, int oz, NavWorld.BreakRule rule) {
+    public PathFollower(Bot bot, List<Step> steps, int ox, int oy, int oz, NavWorld.BreakRule rule, boolean gentle) {
+        this.gentle = gentle;
         this.bot = bot;
         this.steps = steps;
         this.ox = ox;
@@ -89,7 +91,7 @@ public final class PathFollower {
         }
         if (++stepTicks > limit(s)) return Status.BLOCKED;
 
-        NavWorld nav = new NavWorld(p, rule);
+        NavWorld nav = new NavWorld(p, rule, gentle, bot.scaffoldCells());
         int[] blocked = firstBlocked(nav, s, px, py, pz);
         if (blocked != null) {
             if (blocked.length == 0 || nav.breakCost(blocked[0], blocked[1], blocked[2]) < 0) return Status.BLOCKED;
@@ -150,7 +152,8 @@ public final class PathFollower {
                 return Status.FAILED;
             }
             Placer.Result r = Placer.place(bot, s.x, cellY, s.z, scaffold);
-            if (r != Placer.Result.PLACED && r != Placer.Result.IN_THE_WAY) return Status.BLOCKED;
+            if (r == Placer.Result.PLACED) bot.noteScaffold(s.x, cellY, s.z);
+            else if (r != Placer.Result.IN_THE_WAY) return Status.BLOCKED;
         }
         return Status.MOVING;
     }

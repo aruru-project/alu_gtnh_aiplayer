@@ -50,8 +50,12 @@ public final class Rules {
 
             @Override
             public boolean mayBreak(World w, int x, int y, int z, Block block) {
-                if (x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2) return true;
-                return isNatural(block);
+                return isJob(w, x, y, z, block) || isNatural(block);
+            }
+
+            @Override
+            public boolean isJob(World w, int x, int y, int z, Block block) {
+                return x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2;
             }
         };
     }
@@ -67,6 +71,18 @@ public final class Rules {
                 return isNatural(block);
             }
         };
+    }
+
+    private static final Map<Block, Boolean> FILLER = new IdentityHashMap<>();
+
+    /** One of the configured throwaway blocks. */
+    public static boolean isFiller(Block b) {
+        Boolean known = FILLER.get(b);
+        if (known == null) {
+            known = AiPlayerMod.config().fillerBlocks.contains(Names.blockId(b));
+            FILLER.put(b, known);
+        }
+        return known;
     }
 
     /** The throwaway block to build pillars and fill holes with: the first configured filler the bot carries. */

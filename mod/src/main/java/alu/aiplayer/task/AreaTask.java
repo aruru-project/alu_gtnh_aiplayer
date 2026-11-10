@@ -143,6 +143,7 @@ abstract class AreaTask extends Task {
             if (st == Digger.Status.WORKING) return Act.BUSY;
             if (st == Digger.Status.DONE) {
                 removed++;
+                bot.forgetScaffold(x, y, z);
                 return Act.OK;
             }
             return digFailed(x, y, z);
@@ -171,7 +172,8 @@ abstract class AreaTask extends Task {
         if (bump(x, y, z) > MAX_ATTEMPTS_PER_CELL) return Act.UNREACHABLE;
         // Treetops and what lies on them hang far above anything to stand on. Not worth a search, or a tower.
         if (w.blockExists(x, y, z) && isFoliage(w, x, y, z) && y > groundNear(w, x, z) + 6) return Act.UNREACHABLE;
-        nav.go(Goal.reach(x, y, z, false), rule);
+        // While tidying up, no new climbing blocks: that would never end.
+        nav.go(Goal.reach(x, y, z, false), rule, tidyList == null);
         walking = true;
         return Act.BUSY;
     }
@@ -508,6 +510,52 @@ abstract class AreaTask extends Task {
             20 * 90);
     }
 
+    // ---- tidying up -----------------------------------------------------------------------------------------
+
+    private List<int[]> tidyList;
+    private int[] tidyCurrent;
+    private int scaffoldLeft;
+
+    /** Whether a block at this cell is part of what the task is meant to leave behind. */
+    protected boolean keepsBlock(int x, int y, int z) {
+        return false;
+    }
+
+    /**
+     * Takes down the climbing blocks the bot has left standing around here, highest first. Returns true while it
+     * is still at it. What it cannot get at without building more is counted and left.
+     */
+    protected boolean tidying() {
+        EntityPlayerMP p = bot.player();
+        World w = p.worldObj;
+        if (tidyList == null) {
+            tidyList = new ArrayList<>();
+            for (Long k : new ArrayList<>(bot.scaffoldCells())) {
+                int x = NavWorld.keyX(k), y = NavWorld.keyY(k), z = NavWorld.keyZ(k);
+                if (!w.blockExists(x, y, z)) continue;
+                if (!Rules.isFiller(w.getBlock(x, y, z)) || keepsBlock(x, y, z)) {
+                    bot.forgetScaffold(x, y, z);
+                    continue;
+                }
+                if (p.getDistanceSq(x + 0.5, y, z + 0.5) > 48.0 * 48.0) continue;
+                tidyList.add(new int[] { x, y, z });
+            }
+            if (!tidyList.isEmpty()) phase = "tidying up";
+        }
+        if (tidyCurrent != null) {
+            Act a = digCell(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
+            if (a == Act.BUSY || a == Act.FAILED) return true;
+            bot.forgetScaffold(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
+            if (a != Act.OK) scaffoldLeft++;
+            tidyCurrent = null;
+        }
+        if (tidyList.isEmpty()) return false;
+        int best = 0;
+        for (int i = 1; i < tidyList.size(); i++) if (tidyList.get(i)[1] > tidyList.get(best)[1]) best = i;
+        tidyCurrent = tidyList.remove(best);
+        return true;
+    }
+
     // ---- helpers for subclasses -----------------------------------------------------------------------------
 
     /** Why a block must be left alone, or null if it may be dug out. */
@@ -551,6 +599,7 @@ abstract class AreaTask extends Task {
             o.add("skipped", s);
             o.add("skippedExamples", skipExamples);
         }
+        if (scaffoldLeft > 0) o.addProperty("climbingBlocksLeftStanding", scaffoldLeft);
         if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
         return o;
     }
