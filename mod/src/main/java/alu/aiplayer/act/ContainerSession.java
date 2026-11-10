@@ -78,11 +78,25 @@ public final class ContainerSession {
     public String failCode;
     public String failMessage;
 
+    /** When set, the screen is the one a carried item opens when used (a backpack), not a block's. */
+    private final ItemFilter opener;
+    private int openerSlot = -1;
+
     public ContainerSession(Bot bot, int x, int y, int z) {
         this.bot = bot;
         this.x = x;
         this.y = y;
         this.z = z;
+        this.opener = null;
+    }
+
+    /** A session at the screen that opens when the bot uses an item it carries: a backpack and its like. */
+    public ContainerSession(Bot bot, ItemFilter opener) {
+        this.bot = bot;
+        this.x = 0;
+        this.y = 0;
+        this.z = 0;
+        this.opener = opener;
     }
 
     public ContainerSession deposit(DepositPlan plan) {
@@ -125,6 +139,7 @@ public final class ContainerSession {
     public Status tick() {
         EntityPlayerMP p = bot.player();
         World w = p.worldObj;
+        if (opener != null && phase <= 1) return openByItem(p);
         switch (phase) {
             case 0: {
                 if (!w.blockExists(x, y, z)) return fail("out_of_reach", "the container is out of reach");
@@ -328,6 +343,41 @@ public final class ContainerSession {
         clickEmptyHanded(bot, x, y, z);
     }
 
+    /** Takes the item in hand and uses it, as a player right-clicks a backpack, then waits for its screen. */
+    private Status openByItem(EntityPlayerMP p) {
+        if (phase == 0) {
+            if (p.openContainer != p.inventoryContainer) bot.conn()
+                .closeWindow();
+            int slot = -1;
+            for (int i = 0; i < Inventories.CARRY_SLOTS && slot < 0; i++) {
+                ItemStack s = p.inventory.mainInventory[i];
+                if (s != null && opener.matches(s)) slot = i;
+            }
+            if (slot < 0) return fail("no_material", "the bot carries no such item to open");
+            Inventories.hold(bot, slot);
+            openerSlot = p.inventory.currentItem;
+            bot.conn()
+                .useItem();
+            phase = 1;
+            wait = 0;
+            return Status.WORKING;
+        }
+        if (p.openContainer != p.inventoryContainer) {
+            if (!hasOwnSlots(p)) {
+                bot.conn()
+                    .closeWindow();
+                return fail("invalid", "the screen that item opens is not one whose slots can be used");
+            }
+            viaScreen = true;
+            phase = 2;
+            wait = 0;
+            cursor = 0;
+        } else if (++wait >= OPEN_WAIT) {
+            return fail("invalid", "using that item opened no screen; it may be something to place or to wear instead");
+        }
+        return Status.WORKING;
+    }
+
     /** Right-clicks a block as if nothing were held; see the instance method. */
     public static void clickEmptyHanded(Bot bot, int x, int y, int z) {
         EntityPlayerMP p = bot.player();
@@ -385,6 +435,8 @@ public final class ContainerSession {
                 Slot s = mine.get(cursor);
                 ItemStack stack = s.getStack();
                 if (stack == null) continue;
+                // The bag in the hand does not go into itself.
+                if (opener != null && s.getSlotIndex() == openerSlot) continue;
                 int want = deposit.wanted(stack);
                 if (want == 0) continue;
                 if (want > 0 && want < stack.stackSize) {

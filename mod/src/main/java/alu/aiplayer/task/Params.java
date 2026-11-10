@@ -21,6 +21,20 @@ final class Params {
         return new int[] { J.reqCoord(o, "x"), y, J.reqCoord(o, "z") };
     }
 
+    /**
+     * For a container that may also be "the bag I carry": {@code {item:{id, meta?}}} in place of a position.
+     * Null when the parameter is a position (or absent).
+     */
+    static alu.aiplayer.act.ItemFilter carried(JsonObject params, String key) {
+        JsonObject o = J.object(params, key);
+        if (o == null || !J.has(o, "item")) return null;
+        JsonObject item = J.object(o, "item");
+        if (item == null) throw new IllegalArgumentException(key + ".item must be {id, meta?}");
+        String id = J.reqStr(item, "id");
+        if (alu.aiplayer.util.Names.item(id) == null) throw new IllegalArgumentException("unknown item id: " + id);
+        return new alu.aiplayer.act.ItemFilter(id, J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1);
+    }
+
     static int[] pos(JsonObject params, String key) {
         JsonObject o = J.object(params, key);
         if (o == null) throw new IllegalArgumentException(key + " must be a position {x,y,z}");

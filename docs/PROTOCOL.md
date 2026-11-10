@@ -417,6 +417,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
+| `use` | `{item:{id,meta?}, on?:{x,y,z}, sneak?=false}` | 把身上的一件东西拿到手里右键用一下：不给 `on` 是对着空中用（吃、喝、穿戴、打开它自己的界面），给了是对着那个方块用（会先走过去）。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -453,6 +454,12 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
   - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。
     四周空着的行列会被去掉，摆得进 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
+- **随身的包当容器**：`deposit` / `withdraw` 的 `container` 除了位置，还可以写 `{item:{id,meta?}}`，意思是“我身上这件东西右键打开的那个界面”（背包一类）。不用走路；包本身不会被放进它自己里面；`deposit` 这样用时必须列出 `items`。身上没有这件东西是 `no_material`；右键后没有界面打开是 `invalid`。
+- **`use`**：
+  - 这是玩家用东西的通用办法，做了什么由那件物品自己决定，所以结果只报看得见的变化：`{used:"名字", gained:[{id,meta,name,count}], lost:[…], openedScreen?, health, food, freeSlots}`。`gained`/`lost` 是背包里多了、少了什么（吃掉的食物、穿到身上去的装备会出现在 `lost` 里）。
+  - 吃喝这类要举着一会儿的，会等到用完（最多 8 秒）。
+  - 右键打开了界面的（背包）会被马上关掉并带 `openedScreen:true`；要往里放、往外拿，用上一条说的 `deposit` / `withdraw`。
+  - `sneak:true` 是蹲着右键，有些东西蹲着用是另一个意思（比如穿到身上而不是打开）。
 - **`process`**：
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
   - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。

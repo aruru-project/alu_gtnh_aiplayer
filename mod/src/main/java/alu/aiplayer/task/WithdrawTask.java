@@ -14,12 +14,14 @@ import alu.aiplayer.util.J;
 public final class WithdrawTask extends Task {
 
     private final int[] at;
+    private final alu.aiplayer.act.ItemFilter bag;
     private final List<ItemFilter> items;
     private ContainerTrip trip;
 
     public WithdrawTask(JsonObject params) {
         super("withdraw", params);
-        at = Params.pos(params, "container");
+        bag = Params.carried(params, "container");
+        at = bag != null ? null : Params.pos(params, "container");
         items = Inventories.filters(J.array(params, "items"));
         if (items.isEmpty()) throw new IllegalArgumentException("items must list what to take");
     }
@@ -27,9 +29,14 @@ public final class WithdrawTask extends Task {
     @Override
     public void start(Bot bot) {
         super.start(bot);
-        if (!withinTravel(at[0], at[2])) return;
-        phase = "going to the container";
-        trip = new ContainerTrip(bot, at[0], at[1], at[2]);
+        if (bag != null) {
+            phase = "opening the bag";
+            trip = new ContainerTrip(bot, bag);
+        } else {
+            if (!withinTravel(at[0], at[2])) return;
+            phase = "going to the container";
+            trip = new ContainerTrip(bot, at[0], at[1], at[2]);
+        }
         trip.session.withdraw(items);
     }
 

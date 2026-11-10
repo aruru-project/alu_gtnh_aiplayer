@@ -25,6 +25,18 @@ final class ContainerTrip {
     String failCode;
     String failMessage;
 
+    /** No walking: the container is an item the bot carries and opens in its hand. */
+    ContainerTrip(Bot bot, alu.aiplayer.act.ItemFilter opener) {
+        this.bot = bot;
+        this.x = 0;
+        this.y = 0;
+        this.z = 0;
+        session = new ContainerSession(bot, opener);
+        nav = null;
+        arrived = true;
+        frontChecked = true;
+    }
+
     ContainerTrip(Bot bot, int x, int y, int z) {
         this.bot = bot;
         this.x = x;
@@ -67,7 +79,7 @@ final class ContainerTrip {
     }
 
     void stop() {
-        nav.stop();
+        if (nav != null) nav.stop();
         session.abort();
     }
 }

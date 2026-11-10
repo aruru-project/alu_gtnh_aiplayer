@@ -48,6 +48,8 @@ public final class TaskFactory {
                 return new CraftTask(params);
             case "process":
                 return new ProcessTask(params);
+            case "use":
+                return new UseTask(params);
             default:
                 throw RpcException.badRequest("unknown task type: " + type);
         }
