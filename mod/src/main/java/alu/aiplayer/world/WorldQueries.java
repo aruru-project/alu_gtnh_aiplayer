@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 import net.minecraft.block.Block;
@@ -99,7 +100,7 @@ public final class WorldQueries {
 
     public static JsonObject scan(World w, int ax, int az, int bx, int bz) {
         int x1 = Math.min(ax, bx), x2 = Math.max(ax, bx), z1 = Math.min(az, bz), z2 = Math.max(az, bz);
-        if ((long) (x2 - x1 + 1) > 64 || (long) (z2 - z1 + 1) > 64) {
+        if ((long) x2 - x1 + 1 > 64 || (long) z2 - z1 + 1 > 64) {
             throw RpcException.tooLarge("scan area is limited to 64x64 columns");
         }
         JsonObject o = new JsonObject();
@@ -202,7 +203,12 @@ public final class WorldQueries {
 
     public static JsonObject find(World w, int cx, int cy, int cz, int radius, Set<Block> wanted, int limit) {
         if (radius > 48) throw RpcException.tooLarge("radius is limited to 48");
-        final List<int[]> hits = new ArrayList<>();
+        final int fx = cx, fy = cy, fz = cz;
+        // Only the nearest few are wanted; a common block can match hundreds of thousands of cells.
+        PriorityQueue<int[]> nearest = new PriorityQueue<>(
+            limit + 1,
+            (a, b) -> Long.compare(dist2(b, fx, fy, fz), dist2(a, fx, fy, fz)));
+        int total = 0;
         int yLo = Math.max(0, cy - radius), yHi = Math.min(255, cy + radius);
         for (int chX = (cx - radius) >> 4; chX <= (cx + radius) >> 4; chX++) {
             for (int chZ = (cz - radius) >> 4; chZ <= (cz + radius) >> 4; chZ++) {
@@ -217,17 +223,24 @@ public final class WorldQueries {
                         for (int lz = 0; lz < 16; lz++) {
                             int z = (chZ << 4) + lz;
                             if (z < cz - radius || z > cz + radius) continue;
-                            if (wanted.contains(chunk.getBlock(lx, y, lz))) hits.add(new int[] { x, y, z });
+                            if (!wanted.contains(chunk.getBlock(lx, y, lz))) continue;
+                            total++;
+                            int[] hit = { x, y, z };
+                            if (nearest.size() < limit) {
+                                nearest.add(hit);
+                            } else if (dist2(hit, fx, fy, fz) < dist2(nearest.peek(), fx, fy, fz)) {
+                                nearest.poll();
+                                nearest.add(hit);
+                            }
                         }
                     }
                 }
             }
         }
-        final int fx = cx, fy = cy, fz = cz;
+        List<int[]> hits = new ArrayList<>(nearest);
         Collections.sort(hits, (a, b) -> Long.compare(dist2(a, fx, fy, fz), dist2(b, fx, fy, fz)));
         JsonArray matches = new JsonArray();
         for (int[] h : hits) {
-            if (matches.size() >= limit) break;
             JsonObject m = J.pos(h[0], h[1], h[2]);
             m.addProperty("id", Names.blockId(w.getBlock(h[0], h[1], h[2])));
             m.addProperty("meta", w.getBlockMetadata(h[0], h[1], h[2]));
@@ -236,7 +249,7 @@ public final class WorldQueries {
         }
         JsonObject o = new JsonObject();
         o.add("matches", matches);
-        o.addProperty("total", hits.size());
+        o.addProperty("total", total);
         return o;
     }
 

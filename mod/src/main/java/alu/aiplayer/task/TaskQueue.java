@@ -26,7 +26,13 @@ public final class TaskQueue {
     }
 
     private static final int RECENT = 10;
-    private static long counter = System.currentTimeMillis() % 100000;
+    private static final int MAX_QUEUED = 32;
+    // Starting from the clock keeps ids from repeating across restarts, where saved tasks keep their old ids.
+    private static long counter = System.currentTimeMillis();
+
+    private static String nextId() {
+        return "t" + Long.toString(++counter, 36);
+    }
 
     private final Bot bot;
     private final Listener listener;
@@ -49,8 +55,11 @@ public final class TaskQueue {
 
     /** Queues a task. Unless appending, whatever was pending is canceled first; those ids are returned. */
     public List<String> add(Task task, boolean append) {
+        if (append && queue.size() >= MAX_QUEUED) {
+            throw alu.aiplayer.bridge.RpcException.tooLarge("at most " + MAX_QUEUED + " tasks may wait in the queue");
+        }
         List<String> replaced = append ? new ArrayList<String>() : cancel(null);
-        task.id = "t" + (++counter);
+        task.id = nextId();
         queue.addLast(task);
         listener.onQueueChanged(bot);
         return replaced;
@@ -115,6 +124,7 @@ public final class TaskQueue {
             if (active == null) return;
             active.state = Task.State.RUNNING;
             active.startedAt = System.currentTimeMillis();
+            active.startDim = bot.player().dimension;
             try {
                 active.start(bot);
             } catch (Throwable t) {
@@ -122,6 +132,9 @@ public final class TaskQueue {
                 active.failExternally("internal", String.valueOf(t));
             }
             listener.onTaskUpdate(bot, active);
+        }
+        if (!active.finished() && active.dimensionBound() && bot.player().dimension != active.startDim) {
+            active.failExternally("interrupted", "the bot was moved to another dimension");
         }
         if (!active.finished()) {
             try {
@@ -198,7 +211,7 @@ public final class TaskQueue {
             try {
                 JsonObject o = e.getAsJsonObject();
                 Task t = TaskFactory.create(J.reqStr(o, "type"), J.object(o, "params"));
-                t.id = J.str(o, "id", "t" + (++counter));
+                t.id = J.str(o, "id", nextId());
                 t.createdAt = J.l(o, "createdAt", t.createdAt);
                 queue.addLast(t);
             } catch (Exception ex) {

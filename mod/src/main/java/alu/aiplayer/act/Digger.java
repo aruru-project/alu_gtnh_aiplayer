@@ -32,6 +32,7 @@ public final class Digger {
     private int limit;
     private int expected;
     private boolean finishSent;
+    private boolean retried;
     private Block target;
     private int targetMeta;
 
@@ -54,6 +55,7 @@ public final class Digger {
         this.z = z;
         phase = 1;
         ticks = 0;
+        retried = false;
         failCode = null;
         failMessage = null;
         failBlock = null;
@@ -72,6 +74,11 @@ public final class Digger {
                     ticks = 0;
                     return Status.WORKING;
                 }
+                if (!Reach.canReach(p, x, y, z)) {
+                    // Pushed or carried away mid-dig (a current, a fall): the server would ignore the finish.
+                    abort();
+                    return fail("out_of_reach", "moved out of reach while digging");
+                }
                 bot.motion.lookAt(p, x + 0.5, y + 0.5, z + 0.5);
                 if (ticks % 5 == 0) bot.conn()
                     .swingArm();
@@ -83,8 +90,15 @@ public final class Digger {
                         .finishDigging(x, y, z, face);
                 }
                 if (ticks > limit) {
-                    bot.conn()
+                    if (!finishSent) bot.conn()
                         .abortDigging(x, y, z, face);
+                    if (!retried) {
+                        // Digging speed can drop under way (tool broke, feet left the ground). Once more from
+                        // the start before concluding that something forbids it.
+                        retried = true;
+                        phase = 1;
+                        return Status.WORKING;
+                    }
                     return fail("denied", "the block did not break; it may be protected");
                 }
                 return Status.WORKING;

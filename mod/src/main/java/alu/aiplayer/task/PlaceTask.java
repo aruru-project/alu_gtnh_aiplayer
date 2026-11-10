@@ -35,6 +35,12 @@ public final class PlaceTask extends AreaTask {
     }
 
     @Override
+    public void start(alu.aiplayer.bot.Bot bot) {
+        super.start(bot);
+        for (int[] t : targets) if (!withinTravel(t[0], t[2])) return;
+    }
+
+    @Override
     public void tick() {
         if (busyWithErrand()) return;
         if (current != null) {

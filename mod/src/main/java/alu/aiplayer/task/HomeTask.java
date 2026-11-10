@@ -24,12 +24,22 @@ public final class HomeTask extends Task {
     }
 
     @Override
+    public boolean dimensionBound() {
+        return false;
+    }
+
+    @Override
     public void start(Bot bot) {
         super.start(bot);
         teleportsBefore = bot.conn()
             .teleportCount();
         phase = "teleporting";
-        output = bot.runCommand("home " + name);
+        try {
+            output = bot.runCommand("home " + name);
+        } catch (alu.aiplayer.bridge.RpcException e) {
+            output = java.util.Collections.emptyList();
+            fail("denied", e.getMessage());
+        }
     }
 
     @Override

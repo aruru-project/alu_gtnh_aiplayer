@@ -65,6 +65,8 @@ public final class Tools {
                 ItemStack s = slot == cur ? saved : inv.mainInventory[slot];
                 // Any single item might be a modded tool; stackable things never dig better than a hand.
                 if (s == null || s.getMaxStackSize() != 1) continue;
+                // Hammers and the like take neighbouring blocks with them, beyond what a task was given.
+                if (alu.aiplayer.AiPlayerMod.config().excludedTools.contains(Names.itemId(s.getItem()))) continue;
                 Double left = Names.durabilityLeft(s);
                 if (left != null && left < MIN_DURABILITY) continue;
                 inv.mainInventory[cur] = s;
@@ -109,11 +111,14 @@ public final class Tools {
             for (int slot = -1; slot < inv.mainInventory.length; slot++) {
                 ItemStack s = slot < 0 ? null : (slot == cur ? saved : inv.mainInventory[slot]);
                 if (slot >= 0 && (s == null || s.getMaxStackSize() != 1)) continue;
+                boolean excluded = s != null
+                    && alu.aiplayer.AiPlayerMod.config().excludedTools.contains(Names.itemId(s.getItem()));
                 inv.mainInventory[cur] = s;
                 Choice c = evaluate(slot, block, meta, p, w, x, y, z);
                 com.google.gson.JsonObject o = new com.google.gson.JsonObject();
                 o.addProperty("slot", slot);
                 o.addProperty("item", s == null ? "hand" : Names.itemId(s.getItem()) + ":" + s.getItemDamage());
+                if (excluded) o.addProperty("excluded", true);
                 o.addProperty("harvest", c.harvest);
                 o.addProperty("strength", c.strength);
                 o.addProperty("ticks", c.ticks() == Integer.MAX_VALUE ? -1 : c.ticks());

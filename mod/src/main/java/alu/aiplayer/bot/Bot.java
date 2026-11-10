@@ -18,6 +18,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.task.TaskQueue;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
@@ -32,6 +33,12 @@ public final class Bot implements BotConnection.Listener {
     private static final int CHAT_INTERVAL = 22;
     private static final int RESPAWN_DELAY = 30;
     private static final int HEARD_BUFFER = 60;
+    private static final int MAX_SAY_CHARS = 1000;
+    private static final int MAX_QUEUED_LINES = 20;
+    // The server adds 20 to a counter per chat line or command, takes 1 off per tick, and kicks above 200.
+    private static final int SPAM_PER_LINE = 20;
+    private static final int SPAM_ROOM_FOR_CHAT = 120;
+    private static final int SPAM_ROOM_FOR_COMMAND = 160;
 
     public final String name;
     public final UUID uuid;
@@ -49,6 +56,7 @@ public final class Bot implements BotConnection.Listener {
     private int chatCooldown;
     private final ArrayDeque<Heard> heard = new ArrayDeque<>();
     private long heardSeq;
+    private int spam;
     private int deadTicks;
     private long ticksOnline;
 
@@ -101,6 +109,8 @@ public final class Bot implements BotConnection.Listener {
         }
         deadTicks = 0;
         applySettings();
+        conn.deliverPending();
+        conn.markActive();
         conn.onNetworkTick();
         flushChat();
         tasks.tick();
@@ -149,22 +159,23 @@ public final class Bot implements BotConnection.Listener {
 
     /** Queues text for public chat, split into lines a client could send. */
     public void say(String message) {
+        if (message.length() > MAX_SAY_CHARS) message = message.substring(0, MAX_SAY_CHARS);
         for (String part : message.split("\\r?\\n")) {
-            // Chat is never a command, whatever the text starts with.
-            String rest = part.trim()
-                .replaceFirst("^/+", "");
-            while (rest.length() > 100) {
+            String rest = part.trim();
+            while (rest.length() > 100 && chatOut.size() < MAX_QUEUED_LINES) {
                 chatOut.add(rest.substring(0, 100));
                 rest = rest.substring(100);
             }
-            if (!rest.isEmpty()) chatOut.add(rest);
+            if (!rest.isEmpty() && chatOut.size() < MAX_QUEUED_LINES) chatOut.add(rest);
         }
     }
 
     private void flushChat() {
+        if (spam > 0) spam--;
         if (chatCooldown > 0) chatCooldown--;
-        if (chatCooldown == 0 && !chatOut.isEmpty()) {
-            conn.sendChatLine(chatOut.poll());
+        if (chatCooldown == 0 && !chatOut.isEmpty() && spam <= SPAM_ROOM_FOR_CHAT) {
+            spam += SPAM_PER_LINE;
+            conn.sendChat(chatOut.poll());
             chatCooldown = CHAT_INTERVAL;
         }
     }
@@ -174,10 +185,17 @@ public final class Bot implements BotConnection.Listener {
      * (after a warm-up, say) reach the brain as bot.message events.
      */
     public List<String> runCommand(String command) {
+        if (!manager.config()
+            .commandAllowed(command)) {
+            throw RpcException.denied("command is not on the bot allow list: " + command.trim());
+        }
+        // The server kicks players who send too much too fast; refuse before it comes to that.
+        if (spam > SPAM_ROOM_FOR_COMMAND) {
+            throw RpcException.denied("too many chat lines and commands in a short time; try again in a few seconds");
+        }
         long mark = heardSeq;
-        String line = "/" + command;
-        if (line.length() > 100) line = line.substring(0, 100);
-        conn.sendChatLine(line);
+        if (!conn.sendCommand(command)) throw RpcException.badRequest("the command is too long for a chat line");
+        spam += SPAM_PER_LINE;
         List<String> out = new ArrayList<>();
         for (Heard h : heard) if (h.seq > mark) out.add(h.text);
         return out;
@@ -215,6 +233,26 @@ public final class Bot implements BotConnection.Listener {
 
     private static String text(Object o) {
         return o instanceof IChatComponent ? ((IChatComponent) o).getUnformattedText() : String.valueOf(o);
+    }
+
+    // ---- interaction results ----------------------------------------------------------------------------------
+
+    private int clickX, clickY, clickZ;
+    private boolean clickRefused;
+    private long clickTick = -1;
+
+    /** Called for each right-click on a block this bot makes, with whether something refused it. */
+    public void noteInteraction(int x, int y, int z, boolean refused) {
+        clickX = x;
+        clickY = y;
+        clickZ = z;
+        clickRefused = refused;
+        clickTick = ticksOnline;
+    }
+
+    /** Whether this bot's most recent click on that block, within the last few ticks, was refused. */
+    public boolean clickWasRefused(int x, int y, int z) {
+        return clickRefused && clickX == x && clickY == y && clickZ == z && ticksOnline - clickTick <= 10;
     }
 
     // ---- description ----------------------------------------------------------------------------------------

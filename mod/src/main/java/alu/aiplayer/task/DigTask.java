@@ -44,20 +44,18 @@ public final class DigTask extends AreaTask {
     }
 
     @Override
+    public void start(alu.aiplayer.bot.Bot bot) {
+        super.start(bot);
+        for (int[] t : targets) if (!withinTravel(t[0], t[2])) return;
+    }
+
+    @Override
     public void tick() {
         if (busyWithErrand()) return;
         if (current != null) {
-            World w = bot.player().worldObj;
-            Block b = w.getBlock(current[0], current[1], current[2]);
-            String why = b.isAir(w, current[0], current[1], current[2]) ? null
-                : untouchable(w, current[0], current[1], current[2], b);
-            if (why != null) {
-                skip(current[0], current[1], current[2], why);
-            } else {
-                Act a = digCell(current[0], current[1], current[2]);
-                if (a == Act.BUSY || a == Act.FAILED) return;
-                if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], "unreachable");
-            }
+            Act a = digCell(current[0], current[1], current[2]);
+            if (a == Act.BUSY || a == Act.FAILED) return;
+            if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], "unreachable");
             progressDone++;
             current = null;
         }

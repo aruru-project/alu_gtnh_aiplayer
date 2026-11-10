@@ -14,7 +14,9 @@ public final class GotoPlayerTask extends MoveTask {
 
     private final String player;
     private final int range;
+    private static final int TIME_LIMIT = 20 * 60 * 5;
     private int gx, gy, gz;
+    private int ticks;
 
     public GotoPlayerTask(JsonObject params) {
         super("goto_player", params);
@@ -51,7 +53,12 @@ public final class GotoPlayerTask extends MoveTask {
         EntityPlayerMP target = findPlayer(player);
         if (target != null && target.dimension == bot.player().dimension) {
             double dx = target.posX - (gx + 0.5), dy = target.posY - gy, dz = target.posZ - (gz + 0.5);
-            if (dx * dx + dy * dy + dz * dz > 9.0 && !aim()) return;
+            // Re-aiming discards a search in progress; against a target that keeps moving that would never end.
+            if (dx * dx + dy * dy + dz * dz > 9.0 && !nav.planning() && !aim()) return;
+        }
+        if (++ticks > TIME_LIMIT) {
+            fail("stuck", "could not catch up with " + player);
+            return;
         }
         Navigator.Status st = nav.tick();
         if (st == Navigator.Status.ARRIVED) done();

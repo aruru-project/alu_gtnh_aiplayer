@@ -33,15 +33,15 @@ public final class FillTask extends AreaTask {
 
     public FillTask(JsonObject params) {
         super("fill", params);
-        int ax = J.reqInt(params, "x1"), ay = J.reqInt(params, "y1"), az = J.reqInt(params, "z1");
-        int bx = J.reqInt(params, "x2"), by = J.reqInt(params, "y2"), bz = J.reqInt(params, "z2");
+        int ax = J.reqCoord(params, "x1"), ay = J.reqHeight(params, "y1"), az = J.reqCoord(params, "z1");
+        int bx = J.reqCoord(params, "x2"), by = J.reqHeight(params, "y2"), bz = J.reqCoord(params, "z2");
         x1 = Math.min(ax, bx);
         x2 = Math.max(ax, bx);
         y1 = Math.max(1, Math.min(ay, by));
         y2 = Math.min(254, Math.max(ay, by));
         z1 = Math.min(az, bz);
         z2 = Math.max(az, bz);
-        long volume = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+        long volume = ((long) x2 - x1 + 1) * ((long) y2 - y1 + 1) * ((long) z2 - z1 + 1);
         if (volume > ClearTask.MAX_VOLUME) {
             throw new IllegalArgumentException("the box holds " + volume + " cells; the limit is " + ClearTask.MAX_VOLUME);
         }
@@ -67,8 +67,11 @@ public final class FillTask extends AreaTask {
     @Override
     public void start(Bot bot) {
         super.start(bot);
+        if (!withinTravel((x1 + x2) / 2, (z1 + z2) / 2)) return;
+        // Whatever the bot has to dig through on the way, it must not be the blocks this task puts down.
+        rule = Rules.outside(x1, y1, z1, x2, y2, z2);
         phase = "going to the area";
-        nav.go(Goal.near((x1 + x2) / 2, bot.blockY(), (z1 + z2) / 2, range()), Rules.NATURAL_ONLY);
+        nav.go(Goal.column((x1 + x2) / 2, (z1 + z2) / 2, range()), rule);
     }
 
     private int range() {

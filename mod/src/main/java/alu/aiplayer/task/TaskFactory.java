@@ -40,6 +40,8 @@ public final class TaskFactory {
                 return new HaulTask(params);
             case "collect":
                 return new CollectTask(params);
+            case "give":
+                return new GiveTask(params);
             default:
                 throw RpcException.badRequest("unknown task type: " + type);
         }

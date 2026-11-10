@@ -36,13 +36,13 @@ public class ClearTask extends AreaTask {
     public ClearTask(JsonObject params) {
         this("clear", params);
         setBox(
-            J.reqInt(params, "x1"),
-            J.reqInt(params, "y1"),
-            J.reqInt(params, "z1"),
-            J.reqInt(params, "x2"),
-            J.reqInt(params, "y2"),
-            J.reqInt(params, "z2"));
-        long volume = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+            J.reqCoord(params, "x1"),
+            J.reqHeight(params, "y1"),
+            J.reqCoord(params, "z1"),
+            J.reqCoord(params, "x2"),
+            J.reqHeight(params, "y2"),
+            J.reqCoord(params, "z2"));
+        long volume = ((long) x2 - x1 + 1) * ((long) y2 - y1 + 1) * ((long) z2 - z1 + 1);
         if (volume > MAX_VOLUME) {
             throw new IllegalArgumentException("the box holds " + volume + " cells; the limit is " + MAX_VOLUME);
         }
@@ -66,8 +66,9 @@ public class ClearTask extends AreaTask {
     @Override
     public void start(Bot bot) {
         super.start(bot);
+        if (!withinTravel((x1 + x2) / 2, (z1 + z2) / 2)) return;
         phase = "going to the area";
-        nav.go(Goal.near((x1 + x2) / 2, bot.blockY(), (z1 + z2) / 2, approachRange()), Rules.NATURAL_ONLY);
+        nav.go(Goal.column((x1 + x2) / 2, (z1 + z2) / 2, approachRange()), Rules.NATURAL_ONLY);
     }
 
     /** Close enough that the whole area is loaded and the first target is a short walk. */

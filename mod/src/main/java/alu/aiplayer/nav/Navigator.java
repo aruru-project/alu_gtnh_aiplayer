@@ -30,6 +30,7 @@ public final class Navigator {
     private int fruitless;
     private int plans;
     private int airTicks;
+    private boolean mayPillar = true;
 
     /** unreachable, stuck, no_tool or no_material. */
     public String failCode;
@@ -42,7 +43,16 @@ public final class Navigator {
 
     /** Sets a new destination and forgets the old one. */
     public void go(Goal goal, NavWorld.BreakRule rule) {
+        go(goal, rule, true);
+    }
+
+    /**
+     * @param mayPillar whether the bot may stack filler blocks under itself to climb. Off for errands that carry
+     *                  cargo, which would otherwise get used up as scaffolding.
+     */
+    public void go(Goal goal, NavWorld.BreakRule rule, boolean mayPillar) {
         stop();
+        this.mayPillar = mayPillar;
         this.goal = goal;
         this.rule = rule == null ? Rules.NATURAL_ONLY : rule;
         fruitless = 0;
@@ -54,6 +64,11 @@ public final class Navigator {
 
     public boolean active() {
         return goal != null;
+    }
+
+    /** True while a route is being worked out; a new destination now would throw that work away. */
+    public boolean planning() {
+        return search != null;
     }
 
     public void stop() {
@@ -101,17 +116,26 @@ public final class Navigator {
                 bot.blockY(),
                 bot.blockZ(),
                 goal,
-                Rules.scaffold(p) != null,
+                mayPillar && Rules.scaffold(p) != null,
                 MAX_NODES);
         }
 
-        PathSearch.Status st = search.step(SEARCH_BUDGET_NANOS);
+        PathSearch.Status st = search.step(budget());
         if (st == PathSearch.Status.RUNNING) return Status.WORKING;
         PathSearch finished = search;
         search = null;
         if (st == PathSearch.Status.NONE) return fail("unreachable", "no way to get there", null);
         follower = new PathFollower(bot, finished.path(), bot.blockX(), bot.blockY(), bot.blockZ(), rule);
         return Status.WORKING;
+    }
+
+    /** Planning time for this tick: the normal slice, or a fraction of it while the server is behind. */
+    private static long budget() {
+        long[] times = net.minecraft.server.MinecraftServer.getServer().tickTimeArray;
+        long sum = 0;
+        for (long t : times) sum += t;
+        long mean = sum / times.length;
+        return mean > 45_000_000L ? SEARCH_BUDGET_NANOS / 5 : SEARCH_BUDGET_NANOS;
     }
 
     private Status fail(String code, String message, String block) {

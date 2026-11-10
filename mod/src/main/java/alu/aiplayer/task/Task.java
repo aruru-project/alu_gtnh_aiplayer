@@ -49,6 +49,32 @@ public abstract class Task {
         this.bot = bot;
     }
 
+    /** The dimension the task started in. */
+    public int startDim;
+
+    /** Whether the task is tied to the place it started in; a bot carried to another dimension then stops. */
+    public boolean dimensionBound() {
+        return true;
+    }
+
+    /**
+     * Whether a destination is within walking distance. Fails the task and returns false when it is not, so a
+     * mistyped coordinate cannot send the bot off across the map, generating terrain as it goes.
+     */
+    protected final boolean withinTravel(int x, int z) {
+        int max = bot.manager()
+            .config().maxTravel;
+        long dx = (long) x - bot.blockX(), dz = (long) z - bot.blockZ();
+        if (dx * dx + dz * dz <= (long) max * max) return true;
+        fail(
+            "unreachable",
+            "that is " + (long) Math.sqrt((double) dx * dx + (double) dz * dz)
+                + " blocks away and the bot walks at most "
+                + max
+                + "; teleport closer first");
+        return false;
+    }
+
     /** Called every server tick while running. */
     public abstract void tick();
 

@@ -17,9 +17,9 @@ public final class GotoTask extends MoveTask {
 
     public GotoTask(JsonObject params) {
         super("goto", params);
-        x = J.reqInt(params, "x");
-        y = J.has(params, "y") ? J.reqInt(params, "y") : null;
-        z = J.reqInt(params, "z");
+        x = J.reqCoord(params, "x");
+        y = J.has(params, "y") ? J.reqHeight(params, "y") : null;
+        z = J.reqCoord(params, "z");
         range = Math.max(0, Math.min(32, J.i(params, "range", 1)));
     }
 
@@ -30,6 +30,7 @@ public final class GotoTask extends MoveTask {
             fail("unreachable", "the destination is in another dimension");
             return;
         }
+        if (!withinTravel(x, z)) return;
         phase = "walking";
         if (y == null) nav.go(Goal.column(x, z, range), Rules.NATURAL_ONLY);
         else walkTo(x, y, z, range);

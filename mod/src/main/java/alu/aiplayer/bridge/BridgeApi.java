@@ -42,12 +42,12 @@ public final class BridgeApi {
 
         bridge.register("world.block", p -> {
             WorldServer w = world(p);
-            return WorldQueries.block(w, J.reqInt(p, "x"), J.reqInt(p, "y"), J.reqInt(p, "z"));
+            return WorldQueries.block(w, J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z"));
         });
         bridge.register(
             "world.scan",
             p -> WorldQueries
-                .scan(world(p), J.reqInt(p, "x1"), J.reqInt(p, "z1"), J.reqInt(p, "x2"), J.reqInt(p, "z2")));
+                .scan(world(p), J.reqCoord(p, "x1"), J.reqCoord(p, "z1"), J.reqCoord(p, "x2"), J.reqCoord(p, "z2")));
         bridge.register("world.find", p -> {
             Set<Block> wanted = new HashSet<>();
             JsonArray ids = J.array(p, "blocks");
@@ -88,7 +88,9 @@ public final class BridgeApi {
         bridge.register("bot.spawn", p -> {
             double[] pos = null;
             if (J.has(p, "x") && J.has(p, "y") && J.has(p, "z")) {
-                pos = new double[] { J.d(p, "x", 0) + 0.5, J.d(p, "y", 0), J.d(p, "z", 0) + 0.5 };
+                int y = J.reqHeight(p, "y");
+                if (y < 0 || y > 255) throw RpcException.badRequest("y must be between 0 and 255");
+                pos = new double[] { J.reqCoord(p, "x") + 0.5, y, J.reqCoord(p, "z") + 0.5 };
             }
             Integer dim = J.has(p, "dim") ? J.i(p, "dim", 0) : null;
             return bots.spawn(J.reqStr(p, "name"), dim, pos, J.object(p, "skin"))
@@ -131,10 +133,6 @@ public final class BridgeApi {
             String command = J.reqStr(p, "command")
                 .trim();
             if (command.startsWith("/")) command = command.substring(1);
-            String word = command.split("\\s+", 2)[0].toLowerCase();
-            if (!bots.config().allowedCommands.contains(word)) {
-                throw RpcException.denied("command is not on the bot allow list: " + word);
-            }
             List<String> out = b.runCommand(command);
             JsonArray a = new JsonArray();
             for (String line : out) a.add(J.prim(line));
@@ -144,14 +142,14 @@ public final class BridgeApi {
         });
         bridge.register("bot.look", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));
-            Motion.face(b.player(), J.reqInt(p, "x") + 0.5, J.reqInt(p, "y") + 0.5, J.reqInt(p, "z") + 0.5);
+            Motion.face(b.player(), J.reqCoord(p, "x") + 0.5, J.reqHeight(p, "y") + 0.5, J.reqCoord(p, "z") + 0.5);
             return null;
         });
         bridge.register("bot.probe", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));
-            int x = J.reqInt(p, "x"), y = J.reqInt(p, "y"), z = J.reqInt(p, "z");
+            int x = J.reqCoord(p, "x"), y = J.reqHeight(p, "y"), z = J.reqCoord(p, "z");
             JsonObject o = WorldQueries.block(b.world(), x, y, z);
-            if (b.world()
+            if (y >= 0 && y <= 255 && b.world()
                 .blockExists(x, y, z)) {
                 Tools.Choice best = Tools.best(b.player(), b.world(), x, y, z);
                 o.addProperty("canDig", best != null && best.worthwhile());
@@ -205,7 +203,7 @@ public final class BridgeApi {
     /** The point a search is centred on: x, y, z if given, else where the named bot stands. */
     private int[] centre(JsonObject p) {
         if (J.has(p, "x") && J.has(p, "y") && J.has(p, "z")) {
-            return new int[] { J.reqInt(p, "x"), J.reqInt(p, "y"), J.reqInt(p, "z") };
+            return new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") };
         }
         if (!J.has(p, "bot")) throw RpcException.badRequest("give x, y, z or a bot to centre on");
         Bot b = bots.requireOnline(J.reqStr(p, "bot"));

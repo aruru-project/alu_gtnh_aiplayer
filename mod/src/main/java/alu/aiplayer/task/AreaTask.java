@@ -78,6 +78,9 @@ abstract class AreaTask extends Task {
     private final Map<Long, Integer> attempts = new HashMap<>();
     private int cooldown;
     private boolean walking;
+    private int recentre;
+    private int recentred;
+    private int airborne;
 
     private ContainerTrip trip;
     private Runnable afterTrip;
@@ -150,15 +153,24 @@ abstract class AreaTask extends Task {
             walking = false;
             if (st == Navigator.Status.FAILED) return walkFailed(x, y, z);
         }
-        if (w.getBlock(x, y, z)
-            .isAir(w, x, y, z)) return Act.OK;
-        if (Reach.canReach(p, x, y, z)) {
-            digger.begin(x, y, z);
-            return Act.BUSY;
+        if (w.blockExists(x, y, z)) {
+            Block block = w.getBlock(x, y, z);
+            if (block.isAir(w, x, y, z)) return Act.OK;
+            // The work list may be minutes old: someone could have put a chest here since.
+            String why = untouchable(w, x, y, z, block);
+            if (why == null && nextToLava(w, x, y, z)) why = "next to lava";
+            if (why != null) {
+                skip(x, y, z, why);
+                return Act.SKIPPED;
+            }
+            if (Reach.canReach(p, x, y, z)) {
+                digger.begin(x, y, z);
+                return Act.BUSY;
+            }
         }
         if (bump(x, y, z) > MAX_ATTEMPTS_PER_CELL) return Act.UNREACHABLE;
         // Treetops and what lies on them hang far above anything to stand on. Not worth a search, or a tower.
-        if (isFoliage(w, x, y, z) && y > groundNear(w, x, z) + 6) return Act.UNREACHABLE;
+        if (w.blockExists(x, y, z) && isFoliage(w, x, y, z) && y > groundNear(w, x, z) + 6) return Act.UNREACHABLE;
         nav.go(Goal.reach(x, y, z, false), rule);
         walking = true;
         return Act.BUSY;
@@ -186,6 +198,19 @@ abstract class AreaTask extends Task {
             return Act.FAILED;
         }
         return Act.UNREACHABLE;
+    }
+
+    /** Opening a cell beside lava lets it run, onto the bot and over the drops. */
+    private static boolean nextToLava(World w, int x, int y, int z) {
+        return isLava(w, x + 1, y, z) || isLava(w, x - 1, y, z)
+            || isLava(w, x, y, z + 1)
+            || isLava(w, x, y, z - 1)
+            || isLava(w, x, y + 1, z);
+    }
+
+    private static boolean isLava(World w, int x, int y, int z) {
+        return w.blockExists(x, y, z) && w.getBlock(x, y, z)
+            .getMaterial() == Material.lava;
     }
 
     /** Leaves, and thin things resting on them such as snow. */
@@ -236,9 +261,22 @@ abstract class AreaTask extends Task {
             walking = false;
             if (st == Navigator.Status.FAILED) return walkFailed(x, y, z);
         }
+        if (recentre > 0) {
+            // Standing with a shoulder in the target cell: shuffle back to the middle of the bot's own cell.
+            recentre--;
+            bot.motion.moveToward(p, bot.blockX() + 0.5, bot.blockZ() + 0.5);
+            return Act.BUSY;
+        }
         // Placing while airborne would put the block where the feet are about to be.
-        if (!p.onGround && !p.isInWater()) return Act.BUSY;
+        if (!p.onGround && !p.isInWater() && ++airborne < 100) return Act.BUSY;
+        airborne = 0;
         Placer.Result r = Placer.place(bot, x, y, z, item);
+        if (r == Placer.Result.IN_THE_WAY && (bot.blockX() != x || bot.blockZ() != z) && recentred < 3) {
+            recentred++;
+            recentre = 6;
+            return Act.BUSY;
+        }
+        recentred = 0;
         switch (r) {
             case PLACED:
                 placed++;
@@ -307,7 +345,7 @@ abstract class AreaTask extends Task {
         trip = null;
         List<int[]> places = tripIsDropoff ? dropoff : supply;
         boolean incomplete = st == ContainerTrip.Status.FAILED
-            || (tripIsDropoff ? finished.session.containerFull : !supplySatisfied(finished.session));
+            || (tripIsDropoff ? finished.session.containerFull : !supplySatisfied());
         if (incomplete && tripIndex + 1 < places.size()) {
             // Try the next chest in the list.
             tripIndex++;
@@ -325,19 +363,72 @@ abstract class AreaTask extends Task {
         return finished();
     }
 
-    private ContainerSession.DepositPlan dropPlan;
+    private Set<String> dropKeep;
     private List<ItemFilter> supplyWant;
+    private int[] supplyHad;
 
-    private boolean supplySatisfied(ContainerSession s) {
-        for (int i = 0; i < supplyWant.size(); i++) if (s.withdrawMissing(i) > 0) return false;
+    private boolean supplySatisfied() {
+        for (int i = 0; i < supplyWant.size(); i++) {
+            ItemFilter f = supplyWant.get(i);
+            if (f.count > 0 && Inventories.count(bot.player(), f) - supplyHad[i] < f.count) return false;
+        }
         return true;
     }
 
     private void beginTrip() {
         int[] at = (tripIsDropoff ? dropoff : supply).get(tripIndex);
         trip = new ContainerTrip(bot, at[0], at[1], at[2]);
-        if (tripIsDropoff) trip.session.deposit(dropPlan);
-        else trip.session.withdraw(supplyWant);
+        if (tripIsDropoff) {
+            trip.session.deposit(dropPlan(dropKeep));
+            return;
+        }
+        // Ask each further chest only for what the earlier ones did not provide.
+        List<ItemFilter> rest = new ArrayList<>();
+        for (int i = 0; i < supplyWant.size(); i++) {
+            ItemFilter f = supplyWant.get(i);
+            int gained = Inventories.count(bot.player(), f) - supplyHad[i];
+            int need = f.count < 0 ? -1 : Math.max(0, f.count - Math.max(0, gained));
+            if (need != 0) rest.add(new ItemFilter(f.id, f.meta, need));
+        }
+        if (rest.isEmpty()) rest.add(new ItemFilter(supplyWant.get(0).id, supplyWant.get(0).meta, 0));
+        trip.session.withdraw(rest);
+    }
+
+    /** At most this many items of the kinds to keep stay with the bot on a drop-off trip. */
+    private static final int KEEP_LIMIT = 256;
+
+    /** What to leave at a drop-off: everything but tools, food, a limited amount of what the task needs, and one
+     * stack of filler to climb with. A fresh plan for each chest, since it counts what it has let through. */
+    private ContainerSession.DepositPlan dropPlan(final Set<String> keep) {
+        final ItemFilter scaffold = Rules.scaffold(bot.player());
+        return new ContainerSession.DepositPlan() {
+
+            private final Map<ItemStack, Integer> decided = new java.util.IdentityHashMap<>();
+            private boolean keptScaffold;
+            private int kept;
+
+            @Override
+            public int wanted(ItemStack stack) {
+                // Asked more than once about the same stack, the answer must not change.
+                Integer known = decided.get(stack);
+                if (known != null) return known;
+                int answer = -1;
+                if (Inventories.isTool(stack) || Inventories.isFood(stack)) {
+                    answer = 0;
+                } else if (keep != null && keep.contains(Names.itemId(stack.getItem())) && kept < KEEP_LIMIT) {
+                    kept += stack.stackSize;
+                    answer = 0;
+                } else if (scaffold != null && !keptScaffold && scaffold.matches(stack)) {
+                    keptScaffold = true;
+                    answer = 0;
+                }
+                decided.put(stack, answer);
+                return answer;
+            }
+
+            @Override
+            public void moved(ItemStack type, int count) {}
+        };
     }
 
     /** Whether the inventory is full enough that digging should stop to deal with it. */
@@ -365,38 +456,12 @@ abstract class AreaTask extends Task {
         return false;
     }
 
-    /** At most this many items of the kinds to keep stay with the bot on a drop-off trip. */
-    private static final int KEEP_LIMIT = 256;
-
     protected void startDropoff(final Set<String> keep, Runnable then) {
         phase = "emptying inventory";
         tripIsDropoff = true;
         tripIndex = 0;
         afterTrip = then;
-        // Keep one stack of filler to climb with.
-        final ItemFilter scaffold = Rules.scaffold(bot.player());
-        dropPlan = new ContainerSession.DepositPlan() {
-
-            boolean keptScaffold;
-            int kept;
-
-            @Override
-            public int wanted(ItemStack stack) {
-                if (Inventories.isTool(stack) || Inventories.isFood(stack)) return 0;
-                if (keep != null && keep.contains(Names.itemId(stack.getItem())) && kept < KEEP_LIMIT) {
-                    kept += stack.stackSize;
-                    return 0;
-                }
-                if (scaffold != null && !keptScaffold && scaffold.matches(stack)) {
-                    keptScaffold = true;
-                    return 0;
-                }
-                return -1;
-            }
-
-            @Override
-            public void moved(ItemStack type, int count) {}
-        };
+        dropKeep = keep;
         beginTrip();
     }
 
@@ -410,6 +475,8 @@ abstract class AreaTask extends Task {
         tripIsDropoff = false;
         tripIndex = 0;
         supplyWant = want;
+        supplyHad = new int[want.size()];
+        for (int i = 0; i < supplyHad.length; i++) supplyHad[i] = Inventories.count(bot.player(), want.get(i));
         final int before = countAll(want);
         final String msg = missingMessage;
         final JsonObject det = detail;

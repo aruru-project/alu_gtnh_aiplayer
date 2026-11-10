@@ -39,6 +39,8 @@ public final class BotManager implements TaskQueue.Listener {
     private final ModConfig config;
     private final BridgeServer bridge;
     private final Map<String, Bot> bots = new LinkedHashMap<>();
+    /** Names of bots that were removed; their leftover player data may be picked up again by a bot of that name. */
+    private final java.util.Set<String> retired = new java.util.TreeSet<>();
     private File saveFile;
     private boolean dirty;
     private int ticksSinceSave;
@@ -121,14 +123,14 @@ public final class BotManager implements TaskQueue.Listener {
         if (autoLoginIn >= 0 && autoLoginIn-- == 0) autoLogin();
         for (Bot b : new ArrayList<>(bots.values())) {
             if (!b.online()) continue;
-            String kicked = b.conn.kickReason();
-            if (kicked != null) {
-                // Kicked by a command or replaced by a real login with the same name: stay offline until asked.
-                b.wantOnline = false;
-                logout(b, kicked, false);
-                continue;
-            }
             try {
+                String kicked = b.conn.kickReason();
+                if (kicked != null) {
+                    // Kicked by a command or replaced by a real login with the same name: stay offline until asked.
+                    b.wantOnline = false;
+                    logout(b, kicked, false);
+                    continue;
+                }
                 b.tick(scm);
             } catch (Throwable t) {
                 AiPlayerMod.LOG.error("Bot {} failed while ticking; logging it out", b.name, t);
@@ -150,25 +152,63 @@ public final class BotManager implements TaskQueue.Listener {
         }
         Bot b = find(name);
         if (b != null && b.online()) throw RpcException.badRequest("bot is already online: " + b.name);
-        ServerConfigurationManager scm = MinecraftServer.getServer()
-            .getConfigurationManager();
+        MinecraftServer server = MinecraftServer.getServer();
+        ServerConfigurationManager scm = server.getConfigurationManager();
         if (scm.func_152612_a(name) != null) {
             throw RpcException.denied("a player named " + name + " is online");
         }
-        if (b == null) {
+        if (dim != null && !DimensionManager.isDimensionRegistered(dim)) {
+            throw RpcException.badRequest("no such dimension: " + dim);
+        }
+        int online = 0;
+        for (Bot other : bots.values()) if (other.online()) online++;
+        if (online >= config.maxBots) throw RpcException.denied("at most " + config.maxBots + " bots may be online");
+        boolean created = b == null;
+        if (created) {
+            // On a server without account checks a name is all that identifies a player. A new bot must not take
+            // over the inventory and homes of a person who has played here under that name.
+            if (!retired.contains(name.toLowerCase()) && hasPlayerData(offlineUuid(name))) {
+                throw RpcException.denied("a player named " + name + " has already played on this server");
+            }
             b = new Bot(this, name, offlineUuid(name));
             b.invulnerable = config.defaultInvulnerable;
             b.hunger = config.defaultHunger;
             bots.put(name.toLowerCase(), b);
         }
-        int online = 0;
-        for (Bot other : bots.values()) if (other.online()) online++;
-        if (online >= config.maxBots) throw RpcException.denied("at most " + config.maxBots + " bots may be online");
-        if (skin != null) b.skin = skin;
+        if (skin != null) b.skin = validSkin(skin);
         b.wantOnline = true;
-        login(b, pos == null ? null : new Placement(dim, pos));
+        try {
+            login(b, pos == null ? null : new Placement(dim, pos));
+        } catch (RuntimeException e) {
+            b.wantOnline = false;
+            if (created) bots.remove(name.toLowerCase());
+            throw e;
+        }
+        retired.remove(name.toLowerCase());
         dirty = true;
         return b;
+    }
+
+    private static boolean hasPlayerData(UUID uuid) {
+        File dir = new File(DimensionManager.getCurrentSaveRootDirectory(), "playerdata");
+        return new File(dir, uuid + ".dat").isFile();
+    }
+
+    /**
+     * A skin is only usable with its signature: the packet that shows a player to others cannot be written without
+     * one, and the failed write disconnects whoever was meant to receive it.
+     */
+    private static JsonObject validSkin(JsonObject skin) {
+        String value = J.str(skin, "value", "");
+        String signature = J.str(skin, "signature", "");
+        if (value.isEmpty() || signature.isEmpty()) {
+            throw RpcException.badRequest("skin needs both value and signature");
+        }
+        if (value.length() > 16000 || signature.length() > 2000) throw RpcException.tooLarge("skin data is too long");
+        JsonObject clean = new JsonObject();
+        clean.addProperty("value", value);
+        clean.addProperty("signature", signature);
+        return clean;
     }
 
     public void despawn(Bot b) {
@@ -181,6 +221,7 @@ public final class BotManager implements TaskQueue.Listener {
     public void remove(Bot b) {
         if (b.online()) throw RpcException.badRequest("despawn the bot first: " + b.name);
         bots.remove(b.name.toLowerCase());
+        retired.add(b.name.toLowerCase());
         dirty = true;
     }
 
@@ -188,13 +229,11 @@ public final class BotManager implements TaskQueue.Listener {
         MinecraftServer server = MinecraftServer.getServer();
         ServerConfigurationManager scm = server.getConfigurationManager();
         GameProfile profile = new GameProfile(b.uuid, b.name);
-        if (b.skin != null && J.has(b.skin, "value")) {
-            String sig = J.str(b.skin, "signature", null);
+        if (b.skin != null && J.has(b.skin, "value") && J.has(b.skin, "signature")) {
             profile.getProperties()
                 .put(
                     "textures",
-                    sig == null ? new Property("textures", J.str(b.skin, "value", ""))
-                        : new Property("textures", J.str(b.skin, "value", ""), sig));
+                    new Property("textures", J.str(b.skin, "value", ""), J.str(b.skin, "signature", "")));
         }
         if (!scm.func_152607_e(profile)) {
             // With the whitelist on, other mods (ServerUtilities) refuse to set up players that are not on it.
@@ -214,7 +253,8 @@ public final class BotManager implements TaskQueue.Listener {
         }
         if (where != null) {
             if (where.dim != null && where.dim != player.dimension) {
-                scm.transferPlayerToDimension(player, where.dim);
+                // The stock teleporter would search for a portal across hundreds of chunks and build one.
+                scm.transferPlayerToDimension(player, where.dim, new DirectTeleporter(server.worldServerForDimension(where.dim)));
             }
             conn.setPlayerLocation(where.pos[0], where.pos[1], where.pos[2], player.rotationYaw, 0.0F);
         }
@@ -234,6 +274,31 @@ public final class BotManager implements TaskQueue.Listener {
         data.addProperty("reason", reason);
         bridge.emit("bot.despawned", data);
         dirty = true;
+    }
+
+    /** Changes dimension without looking for, or building, a portal. The caller sets the position afterwards. */
+    private static final class DirectTeleporter extends net.minecraft.world.Teleporter {
+
+        DirectTeleporter(net.minecraft.world.WorldServer world) {
+            super(world);
+        }
+
+        @Override
+        public void placeInPortal(net.minecraft.entity.Entity entity, double x, double y, double z, float yaw) {}
+
+        @Override
+        public boolean placeInExistingPortal(net.minecraft.entity.Entity entity, double x, double y, double z,
+            float yaw) {
+            return true;
+        }
+
+        @Override
+        public boolean makePortal(net.minecraft.entity.Entity entity) {
+            return true;
+        }
+
+        @Override
+        public void removeStalePortalLocations(long worldTime) {}
     }
 
     static UUID offlineUuid(String name) {
@@ -309,6 +374,8 @@ public final class BotManager implements TaskQueue.Listener {
         if (saveFile == null || !saveFile.isFile()) return;
         try {
             JsonObject root = J.parseObject(new String(Files.readAllBytes(saveFile.toPath()), StandardCharsets.UTF_8));
+            JsonArray gone = J.array(root, "retired");
+            if (gone != null) for (JsonElement e : gone) retired.add(e.getAsString());
             JsonArray list = J.array(root, "bots");
             if (list == null) return;
             for (JsonElement e : list) {
@@ -323,7 +390,11 @@ public final class BotManager implements TaskQueue.Listener {
                 bots.put(name.toLowerCase(), b);
             }
         } catch (Exception e) {
-            AiPlayerMod.LOG.error("Cannot read {}; starting without saved bots", saveFile, e);
+            // Keep the unreadable file: the next save would otherwise overwrite the only copy.
+            File kept = new File(saveFile.getPath() + ".unreadable-" + System.currentTimeMillis());
+            AiPlayerMod.LOG.error("Cannot read {}; starting without saved bots, old file kept as {}", saveFile, kept, e);
+            saveFile.renameTo(kept);
+            bots.clear();
         }
     }
 
@@ -344,6 +415,9 @@ public final class BotManager implements TaskQueue.Listener {
         }
         JsonObject root = new JsonObject();
         root.add("bots", list);
+        JsonArray gone = new JsonArray();
+        for (String name : retired) gone.add(J.prim(name));
+        root.add("retired", gone);
         try {
             saveFile.getParentFile()
                 .mkdirs();
@@ -353,7 +427,7 @@ public final class BotManager implements TaskQueue.Listener {
                 .toJson(root);
             Files.write(tmp.toPath(), text.getBytes(StandardCharsets.UTF_8));
             Files.move(tmp.toPath(), saveFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             AiPlayerMod.LOG.error("Cannot save {}", saveFile, e);
         }
     }

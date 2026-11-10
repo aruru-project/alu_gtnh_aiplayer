@@ -13,11 +13,12 @@ public abstract class Goal {
     public abstract double heuristic(int x, int y, int z);
 
     /**
-     * Within a horizontal range of a block position, and about level with it: up to two blocks off in height, so a
-     * position read off a map or a player still counts when the ground there is a little higher or lower.
+     * Within a horizontal range of a block position, and about level with it: up to two blocks off in height (four
+     * for a wide range), so a position read off a map or a player still counts when the ground there is a little
+     * higher or lower.
      */
     public static Goal near(final int gx, final int gy, final int gz, final int range) {
-        final int slack = Math.max(2, range);
+        final int slack = Math.max(2, Math.min(4, range));
         return new Goal() {
 
             @Override

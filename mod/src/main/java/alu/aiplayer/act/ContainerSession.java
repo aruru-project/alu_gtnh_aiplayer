@@ -105,29 +105,34 @@ public final class ContainerSession {
         World w = p.worldObj;
         switch (phase) {
             case 0: {
+                if (!w.blockExists(x, y, z)) return fail("out_of_reach", "the container is out of reach");
                 TileEntity te = w.getTileEntity(x, y, z);
                 if (!(te instanceof IInventory)) return fail("invalid", "there is no container at that position");
                 if (!Reach.canReach(p, x, y, z)) return fail("out_of_reach", "the container is out of reach");
+                // Some other screen left open would be mistaken for this container's.
+                if (p.openContainer != p.inventoryContainer) bot.conn()
+                    .closeWindow();
                 Motion.face(p, x + 0.5, y + 0.5, z + 0.5);
-                // Click with an empty hand only: a held block could get placed, a held tool could reconfigure it.
-                if (Inventories.holdNothing(bot)) {
-                    int side = Reach.facingSide(p, x, y, z);
-                    bot.conn()
-                        .useOnBlock(x, y, z, side, 0.5F, 0.5F, 0.5F);
-                    bot.conn()
-                        .swingArm();
-                }
+                clickEmptyHanded(p);
                 phase = 1;
                 wait = 0;
                 return Status.WORKING;
             }
             case 1:
+                if (bot.clickWasRefused(x, y, z)) {
+                    return fail("denied", "opening the container was refused; it may be protected");
+                }
                 if (p.openContainer != p.inventoryContainer) {
                     viaScreen = true;
                     phase = 2;
                     wait = 0;
                     cursor = 0;
                 } else if (++wait >= OPEN_WAIT) {
+                    // No screen opened although nothing refused the click: storage without one (barrels, drawers).
+                    TileEntity te = w.getTileEntity(x, y, z);
+                    if (!(te instanceof IInventory) || !((IInventory) te).isUseableByPlayer(p)) {
+                        return fail("denied", "the container cannot be used from here");
+                    }
                     phase = 3;
                     wait = 0;
                     cursor = 0;
@@ -157,6 +162,31 @@ public final class ContainerSession {
                 if (++wait >= 2) return Status.DONE;
                 return Status.WORKING;
         }
+    }
+
+    /**
+     * Right-clicks the container as if nothing were held. What is in hand is set aside for the duration of the
+     * click and put straight back, so a held block is not placed and a held tool does not act on the container,
+     * and it works with a full inventory too.
+     */
+    private void clickEmptyHanded(EntityPlayerMP p) {
+        int slot = p.inventory.currentItem;
+        ItemStack held = p.inventory.mainInventory[slot];
+        p.inventory.mainInventory[slot] = null;
+        try {
+            int side = Reach.facingSide(p, x, y, z);
+            bot.conn()
+                .useOnBlock(x, y, z, side, 0.5F, 0.5F, 0.5F);
+        } finally {
+            if (p.inventory.mainInventory[slot] == null) {
+                p.inventory.mainInventory[slot] = held;
+            } else if (held != null && !p.inventory.addItemStackToInventory(held)) {
+                // Something appeared in the hand during the click and there is no room: drop rather than lose it.
+                p.dropPlayerItemWithRandomChoice(held, false);
+            }
+        }
+        bot.conn()
+            .swingArm();
     }
 
     public void abort() {
@@ -196,17 +226,19 @@ public final class ContainerSession {
                     stack = s.getStack();
                 }
                 ItemStack type = stack.copy();
-                int before = stack.stackSize;
+                int offered = stack.stackSize;
+                // Counted across the whole inventory: some screens answer a shift-click by shuffling the stack
+                // to another of the bot's own slots, which is not a deposit.
+                int before = Inventories.count(p, exact(type));
                 c.slotClick(s.slotNumber, 0, 1, p);
                 c.detectAndSendChanges();
-                ItemStack after = s.getStack();
-                int gone = before - (after == null ? 0 : after.stackSize);
+                int gone = before - Inventories.count(p, exact(type));
                 if (gone > 0) {
                     moved += gone;
                     deposit.moved(type, gone);
                 }
                 // What stays behind did not fit. Other kinds of item might still, so carry on.
-                if (after != null) rejected++;
+                if (gone < offered) rejected++;
                 cursor++;
                 return true;
             }
@@ -339,31 +371,43 @@ public final class ContainerSession {
                 int f = matchingFilter(stack);
                 if (f < 0) continue;
                 if (inv instanceof ISidedInventory && !((ISidedInventory) inv).canExtractItem(slot, stack, 1)) continue;
-                int take = Math.min(stack.stackSize, withdrawLeft[f]);
+                int room = roomFor(p, stack);
+                if (room <= 0) {
+                    inventoryFull = true;
+                    break;
+                }
+                int take = Math.min(room, Math.min(stack.stackSize, withdrawLeft[f]));
                 ItemStack out = inv.decrStackSize(slot, take);
                 if (out == null) continue;
-                int asked = out.stackSize;
-                p.inventory.addItemStackToInventory(out);
-                int got = asked - out.stackSize;
-                if (out.stackSize > 0) {
-                    // No room for the rest: put it back where it came from.
-                    ItemStack back = inv.getStackInSlot(slot);
-                    if (back == null) inv.setInventorySlotContents(slot, out);
-                    else back.stackSize += out.stackSize;
-                    inventoryFull = true;
+                int got = out.stackSize;
+                if (!p.inventory.addItemStackToInventory(out) && out.stackSize > 0) {
+                    // Should not happen after the room check; never let the remainder vanish.
+                    got -= out.stackSize;
+                    p.dropPlayerItemWithRandomChoice(out, false);
                 }
                 inv.markDirty();
+                p.inventory.markDirty();
                 if (got > 0) {
                     moved += got;
                     if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] -= got;
                 }
-                if (inventoryFull) break;
                 cursor++;
                 return true;
             }
             withdraw = null;
         }
         return deposit != null;
+    }
+
+    /** How many more items like this the bot's inventory can take. */
+    private static int roomFor(EntityPlayerMP p, ItemStack like) {
+        int room = 0;
+        int max = like.getMaxStackSize();
+        for (ItemStack s : p.inventory.mainInventory) {
+            if (s == null) room += max;
+            else if (sameItem(s, like) && s.isStackable()) room += Math.max(0, max - s.stackSize);
+        }
+        return room;
     }
 
     private static int[] accessible(IInventory inv) {

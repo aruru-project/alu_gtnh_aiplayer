@@ -56,6 +56,19 @@ public final class Rules {
         };
     }
 
+    /** Natural terrain only, and nothing at all inside a box that a task is filling in. */
+    public static NavWorld.BreakRule outside(final int x1, final int y1, final int z1, final int x2, final int y2,
+        final int z2) {
+        return new NavWorld.BreakRule() {
+
+            @Override
+            public boolean mayBreak(World w, int x, int y, int z, Block block) {
+                if (x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2) return false;
+                return isNatural(block);
+            }
+        };
+    }
+
     /** The throwaway block to build pillars and fill holes with: the first configured filler the bot carries. */
     public static ItemFilter scaffold(EntityPlayerMP p) {
         for (String id : AiPlayerMod.config().fillerBlocks) {

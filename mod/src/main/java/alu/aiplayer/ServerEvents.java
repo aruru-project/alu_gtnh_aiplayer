@@ -4,6 +4,7 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 
 import com.google.gson.JsonObject;
 
@@ -21,7 +22,7 @@ public final class ServerEvents {
 
     private final BridgeServer bridge;
     private final BotManager bots;
-    private long lastHurtEvent;
+    private final java.util.Map<String, Long> lastHurtEvent = new java.util.HashMap<>();
 
     ServerEvents(BridgeServer bridge, BotManager bots) {
         this.bridge = bridge;
@@ -73,6 +74,16 @@ public final class ServerEvents {
         bridge.emit(name, data);
     }
 
+    /** Remembers whether a bot's right-click on a block was refused by anything (land claims, mostly). */
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public void onInteract(PlayerInteractEvent event) {
+        if (event.action != PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK) return;
+        Bot bot = bots.botOf(event.entityPlayer);
+        if (bot == null) return;
+        boolean refused = event.isCanceled() || event.useBlock == cpw.mods.fml.common.eventhandler.Event.Result.DENY;
+        bot.noteInteraction(event.x, event.y, event.z, refused);
+    }
+
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onDeath(LivingDeathEvent event) {
         if (!(event.entityLiving instanceof EntityPlayer)) return;
@@ -90,8 +101,9 @@ public final class ServerEvents {
         Bot bot = bots.botOf((EntityPlayer) event.entityLiving);
         if (bot == null) return;
         long now = System.currentTimeMillis();
-        if (now - lastHurtEvent < 2000) return;
-        lastHurtEvent = now;
+        Long last = lastHurtEvent.get(bot.name);
+        if (last != null && now - last < 2000) return;
+        lastHurtEvent.put(bot.name, now);
         JsonObject data = new JsonObject();
         data.addProperty("bot", bot.name);
         data.addProperty("source", event.source == null ? "unknown" : event.source.getDamageType());

@@ -34,7 +34,9 @@ public final class Placer {
     private static final int[][] NEIGHBOURS = { { 0, -1, 0, 1 }, { 0, 0, -1, 3 }, { 0, 0, 1, 2 }, { -1, 0, 0, 5 },
         { 1, 0, 0, 4 }, { 0, 1, 0, 0 } };
 
+    /** Whether a block could be placed in the cell. Cells in chunks that are not loaded count as occupied. */
     public static boolean isReplaceable(World w, int x, int y, int z) {
+        if (y < 0 || y > 255 || !w.blockExists(x, y, z)) return false;
         Block b = w.getBlock(x, y, z);
         return b.isAir(w, x, y, z) || b.isReplaceable(w, x, y, z);
     }
@@ -54,6 +56,7 @@ public final class Placer {
     public static Result place(Bot bot, int x, int y, int z, ItemFilter item) {
         EntityPlayerMP p = bot.player();
         World w = p.worldObj;
+        if (!w.blockExists(x, y, z)) return Result.OUT_OF_REACH;
         if (!isReplaceable(w, x, y, z)) return Result.OCCUPIED;
         if (bodyIntersects(p, x, y, z)) return Result.IN_THE_WAY;
         int slot = Inventories.find(p, item);

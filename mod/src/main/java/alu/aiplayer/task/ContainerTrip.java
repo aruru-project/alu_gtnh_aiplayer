@@ -24,7 +24,7 @@ final class ContainerTrip {
     ContainerTrip(Bot bot, int x, int y, int z) {
         session = new ContainerSession(bot, x, y, z);
         nav = new Navigator(bot);
-        nav.go(Goal.reach(x, y, z, false), Rules.NATURAL_ONLY);
+        nav.go(Goal.reach(x, y, z, false), Rules.NATURAL_ONLY, false);
     }
 
     Status tick() {

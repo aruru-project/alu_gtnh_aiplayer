@@ -14,6 +14,7 @@ import alu.aiplayer.AiPlayerMod;
 import alu.aiplayer.act.Inventories;
 import alu.aiplayer.act.ItemFilter;
 import alu.aiplayer.act.Placer;
+import alu.aiplayer.nav.Rules;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 
@@ -35,13 +36,13 @@ public final class FlattenTask extends ClearTask {
 
     public FlattenTask(JsonObject params) {
         super("flatten", params);
-        ax = J.reqInt(params, "x1");
-        az = J.reqInt(params, "z1");
-        bx = J.reqInt(params, "x2");
-        bz = J.reqInt(params, "z2");
-        level = J.reqInt(params, "y");
+        ax = J.reqCoord(params, "x1");
+        az = J.reqCoord(params, "z1");
+        bx = J.reqCoord(params, "x2");
+        bz = J.reqCoord(params, "z2");
+        level = J.reqHeight(params, "y");
         if (level < 1 || level > 250) throw new IllegalArgumentException("y must be between 1 and 250");
-        if (Math.abs(bx - ax) + 1 > 64 || Math.abs(bz - az) + 1 > 64) {
+        if (Math.abs((long) bx - ax) + 1 > 64 || Math.abs((long) bz - az) + 1 > 64) {
             throw new IllegalArgumentException("the area is limited to 64x64");
         }
         fill = J.bool(params, "fill", true);
@@ -78,6 +79,8 @@ public final class FlattenTask extends ClearTask {
                     break;
                 }
                 phase = "filling";
+                // From here on the ground being laid must not be dug up again to make a path.
+                rule = Rules.outside(x1, 0, z1, x2, level, z2);
                 holes = findHoles();
                 progressTotal += holes.size();
                 stage = 3;
@@ -193,7 +196,7 @@ public final class FlattenTask extends ClearTask {
         for (String id : fillItems) ids.add(J.prim(id));
         detail.add("items", ids);
         List<ItemFilter> want = new ArrayList<>();
-        for (String id : fillItems) want.add(new ItemFilter(id, -1, Math.min(missing, 128)));
+        for (String id : fillItems) want.add(new ItemFilter(id, -1, Math.min(missing, 64)));
         startSupply(want, "out of filler blocks; " + missing + " more needed", detail);
     }
 

@@ -78,6 +78,7 @@ public final class DepositTask extends Task {
     @Override
     public void start(Bot bot) {
         super.start(bot);
+        if (!withinTravel(at[0], at[2])) return;
         phase = "going to the container";
         trip = new ContainerTrip(bot, at[0], at[1], at[2]);
         trip.session.deposit(items.isEmpty() ? everythingBut(keep) : listed(items));
@@ -85,6 +86,7 @@ public final class DepositTask extends Task {
 
     @Override
     public void tick() {
+        if (trip == null) return;
         ContainerTrip.Status st = trip.tick();
         progressDone = trip.session.moved;
         if (st == ContainerTrip.Status.FAILED) fail(trip.failCode, trip.failMessage);

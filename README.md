@@ -1,0 +1,62 @@
+# Alu AI Player
+
+GTNH（Minecraft 1.7.10）服务器里的 AI 玩家：一个真的玩家实体，按生存规则走路、挖、放、开箱子，由大模型决定做什么。
+
+- **身体** `mod/`：只装在服务端的 Forge mod。客户端不用装任何东西。
+- **大脑** `brain/`：独立的后台服务。听游戏里的聊天，调大模型，指挥身体；带网页面板，用来配置模型服务和 API key。
+- 两者之间的全部约定在 [docs/PROTOCOL.md](docs/PROTOCOL.md)，整体设计在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## 它现在会做什么
+
+| 类别 | 任务 |
+|---|---|
+| 走动 | 走到坐标、走到玩家身边、跟随玩家、`/home` 传送、`/sethome` |
+| 地形 | 把一块地整平（挖高填低）、清空一个盒子、挖指定方块 |
+| 建造 | 用一种方块填满盒子、只砌六个面、只砌四面墙、按清单逐块放置 |
+| 物品 | 往箱子里存、从箱子里取（数量精确）、在两个箱子之间来回搬、捡地上的掉落物、把东西递给玩家 |
+| 感知 | 自己的状态和背包、区域高度图、找方块、附近的箱子和里面的东西、附近的实体 |
+
+任务下达后由身体自己做完，期间不调用模型；任务队列存在世界存档里，服务器重启后接着做。
+
+## 目录
+
+```
+mod/         服务端 mod（GTNH 官方模板，Java）
+brain/       大脑服务（TypeScript，Node 24，无运行时依赖）
+docs/        架构、协议、部署、运行记录
+tools/       开发脚本
+testserver/  完整 GTNH 测试实例（不入库，由 tools/testserver setup 生成）
+```
+
+## 开发
+
+```bash
+tools/gradle build                 # 编译 mod，产物在 mod/build/libs/
+tools/testserver setup             # 从正式实例只读复制出一个测试实例（独立端口、全新世界）
+tools/testserver install           # 把刚编译的 mod 放进测试实例
+tools/testserver start             # 约 40 秒
+tools/test-kit.sh Alu              # 给测试用的 bot 一套匠魂工具和一组泥土
+tools/bridge.py call bot.spawn '{"name":"Alu"}'
+tools/bridge.py call task.start '{"bot":"Alu","task":{"type":"goto","x":-44,"z":-80}}'
+tools/bridge.py listen             # 看事件
+tools/testserver rcon list
+tools/testserver stop
+```
+
+测试实例端口：游戏 10186，RCON 25576，bridge 25591。它只读取正式实例的文件，从不写入。
+
+大脑的开发和运行见 [brain/README.md](brain/README.md)。
+
+## 部署到正式服
+
+见 [docs/DEPLOY.md](docs/DEPLOY.md)。需要重启一次游戏服务器。
+
+## 在 GTNH 里要知道的几件事
+
+- **工具**：GTNH 里原版镐铲和 GregTech 的镐铲都挖不动东西，要给它匠魂（Tinkers' Construct）工具，和玩家一样。扔在它脚边它会捡，或者放进箱子让它取。
+- **领地**：它在 ServerUtilities 眼里是普通玩家。要在已认领的区块里动手，得先把它加进队伍：主人执行 `/team status <名字> invited`，再让它执行 `team join <队伍>`。
+- **白名单**：服务器开着白名单时，mod 会在它第一次上线时把它加进白名单，否则其他 mod 不承认它。
+- **皮肤**：`skin <名字> set <正版用户名>`（服务器已有的 PierceSkinRestorer）。
+- **默认无敌、不掉饱食度**。可以在面板里关掉；关掉后它会受伤、会死、会按服务器规则掉落物品并自动重生。
+- **睡觉**：这台服务器按在线人数的一半算跳过夜晚，它算一个在线的人。正好两个真人在线时，会从“一人睡即可”变成“两人都要睡”。
+- **紧急停止**：管理员在游戏里执行 `/aiplayer stop <名字>` 取消它的全部任务，`/aiplayer despawn <名字>` 让它下线。

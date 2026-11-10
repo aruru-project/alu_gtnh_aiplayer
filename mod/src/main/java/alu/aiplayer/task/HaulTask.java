@@ -44,6 +44,7 @@ public final class HaulTask extends Task {
     @Override
     public void start(Bot bot) {
         super.start(bot);
+        if (!withinTravel(from[0], from[2]) || !withinTravel(to[0], to[2])) return;
         fetch();
     }
 
@@ -79,6 +80,7 @@ public final class HaulTask extends Task {
 
     @Override
     public void tick() {
+        if (trip == null) return;
         ContainerTrip.Status st = trip.tick();
         if (st == ContainerTrip.Status.WORKING) return;
         if (st == ContainerTrip.Status.FAILED) {

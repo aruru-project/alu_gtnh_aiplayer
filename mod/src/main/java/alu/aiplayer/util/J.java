@@ -96,6 +96,23 @@ public final class J {
         return (int) Math.floor(o.get(key).getAsDouble());
     }
 
+    /** The largest horizontal coordinate the game itself accepts. */
+    public static final int WORLD_LIMIT = 30000000;
+
+    /** A horizontal block coordinate, checked against the world border so later arithmetic cannot overflow. */
+    public static int reqCoord(JsonObject o, String key) {
+        int v = reqInt(o, key);
+        if (v < -WORLD_LIMIT || v > WORLD_LIMIT) throw new IllegalArgumentException(key + " is outside the world");
+        return v;
+    }
+
+    /** A height; anything from far below the world to far above it is accepted and means what it says. */
+    public static int reqHeight(JsonObject o, String key) {
+        int v = reqInt(o, key);
+        if (v < -1024 || v > 1024) throw new IllegalArgumentException(key + " is not a sensible height");
+        return v;
+    }
+
     public static String reqStr(JsonObject o, String key) {
         String s = str(o, key, null);
         if (s == null || s.isEmpty()) throw new IllegalArgumentException("missing field: " + key);

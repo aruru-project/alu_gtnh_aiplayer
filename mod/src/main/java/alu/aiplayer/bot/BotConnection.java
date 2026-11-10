@@ -30,7 +30,9 @@ public final class BotConnection extends NetHandlerPlayServer {
     private static final Field CHAT_COMPONENT = findChatField();
 
     private final Listener listener;
-    private String kickReason;
+    private final Thread owner = Thread.currentThread();
+    private final java.util.concurrent.ConcurrentLinkedQueue<IChatComponent> offThread = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile String kickReason;
     private boolean teleported;
     private int teleports;
     private double teleX, teleY, teleZ;
@@ -46,7 +48,10 @@ public final class BotConnection extends NetHandlerPlayServer {
         if (packet instanceof S02PacketChat && CHAT_COMPONENT != null && listener != null) {
             try {
                 IChatComponent c = (IChatComponent) CHAT_COMPONENT.get(packet);
-                if (c != null) listener.onMessage(c);
+                if (c == null) return;
+                // Other mods may message players from their own threads; those wait for the next tick.
+                if (Thread.currentThread() == owner) listener.onMessage(c);
+                else offThread.add(c);
             } catch (Exception e) {
                 AiPlayerMod.LOG.debug("Cannot read chat packet", e);
             }
@@ -57,6 +62,12 @@ public final class BotConnection extends NetHandlerPlayServer {
     @Override
     public void kickPlayerFromServer(String reason) {
         if (kickReason == null) kickReason = reason == null ? "kicked" : reason;
+    }
+
+    /** Hands over messages that arrived from other threads. Call from the server thread. */
+    public void deliverPending() {
+        IChatComponent c;
+        while ((c = offThread.poll()) != null) listener.onMessage(c);
     }
 
     public String kickReason() {
@@ -95,17 +106,38 @@ public final class BotConnection extends NetHandlerPlayServer {
         return teleports;
     }
 
-    /** Says one line in public chat, or runs it as a command when it starts with '/'. At most 100 characters. */
-    public void sendChatLine(String line) {
+    /**
+     * Says one line in public chat. The text is never run as a command, whatever it looks like: once the characters
+     * the server would refuse are replaced, every leading slash and blank is dropped.
+     */
+    public void sendChat(String line) {
+        String text = clean(line);
+        int start = 0;
+        while (start < text.length() && (text.charAt(start) == '/' || Character.isWhitespace(text.charAt(start)))) {
+            start++;
+        }
+        text = text.substring(start);
+        if (text.length() > 100) text = text.substring(0, 100);
+        if (text.isEmpty()) return;
+        processChatMessage(new C01PacketChatMessage(text));
+    }
+
+    /** Runs a command (given without the slash) as this player. Returns false if it does not fit in a chat line. */
+    public boolean sendCommand(String command) {
+        String text = "/" + clean(command);
+        if (text.length() < 2 || text.length() > 100) return false;
+        processChatMessage(new C01PacketChatMessage(text));
+        return true;
+    }
+
+    /** Replaces characters the server kicks for and trims, as the chat handler itself will. */
+    private static String clean(String line) {
         StringBuilder sb = new StringBuilder(line.length());
         for (int i = 0; i < line.length(); i++) {
             char ch = line.charAt(i);
             sb.append(ChatAllowedCharacters.isAllowedCharacter(ch) ? ch : ' ');
         }
-        String clean = sb.toString()
-            .trim();
-        if (clean.isEmpty()) return;
-        processChatMessage(new C01PacketChatMessage(clean));
+        return org.apache.commons.lang3.StringUtils.normalizeSpace(sb.toString());
     }
 
     public void startDigging(int x, int y, int z, int face) {
@@ -142,6 +174,11 @@ public final class BotConnection extends NetHandlerPlayServer {
 
     public void closeWindow() {
         processCloseWindow(ClientPackets.closeWindow(playerEntity.openContainer.windowId));
+    }
+
+    /** Counts as player activity, so a configured idle timeout does not kick a bot that is busy. */
+    public void markActive() {
+        playerEntity.func_143004_u();
     }
 
     /** Asks for a respawn after death. The server replaces {@link #playerEntity} with a new entity. */

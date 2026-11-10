@@ -16,15 +16,16 @@ public final class CollectTask extends Task {
 
     public CollectTask(JsonObject params) {
         super("collect", params);
-        x = J.reqInt(params, "x");
-        y = J.reqInt(params, "y");
-        z = J.reqInt(params, "z");
+        x = J.reqCoord(params, "x");
+        y = J.reqHeight(params, "y");
+        z = J.reqCoord(params, "z");
         radius = Math.max(1, Math.min(32, J.i(params, "radius", 8)));
     }
 
     @Override
     public void start(Bot bot) {
         super.start(bot);
+        if (!withinTravel(x, z)) return;
         phase = "collecting";
         AxisAlignedBB box = AxisAlignedBB
             .getBoundingBox(x - radius, y - radius, z - radius, x + radius + 1, y + radius + 1, z + radius + 1);
@@ -33,6 +34,7 @@ public final class CollectTask extends Task {
 
     @Override
     public void tick() {
+        if (collector == null) return;
         boolean more = collector.tick();
         progressDone = collector.picked;
         if (!more) done();

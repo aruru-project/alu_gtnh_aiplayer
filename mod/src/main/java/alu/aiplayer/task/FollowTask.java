@@ -54,7 +54,7 @@ public final class FollowTask extends MoveTask {
         int tz = MathHelper.floor_double(target.posZ);
         boolean moved = Math.abs(tx - gx) + Math.abs(ty - gy) + Math.abs(tz - gz) > 2;
         // A flying or falling player has no ground under them to path to; wait until they land.
-        if ((!nav.active() || moved) && (target.onGround || target.isInWater() || !nav.active())) {
+        if ((!nav.active() || (moved && !nav.planning())) && (target.onGround || target.isInWater() || !nav.active())) {
             gx = tx;
             gy = ty;
             gz = tz;

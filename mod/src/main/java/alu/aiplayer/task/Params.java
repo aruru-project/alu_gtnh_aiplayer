@@ -16,7 +16,9 @@ final class Params {
 
     static int[] pos(JsonObject o) {
         if (o == null) throw new IllegalArgumentException("a position {x,y,z} is required");
-        return new int[] { J.reqInt(o, "x"), J.reqInt(o, "y"), J.reqInt(o, "z") };
+        int y = J.reqHeight(o, "y");
+        if (y < 0 || y > 255) throw new IllegalArgumentException("y must be between 0 and 255");
+        return new int[] { J.reqCoord(o, "x"), y, J.reqCoord(o, "z") };
     }
 
     static int[] pos(JsonObject params, String key) {
