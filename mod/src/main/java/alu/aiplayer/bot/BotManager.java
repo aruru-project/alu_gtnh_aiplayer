@@ -89,8 +89,17 @@ public final class BotManager implements TaskQueue.Listener {
     public void onServerStarted() {
         saveFile = new File(DimensionManager.getCurrentSaveRootDirectory(), "aiplayer/bots.json");
         load();
+        // Other mods finish their own start-up in the same event, in no guaranteed order, and a login before
+        // they are ready fails halfway. So bots come back a moment after the server has begun ticking.
+        autoLoginIn = AUTO_LOGIN_DELAY;
+    }
+
+    private static final int AUTO_LOGIN_DELAY = 40;
+    private int autoLoginIn = -1;
+
+    private void autoLogin() {
         for (Bot b : new ArrayList<>(bots.values())) {
-            if (!b.wantOnline) continue;
+            if (!b.wantOnline || b.online()) continue;
             try {
                 login(b, null);
             } catch (Throwable t) {
@@ -109,6 +118,7 @@ public final class BotManager implements TaskQueue.Listener {
     public void tick() {
         ServerConfigurationManager scm = MinecraftServer.getServer()
             .getConfigurationManager();
+        if (autoLoginIn >= 0 && autoLoginIn-- == 0) autoLogin();
         for (Bot b : new ArrayList<>(bots.values())) {
             if (!b.online()) continue;
             String kicked = b.conn.kickReason();
@@ -177,6 +187,11 @@ public final class BotManager implements TaskQueue.Listener {
                     sig == null ? new Property("textures", J.str(b.skin, "value", ""))
                         : new Property("textures", J.str(b.skin, "value", ""), sig));
         }
+        if (!scm.func_152607_e(profile)) {
+            // With the whitelist on, other mods (ServerUtilities) refuse to set up players that are not on it.
+            scm.func_152601_d(profile);
+            AiPlayerMod.LOG.info("Added bot {} to the whitelist", b.name);
+        }
         EntityPlayerMP player = scm.createPlayerForUser(profile);
         BotConnection conn = new BotConnection(server, new BotNetworkManager(), player, b);
         b.conn = conn;
@@ -184,6 +199,8 @@ public final class BotManager implements TaskQueue.Listener {
             scm.initializeConnectionToPlayer(conn.netManager, player, conn);
         } catch (RuntimeException e) {
             b.conn = null;
+            // Do not leave a half-logged-in player behind.
+            if (scm.playerEntityList.contains(player)) scm.playerLoggedOut(player);
             throw e;
         }
         if (where != null) {
@@ -263,6 +280,17 @@ public final class BotManager implements TaskQueue.Listener {
 
     public void markDirty() {
         dirty = true;
+    }
+
+    private String chatBroadcast;
+
+    /** Remembers the text of the public chat line being sent out right now. */
+    public void noteChatBroadcast(String text) {
+        chatBroadcast = text;
+    }
+
+    boolean isChatBroadcast(String text) {
+        return text != null && text.equals(chatBroadcast);
     }
 
     // ---- persistence ----------------------------------------------------------------------------------------

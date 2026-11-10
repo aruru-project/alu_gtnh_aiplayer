@@ -203,7 +203,7 @@ public final class Bot implements BotConnection.Listener {
             }
         }
         if (text == null || text.trim()
-            .isEmpty()) return;
+            .isEmpty() || manager.isChatBroadcast(text)) return;
         heard.addLast(new Heard(++heardSeq, text));
         while (heard.size() > HEARD_BUFFER) heard.removeFirst();
         manager.emitBotMessage(this, text);

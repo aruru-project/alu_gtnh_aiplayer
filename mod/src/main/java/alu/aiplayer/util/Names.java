@@ -61,6 +61,14 @@ public final class Names {
     public static Double durabilityLeft(ItemStack stack) {
         try {
             Item item = stack.getItem();
+            // GregTech tools keep their wear in their own tag instead of the vanilla damage value.
+            if (stack.hasTagCompound() && stack.getTagCompound()
+                .hasKey("GT.ToolStats", 10)) {
+                net.minecraft.nbt.NBTTagCompound stats = stack.getTagCompound()
+                    .getCompoundTag("GT.ToolStats");
+                long max = stats.getLong("MaxDamage");
+                if (max > 0) return Math.max(0.0, Math.min(1.0, 1.0 - (double) stats.getLong("Damage") / max));
+            }
             if (stack.isItemStackDamageable() || item.showDurabilityBar(stack)) {
                 double used = item.getDurabilityForDisplay(stack);
                 return Math.max(0.0, Math.min(1.0, 1.0 - used));

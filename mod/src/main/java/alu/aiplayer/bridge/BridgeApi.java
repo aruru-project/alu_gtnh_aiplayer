@@ -15,6 +15,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import alu.aiplayer.act.Inventories;
+import alu.aiplayer.act.Reach;
+import alu.aiplayer.act.Tools;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.bot.BotManager;
 import alu.aiplayer.bot.Motion;
@@ -146,6 +148,23 @@ public final class BridgeApi {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));
             Motion.face(b.player(), J.reqInt(p, "x") + 0.5, J.reqInt(p, "y") + 0.5, J.reqInt(p, "z") + 0.5);
             return null;
+        });
+        bridge.register("bot.probe", p -> {
+            Bot b = bots.requireOnline(J.reqStr(p, "bot"));
+            int x = J.reqInt(p, "x"), y = J.reqInt(p, "y"), z = J.reqInt(p, "z");
+            JsonObject o = WorldQueries.block(b.world(), x, y, z);
+            if (b.world()
+                .blockExists(x, y, z)) {
+                Tools.Choice best = Tools.best(b.player(), b.world(), x, y, z);
+                o.addProperty("canDig", best != null && best.worthwhile());
+                if (best != null) {
+                    o.addProperty("digTicks", best.ticks() == Integer.MAX_VALUE ? -1 : best.ticks());
+                    o.addProperty("toolSlot", best.slot);
+                }
+                o.addProperty("inReach", Reach.canReach(b.player(), x, y, z));
+                o.add("candidates", Tools.explain(b.player(), b.world(), x, y, z));
+            }
+            return o;
         });
         bridge.register("bot.drop", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));

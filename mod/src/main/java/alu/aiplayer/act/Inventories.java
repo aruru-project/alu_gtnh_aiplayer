@@ -6,6 +6,8 @@ import java.util.List;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.ItemFood;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.ItemSword;
+import net.minecraft.item.ItemTool;
 import net.minecraftforge.common.ForgeHooks;
 
 import com.google.gson.JsonArray;
@@ -50,6 +52,8 @@ public final class Inventories {
         if (s == null || s.getMaxStackSize() != 1) return false;
         try {
             return s.isItemStackDamageable() || Names.durabilityLeft(s) != null
+                || s.getItem() instanceof ItemTool
+                || s.getItem() instanceof ItemSword
                 || !s.getItem()
                     .getToolClasses(s)
                     .isEmpty();

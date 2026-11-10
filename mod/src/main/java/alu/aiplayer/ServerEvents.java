@@ -48,6 +48,8 @@ public final class ServerEvents {
         data.addProperty("message", event.message);
         data.addProperty("isBot", bots.isBot(event.player));
         bridge.emit("chat", data);
+        // The same line is about to be delivered to every player, bots included; they need not hear it twice.
+        bots.noteChatBroadcast(event.component == null ? null : event.component.getUnformattedText());
     }
 
     @SubscribeEvent

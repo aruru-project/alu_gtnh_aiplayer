@@ -14,6 +14,32 @@ public final class TaskFactory {
         switch (type) {
             case "wait":
                 return new WaitTask(params);
+            case "goto":
+                return new GotoTask(params);
+            case "goto_player":
+                return new GotoPlayerTask(params);
+            case "follow":
+                return new FollowTask(params);
+            case "home":
+                return new HomeTask(params);
+            case "dig":
+                return new DigTask(params);
+            case "place":
+                return new PlaceTask(params);
+            case "clear":
+                return new ClearTask(params);
+            case "fill":
+                return new FillTask(params);
+            case "flatten":
+                return new FlattenTask(params);
+            case "deposit":
+                return new DepositTask(params);
+            case "withdraw":
+                return new WithdrawTask(params);
+            case "haul":
+                return new HaulTask(params);
+            case "collect":
+                return new CollectTask(params);
             default:
                 throw RpcException.badRequest("unknown task type: " + type);
         }

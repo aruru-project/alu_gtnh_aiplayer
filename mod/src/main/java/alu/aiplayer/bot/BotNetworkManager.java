@@ -8,6 +8,8 @@ import net.minecraft.network.EnumConnectionState;
 import net.minecraft.network.NetworkManager;
 import net.minecraft.network.Packet;
 
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.concurrent.GenericFutureListener;
 
@@ -17,13 +19,22 @@ import io.netty.util.concurrent.GenericFutureListener;
  */
 public final class BotNetworkManager extends NetworkManager {
 
+    private static final String[] PIPELINE_NAMES = { "timeout", "splitter", "decoder", "prepender", "encoder" };
     private static final SocketAddress LOOPBACK = new InetSocketAddress(InetAddress.getLoopbackAddress(), 0);
 
     public BotNetworkManager() {
         super(false);
-        // Registering the handler fires channelActive, which stores the channel in the superclass.
-        new EmbeddedChannel(this);
-        if (channel() == null) throw new IllegalStateException("embedded channel did not activate");
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelDuplexHandler());
+        ChannelPipeline pipeline = channel.pipeline();
+        // Mods insert their own handlers relative to the names of a real connection's pipeline.
+        for (String name : PIPELINE_NAMES) pipeline.addLast(name, new ChannelDuplexHandler());
+        pipeline.addLast("packet_handler", this);
+        try {
+            // Stores the channel in the superclass, as the activation of a real connection would.
+            channelActive(pipeline.context(this));
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot set up the bot connection", e);
+        }
         setConnectionState(EnumConnectionState.PLAY);
     }
 

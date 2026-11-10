@@ -28,6 +28,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import alu.aiplayer.bridge.RpcException;
+import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 
@@ -74,14 +75,14 @@ public final class WorldQueries {
         }
     }
 
-    /** True for blocks that count as terrain surface: anything with a collision box, and liquids. */
+    /**
+     * True for blocks that count as terrain surface: liquids and anything the bot would bump into, except foliage.
+     * Thin covers such as a snow layer do not count; the ground under them does.
+     */
     public static boolean isSurface(World w, Block b, int x, int y, int z) {
-        if (b.isAir(w, x, y, z)) return false;
         Material m = b.getMaterial();
-        if (m.isLiquid()) return true;
-        return b.getCollisionBoundingBoxFromPool(w, x, y, z) != null && m != Material.plants
-            && m != Material.vine
-            && m != Material.leaves;
+        if (m == Material.air || m == Material.leaves || m == Material.plants || m == Material.vine) return false;
+        return NavWorld.classify(w, x, y, z) != NavWorld.OPEN;
     }
 
     /** The y of the highest surface block in a column, or -1. Leaves, plants and thin snow do not count. */

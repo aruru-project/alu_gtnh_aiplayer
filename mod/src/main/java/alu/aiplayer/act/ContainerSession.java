@@ -1,0 +1,409 @@
+package alu.aiplayer.act;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.inventory.Container;
+import net.minecraft.inventory.IInventory;
+import net.minecraft.inventory.ISidedInventory;
+import net.minecraft.inventory.Slot;
+import net.minecraft.item.ItemStack;
+import net.minecraft.tileentity.TileEntity;
+import net.minecraft.world.World;
+
+import alu.aiplayer.bot.Bot;
+import alu.aiplayer.bot.Motion;
+
+/**
+ * One visit to a container the bot is standing next to: open it, move stacks in or out one at a time, close it.
+ * <p>
+ * The normal way is the container's own screen, driven with the same shift-clicks a player uses, so the block's
+ * rules about what goes where apply. Storage that has no screen (barrels, drawers) is filled and emptied through
+ * its item-handling interface instead, the way a hopper would.
+ */
+public final class ContainerSession {
+
+    public enum Status {
+        WORKING,
+        DONE,
+        FAILED
+    }
+
+    /** Which of the bot's stacks to put in, and how many items at most (-1 for all). */
+    public interface DepositPlan {
+
+        /** How many items of this stack should go in: 0 to keep it, -1 for the whole stack. */
+        int wanted(ItemStack stack);
+
+        void moved(ItemStack type, int count);
+    }
+
+    private static final int CLICK_INTERVAL = 3;
+    private static final int OPEN_WAIT = 4;
+
+    private final Bot bot;
+    private final int x, y, z;
+    private DepositPlan deposit;
+    private List<ItemFilter> withdraw;
+    private int[] withdrawLeft;
+    private int phase; // 0 open, 1 wait for screen, 2 screen transfers, 3 direct transfers, 4 closing
+    private int wait;
+    private int cursor;
+    private boolean viaScreen;
+    private int rejected;
+    private boolean takeAll;
+
+    public int moved;
+    /** True when some of what was to be deposited did not fit. */
+    public boolean containerFull;
+    /** True when a withdrawal stopped because the bot's inventory is full. */
+    public boolean inventoryFull;
+    public String failCode;
+    public String failMessage;
+
+    public ContainerSession(Bot bot, int x, int y, int z) {
+        this.bot = bot;
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    public ContainerSession deposit(DepositPlan plan) {
+        this.deposit = plan;
+        return this;
+    }
+
+    public ContainerSession withdraw(List<ItemFilter> items) {
+        this.withdraw = items;
+        this.withdrawLeft = new int[items.size()];
+        for (int i = 0; i < items.size(); i++) {
+            withdrawLeft[i] = items.get(i).count < 0 ? Integer.MAX_VALUE : items.get(i).count;
+        }
+        return this;
+    }
+
+    /** Takes everything the container holds, as far as the bot can carry it. */
+    public ContainerSession withdrawAll() {
+        this.withdraw = new ArrayList<>();
+        this.withdrawLeft = new int[] { Integer.MAX_VALUE };
+        this.takeAll = true;
+        return this;
+    }
+
+    /** Items of each withdraw filter still not obtained (0 when satisfied or when everything available was taken). */
+    public int withdrawMissing(int index) {
+        return withdrawLeft[index] == Integer.MAX_VALUE ? 0 : withdrawLeft[index];
+    }
+
+    public boolean usedScreen() {
+        return viaScreen;
+    }
+
+    public Status tick() {
+        EntityPlayerMP p = bot.player();
+        World w = p.worldObj;
+        switch (phase) {
+            case 0: {
+                TileEntity te = w.getTileEntity(x, y, z);
+                if (!(te instanceof IInventory)) return fail("invalid", "there is no container at that position");
+                if (!Reach.canReach(p, x, y, z)) return fail("out_of_reach", "the container is out of reach");
+                Motion.face(p, x + 0.5, y + 0.5, z + 0.5);
+                // Click with an empty hand only: a held block could get placed, a held tool could reconfigure it.
+                if (Inventories.holdNothing(bot)) {
+                    int side = Reach.facingSide(p, x, y, z);
+                    bot.conn()
+                        .useOnBlock(x, y, z, side, 0.5F, 0.5F, 0.5F);
+                    bot.conn()
+                        .swingArm();
+                }
+                phase = 1;
+                wait = 0;
+                return Status.WORKING;
+            }
+            case 1:
+                if (p.openContainer != p.inventoryContainer) {
+                    viaScreen = true;
+                    phase = 2;
+                    wait = 0;
+                    cursor = 0;
+                } else if (++wait >= OPEN_WAIT) {
+                    phase = 3;
+                    wait = 0;
+                    cursor = 0;
+                }
+                return Status.WORKING;
+            case 2:
+                if (p.openContainer == p.inventoryContainer) {
+                    return fail("denied", "the container closed while it was being used");
+                }
+                if (++wait < CLICK_INTERVAL) return Status.WORKING;
+                wait = 0;
+                if (!screenStep(p)) {
+                    bot.conn()
+                        .closeWindow();
+                    phase = 4;
+                }
+                return Status.WORKING;
+            case 3: {
+                TileEntity te = w.getTileEntity(x, y, z);
+                if (!(te instanceof IInventory)) return fail("invalid", "the container is gone");
+                if (++wait < CLICK_INTERVAL) return Status.WORKING;
+                wait = 0;
+                if (!directStep(p, (IInventory) te)) phase = 4;
+                return Status.WORKING;
+            }
+            default:
+                if (++wait >= 2) return Status.DONE;
+                return Status.WORKING;
+        }
+    }
+
+    public void abort() {
+        if (bot.online() && bot.player().openContainer != bot.player().inventoryContainer) bot.conn()
+            .closeWindow();
+    }
+
+    private Status fail(String code, String message) {
+        failCode = code;
+        failMessage = message;
+        abort();
+        return Status.FAILED;
+    }
+
+    // ---- through the container's screen -----------------------------------------------------------------------
+
+    /** Does one transfer. Returns false when there is nothing left to do. */
+    private boolean screenStep(EntityPlayerMP p) {
+        Container c = p.openContainer;
+        List<Slot> mine = new ArrayList<>();
+        List<Slot> theirs = new ArrayList<>();
+        for (Object o : c.inventorySlots) {
+            Slot s = (Slot) o;
+            if (s.inventory == p.inventory) mine.add(s);
+            else theirs.add(s);
+        }
+        if (deposit != null) {
+            for (; cursor < mine.size(); cursor++) {
+                Slot s = mine.get(cursor);
+                ItemStack stack = s.getStack();
+                if (stack == null) continue;
+                int want = deposit.wanted(stack);
+                if (want == 0) continue;
+                if (want > 0 && want < stack.stackSize) {
+                    // Set the surplus aside in a free slot first, so the shift-click moves exactly the wanted part.
+                    if (!splitOff(p, s.getSlotIndex(), stack.stackSize - want)) want = stack.stackSize;
+                    stack = s.getStack();
+                }
+                ItemStack type = stack.copy();
+                int before = stack.stackSize;
+                c.slotClick(s.slotNumber, 0, 1, p);
+                c.detectAndSendChanges();
+                ItemStack after = s.getStack();
+                int gone = before - (after == null ? 0 : after.stackSize);
+                if (gone > 0) {
+                    moved += gone;
+                    deposit.moved(type, gone);
+                }
+                // What stays behind did not fit. Other kinds of item might still, so carry on.
+                if (after != null) rejected++;
+                cursor++;
+                return true;
+            }
+            deposit = null;
+            cursor = 0;
+            containerFull = rejected > 0;
+        }
+        if (withdraw != null && !inventoryFull) {
+            for (; cursor < theirs.size(); cursor++) {
+                Slot s = theirs.get(cursor);
+                ItemStack stack = s.getStack();
+                if (stack == null || !s.canTakeStack(p)) continue;
+                int f = matchingFilter(stack);
+                if (f < 0) continue;
+                ItemStack type = stack.copy();
+                int had = Inventories.count(p, exact(type));
+                c.slotClick(s.slotNumber, 0, 1, p);
+                c.detectAndSendChanges();
+                int got = Inventories.count(p, exact(type)) - had;
+                if (got <= 0) {
+                    inventoryFull = Inventories.freeSlots(p) == 0;
+                    if (inventoryFull) break;
+                    continue;
+                }
+                moved += got;
+                if (withdrawLeft[f] != Integer.MAX_VALUE) {
+                    withdrawLeft[f] -= got;
+                    if (withdrawLeft[f] < 0) {
+                        // Took a whole stack where less was asked for; hand the surplus back next.
+                        final int surplus = -withdrawLeft[f];
+                        withdrawLeft[f] = 0;
+                        returnSurplus(type, surplus);
+                    }
+                }
+                return true;
+            }
+            withdraw = null;
+        }
+        return deposit != null;
+    }
+
+    /** After an over-large withdrawal, queue a deposit of exactly the surplus. */
+    private void returnSurplus(final ItemStack type, final int surplus) {
+        deposit = new DepositPlan() {
+
+            int left = surplus;
+
+            @Override
+            public int wanted(ItemStack stack) {
+                if (left <= 0 || !sameItem(stack, type)) return 0;
+                return Math.min(left, stack.stackSize);
+            }
+
+            @Override
+            public void moved(ItemStack t, int count) {
+                left -= count;
+                moved -= 2 * count; // it was counted coming out and again going back
+            }
+        };
+        cursor = 0;
+    }
+
+    private static boolean splitOff(EntityPlayerMP p, int invSlot, int count) {
+        ItemStack[] inv = p.inventory.mainInventory;
+        if (invSlot < 0 || invSlot >= inv.length || inv[invSlot] == null) return false;
+        for (int i = 9; i < inv.length; i++) {
+            if (inv[i] == null) {
+                inv[i] = inv[invSlot].splitStack(count);
+                p.inventory.markDirty();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int matchingFilter(ItemStack stack) {
+        if (withdraw.isEmpty()) return takeAll ? 0 : -1;
+        for (int i = 0; i < withdraw.size(); i++) {
+            if (withdrawLeft[i] > 0 && withdraw.get(i)
+                .matches(stack)) return i;
+        }
+        return -1;
+    }
+
+    private static ItemFilter exact(ItemStack type) {
+        return new ItemFilter(alu.aiplayer.util.Names.itemId(type.getItem()), alu.aiplayer.util.Names.meta(type), -1);
+    }
+
+    private static boolean sameItem(ItemStack a, ItemStack b) {
+        return a != null && b != null
+            && a.getItem() == b.getItem()
+            && alu.aiplayer.util.Names.meta(a) == alu.aiplayer.util.Names.meta(b)
+            && ItemStack.areItemStackTagsEqual(a, b);
+    }
+
+    // ---- through the item-handling interface ------------------------------------------------------------------
+
+    private boolean directStep(EntityPlayerMP p, IInventory inv) {
+        ItemStack[] mine = p.inventory.mainInventory;
+        if (deposit != null) {
+            for (; cursor < mine.length; cursor++) {
+                ItemStack stack = mine[cursor];
+                if (stack == null) continue;
+                int want = deposit.wanted(stack);
+                if (want == 0) continue;
+                if (want < 0 || want > stack.stackSize) want = stack.stackSize;
+                ItemStack type = stack.copy();
+                int put = insert(inv, stack, want);
+                if (put < want) rejected++;
+                if (stack.stackSize <= 0) mine[cursor] = null;
+                if (put > 0) {
+                    moved += put;
+                    deposit.moved(type, put);
+                    inv.markDirty();
+                    p.inventory.markDirty();
+                }
+                cursor++;
+                return true;
+            }
+            deposit = null;
+            cursor = 0;
+            containerFull = rejected > 0;
+        }
+        if (withdraw != null && !inventoryFull) {
+            int[] slots = accessible(inv);
+            for (; cursor < slots.length; cursor++) {
+                int slot = slots[cursor];
+                ItemStack stack = inv.getStackInSlot(slot);
+                if (stack == null) continue;
+                int f = matchingFilter(stack);
+                if (f < 0) continue;
+                if (inv instanceof ISidedInventory && !((ISidedInventory) inv).canExtractItem(slot, stack, 1)) continue;
+                int take = Math.min(stack.stackSize, withdrawLeft[f]);
+                ItemStack out = inv.decrStackSize(slot, take);
+                if (out == null) continue;
+                int asked = out.stackSize;
+                p.inventory.addItemStackToInventory(out);
+                int got = asked - out.stackSize;
+                if (out.stackSize > 0) {
+                    // No room for the rest: put it back where it came from.
+                    ItemStack back = inv.getStackInSlot(slot);
+                    if (back == null) inv.setInventorySlotContents(slot, out);
+                    else back.stackSize += out.stackSize;
+                    inventoryFull = true;
+                }
+                inv.markDirty();
+                if (got > 0) {
+                    moved += got;
+                    if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] -= got;
+                }
+                if (inventoryFull) break;
+                cursor++;
+                return true;
+            }
+            withdraw = null;
+        }
+        return deposit != null;
+    }
+
+    private static int[] accessible(IInventory inv) {
+        if (inv instanceof ISidedInventory) {
+            int[] slots = ((ISidedInventory) inv).getAccessibleSlotsFromSide(1);
+            if (slots != null) return slots;
+        }
+        int[] all = new int[inv.getSizeInventory()];
+        for (int i = 0; i < all.length; i++) all[i] = i;
+        return all;
+    }
+
+    /** Moves up to {@code count} items of a stack into the inventory, hopper-style. Returns how many went in. */
+    private int insert(IInventory inv, ItemStack stack, int count) {
+        int left = count;
+        int[] slots = accessible(inv);
+        int limit = inv.getInventoryStackLimit();
+        // Top up matching stacks before opening new slots.
+        for (int pass = 0; pass < 2 && left > 0; pass++) {
+            for (int slot : slots) {
+                if (left <= 0) break;
+                ItemStack there = inv.getStackInSlot(slot);
+                if (pass == 0 ? there == null : there != null) continue;
+                if (!inv.isItemValidForSlot(slot, stack)) continue;
+                if (inv instanceof ISidedInventory && !((ISidedInventory) inv).canInsertItem(slot, stack, 1)) continue;
+                if (there == null) {
+                    int n = Math.min(left, Math.min(limit, stack.getMaxStackSize()));
+                    inv.setInventorySlotContents(slot, stack.splitStack(n));
+                    left -= n;
+                } else if (sameItem(there, stack)) {
+                    int room = Math.min(limit, there.getMaxStackSize()) - there.stackSize;
+                    int n = Math.min(left, room);
+                    if (n > 0) {
+                        there.stackSize += n;
+                        stack.stackSize -= n;
+                        left -= n;
+                    }
+                }
+            }
+        }
+        return count - left;
+    }
+}

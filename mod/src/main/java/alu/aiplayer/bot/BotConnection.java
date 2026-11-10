@@ -32,6 +32,7 @@ public final class BotConnection extends NetHandlerPlayServer {
     private final Listener listener;
     private String kickReason;
     private boolean teleported;
+    private int teleports;
     private double teleX, teleY, teleZ;
 
     public BotConnection(MinecraftServer server, BotNetworkManager manager, EntityPlayerMP player,
@@ -67,6 +68,7 @@ public final class BotConnection extends NetHandlerPlayServer {
     public void setPlayerLocation(double x, double y, double z, float yaw, float pitch) {
         super.setPlayerLocation(x, y, z, yaw, pitch);
         teleported = true;
+        teleports++;
         teleX = x;
         teleY = y;
         teleZ = z;
@@ -86,6 +88,11 @@ public final class BotConnection extends NetHandlerPlayServer {
 
     public boolean teleportPending() {
         return teleported;
+    }
+
+    /** How many times the server has moved this player by teleport since it logged in. */
+    public int teleportCount() {
+        return teleports;
     }
 
     /** Says one line in public chat, or runs it as a command when it starts with '/'. At most 100 characters. */
