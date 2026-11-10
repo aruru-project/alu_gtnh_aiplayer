@@ -5,6 +5,7 @@ import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.world.BlockEvent;
 
 import com.google.gson.JsonObject;
 
@@ -82,6 +83,14 @@ public final class ServerEvents {
         if (bot == null) return;
         boolean refused = event.isCanceled() || event.useBlock == cpw.mods.fml.common.eventhandler.Event.Result.DENY;
         bot.noteInteraction(event.x, event.y, event.z, refused);
+    }
+
+    /** Remembers when something refused a block a bot tried to place. */
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public void onPlace(BlockEvent.PlaceEvent event) {
+        if (!event.isCanceled()) return;
+        Bot bot = bots.botOf(event.player);
+        if (bot != null) bot.notePlacementRefused();
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)

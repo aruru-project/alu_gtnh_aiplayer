@@ -163,6 +163,7 @@ public final class BotManager implements TaskQueue.Listener {
         int online = 0;
         for (Bot other : bots.values()) if (other.online()) online++;
         if (online >= config.maxBots) throw RpcException.denied("at most " + config.maxBots + " bots may be online");
+        JsonObject checkedSkin = skin == null ? null : validSkin(skin);
         boolean created = b == null;
         if (created) {
             // On a server without account checks a name is all that identifies a player. A new bot must not take
@@ -175,7 +176,7 @@ public final class BotManager implements TaskQueue.Listener {
             b.hunger = config.defaultHunger;
             bots.put(name.toLowerCase(), b);
         }
-        if (skin != null) b.skin = validSkin(skin);
+        if (checkedSkin != null) b.skin = checkedSkin;
         b.wantOnline = true;
         try {
             login(b, pos == null ? null : new Placement(dim, pos));

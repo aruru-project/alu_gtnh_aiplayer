@@ -282,6 +282,17 @@ public final class Bot implements BotConnection.Listener {
         return clickRefused && clickX == x && clickY == y && clickZ == z && ticksOnline - clickTick <= 10;
     }
 
+    private long placeRefusedTick = -1;
+
+    public void notePlacementRefused() {
+        placeRefusedTick = ticksOnline;
+    }
+
+    /** Whether, this tick, a block this bot tried to place or a click it made to place one was refused. */
+    public boolean placementWasRefused() {
+        return placeRefusedTick == ticksOnline || (clickRefused && clickTick == ticksOnline);
+    }
+
     // ---- description ----------------------------------------------------------------------------------------
 
     public JsonObject brief() {

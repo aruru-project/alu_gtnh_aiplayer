@@ -104,6 +104,10 @@
 一项可以是几个词：`team join` 只放行 `team join …`，不放行 `team leave`。`home` 任务也受这个列表约束。
 在这台服务器（ServerUtilities）上实测：`sethome 名字` 回 `Home '名字' set!`；`home list` 回 `Alu: 1 / 99: 名字, …`；不存在的 home 回 `Unknown Home: '名字'!`。
 
+对已经在线的 bot 再 `bot.spawn` 返回 `bad_request`；先看 `bot.status` 的 `online`。
+
+上线时服务器和其他 mod 会给它发十来行欢迎语，这些都作为 `bot.message` 事件出现。`bot.command` 的回显除了在响应里，也会各作为一条 `bot.message` 事件发出。
+
 `BotStatus`：
 
 ```jsonc
@@ -140,7 +144,7 @@
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `task.start` | `{bot, task:{type,…}, mode?:"replace"\|"append"}` | `{task:TaskInfo, replaced:[id]}`。`replace`（默认）取消当前任务和队列后立即开始，`replaced` 是被它取消的任务；`append` 排到队尾 |
+| `task.start` | `{bot, task:{type,…}, mode?:"replace"\|"append"}` | `{task:TaskInfo, replaced:[id]}`。`replace`（默认）取消当前任务和队列后立即开始，`replaced` 是被它取消的任务；`append` 排到队尾。响应里的任务状态总是 `queued`，它在下一刻才开始（届时发 `task.update`）。被取消任务的 `task.update` 事件先于这个响应到达 |
 | `task.cancel` | `{bot, id?}` | `{canceled:n, ids:[id]}`。不给 id 则取消当前任务和整个队列 |
 | `task.list` | `{bot}` | `{active:TaskInfo\|null, queue:[TaskInfo], recent:[TaskInfo]}`，recent 是最近结束的 10 个，新的在前 |
 
@@ -167,7 +171,7 @@
 | `no_material` | 要放的方块不够 | `missing`，`item` 或 `items` | 去取或问人 |
 | `inventory_full` | 背包满且没有指定卸货箱 | | 去存东西再重启任务 |
 | `container_full` | 目标箱子放不下 | | 换箱子或问人 |
-| `denied` | 被领地保护或其他 mod 拒绝 | `block`、`x y z` | 问人 |
+| `denied` | 被领地保护或其他 mod 拒绝（挖不动、放不下、箱子打不开），或指令不在允许列表里 | 可能有 `block`、`x y z` | 问人 |
 | `invalid` | 参数不合法，或服务器拒绝了指令 | | 修正参数 |
 | `interrupted` | bot 下线、死亡，或被带到了别的维度 | | – |
 | `internal` | mod 内部出错 | | 报告给人 |
@@ -200,6 +204,7 @@
   没有合适工具时，一挖就碎的东西（雪、草）徒手挖，石头之类则以 `no_tool` 失败。
   不动带数据的方块（箱子、机器）、液体、基岩和紧挨岩浆的方块，记入 `result.skipped`。
 - **放**：必须有相邻的方块可以依附，够得着，自己不能站在那一格。没处依附的记入 skipped。
+- **走路时**先找不改动地形的路；确实走不通才挖开或垫脚。
 - **走路时**只会自己挖开“天然方块”（mod 配置 `naturalBlocks`：泥土、草方块、沙子、沙砾、雪、树叶、花草等；不含石头和木头，因为人也拿它们盖房子）和任务指定要清掉的区域内的方块，不会为了抄近路拆别的东西，也不会挖掉本任务刚放下的方块。
   够不着高处时会用填充方块（配置 `fillerBlocks`：泥土、圆石等）垫脚往上搭；去箱子存取的路上不垫脚，免得把货用掉。
 - **树**：够不着的树叶和上面的雪直接跳过（`foliage out of reach`）。
@@ -213,6 +218,7 @@
 结果 `result`：
 
 - 区域任务：`{removed, placed, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], freeSlots}`，`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。
+  为了够到高处垫的方块，任务结束前会拆掉；够不着拆的个数在 `climbingBlocksLeftStanding`。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。
 

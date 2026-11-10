@@ -291,6 +291,10 @@ abstract class AreaTask extends Task {
             case NO_SUPPORT:
                 return Act.SKIPPED;
             case REJECTED:
+                if (bot.placementWasRefused()) {
+                    fail("denied", "placing a block here was refused; the area may be protected", J.pos(x, y, z));
+                    return Act.FAILED;
+                }
                 if (bump(x, y, z) >= 2) {
                     skip(x, y, z, "rejected");
                     return Act.SKIPPED;
