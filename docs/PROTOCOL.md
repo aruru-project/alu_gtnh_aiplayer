@@ -146,6 +146,7 @@
 |---|---|---|
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
+| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 单方块加工机器，由近到远：`{machines:[{x,y,z,name,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
@@ -316,6 +317,7 @@
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}` | 手工合成：用身上的材料按配方摆好、取成品。`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index` |
+| `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], wait?=180}` | 用一台 GT 单方块机器加工一批：把原料放进输入格，等它做完，把产物取回来。`wait` 是最多等多少秒（5–1800） |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -350,6 +352,14 @@
   - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
+- **`process`**：
+  - 原料必须已经在身上。要编程电路或模具的配方，把电路、模具也列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
+  - 机器 3 秒内没开工就把原料取回来，以 `invalid` 失败，`error.detail` 是这台机器的状态（没电时 `storedEU` 是 0）。原因可能是没电、缺电路或流体、这台机器没有这个配方、输出格被占着。
+  - 不处理流体：需要流体的配方要机器已经接好了流体来源。
+  - 结果 `{put, outputs:[{id,meta,name,count}], timedOut?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
+  - 只认 GregTech 的单方块加工机器（`world.machines` 列出来的那些）。多方块机器、蒸汽机器、其他 mod 的机器不行。
+- **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。
+  会坐 OpenBlocks 电梯（站上去，相当于跳一下上楼、蹲一下下楼）。门打不开或电梯不动时换别的路。
 - **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。
   数量按 bot 背包里实际增减的数目计。
 

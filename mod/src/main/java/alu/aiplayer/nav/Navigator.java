@@ -115,7 +115,7 @@ public final class Navigator {
             // First look for a way that leaves the terrain as it is. Digging through and stacking blocks to climb
             // are the fallback, for when walking there is impossible.
             search = new PathSearch(
-                new NavWorld(p, rule, gentle, bot.scaffoldCells()),
+                new NavWorld(p, rule, gentle, bot.scaffoldCells(), bot.shutDoors()),
                 bot.blockX(),
                 bot.blockY(),
                 bot.blockZ(),

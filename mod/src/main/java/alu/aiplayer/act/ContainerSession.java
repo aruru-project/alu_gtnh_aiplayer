@@ -25,7 +25,9 @@ import alu.aiplayer.bot.Motion;
  * The normal way is the container's own screen, driven with the same shift-clicks a player uses, so the block's
  * rules about what goes where apply. Drawers have no screen and are worked the way a player works them: punched
  * to take, right-clicked with the item in hand to fill. Other storage without a screen (barrels) is filled and
- * emptied through its item-handling interface, the way a hopper would.
+ * emptied through its item-handling interface, the way a hopper would. So are GregTech's processing machines once
+ * their screen has opened for the bot: what goes in lands in the input slots and what is taken comes from the
+ * output slots, as it would by hand, since their screens are not built from the slots this code can click.
  */
 public final class ContainerSession {
 
@@ -59,6 +61,9 @@ public final class ContainerSession {
     private int interval = CLICK_INTERVAL;
     private final Set<ItemStack> unplaceable = Collections.newSetFromMap(new IdentityHashMap<ItemStack, Boolean>());
     private final Set<Integer> deadDrawers = new HashSet<>();
+    /** For a processing machine, its input and output slots as {first, count}. */
+    private int[] machineIn, machineOut;
+    private boolean fromInputs;
     private int wait;
     private int cursor;
     private boolean viaScreen;
@@ -107,6 +112,12 @@ public final class ContainerSession {
         return withdrawLeft[index] == Integer.MAX_VALUE ? 0 : withdrawLeft[index];
     }
 
+    /** At a processing machine, take from the input slots instead of the output slots: getting back what was put in. */
+    public ContainerSession fromInputSlots() {
+        fromInputs = true;
+        return this;
+    }
+
     public boolean usedScreen() {
         return viaScreen;
     }
@@ -143,8 +154,19 @@ public final class ContainerSession {
                     return fail("denied", "opening the container was refused; it may be protected");
                 }
                 if (p.openContainer != p.inventoryContainer) {
-                    viaScreen = true;
-                    phase = 2;
+                    TileEntity te = w.getTileEntity(x, y, z);
+                    machineIn = Machines.inputSlots(te);
+                    machineOut = Machines.outputSlots(te);
+                    if (machineIn != null && machineOut != null || !hasOwnSlots(p)) {
+                        // The screen opened, so the bot may use this; but it is not one that can be clicked through.
+                        bot.conn()
+                            .closeWindow();
+                        if (!(te instanceof IInventory)) return fail("invalid", "there is no container at that position");
+                        phase = 3;
+                    } else {
+                        viaScreen = true;
+                        phase = 2;
+                    }
                     wait = 0;
                     cursor = 0;
                 } else if (++wait >= OPEN_WAIT) {
@@ -328,6 +350,12 @@ public final class ContainerSession {
             .swingArm();
     }
 
+    /** Whether the open screen shows the bot's own inventory in slots of the ordinary kind. */
+    private static boolean hasOwnSlots(EntityPlayerMP p) {
+        for (Object o : p.openContainer.inventorySlots) if (((Slot) o).inventory == p.inventory) return true;
+        return false;
+    }
+
     public void abort() {
         if (bot.online() && bot.player().openContainer != bot.player().inventoryContainer) bot.conn()
             .closeWindow();
@@ -502,14 +530,15 @@ public final class ContainerSession {
             containerFull = rejected > 0;
         }
         if (withdraw != null && !inventoryFull) {
-            int[] slots = accessible(inv);
+            int[] slots = slotsFor(inv, false);
             for (; cursor < slots.length; cursor++) {
                 int slot = slots[cursor];
                 ItemStack stack = inv.getStackInSlot(slot);
                 if (stack == null) continue;
                 int f = matchingFilter(stack);
                 if (f < 0) continue;
-                if (inv instanceof ISidedInventory && !((ISidedInventory) inv).canExtractItem(slot, stack, 1)) continue;
+                if (machineIn == null && inv instanceof ISidedInventory
+                    && !((ISidedInventory) inv).canExtractItem(slot, stack, 1)) continue;
                 int room = roomFor(p, stack);
                 if (room <= 0) {
                     inventoryFull = true;
@@ -551,6 +580,14 @@ public final class ContainerSession {
         return room;
     }
 
+    private int[] slotsFor(IInventory inv, boolean putting) {
+        if (machineIn == null || machineOut == null) return accessible(inv);
+        int[] range = putting || fromInputs ? machineIn : machineOut;
+        int[] out = new int[Math.max(0, Math.min(range[1], inv.getSizeInventory() - range[0]))];
+        for (int i = 0; i < out.length; i++) out[i] = range[0] + i;
+        return out;
+    }
+
     private static int[] accessible(IInventory inv) {
         if (inv instanceof ISidedInventory) {
             int[] slots = ((ISidedInventory) inv).getAccessibleSlotsFromSide(1);
@@ -564,7 +601,8 @@ public final class ContainerSession {
     /** Moves up to {@code count} items of a stack into the inventory, hopper-style. Returns how many went in. */
     private int insert(IInventory inv, ItemStack stack, int count) {
         int left = count;
-        int[] slots = accessible(inv);
+        int[] slots = slotsFor(inv, true);
+        boolean machine = machineIn != null;
         int limit = inv.getInventoryStackLimit();
         // Top up matching stacks before opening new slots.
         for (int pass = 0; pass < 2 && left > 0; pass++) {
@@ -572,8 +610,10 @@ public final class ContainerSession {
                 if (left <= 0) break;
                 ItemStack there = inv.getStackInSlot(slot);
                 if (pass == 0 ? there == null : there != null) continue;
-                if (!inv.isItemValidForSlot(slot, stack)) continue;
-                if (inv instanceof ISidedInventory && !((ISidedInventory) inv).canInsertItem(slot, stack, 1)) continue;
+                // A machine's sides matter to pipes and hoppers, not to a hand reaching into its screen.
+                if (!machine && !inv.isItemValidForSlot(slot, stack)) continue;
+                if (!machine && inv instanceof ISidedInventory
+                    && !((ISidedInventory) inv).canInsertItem(slot, stack, 1)) continue;
                 if (there == null) {
                     int n = Math.min(left, Math.min(limit, stack.getMaxStackSize()));
                     inv.setInventorySlotContents(slot, stack.splitStack(n));

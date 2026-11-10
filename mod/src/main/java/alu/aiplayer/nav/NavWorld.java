@@ -10,6 +10,8 @@ import net.minecraft.init.Blocks;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.world.World;
 
+import alu.aiplayer.act.Doors;
+import alu.aiplayer.act.Elevators;
 import alu.aiplayer.act.Tools;
 
 /**
@@ -32,6 +34,8 @@ public final class NavWorld {
     public static final byte SLAB = 5;
     /** Chunk not loaded: unknown, treated as impassable. */
     public static final byte UNLOADED = 6;
+    /** A closed door or gate that a right-click opens. */
+    public static final byte DOOR = 7;
 
     /** Decides which blocks may be broken to make a path. */
     public interface BreakRule {
@@ -53,6 +57,7 @@ public final class NavWorld {
     private final BreakRule rule;
     private final boolean gentle;
     private final java.util.Set<Long> ownScaffold;
+    private final java.util.Set<Long> shutDoors;
     private final Map<Long, Byte> classes = new HashMap<>();
     private final Map<Long, Integer> breakCosts = new HashMap<>();
     private final Map<Integer, Integer> digTicks = new HashMap<>();
@@ -64,6 +69,15 @@ public final class NavWorld {
      * @param ownScaffold cells where this bot has put climbing blocks; taking those away again is always welcome
      */
     public NavWorld(EntityPlayerMP player, BreakRule rule, boolean gentle, java.util.Set<Long> ownScaffold) {
+        this(player, rule, gentle, ownScaffold, java.util.Collections.<Long>emptySet());
+    }
+
+    /**
+     * @param shutDoors doors that did not open when tried; they count as walls
+     */
+    public NavWorld(EntityPlayerMP player, BreakRule rule, boolean gentle, java.util.Set<Long> ownScaffold,
+        java.util.Set<Long> shutDoors) {
+        this.shutDoors = shutDoors;
         this.world = player.worldObj;
         this.player = player;
         this.rule = rule;
@@ -94,6 +108,7 @@ public final class NavWorld {
         Byte cached = classes.get(k);
         if (cached != null) return cached;
         byte c = classify(world, x, y, z);
+        if (c == DOOR && shutDoors.contains(k)) c = OBSTACLE;
         if (c == UNLOADED) sawUnloaded = true;
         classes.put(k, c);
         return c;
@@ -106,6 +121,9 @@ public final class NavWorld {
         if (m == Material.air) return OPEN;
         if (m == Material.lava || m == Material.fire || b == Blocks.cactus) return HAZARD;
         if (m.isLiquid()) return WATER;
+        int door = Doors.state(w, x, y, z, b);
+        if (door == Doors.OPEN) return OPEN;
+        if (door == Doors.CLOSED) return DOOR;
         AxisAlignedBB bb;
         try {
             bb = b.getCollisionBoundingBoxFromPool(w, x, y, z);
@@ -121,6 +139,25 @@ public final class NavWorld {
         if (height >= 0.4 && height <= 0.6 && bb.minY <= y + 0.01) return SLAB;
         return OBSTACLE;
     }
+
+    /** For a bot standing with its feet at x y z: the feet level it would arrive at by elevator, or -1. */
+    public int elevatorTarget(int x, int y, int z, boolean up) {
+        if (y < 1 || !world.blockExists(x, y - 1, z)) return -1;
+        Block here = world.getBlock(x, y - 1, z);
+        if (!Elevators.is(here)) return -1;
+        int colour = Elevators.colour(world, x, y - 1, z);
+        // The mod's own search is the judge; this only has to be right often enough to be worth trying.
+        for (int d = 2; d <= ELEVATOR_REACH; d++) {
+            int by = up ? y - 1 + d : y - 1 - d;
+            if (by < 1 || by > 253) break;
+            if (!Elevators.is(world.getBlock(x, by, z)) || Elevators.colour(world, x, by, z) != colour) continue;
+            if (cls(x, by + 1, z) != OPEN || cls(x, by + 2, z) != OPEN) continue;
+            return by + 1;
+        }
+        return -1;
+    }
+
+    private static final int ELEVATOR_REACH = 20;
 
     public boolean passable(int x, int y, int z) {
         byte c = cls(x, y, z);

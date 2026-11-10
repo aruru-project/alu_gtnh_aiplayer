@@ -38,6 +38,9 @@ public final class PathFollower {
     private int stepTicks;
     private int pushTicks;
     private int stepsDone;
+    private int doorWait;
+    private int doorTries;
+    private int rideWait;
 
     public String failCode;
     public String failMessage;
@@ -82,18 +85,30 @@ public final class PathFollower {
             return Status.MOVING;
         }
 
+        if (doorWait > 0) {
+            // A door was just clicked; give it a moment to swing before judging the way again.
+            doorWait--;
+            return Status.MOVING;
+        }
+
         if (arrived(p, s)) {
             index++;
             stepsDone++;
             stepTicks = 0;
             pushTicks = 0;
+            doorTries = 0;
+            rideWait = 0;
             return index >= steps.size() ? Status.ARRIVED : Status.MOVING;
         }
         if (++stepTicks > limit(s)) return Status.BLOCKED;
 
-        NavWorld nav = new NavWorld(p, rule, gentle, bot.scaffoldCells());
+        NavWorld nav = new NavWorld(p, rule, gentle, bot.scaffoldCells(), bot.shutDoors());
+        if (s.move == PathSearch.ELEVATOR) return ride(p, s, px, py, pz);
         int[] blocked = firstBlocked(nav, s, px, py, pz);
         if (blocked != null) {
+            if (blocked.length == 3 && nav.cls(blocked[0], blocked[1], blocked[2]) == NavWorld.DOOR) {
+                return openDoor(p, blocked);
+            }
             if (blocked.length == 0 || nav.breakCost(blocked[0], blocked[1], blocked[2]) < 0) return Status.BLOCKED;
             if (s.move == PathSearch.DIG_DOWN && !centered(p, px, pz, 0.18)) {
                 bot.motion.moveToward(p, px + 0.5, pz + 0.5);
@@ -127,6 +142,39 @@ public final class PathFollower {
                 }
                 break;
         }
+        return Status.MOVING;
+    }
+
+    /** Right-clicks a closed door in the way. One that stays shut after two tries is remembered as a wall. */
+    private Status openDoor(EntityPlayerMP p, int[] door) {
+        if (!Reach.canReach(p, door[0], door[1], door[2])) return Status.BLOCKED;
+        if (doorTries >= 2 || bot.clickWasRefused(door[0], door[1], door[2])) {
+            bot.noteShutDoor(door[0], door[1], door[2]);
+            return Status.BLOCKED;
+        }
+        doorTries++;
+        alu.aiplayer.act.ContainerSession.clickEmptyHanded(bot, door[0], door[1], door[2]);
+        bot.noteOpenedDoor(door[0], door[1], door[2]);
+        doorWait = 8;
+        stepTicks = 0;
+        return Status.MOVING;
+    }
+
+    /** Stands in the middle of the elevator block and asks to be taken up or down. */
+    private Status ride(EntityPlayerMP p, Step s, int px, int py, int pz) {
+        if (!centered(p, px, pz, 0.25)) {
+            bot.motion.moveToward(p, px + 0.5, pz + 0.5);
+            return Status.MOVING;
+        }
+        if (!p.onGround) return Status.MOVING;
+        if (rideWait > 0) {
+            // Asked already: the server either moved the bot (and this step has been arrived at) or declined.
+            if (--rideWait == 0) return Status.BLOCKED;
+            return Status.MOVING;
+        }
+        alu.aiplayer.act.Elevators.ride(p, px, py - 1, pz, s.y > py);
+        rideWait = 15;
+        stepTicks = 0;
         return Status.MOVING;
     }
 

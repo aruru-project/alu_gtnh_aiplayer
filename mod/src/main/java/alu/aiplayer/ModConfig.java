@@ -91,6 +91,16 @@ public final class ModConfig {
     public List<String> fillerBlocks = new ArrayList<>(
         Arrays.asList("minecraft:dirt", "minecraft:cobblestone", "minecraft:stone", "minecraft:netherrack"));
 
+    /**
+     * Doors of kinds the game does not recognise as doors by itself, which a right-click opens. Vanilla-style
+     * wooden doors and fence gates, and mod doors built on them, need no listing.
+     */
+    public Set<String> doorBlocks = new HashSet<>(
+        Arrays.asList(
+            "CarpentersBlocks:blockCarpentersGarageDoor",
+            "CarpentersBlocks:blockCarpentersDoor",
+            "CarpentersBlocks:blockCarpentersGate"));
+
     public static ModConfig load(File file) {
         ModConfig c = new ModConfig();
         JsonObject o = new JsonObject();
@@ -112,6 +122,7 @@ public final class ModConfig {
         c.maxTravel = Math.max(16, J.i(o, "maxTravel", c.maxTravel));
         c.excludedTools = stringSet(o, "excludedTools", c.excludedTools);
         c.naturalBlocks = stringSet(o, "naturalBlocks", c.naturalBlocks);
+        c.doorBlocks = stringSet(o, "doorBlocks", c.doorBlocks);
         JsonArray filler = J.array(o, "fillerBlocks");
         if (filler != null) {
             c.fillerBlocks = new ArrayList<>();
@@ -158,6 +169,7 @@ public final class ModConfig {
         o.addProperty("maxTravel", maxTravel);
         o.add("excludedTools", toArray(new java.util.TreeSet<>(excludedTools)));
         o.add("naturalBlocks", toArray(new java.util.TreeSet<>(naturalBlocks)));
+        o.add("doorBlocks", toArray(new java.util.TreeSet<>(doorBlocks)));
         o.add("fillerBlocks", toArray(fillerBlocks));
         try {
             file.getParentFile()

@@ -110,6 +110,7 @@ public final class Bot implements BotConnection.Listener {
         }
         deadTicks = 0;
         applySettings();
+        closeDoorsBehind(p);
         conn.deliverPending();
         conn.markActive();
         conn.onNetworkTick();
@@ -251,6 +252,55 @@ public final class Bot implements BotConnection.Listener {
             java.util.Iterator<Long> it = scaffold.iterator();
             it.next();
             it.remove();
+        }
+    }
+
+    // ---- doors ---------------------------------------------------------------------------------------------
+
+    private final java.util.Map<Long, Long> shutDoors = new java.util.HashMap<>();
+    private final java.util.Set<Long> shutDoorView = java.util.Collections.unmodifiableSet(shutDoors.keySet());
+    private final java.util.List<int[]> openedDoors = new java.util.ArrayList<>();
+
+    /** Doors that would not open for this bot. Forgotten after a few minutes, in case someone unlocks them. */
+    public java.util.Set<Long> shutDoors() {
+        return shutDoorView;
+    }
+
+    public void noteShutDoor(int x, int y, int z) {
+        if (shutDoors.size() > 256) shutDoors.clear();
+        shutDoors.put(alu.aiplayer.nav.NavWorld.key(x, y, z), ticksOnline);
+    }
+
+    public void noteOpenedDoor(int x, int y, int z) {
+        for (int[] d : openedDoors) if (d[0] == x && d[1] == y && d[2] == z) return;
+        if (openedDoors.size() < 16) openedDoors.add(new int[] { x, y, z });
+    }
+
+    /** Shuts the doors this bot opened once it has walked on, as a person would pull one to behind them. */
+    private void closeDoorsBehind(EntityPlayerMP p) {
+        if (shutDoors.size() > 0 && ticksOnline % 200 == 0) {
+            for (java.util.Iterator<Long> it = shutDoors.values()
+                .iterator(); it.hasNext();) if (ticksOnline - it.next() > 20 * 300) it.remove();
+        }
+        if (openedDoors.isEmpty() || ticksOnline % 5 != 0) return;
+        for (java.util.Iterator<int[]> it = openedDoors.iterator(); it.hasNext();) {
+            int[] d = it.next();
+            double dx = p.posX - (d[0] + 0.5), dz = p.posZ - (d[2] + 0.5);
+            double flat = dx * dx + dz * dz;
+            if (flat < 2.6 * 2.6) continue; // still in or right by the doorway
+            it.remove();
+            net.minecraft.world.World w = p.worldObj;
+            if (!w.blockExists(d[0], d[1], d[2])) continue;
+            net.minecraft.block.Block b = w.getBlock(d[0], d[1], d[2]);
+            if (alu.aiplayer.act.Doors.state(w, d[0], d[1], d[2], b) != alu.aiplayer.act.Doors.OPEN) continue;
+            if (!alu.aiplayer.act.Reach.canReach(p, d[0], d[1], d[2])) continue;
+            alu.aiplayer.act.ContainerSession.clickEmptyHanded(this, d[0], d[1], d[2]);
+            // One click moves the whole door; its other cells need no click of their own.
+            for (java.util.Iterator<int[]> rest = openedDoors.iterator(); rest.hasNext();) {
+                int[] o = rest.next();
+                if (Math.abs(o[0] - d[0]) + Math.abs(o[1] - d[1]) + Math.abs(o[2] - d[2]) <= 4) rest.remove();
+            }
+            return;
         }
     }
 

@@ -32,6 +32,8 @@ public final class PathSearch {
     public static final byte DESCEND = 3;
     public static final byte PILLAR = 4;
     public static final byte DIG_DOWN = 5;
+    /** Ride an elevator block to another one above or below. */
+    public static final byte ELEVATOR = 6;
 
     public static final class Step {
 
@@ -51,6 +53,8 @@ public final class PathSearch {
     private static final double FALL_PER_BLOCK = 2.0;
     private static final double WATER_FACTOR = 2.5;
     private static final double PILLAR_COST = 22.0;
+    private static final int DOOR_COST = 12;
+    private static final double ELEVATOR_COST = 14.0;
     private static final double HEURISTIC_WEIGHT = 1.3;
     /** How far a bot that can be hurt will let itself fall. */
     public static final int SAFE_DROP = 3;
@@ -199,6 +203,7 @@ public final class PathSearch {
         byte c = nav.cls(x, y, z);
         if (c == NavWorld.OPEN || c == NavWorld.WATER) return 0;
         if (c == NavWorld.HAZARD || c == NavWorld.UNLOADED) return -1;
+        if (c == NavWorld.DOOR) return DOOR_COST;
         return nav.breakCost(x, y, z);
     }
 
@@ -250,6 +255,12 @@ public final class PathSearch {
             }
         }
 
+        if (here == 1) {
+            for (int dir = 0; dir < 2; dir++) {
+                int to = nav.elevatorTarget(x, y, z, dir == 0);
+                if (to >= 0) relax(n, x, to, z, ELEVATOR, ELEVATOR_COST);
+            }
+        }
         if (here == 1) {
             // Pillar up: jump and put a block under the feet.
             if (canPillar) {
