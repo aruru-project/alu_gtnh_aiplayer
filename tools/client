@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""A game client of our own, started straight from the pack's launch description, without a launcher.
+
+It exists for one job: NEI only runs in a client, so the recipe book the brain reads is exported from here
+(see docs/PACKDATA.md). The server does not check accounts, so the client joins under an offline name.
+
+  tools/client setup [--pack ZIP]     unpack the client pack into client/ and fetch the game's libraries
+  tools/client start [--join HOST:PORT] [--name NAME] [-D key=value ...]
+  tools/client stop
+  tools/client status
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HOME = os.path.join(ROOT, "client")
+INSTANCE = os.path.join(HOME, "instance")
+GAME = os.path.join(INSTANCE, ".minecraft")
+LIBS = os.path.join(HOME, "libraries")
+ASSETS = os.path.join(HOME, "assets")
+NATIVES = os.path.join(HOME, "natives")
+PIDFILE = os.path.join(HOME, "client.pid")
+LOG = os.path.join(HOME, "client.log")
+DEFAULT_PACK = "/extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip"
+PROXY = os.environ.get("AIPLAYER_PROXY", "http://127.0.0.1:7890")
+JAVA = os.environ.get("AIPLAYER_CLIENT_JAVA", "/usr/lib/jvm/java-25-openjdk-amd64/bin/java")
+ORDER = ["net.minecraft", "org.lwjgl3", "me.eigenraven.lwjgl3ify.forgepatches", "net.minecraftforge",
+         "me.eigenraven.lwjgl3ify.launchargs"]
+
+
+def opener():
+    handlers = [urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})] if PROXY else []
+    o = urllib.request.build_opener(*handlers)
+    o.addheaders = [("User-Agent", "aiplayer-client-setup")]
+    return o
+
+
+def fetch(url, dest, sha1=None):
+    if os.path.exists(dest) and (sha1 is None or sha1sum(dest) == sha1):
+        return False
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    last = None
+    for attempt in range(4):
+        try:
+            with opener().open(url, timeout=120) as r, open(dest + ".part", "wb") as f:
+                shutil.copyfileobj(r, f)
+            if sha1 is not None and sha1sum(dest + ".part") != sha1:
+                raise IOError("checksum mismatch")
+            os.replace(dest + ".part", dest)
+            return True
+        except Exception as e:  # noqa: BLE001 - retried, then reported with the URL
+            last = e
+            time.sleep(1 + attempt)
+    raise SystemExit(f"could not fetch {url}: {last}")
+
+
+def sha1sum(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def patches():
+    out = []
+    for uid in ORDER:
+        with open(os.path.join(INSTANCE, "patches", uid + ".json"), encoding="utf8") as f:
+            out.append(json.load(f))
+    return out
+
+
+def allowed(lib):
+    rules = lib.get("rules")
+    if not rules:
+        return True
+    ok = False
+    for r in rules:
+        name = (r.get("os") or {}).get("name")
+        if name is None or name == "linux":
+            ok = r.get("action") == "allow"
+    return ok
+
+
+def maven_path(name, classifier=None):
+    parts = name.split(":")
+    group, artifact, version = parts[0], parts[1], parts[2]
+    classifier = classifier or (parts[3] if len(parts) > 3 else None)
+    file = f"{artifact}-{version}" + (f"-{classifier}" if classifier else "") + ".jar"
+    return os.path.join(group.replace(".", "/"), artifact, version, file)
+
+
+def version_key(v):
+    return [int(x) if x.isdigit() else x for x in re.split(r"[.\-_]", v)]
+
+
+def libraries():
+    """(local path, url, sha1, is_natives) for everything the pack's launch description lists for Linux.
+
+    Two parts of the description may name the same library in different versions (the game wants Guava 15,
+    Forge 17). As the launcher does, the newer one takes the older one's place."""
+    chosen = {}
+    for patch in patches():
+        for lib in (patch.get("libraries") or []) + (patch.get("+libraries") or []):
+            if not allowed(lib):
+                continue
+            parts = lib["name"].split(":")
+            key = (parts[0], parts[1], parts[3] if len(parts) > 3 else "", bool(lib.get("natives")))
+            old = chosen.get(key)
+            if old is not None:
+                try:
+                    if version_key(old["name"].split(":")[2]) > version_key(parts[2]):
+                        continue
+                except TypeError:
+                    pass
+            chosen[key] = lib
+    out = []
+    for lib in chosen.values():
+        if True:
+            name = lib["name"]
+            if lib.get("MMC-hint") == "local":
+                parts = name.split(":")
+                file = f"{parts[1]}-{parts[2]}" + (f"-{parts[3]}" if len(parts) > 3 else "") + ".jar"
+                out.append((os.path.join(INSTANCE, "libraries", file), None, None, False))
+                continue
+            downloads = lib.get("downloads") or {}
+            natives = (lib.get("natives") or {}).get("linux")
+            if natives:
+                art = (downloads.get("classifiers") or {}).get(natives)
+                if art:
+                    out.append((os.path.join(LIBS, maven_path(name, natives)), art["url"], art.get("sha1"), True))
+                continue
+            art = downloads.get("artifact")
+            if art:
+                out.append((os.path.join(LIBS, maven_path(name)), art["url"], art.get("sha1"), False))
+            else:
+                base = lib.get("url") or "https://libraries.minecraft.net/"
+                rel = maven_path(name)
+                out.append((os.path.join(LIBS, rel), base.rstrip("/") + "/" + rel.replace(os.sep, "/"), None, False))
+    return out
+
+
+def main_jar():
+    art = patches()[0]["mainJar"]["downloads"]["artifact"]
+    return os.path.join(LIBS, "com/mojang/minecraft/1.7.10/minecraft-1.7.10-client.jar"), art["url"], art["sha1"]
+
+
+def setup(pack):
+    if not os.path.isdir(GAME):
+        print("unpacking", pack)
+        os.makedirs(HOME, exist_ok=True)
+        with zipfile.ZipFile(pack) as z:
+            z.extractall(HOME, [n for n in z.namelist() if n.startswith("instance/")])
+    jobs = [(url, path, sha) for path, url, sha, _ in libraries() if url]
+    path, url, sha = main_jar()
+    jobs.append((url, path, sha))
+    index = patches()[0]["assetIndex"]
+    index_path = os.path.join(ASSETS, "indexes", index["id"] + ".json")
+    fetch(index["url"], index_path, index.get("sha1"))
+    with open(index_path, encoding="utf8") as f:
+        for obj in json.load(f)["objects"].values():
+            h = obj["hash"]
+            jobs.append((f"https://resources.download.minecraft.net/{h[:2]}/{h}", os.path.join(ASSETS, "objects", h[:2], h), None))
+    todo = [j for j in jobs if not os.path.exists(j[1])]
+    print(f"{len(jobs)} files, {len(todo)} to fetch")
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda j: fetch(*j), todo))
+    os.makedirs(NATIVES, exist_ok=True)
+    for path, _, _, natives in libraries():
+        if natives:
+            with zipfile.ZipFile(path) as z:
+                z.extractall(NATIVES, [n for n in z.namelist() if not n.startswith("META-INF/")])
+    print("ready:", HOME)
+
+
+def running():
+    try:
+        pid = int(open(PIDFILE).read())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def set_options(pairs):
+    path = os.path.join(GAME, "options.txt")
+    lines = open(path, encoding="utf8").read().splitlines() if os.path.exists(path) else []
+    seen = set()
+    for i, line in enumerate(lines):
+        key = line.split(":", 1)[0]
+        if key in pairs:
+            lines[i] = f"{key}:{pairs[key]}"
+            seen.add(key)
+    lines += [f"{k}:{v}" for k, v in pairs.items() if k not in seen]
+    with open(path, "w", encoding="utf8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def start(join, name, defines, memory):
+    if running():
+        raise SystemExit("already running")
+    ps = patches()
+    jvm = []
+    main = None
+    tweakers = []
+    for p in ps:
+        jvm += p.get("+jvmArgs") or []
+        main = p.get("mainClass") or main
+        tweakers += p.get("+tweakers") or []
+    cp = [path for path, _, _, natives in libraries() if not natives] + [main_jar()[0]]
+    missing = [c for c in cp if not os.path.exists(c)]
+    if missing:
+        raise SystemExit("missing files, run setup first: " + missing[0])
+    # Small, quiet and Chinese: this client is only here to be read from.
+    set_options({"lang": "zh_CN", "renderDistance": "2", "soundCategory_master": "0.0", "fullscreen": "false",
+                 "pauseOnLostFocus": "false", "maxFps": "20", "snooperEnabled": "false"})
+    uuid = hashlib.md5(("OfflinePlayer:" + name).encode("utf8")).hexdigest()
+    values = {"auth_player_name": name, "version_name": "1.7.10", "game_directory": GAME, "assets_root": ASSETS,
+              "assets_index_name": ps[0]["assetIndex"]["id"], "auth_uuid": uuid, "auth_access_token": "0",
+              "user_properties": "{}", "user_type": "legacy"}
+    args = [re.sub(r"\$\{(\w+)\}", lambda m: values[m.group(1)], a) for a in ps[0]["minecraftArguments"].split()]
+    for t in tweakers:
+        args += ["--tweakClass", t]
+    args += ["--width", "854", "--height", "480"]
+    if join:
+        host, _, port = join.partition(":")
+        args += ["--server", host, "--port", port or "25565"]
+    cmd = [JAVA, f"-Xmx{memory}", "-Xms2G", f"-Djava.library.path={NATIVES}"] + jvm
+    cmd += ["-D" + d for d in defines] + ["-cp", os.pathsep.join(cp), main] + args
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":10")
+    env.setdefault("XAUTHORITY", os.path.expanduser("~/.Xauthority"))
+    with open(LOG, "ab") as log:
+        proc = subprocess.Popen(cmd, cwd=GAME, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    with open(PIDFILE, "w") as f:
+        f.write(str(proc.pid))
+    print("started, pid", proc.pid, "display", env["DISPLAY"], "log", LOG)
+
+
+def stop():
+    pid = running()
+    if not pid:
+        print("not running")
+        return
+    os.killpg(pid, signal.SIGTERM)
+    for _ in range(40):
+        if not running():
+            break
+        time.sleep(0.5)
+    else:
+        os.killpg(pid, signal.SIGKILL)
+    print("stopped")
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        raise SystemExit(__doc__)
+    cmd, rest = argv[0], argv[1:]
+
+    def opt(flag, default=None):
+        return rest[rest.index(flag) + 1] if flag in rest else default
+
+    if cmd == "setup":
+        setup(opt("--pack", DEFAULT_PACK))
+    elif cmd == "start":
+        defines = [rest[i + 1] for i, a in enumerate(rest) if a == "-D"]
+        start(opt("--join"), opt("--name", "Exporter"), defines, opt("--memory", "8G"))
+    elif cmd == "stop":
+        stop()
+    elif cmd == "status":
+        print("running, pid %d" % running() if running() else "not running")
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

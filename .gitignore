@@ -5,3 +5,5 @@
 /brain/node_modules/
 *.log
 .DS_Store
+# our own copy of the game client, only used to export NEI data
+/client/
