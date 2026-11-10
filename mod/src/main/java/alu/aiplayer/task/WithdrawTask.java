@@ -15,6 +15,7 @@ public final class WithdrawTask extends Task {
 
     private final int[] at;
     private final alu.aiplayer.act.ItemFilter bag;
+    private final boolean fromInputs;
     private final List<ItemFilter> items;
     private ContainerTrip trip;
 
@@ -24,6 +25,7 @@ public final class WithdrawTask extends Task {
         at = bag != null ? null : Params.pos(params, "container");
         items = Inventories.filters(J.array(params, "items"));
         if (items.isEmpty()) throw new IllegalArgumentException("items must list what to take");
+        fromInputs = J.bool(params, "fromInputs", false);
     }
 
     @Override
@@ -38,6 +40,9 @@ public final class WithdrawTask extends Task {
             trip = new ContainerTrip(bot, at[0], at[1], at[2]);
         }
         trip.session.withdraw(items);
+        // At a machine a plain withdrawal takes products. A mould or shape left in its input slots is taken out
+        // the same way a player does it, by reaching into those slots, when the caller says so.
+        if (fromInputs) trip.session.fromInputSlots();
     }
 
     @Override
