@@ -4,12 +4,16 @@
 import path from 'node:path'
 import { Agent } from '../src/agent/agent.ts'
 import type { AgentSettings, AgentTiming, PersistedAgentState } from '../src/agent/agent.ts'
+import type { RoutineLimits } from '../src/agent/routine.ts'
+import type { DesignWorkspace } from '../src/design/index.ts'
+import type { PackData } from '../src/packdata/index.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
 import type { Requester } from '../src/bridge/api.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
 import type { AssistantPart, GenerateRequest, GenerateResult, LlmClient, Message } from '../src/llm/index.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
+import type { FeedbackStore } from '../src/store/feedback.ts'
 import { HistoryStore } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
@@ -125,7 +129,7 @@ export class ScriptedLlm implements LlmClient {
     const messages = this.requests[n]?.messages ?? []
     const last = messages[messages.length - 1]
     if (!last || last.role !== 'user') return ''
-    return last.content.map((p) => (p.type === 'text' ? p.text : p.content)).join('\n')
+    return last.content.map((p) => (p.type === 'text' ? p.text : p.type === 'image' ? `[image: ${p.image.label}]` : p.content)).join('\n')
   }
 }
 
@@ -172,6 +176,18 @@ export interface MakeAgentOptions {
   persisted?: { state: PersistedAgentState | undefined }
   game?: FakeGame
   llm?: ScriptedLlm
+  /** 意见簿。给了，模型就能用 report_problem，版本号报的是 brain-under-test / mod-under-test。 */
+  feedback?: FeedbackStore
+  /** 现在用的模型能不能看图（模型上的那个开关）。默认不能。 */
+  vision?: boolean
+  /** 工具结果带的图存到哪（面板的对话日志从这里取）。 */
+  pictures?: { save(png: Buffer): string }
+  /** 跑程序的沙箱和草稿（给了才有 run_program、例程这些）。 */
+  design?: DesignWorkspace
+  /** 例程的上限（测试里调小）。 */
+  routineLimits?: Partial<RoutineLimits>
+  /** 本地资料（物品表、配方册……）。 */
+  packdata?: PackData
 }
 
 export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
@@ -214,6 +230,12 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     todayTokens: () => usedTokens.value,
     persist: { load: () => persisted.state, save: (s) => (persisted.state = structuredClone(s)) },
     timing,
+    ...(opts.feedback ? { feedback: opts.feedback, versions: () => ({ brain: 'brain-under-test', mod: 'mod-under-test' }) } : {}),
+    canSeeImages: () => opts.vision === true,
+    ...(opts.pictures ? { pictures: opts.pictures } : {}),
+    ...(opts.design ? { design: opts.design } : {}),
+    ...(opts.routineLimits ? { routineLimits: opts.routineLimits } : {}),
+    ...(opts.packdata ? { packdata: opts.packdata } : {}),
   })
   agent.start()
   const harness: AgentHarness = {

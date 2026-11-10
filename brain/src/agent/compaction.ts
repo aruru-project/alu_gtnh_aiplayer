@@ -99,6 +99,7 @@ export function renderTranscript(turns: readonly Turn[], maxChars = 60_000): str
       } else {
         for (const p of m.content) {
           if (p.type === 'text') lines.push(`[它看到的] ${clipText(p.text, 1500)}`)
+          else if (p.type === 'image') lines.push(`[它看到的图] ${clipText(p.image.label, 200)}`)
           else lines.push(`[工具结果 ${names.get(p.toolCallId) ?? ''}${p.isError ? ' 出错' : ''}] ${clipText(p.content, 300)}`)
         }
       }

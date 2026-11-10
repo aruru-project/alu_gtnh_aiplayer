@@ -5,9 +5,11 @@
 //   promptCaching      true（默认）| false —— 给 system 和最后一个工具定义加 cache_control
 //   cacheConversation  false（默认）| true —— 额外给最后一条消息加 cache_control，
 //                      一轮里多步工具调用时前面的对话走缓存价。需要 promptCaching 开着。
+//
+// 图片：工具结果里的图直接放在 tool_result 的内容里（文字块后面跟图片块）；user 消息里的图是普通的图片块。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, joinUrl, postJson } from './http.ts'
+import { asNumber, asRecord, getJson, joinUrl, postJson } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -15,13 +17,17 @@ import type {
   AssistantPart,
   GenerateRequest,
   GenerateResult,
+  ImageAttachment,
   LlmClient,
   ProviderConfig,
+  RemoteModel,
   StopReason,
   Usage,
 } from './types.ts'
 
 export const ANTHROPIC_KIND = 'anthropic-messages'
+/** 拉模型列表不该等很久：这只是填表时的一个方便。 */
+const LIST_MODELS_TIMEOUT_MS = 15_000
 export const ANTHROPIC_VERSION = '2023-06-01'
 /** 接口要求必须给 max_tokens；配置和请求都没给时用这个。 */
 export const ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
@@ -52,6 +58,10 @@ export function anthropicEndpoint(baseUrl: string): string {
 const CACHE_CONTROL = { type: 'ephemeral' } as const
 type Block = Record<string, unknown>
 
+function imageBlock(image: ImageAttachment): Block {
+  return { type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } }
+}
+
 export function buildAnthropicBody(config: ProviderConfig, req: GenerateRequest): Record<string, unknown> {
   const options = readOptions(config)
 
@@ -77,8 +87,15 @@ export function buildAnthropicBody(config: ProviderConfig, req: GenerateRequest)
       const content: Block[] = []
       for (const p of m.content) {
         if (p.type === 'text') content.push({ type: 'text', text: p.text })
+        else if (p.type === 'image') content.push(imageBlock(p.image))
         else {
-          const block: Block = { type: 'tool_result', tool_use_id: p.toolCallId, content: p.content }
+          const images = p.images ?? []
+          const block: Block = {
+            type: 'tool_result',
+            tool_use_id: p.toolCallId,
+            // 没有图时内容还是一个字符串（和以前一样）；有图时是文字块加图片块（文字块不能是空的）
+            content: images.length === 0 ? p.content : [...(p.content.trim().length > 0 ? [{ type: 'text', text: p.content }] : []), ...images.map(imageBlock)],
+          }
           if (p.isError) block.is_error = true
           content.push(block)
         }
@@ -194,6 +211,28 @@ function createAnthropicClient(config: ProviderConfig, deps: AdapterDeps): LlmCl
   }
 }
 
+/** GET {baseUrl}/v1/models：Anthropic 的模型列表，形状是 {data:[{id, display_name}]}。第三方网关不一定有这个接口。 */
+async function listAnthropicModels(config: ProviderConfig, deps: AdapterDeps & { signal?: AbortSignal }): Promise<RemoteModel[]> {
+  const options = readOptions(config)
+  const auth: Record<string, string> = options.authStyle === 'bearer' ? { authorization: `Bearer ${config.apiKey}` } : { 'x-api-key': config.apiKey }
+  const { json } = await getJson({
+    fetch: deps.fetch,
+    url: `${anthropicEndpoint(config.baseUrl).replace(/\/messages$/, '/models')}?limit=1000`,
+    headers: { 'anthropic-version': ANTHROPIC_VERSION, ...auth, ...(config.extraHeaders ?? {}) },
+    timeoutMs: LIST_MODELS_TIMEOUT_MS,
+    signal: deps.signal,
+  })
+  const data = asRecord(json)?.data
+  if (!Array.isArray(data)) throw new LlmError('server', 'the response has no list of models')
+  const models: RemoteModel[] = []
+  for (const item of data) {
+    const m = asRecord(item)
+    if (typeof m?.id !== 'string' || m.id.length === 0) continue
+    models.push(typeof m.display_name === 'string' && m.display_name.length > 0 && m.display_name !== m.id ? { id: m.id, label: m.display_name } : { id: m.id })
+  }
+  return models
+}
+
 export const anthropicMessages: Adapter = {
   label: 'Anthropic 兼容（Messages）',
   baseUrlExample: 'https://api.anthropic.com',
@@ -204,6 +243,7 @@ export const anthropicMessages: Adapter = {
       type: 'enum',
       values: ['x-api-key', 'bearer'],
       default: 'x-api-key',
+      scope: 'provider',
     },
     {
       key: 'promptCaching',
@@ -219,4 +259,5 @@ export const anthropicMessages: Adapter = {
     },
   ],
   create: createAnthropicClient,
+  listModels: listAnthropicModels,
 }

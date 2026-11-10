@@ -19,11 +19,31 @@ export interface ToolCallPart {
   invalid?: { reason: string; raw: string }
 }
 
+/** 一张给模型看的图。 */
+export interface ImageAttachment {
+  /** 这是什么图（一句话，给模型看）。图不再附带以后，原处留下的占位文字里用它。 */
+  label: string
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+  /** 文件内容，base64。 */
+  data: string
+}
+
+/** user 消息里直接放的一张图。 */
+export interface ImagePart {
+  type: 'image'
+  image: ImageAttachment
+}
+
 export interface ToolResultPart {
   type: 'tool_result'
   toolCallId: string
   content: string
   isError?: boolean
+  /**
+   * 工具结果带的图（简图、主人传的图片、截图……）。只有模型能看图时上层才会放。
+   * 图很贵：只在产生它的那一轮里附带，之后换成一句占位文字（见 messages.ts 的 withoutImages / keepLatestImages）。
+   */
+  images?: ImageAttachment[]
 }
 
 /**
@@ -36,7 +56,7 @@ export interface OpaquePart {
   data: unknown
 }
 
-export type UserPart = TextPart | ToolResultPart
+export type UserPart = TextPart | ToolResultPart | ImagePart
 export type AssistantPart = TextPart | ToolCallPart | OpaquePart
 
 export type UserMessage = { role: 'user'; content: UserPart[] }
@@ -97,6 +117,8 @@ export interface ProviderConfig {
   extraBody?: Record<string, unknown>
   /** 适配器自己的开关，见各适配器文件 */
   options?: Record<string, unknown>
+  /** 这个模型能看图。不是适配器的事（适配器见到图就发），是上层决定要不要把图放进消息。 */
+  vision?: boolean
 }
 
 /** 每次成功调用后交给上层记账的记录。 */
@@ -115,6 +137,19 @@ export interface AdapterOptionInfo {
   type: 'boolean' | 'enum'
   values?: string[]
   default: string | boolean
+  /**
+   * 这个开关跟着谁走：provider 是这一家接口的事（比如 key 放在哪个请求头），同一家下面的模型都一样；
+   * model 是这个模型的事（比如输出上限用哪个字段名）。不写就是 model。
+   */
+  scope?: 'provider' | 'model'
+}
+
+/** 从接口拉到的一个可用模型。 */
+export interface RemoteModel {
+  /** 模型名：发请求时填的就是它。 */
+  id: string
+  /** 接口给的显示名，可能没有。 */
+  label?: string
 }
 
 export interface AdapterDeps {
@@ -128,4 +163,6 @@ export interface Adapter {
   baseUrlExample: string
   options: AdapterOptionInfo[]
   create(config: ProviderConfig, deps: AdapterDeps): LlmClient
+  /** 问这一家接口有哪些模型。不是每家都有这个接口，没有的不写；拉不到时抛 LlmError。config.model 用不上。 */
+  listModels?(config: ProviderConfig, deps: AdapterDeps & { signal?: AbortSignal }): Promise<RemoteModel[]>
 }

@@ -14,9 +14,7 @@ export const BLOCK_LIST_MAX = 256
 export const BOX_MAX_VOLUME = 32768
 export const FLATTEN_MAX_SIDE = 64
 
-export const queue = bool(
-  'false (default): cancel whatever you are doing and start this now. true: add it to the end of your task queue instead.',
-)
+export const queue = bool('true: add it to the end of your task queue. Default: start it now, replacing what you are doing.')
 
 export const pos = (description: string): Schema => obj({ x: int('x'), y: int('y'), z: int('z') }, ['x', 'y', 'z'], description)
 
@@ -31,12 +29,9 @@ const itemFilter = obj(
 
 /** supply / dropoff：容器坐标的列表。箱子这类有界面的储物方块和抽屉（Storage Drawers）都行。 */
 export const containerList = (description: string): Schema =>
-  arr(description, pos('Position of a container: a chest (or similar storage block) or a Storage Drawers block.'), { min: 1, max: 8 })
+  arr(description, pos('A chest or drawers.'), { min: 1, max: 8 })
 
-export const overflow = str(
-  'What to do when your inventory is full and no dropoff container is given: "fail" (default) stops the task with inventory_full; "leave" keeps digging and leaves the drops lying on the ground.',
-  { enum: ['fail', 'leave'] },
-)
+export const overflow = str('When your inventory is full and there is no dropoff: "fail" (default) stops with inventory_full; "leave" keeps digging and leaves the drops on the ground.', { enum: ['fail', 'leave'] })
 
 /**
  * 以 bot 身份执行一条指令并拿到服务器的回显。
@@ -109,7 +104,7 @@ const boxRequired = ['x1', 'y1', 'z1', 'x2', 'y2', 'z2']
 export const goTo: Tool = {
   name: 'go_to',
   description:
-    'Walk to a position (task). Give only x and z to go to the ground at that spot; give y too when the height matters (you end up within 2 blocks of it). You walk at most about 256 blocks: for anything farther, teleport near it with go_home first. Fails with "unreachable" if there is no path or it is too far.',
+    'Walk to a position (task). Give only x and z for the ground at that spot; give y too when the height matters. You walk at most about 256 blocks: for anything farther, go_home near it first.',
   inputSchema: obj(
     {
       x: int('x'),
@@ -218,7 +213,7 @@ export const listHomes: Tool = {
 
 export const flattenArea: Tool = {
   name: 'flatten_area',
-  description: `Level a rectangle so the ground surface is at height y (task, at most ${FLATTEN_MAX_SIDE}×${FLATTEN_MAX_SIDE}): digs away everything above y, then (if fill is on) fills holes at y and below, preferring what it just dug. What is left over stays in your inventory. Re-running with the same arguments continues where it stopped. Scan the area first to choose y.`,
+  description: `Level a rectangle so the ground surface is at height y (task, at most ${FLATTEN_MAX_SIDE}×${FLATTEN_MAX_SIDE}): digs away what is above y, then fills the holes at y and below. Scan the area first to choose y.`,
   inputSchema: obj(
     {
       x1: int('x of one corner'),
@@ -252,7 +247,7 @@ export const flattenArea: Tool = {
 
 export const clearArea: Tool = {
   name: 'clear_area',
-  description: `Dig out every block in a box, layer by layer from the top (task, volume at most ${BOX_MAX_VOLUME}). Blocks that hold data (chests, drawers, machines), liquids and bedrock are left alone and counted in the result's "skipped". What you dig goes into your inventory. Re-running continues where it stopped.`,
+  description: `Dig out every block in a box, from the top down (task, volume at most ${BOX_MAX_VOLUME}). Chests, drawers, machines, liquids and bedrock are left alone.`,
   inputSchema: obj(
     { ...boxProps, dropoff: containerList('Containers (chests or drawers) to unload into when the inventory fills up.'), overflow, queue },
     boxRequired,
@@ -267,7 +262,7 @@ export const clearArea: Tool = {
 
 export const fillArea: Tool = {
   name: 'fill_area',
-  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). shape "hollow" builds only the six faces, "walls" only the four sides. Blocks come from your inventory (and the supply containers); it fails with no_material when they run out. Re-running continues where it stopped.`,
+  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). shape "hollow" builds only the six faces, "walls" only the four sides. Blocks come from your inventory and the supply containers.`,
   inputSchema: obj(
     {
       ...boxProps,
@@ -289,14 +284,14 @@ export const fillArea: Tool = {
 
 export const digBlocks: Tool = {
   name: 'dig_blocks',
-  description: `Dig specific blocks one by one, nearest first (task, at most ${BLOCK_LIST_MAX}). Blocks that hold data (chests, drawers, machines), liquids and bedrock are left alone and counted as skipped. Re-running continues where it stopped. Use clear_area for whole boxes.`,
+  description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). Use clear_area for whole boxes.`,
   inputSchema: obj({ blocks: arr('Positions to dig.', pos('A block position.'), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
   run: (ctx, i: { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks }, i.queue),
 }
 
 export const placeBlocks: Tool = {
   name: 'place_blocks',
-  description: `Place specific blocks one by one, lowest first (task, at most ${BLOCK_LIST_MAX}). Each block needs an existing block next to it to attach to; ones with nothing to attach to are skipped. Blocks come from your inventory (and the supply containers). Re-running continues where it stopped. Use fill_area for whole boxes.`,
+  description: `Place specific blocks, lowest first (task, at most ${BLOCK_LIST_MAX}). Each needs an existing block next to it to attach to. Use fill_area for whole boxes.`,
   inputSchema: obj(
     {
       blocks: arr(
@@ -321,7 +316,7 @@ export const placeBlocks: Tool = {
 export const depositItems: Tool = {
   name: 'deposit_items',
   description:
-    'Walk to a container and put items into it (task). The container can be a chest, an iron chest or any similar storage block with an inventory screen, or a Storage Drawers block (used the way a player does: right-click its front). Without "items", deposits everything except tools, food and the ids listed in "keep". Fails with container_full if it does not fit; a drawer only takes an item its slots already hold, or any item while a slot is still unassigned.',
+    'Walk to a container (a chest or similar, or Storage Drawers) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit.',
   inputSchema: obj(
     {
       container: pos('Position of the chest or drawers.'),
@@ -338,7 +333,7 @@ export const depositItems: Tool = {
 export const withdrawItems: Tool = {
   name: 'withdraw_items',
   description:
-    'Walk to a container and take items out of it (task): a chest, an iron chest or any similar storage block with an inventory screen, or a Storage Drawers block (used the way a player does: punch its front; the count is exact). The task ends as done even when the container did not have enough: check "missing" in the result.',
+    'Walk to a container (a chest or similar, or Storage Drawers) and take items out (task); counts are exact. It ends as done even when there was not enough: check "missing" in the result.',
   inputSchema: obj(
     { container: pos('Position of the chest or drawers.'), items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue },
     ['container', 'items'],
@@ -350,7 +345,7 @@ export const withdrawItems: Tool = {
 export const haulItems: Tool = {
   name: 'haul_items',
   description:
-    'Carry items from one container to another, making as many trips as needed (task). Either end can be a chest (or similar storage block) or a Storage Drawers block. Without "items", moves everything in the source container. Your own inventory is not touched.',
+    'Carry items from one container to another (chests or similar, or Storage Drawers), in as many trips as it takes (task). Without "items": everything in the source. Your own inventory is not touched.',
   inputSchema: obj(
     {
       from: pos('Source container (chest or drawers).'),

@@ -48,6 +48,71 @@ export interface RecordedLlmRequest {
 
 export type Responder = (req: RecordedLlmRequest) => MockReply
 
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+/** 一张图的内容对不对：base64 能解、文件头和它声称的类型对得上。真实接口对不上时回 400（“Could not process image”）。 */
+function checkImage(mediaType: unknown, data: unknown): string | undefined {
+  if (typeof mediaType !== 'string' || !IMAGE_TYPES.includes(mediaType)) return `unsupported image media type ${String(mediaType)}`
+  if (typeof data !== 'string' || data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return 'image data is not valid base64'
+  const bytes = Buffer.from(data, 'base64')
+  const png = bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8
+  if ((mediaType === 'image/png' && !png) || (mediaType === 'image/jpeg' && !jpeg)) return 'Could not process image'
+  return undefined
+}
+
+const DATA_URL = /^data:([a-z]+\/[a-z0-9.+-]+);base64,(.*)$/s
+
+/** OpenAI 的一条消息内容：字符串，或者一组分段（文字、图片）。图片只有 user 消息能带。 */
+function checkOpenAiContent(m: any, i: number): string | undefined {
+  if (!Array.isArray(m.content)) return undefined
+  if (m.content.length === 0) return `messages.${i}: content must not be an empty array`
+  for (const part of m.content) {
+    if (part?.type === 'text') {
+      if (typeof part.text !== 'string' || part.text.length === 0) return `messages.${i}: text content parts must not be empty`
+    } else if (part?.type === 'image_url') {
+      if (m.role !== 'user') return `messages.${i}: image_url content parts are only allowed in messages with the user role`
+      const url = part.image_url?.url
+      const data = typeof url === 'string' ? DATA_URL.exec(url) : null
+      if (!data) return `messages.${i}: image_url.url must be a data URL (this mock does not fetch remote images)`
+      const bad = checkImage(data[1], data[2])
+      if (bad) return `messages.${i}: ${bad}`
+    } else {
+      return `messages.${i}: unknown content part type ${String(part?.type)}`
+    }
+  }
+  return undefined
+}
+
+/** Anthropic 的一个图片块。 */
+function checkAnthropicImage(block: any, where: string): string | undefined {
+  const source = block.source
+  if (source?.type !== 'base64') return `${where}: image.source.type must be base64 (this mock does not fetch remote images)`
+  const bad = checkImage(source.media_type, source.data)
+  return bad ? `${where}: ${bad}` : undefined
+}
+
+/** 一次请求里带的全部图片（两种线格式都认）：类型和文件内容。 */
+export function imagesInRequest(req: RecordedLlmRequest): { mediaType: string; bytes: Buffer }[] {
+  const out: { mediaType: string; bytes: Buffer }[] = []
+  const messages: any[] = Array.isArray(req.body?.messages) ? req.body.messages : []
+  const anthropic = (block: any): void => {
+    if (block?.type === 'image' && block.source?.type === 'base64') out.push({ mediaType: block.source.media_type, bytes: Buffer.from(block.source.data, 'base64') })
+    if (block?.type === 'tool_result' && Array.isArray(block.content)) block.content.forEach(anthropic)
+  }
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue
+    for (const part of m.content) {
+      if (req.api === 'anthropic') anthropic(part)
+      else if (part?.type === 'image_url') {
+        const data = DATA_URL.exec(part.image_url?.url ?? '')
+        if (data) out.push({ mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') })
+      }
+    }
+  }
+  return out
+}
+
 /**
  * 像真实接口那样检查请求里的消息格式；不合规时返回原因（真实接口会回 400）。
  * 只查会让真实接口拒绝请求的那几条：角色顺序、工具调用和结果的配对、空内容。
@@ -67,6 +132,26 @@ export function validateRequest(api: 'openai' | 'anthropic', body: any): string 
       const blocks: any[] = Array.isArray(m.content) ? m.content : [{ type: 'text', text: m.content }]
       if (blocks.length === 0) return `messages.${i}: content must not be empty`
       for (const b of blocks) if (b.type === 'text' && (typeof b.text !== 'string' || b.text.trim().length === 0)) return `messages.${i}: text content blocks must contain non-whitespace text`
+      for (const b of blocks) {
+        if (b.type === 'image') {
+          if (m.role !== 'user') return `messages.${i}: image blocks are only allowed in user messages`
+          const bad = checkAnthropicImage(b, `messages.${i}`)
+          if (bad) return bad
+        }
+        // tool_result 的内容：一个字符串，或者一组文字块和图片块
+        if (b.type === 'tool_result' && Array.isArray(b.content)) {
+          for (const inner of b.content) {
+            if (inner?.type === 'text') {
+              if (typeof inner.text !== 'string' || inner.text.trim().length === 0) return `messages.${i}: text blocks in a tool_result must contain non-whitespace text`
+            } else if (inner?.type === 'image') {
+              const bad = checkAnthropicImage(inner, `messages.${i}.tool_result`)
+              if (bad) return bad
+            } else {
+              return `messages.${i}: a tool_result may only contain text and image blocks`
+            }
+          }
+        }
+      }
       if (m.role === 'assistant') {
         if (pending.length > 0) return `messages.${i}: tool_use ids ${pending.join(', ')} were not followed by tool_result blocks`
         pending = blocks.filter((b) => b.type === 'tool_use').map((b) => b.id)
@@ -87,6 +172,8 @@ export function validateRequest(api: 'openai' | 'anthropic', body: any): string 
   let pending: string[] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
+    const badContent = checkOpenAiContent(m, i)
+    if (badContent) return badContent
     if (m.role === 'tool') {
       if (!pending.includes(m.tool_call_id)) return `messages.${i}: a tool message must follow an assistant message with a matching tool_call (${m.tool_call_id})`
       pending = pending.filter((id) => id !== m.tool_call_id)
@@ -122,6 +209,13 @@ export class MockLlm {
   strict = true
   /** 被拒绝的请求和原因。 */
   readonly rejected: { api: string; reason: string }[] = []
+  /**
+   * “列出模型”接口（GET …/models）回什么：一个列表，或者一个错误。两种线格式共用这一份，
+   * 按请求带没带 anthropic-version 头决定回哪家的形状。
+   */
+  modelList: { id: string; displayName?: string }[] | { status: number; message: string; rawBody?: string } = [{ id: 'gpt-mock' }, { id: 'claude-mock', displayName: 'Claude Mock' }]
+  /** 收到的“列出模型”请求：路径、查询串和请求头。 */
+  readonly modelListRequests: { path: string; query: string; headers: http.IncomingHttpHeaders }[] = []
   private readonly script: (MockReply | Responder)[] = []
   private server: http.Server | undefined
   private callId = 1
@@ -175,6 +269,10 @@ export class MockLlm {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const path = (req.url ?? '').split('?')[0] ?? ''
+    if (req.method === 'GET' && path.endsWith('/models')) {
+      this.listModels(req, res, path)
+      return
+    }
     const api = path.endsWith('/chat/completions') ? 'openai' : path.endsWith('/messages') ? 'anthropic' : undefined
     if (req.method !== 'POST' || !api) {
       res.writeHead(404, { 'content-type': 'application/json' })
@@ -224,6 +322,26 @@ export class MockLlm {
     }
     res.writeHead(200, headers)
     res.end(JSON.stringify(api === 'openai' ? this.openaiBody(record, reply) : this.anthropicBody(record, reply)))
+  }
+
+  /** GET …/models：OpenAI 回 {object:'list', data:[{id}]}；Anthropic 回 {data:[{id, display_name}], has_more}。 */
+  private listModels(req: http.IncomingMessage, res: http.ServerResponse, path: string): void {
+    const anthropic = req.headers['anthropic-version'] !== undefined
+    this.modelListRequests.push({ path, query: (req.url ?? '').split('?')[1] ?? '', headers: req.headers })
+    const list = this.modelList
+    if (!Array.isArray(list)) {
+      res.writeHead(list.status, { 'content-type': 'application/json' })
+      res.end(list.rawBody ?? JSON.stringify(anthropic ? { type: 'error', error: { type: 'not_found_error', message: list.message } } : { error: { message: list.message, type: 'invalid_request_error', code: null } }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify(
+        anthropic
+          ? { data: list.map((m) => ({ type: 'model', id: m.id, display_name: m.displayName ?? m.id, created_at: '2026-01-01T00:00:00Z' })), has_more: false, first_id: list[0]?.id ?? null, last_id: list.at(-1)?.id ?? null }
+          : { object: 'list', data: list.map((m) => ({ id: m.id, object: 'model', created: 1_700_000_000, owned_by: 'mock' })) },
+      ),
+    )
   }
 
   private openaiBody(req: RecordedLlmRequest, reply: MockReply): unknown {
@@ -285,6 +403,11 @@ function lastUserTurn(req: RecordedLlmRequest): { text: string; afterTool: boole
   const last = messages[messages.length - 1]
   if (!last) return { text: '', afterTool: false }
   if (req.api === 'openai') {
+    // 工具结果带图时，图在紧跟着的一条 user 消息里（内容是分段的）
+    if (Array.isArray(last.content)) {
+      const text = last.content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
+      return { text, afterTool: messages[messages.length - 2]?.role === 'tool' }
+    }
     return { text: typeof last.content === 'string' ? last.content : '', afterTool: last.role === 'tool' }
   }
   const blocks: any[] = Array.isArray(last.content) ? last.content : []

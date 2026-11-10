@@ -14,7 +14,8 @@ Wants=network-online.target
 Type=simple
 # %h 是用户的家目录。仓库不在这个位置时改这两行。
 WorkingDirectory=%h/workshop/alu_gtnh_aiplayer/brain
-ExecStart=%h/.nvm/versions/node/v24.22.1/bin/node src/main.ts
+# --disable-sigusr1：不让别的进程用信号把它的调试口打开（它跑程序的沙箱和它是同一个用户，见 docs/SCRIPTS.md）。
+ExecStart=%h/.nvm/versions/node/v24.22.1/bin/node --disable-sigusr1 src/main.ts
 
 # ── 连哪个游戏（必填）──
 # 身体（mod）的 bridge 端口：正式服是 25590（游戏服务器 config/aiplayer/aiplayer.json 的 bridgePort）。
@@ -29,6 +30,8 @@ Environment=AIPLAYER_DATA_DIR=%h/workshop/alu_gtnh_aiplayer/brain/data
 # 0.0.0.0 = 局域网里的其他电脑也能打开面板（要口令）；只想本机访问就改成 127.0.0.1。
 Environment=AIPLAYER_PANEL_HOST=0.0.0.0
 Environment=AIPLAYER_PANEL_PORT=28765
+# 本地资料（任务书等，tools/make-packdata.py 生成）默认在 brain/packdata；放在别处时取消注释。
+#Environment=AIPLAYER_PACKDATA=%h/workshop/alu_gtnh_aiplayer/brain/packdata
 
 # ── 模型接口要走代理时取消注释 ──
 #Environment=NODE_USE_ENV_PROXY=1

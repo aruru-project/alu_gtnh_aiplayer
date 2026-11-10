@@ -4,7 +4,9 @@ import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
 import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
-import { craftItem, findInStorage, findItem, findMachines, findRecipes, processItems } from './crafting.ts'
+import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
+import { deleteDraft, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
+import { reportProblem } from './feedback.ts'
 import { clip } from './format.ts'
 import { listManuals, readManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
@@ -13,13 +15,14 @@ import {
   getPlayerPosition,
   getStatus,
   inspectBlock,
-  listContainers,
   lookAround,
   probeBlock,
   scanArea,
 } from './observe.ts'
+import { viewArea, viewImage } from './pictures.ts'
 import { findQuests, getQuest, listQuestLines } from './quests.ts'
 import { validate } from './schema.ts'
+import { listContainers, listDrawers, listStock } from './storage.ts'
 import {
   cancelTask,
   clearArea,
@@ -44,7 +47,9 @@ import {
 import { ToolFailure } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
-export type { ManualAccess, MemoryAccess, ReminderAccess, Tool, ToolContext, ToolHooks, ToolResult } from './types.ts'
+export type { FeedbackAccess, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, RoutineAccess, Tool, ToolContext, ToolHooks, ToolImage, ToolResult } from './types.ts'
+export { QuestProgressCache } from './quest-progress.ts'
+export { SurroundingsCache } from './recipe-book.ts'
 
 export const ALL_TOOLS: readonly Tool[] = [
   say,
@@ -52,10 +57,13 @@ export const ALL_TOOLS: readonly Tool[] = [
   getStatus,
   lookAround,
   scanArea,
+  viewArea,
   inspectBlock,
   probeBlock,
   findBlocks,
   listContainers,
+  listDrawers,
+  listStock,
   getPlayerPosition,
   goTo,
   goToPlayer,
@@ -72,6 +80,16 @@ export const ALL_TOOLS: readonly Tool[] = [
   listBlueprints,
   checkBlueprint,
   buildBlueprint,
+  runProgramTool,
+  startRoutine,
+  routineStatus,
+  stopRoutine,
+  listImages,
+  viewImage,
+  listDrafts,
+  viewDraft,
+  publishDraft,
+  deleteDraft,
   depositItems,
   withdrawItems,
   haulItems,
@@ -79,6 +97,7 @@ export const ALL_TOOLS: readonly Tool[] = [
   giveItems,
   findItem,
   findRecipes,
+  findUses,
   findInStorage,
   findMachines,
   craftItem,
@@ -93,6 +112,38 @@ export const ALL_TOOLS: readonly Tool[] = [
   setReminder,
   listManuals,
   readManual,
+  reportProblem,
+]
+
+/**
+ * 只看不动的工具：run_program 的程序里可以调（它在模型的这一轮里跑完，不能去开任务）。
+ * 会开任务、说话、改记忆的不在里面：那些要用 start_routine（后台例程）。
+ */
+export const QUERY_TOOLS: readonly string[] = [
+  'get_status',
+  'look_around',
+  'scan_area',
+  'inspect_block',
+  'probe_block',
+  'find_blocks',
+  'list_containers',
+  'list_drawers',
+  'list_stock',
+  'get_player_position',
+  'list_homes',
+  'list_blueprints',
+  'check_blueprint',
+  'list_images',
+  'list_drafts',
+  'find_item',
+  'find_recipes',
+  'find_uses',
+  'find_in_storage',
+  'find_machines',
+  'list_quest_lines',
+  'find_quests',
+  'get_quest',
+  'task_status',
 ]
 
 export function toToolSpecs(tools: readonly Tool[]): ToolSpec[] {
@@ -152,7 +203,10 @@ export async function runTool(
     const raw = await tool.run(ctx, checked.value)
     const result: ToolResult = typeof raw === 'string' ? { content: raw } : raw
     const content = result.keepWhole ? result.content : clip(result.content, max)
-    return result.isError ? { content, isError: true } : { content }
+    const out: ToolResult = result.isError ? { content, isError: true } : { content }
+    if (result.images && result.images.length > 0) out.images = result.images
+    if (result.data !== undefined) out.data = result.data
+    return out
   } catch (e) {
     if (e instanceof ToolFailure) return { content: e.message, isError: true }
     if (e instanceof BridgeError) {

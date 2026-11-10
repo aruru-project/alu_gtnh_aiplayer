@@ -159,6 +159,27 @@ export interface ScanResult {
   tileEntities?: { x: number; y: number; z: number; id: string }[]
 }
 
+/**
+ * world.blocks：一个盒子里每一格是什么方块（给简图用）。每边最多 64 格。
+ * 格子的顺序是 x 最快，其次 z，最后 y：第 (x, y, z) 格（相对最小角）的下标是 (y * sz + z) * sx + x。
+ */
+export interface WorldBlocks {
+  /** 盒子的最小角。 */
+  x: number
+  y: number
+  z: number
+  /** 各边的格数。 */
+  sx: number
+  sy: number
+  sz: number
+  /** 0 号永远是空气。没加载的区块里的格子记成 id 为 "?" 的一项。 */
+  palette: { id: string; meta?: number }[]
+  /** 调色板下标和连续个数交替：[下标, 几格, 下标, 几格, ……]。 */
+  runs: number[]
+  /** 没加载的区块里的格数。 */
+  unloaded?: number
+}
+
 export interface FindMatch {
   x: number
   y: number
@@ -166,6 +187,16 @@ export interface FindMatch {
   id: string
   meta?: number
   dist?: number
+}
+
+/** 紧挨着一个容器、会自己往里送或往外抽东西的方块（漏斗、管道）。 */
+export interface AttachedBlock {
+  x: number
+  y: number
+  z: number
+  name?: string
+  /** hopper、item pipe、fluid pipe、pipe（其他 mod 的管道类）。 */
+  kind?: string
 }
 
 export interface ContainerInfo {
@@ -176,9 +207,75 @@ export interface ContainerInfo {
   name?: string
   slots?: number
   usedSlots?: number
+  /** 按物品合并，最多列 60 种；还有没列的时带 moreKinds。 */
   items?: Item[]
-  /** 抽屉（Storage Drawers）是 "drawers"：items 的 count 是抽屉里真实的数量，slots 是抽屉格数。普通箱子没有这一项。 */
-  kind?: 'drawers' | (string & {})
+  moreKinds?: number
+  /**
+   * 没有：普通容器。"drawers"：抽屉（Storage Drawers），items 的 count 是抽屉里真实的数量，slots 是抽屉格数。
+   * "drawer_controller"：抽屉管理器，自己不装东西，drawers 是它管着几个抽屉方块。"machine"：GregTech 机器。
+   */
+  kind?: 'drawers' | 'drawer_controller' | 'machine' | (string & {})
+  drawers?: number
+  /** 有这一项的容器多半是自动化的一环：往里放的东西可能马上被抽走。 */
+  attached?: AttachedBlock[]
+  /** 抽屉：管着它的抽屉管理器。 */
+  controller?: BlockPos
+}
+
+/** world.drawers 里的一格。 */
+export interface DrawerSlot {
+  x: number
+  y: number
+  z: number
+  slot: number
+  /** 没指定物品的空格。 */
+  empty?: boolean
+  id?: string
+  meta?: number
+  name?: string
+  count?: number
+  /** 还放得下多少。 */
+  room?: number
+}
+
+export interface DrawersResult {
+  controller?: BlockPos
+  /** 抽屉方块数。 */
+  drawers?: number
+  slotsTotal?: number
+  slotsUsed?: number
+  slots?: DrawerSlot[]
+  /** 符合条件的格数；slots 是其中从 offset 起的一页。 */
+  total?: number
+  offset?: number
+}
+
+/** 一个玩家站在哪、朝哪看、指着什么（world.player 的结果，也是 chat / whisper 事件里的 speaker）。 */
+export interface PlayerView {
+  dim?: number
+  pos?: Vec3
+  block?: BlockPos
+  yaw?: number
+  pitch?: number
+  /** north / south / east / west；抬头或低头超过 60 度时是 up / down。 */
+  facing?: string
+  /** 准星指着的方块，48 格内。 */
+  lookingAt?: SeenBlock & { side?: string }
+  /** 面前 12 格内、视野中央的容器，最正对、最近的在前，最多 6 个。 */
+  ahead?: SeenBlock[]
+}
+
+export interface SeenBlock {
+  x: number
+  y: number
+  z: number
+  id?: string
+  meta?: number
+  name?: string
+  /** container、drawers、drawer_controller、machine；都不是就不带。 */
+  kind?: string
+  dist?: number
+  attached?: AttachedBlock[]
 }
 
 // ── 物品、配方、库存 ──
@@ -252,16 +349,54 @@ export interface RecipeFindResult {
   total?: { crafting?: number; machines?: number; smelting?: number }
 }
 
+/** 多方块机器的一个总线或仓。 */
+export interface MachineHatch {
+  x: number
+  y: number
+  z: number
+  name?: string
+  kind?: string
+  slots?: number
+  usedSlots?: number
+  /** 输入总线上设的编程电路。 */
+  circuit?: number
+  attached?: AttachedBlock[]
+  /** 输出总线不留东西时，东西会到这些箱子里。 */
+  passesTo?: { x: number; y: number; z: number; name?: string }[]
+  capacity?: number
+  fluid?: string
+  fluidName?: string
+  amount?: number
+}
+
 /**
- * world.machines 的一台 GregTech 单方块加工机器。读不出状态的只有坐标、名字和 unreadable。
- * recipes 是它跑哪种配方，和 recipe.find 里机器配方的 machine 同名（如 Lathe）。
+ * world.machines 的一台 GregTech 加工机器：单方块的，或者多方块机器的主机（kind 为 "multiblock"）。
+ * 读不出状态的只有坐标、名字和 unreadable。
+ * id + meta 是这台机器作为物品时的那一对，和配方册里配方页的 machines 可以直接比对；recipeKey 是它跑的配方在配方册里的页。
  */
 export interface MachineInfo {
   x: number
   y: number
   z: number
   name?: string
+  id?: string
+  meta?: number
+  /** 它跑哪种配方（英文，如 Lathe）。 */
   recipes?: string
+  recipeKey?: string
+  /** 现在设的编程电路。 */
+  circuit?: number
+  kind?: 'multiblock' | (string & {})
+  /** 多方块：结构完整。false 时用不了。 */
+  formed?: boolean
+  /** 高炉一类：线圈给的炉温，配方的 special 不能超过它。 */
+  heat?: number
+  /** 多方块没在干活时，机器界面上说的原因（英文）。 */
+  idleReason?: string
+  inputBuses?: MachineHatch[]
+  outputBuses?: MachineHatch[]
+  inputHatches?: MachineHatch[]
+  outputHatches?: MachineHatch[]
   /** 机器的等级；要不低于配方的 tier。 */
   tier?: string
   inputSlots?: number
@@ -360,6 +495,18 @@ export interface QuestDetail {
   requires?: { id: string; name: string; complete?: boolean }[]
   tasks?: QuestTask[]
   rewards?: { type: string; items?: QuestItem[] }[]
+}
+
+/**
+ * quest.progress：一个玩家做完了哪些任务，其中哪些有奖励还没领。id 和上面是同一种写法。
+ * 玩家从没上过线时 completed 是空的，并带 known:false。
+ */
+export interface QuestProgress {
+  player: string
+  completed?: string[]
+  /** 已完成、有奖励、还没领的任务（completed 的子集）。 */
+  unclaimed?: string[]
+  known?: boolean
 }
 
 // ── 图纸 ──

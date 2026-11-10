@@ -1,10 +1,12 @@
+import { BridgeError } from '../bridge/protocol.ts'
 import type { BlockInfo, BlockPos } from '../bridge/protocol.ts'
 import {
   compactJson,
   dimName,
-  displayName,
+  nameOf,
   formatContainer,
   formatEntities,
+  formatPlayerView,
   formatPos,
   formatScan,
   formatStatus,
@@ -12,7 +14,7 @@ import {
 } from './format.ts'
 import { arr, int, obj, str } from './schema.ts'
 import { ToolFailure, fail } from './types.ts'
-import type { Tool, ToolContext } from './types.ts'
+import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 // 协议里各方法的上限
 export const SCAN_MAX_SIDE = 64
@@ -43,7 +45,7 @@ function describeBlock(pos: BlockPos, b: BlockInfo): string {
   }
   const flags = (['air', 'solid', 'liquid', 'replaceable', 'tileEntity', 'inventory'] as const).filter((k) => b[k] === true)
   let s = `${formatPos(pos)}: ${b.id}${b.meta ? `/${b.meta}` : ''}`
-  const name = displayName(b.name)
+  const name = nameOf(b, { block: true })
   if (name) s += ` "${name}"`
   if (flags.length > 0) s += ` [${flags.join(', ')}]`
   if (typeof b.hardness === 'number') s += ` hardness ${b.hardness}${b.hardness < 0 ? ' (unbreakable)' : ''}`
@@ -206,35 +208,27 @@ export const findBlocks: Tool = {
   },
 }
 
-export const listContainers: Tool = {
-  name: 'list_containers',
-  description: `Containers around you with their position and full contents, merged per item (radius at most ${CONTAINERS_MAX_RADIUS}): chests, barrels, Storage Drawers, machines with an inventory. Drawers are marked [drawers] and their counts are what is really stored (one slot can hold thousands). Chests and drawers listed here can be given to deposit_items, withdraw_items and haul_items, and as supply or dropoff. Use this whenever you are unsure whether something is a container or what it holds.`,
-  inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }) }),
-  async run(ctx, input: { radius?: number }) {
-    const radius = input.radius ?? 16
-    const res = await ctx.bridge.worldContainers({ bot: ctx.botName }, { radius })
-    const list = res.containers ?? []
-    if (list.length === 0) return `No containers within ${radius} blocks of you.`
-    const total = res.total ?? list.length
-    const lines = list.slice(0, 24).map((c) => `- ${formatContainer(c, 30)}`)
-    if (total > lines.length) lines.push(`- … ${total - lines.length} more not shown; use a smaller radius`)
-    return `${total} container(s) within ${radius} blocks:\n${lines.join('\n')}`
-  },
-}
-
 export const getPlayerPosition: Tool = {
   name: 'get_player_position',
-  description: 'Where an online player is (dimension and block position).',
+  description:
+    'Where an online player stands, which way they face, what block their crosshair is on, and the containers in front of them. Use it when your owner says "this", "that chest", "in front of me" and the message did not already say what they were pointing at.',
   inputSchema: obj({ player: str('Player name.') }, ['player']),
-  async run(ctx, input: { player: string }) {
-    const info = await ctx.bridge.serverInfo()
-    const players = info.players ?? []
-    const wanted = input.player.toLowerCase()
-    const p = players.find((x) => x.name.toLowerCase() === wanted)
-    if (!p) {
-      const names = players.map((x) => x.name).join(', ')
-      return fail(`${input.player} is not online. Online now: ${names || 'nobody'}`)
+  async run(ctx, input: { player: string }): Promise<ToolResult | string> {
+    try {
+      const view = await ctx.bridge.worldPlayer(input.player)
+      return { content: formatPlayerView(view.name ?? input.player, view), data: view }
+    } catch (e) {
+      // 老的身体没有 world.player：退回去只说位置
+      if (!(e instanceof BridgeError) || (e.code !== 'unknown_method' && e.code !== 'not_found')) throw e
+      const info = await ctx.bridge.serverInfo()
+      const players = info.players ?? []
+      const wanted = input.player.toLowerCase()
+      const p = players.find((x) => x.name.toLowerCase() === wanted)
+      if (!p) {
+        const names = players.map((x) => x.name).join(', ')
+        return fail(`${input.player} is not online. Online now: ${names || 'nobody'}`)
+      }
+      return `${p.name} is in ${dimName(p.dim)} at ${formatPos(p.pos)}.`
     }
-    return `${p.name} is in ${dimName(p.dim)} at ${formatPos(p.pos)}.`
   },
 }

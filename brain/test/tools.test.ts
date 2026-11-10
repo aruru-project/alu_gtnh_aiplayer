@@ -61,15 +61,17 @@ function setup(t: { after(fn: () => void): void }) {
 describe('工具清单', () => {
   it('规格里列出的第一版工具都在，名字不重复，参数 schema 都是对象', () => {
     const expected = [
-      'say', 'whisper', 'get_status', 'look_around', 'scan_area', 'inspect_block', 'probe_block', 'find_blocks', 'list_containers',
+      'say', 'whisper', 'get_status', 'look_around', 'scan_area', 'view_area', 'inspect_block', 'probe_block', 'find_blocks', 'list_containers', 'list_drawers', 'list_stock',
       'get_player_position', 'go_to', 'go_to_player', 'follow_player', 'go_home', 'set_home', 'list_homes', 'join_team',
       'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
       'list_blueprints', 'check_blueprint', 'build_blueprint',
+      'run_program', 'start_routine', 'routine_status', 'stop_routine', 'list_images', 'view_image', 'list_drafts', 'view_draft', 'publish_draft', 'delete_draft',
       'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items',
-      'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
+      'find_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
       'list_quest_lines', 'find_quests', 'get_quest',
       'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
       'list_manuals', 'read_manual',
+      'report_problem',
     ]
     const names = ALL_TOOLS.map((x) => x.name)
     assert.deepEqual([...names].sort(), [...expected].sort())
@@ -320,7 +322,8 @@ describe('观察', () => {
     assert.deepEqual(s.game.callsOf('world.find')[0], { bot: 'Alu', blocks: ['minecraft:chest'], radius: 48, limit: 32 })
     const boxes = await s.run('list_containers')
     assert.match(boxes.content, /\(-47,99,-83\) Chest \[minecraft:chest\] 2\/27 slots used: 27× minecraft:dirt "Dirt"/)
-    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16 })
+    // 一页一页要：从头起的 20 个
+    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16, offset: 0, limit: 20 })
     // 一次 bot.status 都没多查
     assert.equal(s.game.callsOf('bot.status').length, 0)
   })
@@ -905,11 +908,11 @@ describe('物品、配方、库存、合成', () => {
       /^- Fluid Solidifier, ULV \(8 EU\/t\), 1\.6 s: gregtech:gt\.metaitem\.01\/32307 "Mold \(Screw\)" \(stays in the machine, not used up\) \+ 18 mB Molten Steel -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw"$/m,
     )
     assert.match(text, /^- Fluid Solidifier, LV \(24 EU\/t\), 0\.8 s: .* -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw" \+ 40 mB Steam$/m)
-    assert.match(text, /^Machine recipes per machine: Lathe 1, Fluid Solidifier 3\. 3 of 4 shown; give "machine" to see the recipes of one machine\.$/m)
+    assert.match(text, /^Machine recipes per machine: Lathe 1, Fluid Solidifier 3\. 3 of 4 shown; give "way" \(a machine name\) to see the recipes of one machine\.$/m)
     assert.match(text, /^Furnace: smelted from 1× gregtech:gt\.metaitem\.01\/2305 "Steel Dust"\.$/m)
 
     // 只看某一种机器的
-    await s.run('find_recipes', { id: GT, meta: 27305, machine: 'Fluid Solidifier' })
+    await s.run('find_recipes', { id: GT, meta: 27305, way: 'Fluid Solidifier' })
     assert.deepEqual(s.game.callsOf('recipe.find')[1], { id: GT, meta: 27305, machine: 'Fluid Solidifier', bot: 'Alu' })
   })
 
@@ -1023,7 +1026,7 @@ describe('物品、配方、库存、合成', () => {
     // 以 bot 为中心
     assert.deepEqual(s.game.callsOf('world.machines'), [{ bot: 'Alu', radius: 32 }])
     const lines = res.content.split('\n')
-    assert.match(lines[0]!, /^4 single-block machine\(s\) within 32 blocks of you \(9 in range, the nearest 4 shown\), nearest first\./)
+    assert.match(lines[0]!, /^4 GregTech machine\(s\) within 32 blocks of you \(9 in range, the nearest 4 shown: give "name" or a smaller radius to see the others\), nearest first\./)
     assert.deepEqual(lines.slice(1), [
       '- (-40,99,-80) "Advanced Lathe": runs Lathe recipes, tier MV, has power (51200 EU stored), idle, 5 blocks away',
       '- (-38,99,-80) "Basic Assembling Machine": runs Assembler recipes, tier LV, NO POWER (0 EU stored), idle, 7 blocks away',
@@ -1033,8 +1036,8 @@ describe('物品、配方、库存、合成', () => {
 
     const none = await s.run('find_machines', { name: ' Centrifuge ', radius: 48, limit: 5 })
     assert.deepEqual(s.game.callsOf('world.machines')[1], { bot: 'Alu', radius: 48, name: 'Centrifuge', limit: 5 })
-    assert.match(none.content, /^No GregTech single-block machine whose name or recipe type contains "Centrifuge" within 48 blocks of you/)
-    assert.match(none.content, /Multiblock machines, steam machines and machines of other mods are never listed and cannot be used\./)
+    assert.match(none.content, /^No GregTech machine whose name or recipe type contains "Centrifuge" within 48 blocks of you/)
+    assert.match(none.content, /Steam machines and machines of other mods are never listed and cannot be used\./)
   })
 
   it('process_items 启动 process 任务：哪台机器、放进去什么（含不消耗的编程电路）、最多等多久；原料没写数量的不发出去', async (t) => {
@@ -1126,7 +1129,8 @@ describe('手册', () => {
   })
 })
 
-describe('任务书', () => {
+// 本地没有任务书资料时的退路：整件事问服务器（英文）。读本地资料的那条正路在 packdata.test.ts。
+describe('任务书（本地没有资料，问服务器）', () => {
   it('list_quest_lines：每章的总数、主人已完成的和现在能做的', async (t) => {
     const s = setup(t)
     s.who.defaultPlayer = 'Steve'
@@ -1165,10 +1169,20 @@ describe('任务书', () => {
     await s.run('find_quests', { query: ' electric motor ', line: 'Steam', state: 'complete', player: 'Alex', limit: 40 })
     assert.deepEqual(s.game.callsOf('quest.search')[1], { query: 'electric motor', line: 'Steam', state: 'complete', player: 'Alex', limit: 40 })
 
-    // 搜不到，而且用的是中文词：任务书是英文的
+    // 搜不到，而且用的是中文词：这条退路上搜的是服务器那本英文的任务书
     s.game.handlers['quest.search'] = () => ({ quests: [], total: 0 })
     const none = await s.run('find_quests', { query: '电动马达' })
-    assert.match(none.content, /No quest matches \(words "电动马达"\) for Steve\. The quest book is in English/)
+    assert.match(none.content, /No quest matches \(words "电动马达"\) for Steve\. The local quest book data is not loaded, so this search ran on the game server, whose quest book is in English: search with English words\./)
+    // 服务器那边只给前几个，翻不了页
+    const paged = await s.run('find_quests', { state: 'available', page: 2 })
+    assert.equal(paged.isError, true)
+    assert.match(paged.content, /Pages are not available: the local quest book data is not loaded/)
+    assert.equal(s.game.callsOf('quest.search').length, 3)
+    // 服务器只会按三种状态筛；“奖励没领”的要本地资料
+    const unclaimed = await s.run('find_quests', { state: 'unclaimed' })
+    assert.equal(unclaimed.isError, true)
+    assert.match(unclaimed.content, /state "unclaimed" is not available: the local quest book data is not loaded/)
+    assert.equal(s.game.callsOf('quest.search').length, 3)
   })
 
   it('get_quest：说明、前置任务完成没、每个子任务要什么（类型、物品、是否收走、完成没）、奖励', async (t) => {

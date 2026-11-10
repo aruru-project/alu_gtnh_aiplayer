@@ -1,0 +1,15 @@
+// 简图渲染：把草稿或者世界里的一块地方按方块颜色画成 PNG。零依赖，纯软件画。
+
+export { AREA_MAX_SIDE, GridError, cropGrid, countKinds, gridFromBlocks, gridFromDraft, markerId, withMarkers } from './grid.ts'
+export type { GridBox, Marker, VoxelGrid } from './grid.ts'
+export { BlockLooks, MARKER_PREFIX, UNLOADED_ID, colorName, isAir, kindKey, stableColor } from './looks.ts'
+export type { BlockKind, BlockLook, LookSource, Shape } from './looks.ts'
+export { layerLines, legendLines } from './describe.ts'
+export type { NameOf } from './describe.ts'
+export { encodePng } from './png.ts'
+export { blocksOfGrid, sceneOf } from './scene.ts'
+export type { Scene, SceneKind, SceneOptions, StoredBlocks } from './scene.ts'
+export { Raster, shade } from './raster.ts'
+export type { RGB } from './raster.ts'
+export { CORNERS, DEPTH_SHADE, ISO_SHADE, PICTURE_MAX_SIZE, SIDES, legendLabel, legendOf, renderView } from './views.ts'
+export type { Corner, LegendEntry, Picture, RenderOptions, Side, ViewSpec } from './views.ts'

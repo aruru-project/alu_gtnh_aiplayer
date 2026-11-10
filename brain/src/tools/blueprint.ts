@@ -58,7 +58,7 @@ export const listBlueprints: Tool = {
 export const checkBlueprint: Tool = {
   name: 'check_blueprint',
   description:
-    'Compare the world with a blueprint set down at x, y, z, without changing anything: how much is already in place, which materials are needed and how many of each you carry, which blocks a player has to place by hand, and what is in the way (and what the clear list would dig out). Run it before build_blueprint, with the same arguments. The blueprint is not rotated or mirrored.',
+    'Compare the world with a blueprint set down at x, y, z, changing nothing: what is already in place, the materials needed and how many you carry, what a player must place by hand, and what is in the way. Run it before build_blueprint with the same arguments.',
   inputSchema: obj(placementProps, placementRequired),
   async run(ctx, i: BlueprintPlacement) {
     // 带上 bot：用它所在的维度，materials 里有它身上的数量
@@ -72,7 +72,7 @@ export const checkBlueprint: Tool = {
 export const buildBlueprint: Tool = {
   name: 'build_blueprint',
   description:
-    'Build what a blueprint draws (task): first digs out the blocks in the way that "clear" allows, from the top down, then places the blueprint blocks from the bottom up, fetching material from the supply containers when you run out. It places plain building blocks only: blocks with contents or a facing (chests, drawers, stairs, logs, torches, machines, pipes) are left for a player. Without "clear" nothing is dug and blocked spots are skipped. One task covers at most 64×64 columns: split a bigger blueprint with x1, x2, z1, z2 (and floors with y1, y2) and queue the parts. Re-running continues where it stopped. Run check_blueprint first.',
+    'Build what a blueprint draws (task): digs out what "clear" allows, then places the blueprint blocks from the bottom up, fetching material from "supply". Only plain building blocks are placed; blocks with contents or a facing are left for a player. At most 64×64 columns per task: split a bigger one with x1..z2 and queue the parts. Run check_blueprint first; details in the blueprint manual.',
   inputSchema: obj(
     {
       ...placementProps,

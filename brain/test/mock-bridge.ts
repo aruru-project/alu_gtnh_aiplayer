@@ -63,8 +63,10 @@ export interface MockContainer {
   name: string
   slots: number
   items: { id: string; meta: number; count: number; name: string }[]
-  /** 抽屉（Storage Drawers）是 "drawers"：count 是真实库存，slots 是抽屉格数。 */
-  kind?: 'drawers'
+  /** 抽屉（Storage Drawers）是 "drawers"：count 是真实库存，slots 是抽屉格数。"drawer_controller" 是抽屉管理器：自己不装东西，管着所有抽屉。 */
+  kind?: 'drawers' | 'drawer_controller'
+  /** 旁边接着的漏斗、管道（有的话这是个自动化的容器）。 */
+  attached?: { x: number; y: number; z: number; name: string; kind: string }[]
 }
 
 /** 假图纸。读得了的有尺寸和每一格是什么；读不了的只有名字和原因。 */
@@ -99,6 +101,10 @@ export interface MockMachine {
   name: string
   /** 跑哪种配方：和配方书里机器配方的 machine 是同一个词。 */
   recipes: string
+  /** 这台机器作为物品时的 id + meta，和它跑的配方在配方册里的页（和本地配方册比对用）。 */
+  id?: string
+  meta?: number
+  recipeKey?: string
   /** 机器的等级：ULV、LV、MV…… */
   tier: string
   inputSlots: number
@@ -382,11 +388,37 @@ export class MockBridge {
   }
 
   chat(player: string, message: string): number {
-    return this.emit('chat', { player, uuid: `uuid-${player.toLowerCase()}`, message, isBot: false })
+    const speaker = this.playerView(player)
+    return this.emit('chat', { player, uuid: `uuid-${player.toLowerCase()}`, message, isBot: false, ...(speaker ? { speaker } : {}) })
   }
 
   whisper(bot: string, from: string, message: string): number {
-    return this.emit('whisper', { bot, from, message })
+    const speaker = this.playerView(from)
+    return this.emit('whisper', { bot, from, message, ...(speaker ? { speaker } : {}) })
+  }
+
+  /**
+   * 一个在线玩家站在哪、朝哪看、指着什么（world.player 的结果，也是聊天事件里的 speaker）。
+   * 假世界里他总是面朝北，准星指着离他最近的那个容器，面前是最近的几个容器。
+   */
+  private playerView(name: string): Json | undefined {
+    const player = this.players.find((pl) => pl.name.toLowerCase() === name.toLowerCase())
+    if (!player) return undefined
+    const { pos } = player
+    const seen = this.containers
+      .map((c) => ({ x: c.x, y: c.y, z: c.z, id: c.id, meta: 3, name: c.name, kind: c.kind ?? 'container', dist: Math.round(Math.hypot(c.x - pos.x, c.y - pos.y, c.z - pos.z) * 10) / 10, ...(c.attached ? { attached: c.attached } : {}) }))
+      .filter((c) => c.dist <= 12)
+      .sort((a, b) => a.dist - b.dist)
+    return {
+      dim: player.dim,
+      pos,
+      block: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) },
+      yaw: 180,
+      pitch: 0,
+      facing: 'north',
+      ...(seen[0] ? { lookingAt: { ...seen[0], side: 'south' } } : {}),
+      ahead: seen.slice(0, 6),
+    }
   }
 
   addBot(name: string, online: boolean): MockBot {
@@ -733,6 +765,36 @@ export class MockBridge {
           tileEntities: this.containers.filter((c) => c.x >= x1 && c.x <= x2 && c.z >= z1 && c.z <= z2).map((c) => ({ x: c.x, y: c.y, z: c.z, id: c.id })),
         }
       }
+      case 'world.blocks': {
+        // 一个盒子里的全部方块：调色板加“下标, 连续几格”，x 最快、其次 z、最后 y；没加载的格子记成 {id:"?"}
+        const lo = (a: string, b: string): number => Math.min(this.num(p, a), this.num(p, b))
+        const hi = (a: string, b: string): number => Math.max(this.num(p, a), this.num(p, b))
+        const [x1, y1, z1, x2, y2, z2] = [lo('x1', 'x2'), lo('y1', 'y2'), lo('z1', 'z2'), hi('x1', 'x2'), hi('y1', 'y2'), hi('z1', 'z2')]
+        const [sx, sy, sz] = [x2 - x1 + 1, y2 - y1 + 1, z2 - z1 + 1]
+        if (sx > 64 || sy > 64 || sz > 64) throw new RpcError('too_large', 'at most 64 blocks along each side')
+        const palette: { id: string; meta?: number }[] = [{ id: 'minecraft:air', meta: 0 }]
+        const index = new Map<string, number>([['minecraft:air/0', 0]])
+        const runs: number[] = []
+        let unloaded = 0
+        for (let y = y1; y <= y2; y++) {
+          for (let z = z1; z <= z2; z++) {
+            for (let x = x1; x <= x2; x++) {
+              const block = this.blockAt(x, y, z) as { loaded?: boolean; id?: string; meta?: number }
+              const entry = block.loaded === false ? { id: '?' } : { id: block.id ?? 'minecraft:air', meta: block.meta ?? 0 }
+              if (block.loaded === false) unloaded++
+              const key = `${entry.id}/${entry.meta ?? ''}`
+              let at = index.get(key)
+              if (at === undefined) {
+                at = palette.push(entry) - 1
+                index.set(key, at)
+              }
+              if (runs.length > 0 && runs[runs.length - 2] === at) runs[runs.length - 1]!++
+              else runs.push(at, 1)
+            }
+          }
+        }
+        return { x: x1, y: y1, z: z1, sx, sy, sz, palette, runs, unloaded }
+      }
       case 'world.find': {
         const c = this.center(p)
         const wanted = Array.isArray(p.blocks) ? (p.blocks as string[]) : []
@@ -746,20 +808,67 @@ export class MockBridge {
         return { matches, total: matches.length }
       }
       case 'world.containers': {
-        this.center(p)
-        // 抽屉带 kind:"drawers"，普通箱子没有这一项
-        const containers = this.containers.map((c) => ({
-          x: c.x,
-          y: c.y,
-          z: c.z,
-          id: c.id,
-          name: c.name,
-          slots: c.slots,
-          usedSlots: c.items.length,
-          items: c.items,
-          ...(c.kind ? { kind: c.kind } : {}),
-        }))
-        return { containers, total: containers.length }
+        const c = this.center(p)
+        const offset = Math.max(0, typeof p.offset === 'number' ? p.offset : 0)
+        const limit = Math.max(1, Math.min(100, typeof p.limit === 'number' ? p.limit : 40))
+        const controller = this.containers.find((x) => x.kind === 'drawer_controller')
+        const drawers = this.containers.filter((x) => x.kind === 'drawers')
+        // 由近到远；抽屉带 kind:"drawers"，普通箱子没有这一项；抽屉管理器自己不装东西
+        const containers = [...this.containers]
+          .sort((a, b) => Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z) - Math.hypot(b.x - c.x, b.y - c.y, b.z - c.z))
+          .map((box) => ({
+            x: box.x,
+            y: box.y,
+            z: box.z,
+            id: box.id,
+            name: box.name,
+            slots: box.kind === 'drawer_controller' ? drawers.reduce((n, d) => n + d.slots, 0) : box.slots,
+            usedSlots: box.kind === 'drawer_controller' ? drawers.reduce((n, d) => n + d.items.length, 0) : box.items.length,
+            items: box.kind === 'drawer_controller' ? [] : box.items,
+            ...(box.kind ? { kind: box.kind } : {}),
+            ...(box.kind === 'drawer_controller' ? { drawers: drawers.length } : {}),
+            ...(box.kind === 'drawers' && controller ? { controller: { x: controller.x, y: controller.y, z: controller.z } } : {}),
+            ...(box.attached ? { attached: box.attached } : {}),
+          }))
+        // total 是范围里的总数，containers 只是从 offset 起的一页
+        return { containers: containers.slice(offset, offset + limit), total: containers.length, offset }
+      }
+      case 'world.drawers': {
+        // 一个抽屉管理器管着的全部抽屉，逐格列出；给的位置是普通抽屉时只有它自己
+        const at = { x: this.num(p, 'x'), y: this.num(p, 'y'), z: this.num(p, 'z') }
+        const here = this.containers.find((box) => box.x === at.x && box.y === at.y && box.z === at.z)
+        if (!here || (here.kind !== 'drawers' && here.kind !== 'drawer_controller')) throw new RpcError('bad_request', 'there are no drawers at that position')
+        const managed = here.kind === 'drawer_controller' ? this.containers.filter((box) => box.kind === 'drawers') : [here]
+        const below = typeof p.below === 'number' ? p.below : undefined
+        const slots: Json[] = []
+        let slotsTotal = 0
+        let slotsUsed = 0
+        for (const box of managed) {
+          slotsTotal += box.slots
+          slotsUsed += box.items.length
+          box.items.forEach((item, slot) => {
+            if (below === undefined || item.count < below) slots.push({ x: box.x, y: box.y, z: box.z, slot, id: item.id, meta: item.meta, name: item.name, count: item.count, room: Math.max(0, 2048 - item.count) })
+          })
+          // 没指定物品的空格（只在不筛数量时列）
+          if (below === undefined) for (let slot = box.items.length; slot < box.slots; slot++) slots.push({ x: box.x, y: box.y, z: box.z, slot, empty: true })
+        }
+        const offset = Math.max(0, typeof p.offset === 'number' ? p.offset : 0)
+        const limit = Math.max(1, Math.min(500, typeof p.limit === 'number' ? p.limit : 200))
+        return {
+          ...(here.kind === 'drawer_controller' ? { controller: at } : {}),
+          drawers: managed.length,
+          slotsTotal,
+          slotsUsed,
+          slots: slots.slice(offset, offset + limit),
+          total: slots.length,
+          offset,
+        }
+      }
+      case 'world.player': {
+        const name = String(p.name ?? '')
+        const view = this.playerView(name)
+        if (!view) throw new RpcError('not_found', `player ${name} is not online`)
+        return { name: this.players.find((pl) => pl.name.toLowerCase() === name.toLowerCase())!.name, isBot: false, ...view }
       }
       case 'item.search': {
         this.requireRecipes()
@@ -872,6 +981,20 @@ export class MockBridge {
           }
         })
         return { items, containersLookedInto: near.length }
+      }
+      case 'quest.progress': {
+        // 谁做完了哪些任务。任务的内容大脑自己有（本地资料），所以这里只有 id。
+        this.quests()
+        if (typeof p.player !== 'string' || p.player.length === 0) throw new RpcError('bad_request', 'missing or non-text field: player')
+        const key = p.player.toLowerCase()
+        const known = this.questProgress.get(key)
+        const online = this.players.some((pl) => pl.name.toLowerCase() === key) || [...this.bots.values()].some((b) => b.online && b.name.toLowerCase() === key)
+        // 从没上过线的玩家不是错误：没有做完的任务，并带 known:false
+        if (!known && !online) return { player: p.player, completed: [], known: false }
+        const completed = [...(known?.complete ?? [])]
+        // 做完了、有奖励、还没领的
+        const withReward = new Set(this.quests().filter((q) => q.rewards.length > 0).map((q) => q.id))
+        return { player: p.player, completed, unclaimed: completed.filter((id) => withReward.has(id) && !known?.claimed.has(id)) }
       }
       case 'quest.lines': {
         const book = this.quests()
@@ -1165,7 +1288,11 @@ export class MockBridge {
       if (inputs.length === 0 || inputs.length > 9) throw new RpcError('bad_request', 'inputs must list 1 to 9 items')
       if (inputs.some((i) => typeof i.count !== 'number' || i.count <= 0)) throw new RpcError('bad_request', 'each input needs a count')
     }
-    if (type === 'craft' && !this.recipeBook.some((e) => e.id === spec.id)) {
+    if (type === 'craft' && spec.grid !== undefined) {
+      // 调用方把摆法说出来的写法：3×3 一行一行数的 9 格
+      if (!Array.isArray(spec.grid) || spec.grid.length !== 9) throw new RpcError('bad_request', 'grid must list the 9 cells of a 3x3 grid, row by row')
+      if (spec.grid.every((cell) => cell === null)) throw new RpcError('bad_request', 'the grid is empty')
+    } else if (type === 'craft' && !this.recipeBook.some((e) => e.id === spec.id)) {
       throw new RpcError('bad_request', `unknown item id: ${String(spec.id)}`)
     }
     if (type === 'blueprint') {
@@ -1473,8 +1600,59 @@ export class MockBridge {
     return { entry, recipe, rounds }
   }
 
+  /**
+   * craft 任务的 grid 写法：调用方说每一格放什么（{id, meta?}、{ore} 或 null），做 rounds 轮。
+   * 摆好以后出什么由“游戏”说了算：这里是看这些原料凑不凑得出 gives 那个物品的某条合成配方；凑不出就失败，材料不动。
+   */
+  private craftGrid(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+    const p = task.params
+    const cells = (p.grid as (Json | null)[]).map((cell, g) => ({ cell, g })).filter((c): c is { cell: Json; g: number } => c.cell !== null)
+    const rounds = Math.max(1, Math.min(64, typeof p.rounds === 'number' ? p.rounds : 1))
+    const freeSlots = 36 - bot.inventory.length
+    const fits = (item: { id: string; meta: number }, cell: Json): boolean =>
+      typeof cell.ore === 'string' ? this.hasOre(item, cell.ore) : item.id === cell.id && (cell.meta === undefined || item.meta === cell.meta)
+    const isTool = (cell: Json): boolean => typeof cell.ore === 'string' && cell.ore.startsWith('craftingTool')
+    // 同一样原料占了几格就要几份；工具只要一件，不消耗
+    const groups = new Map<string, { cell: Json; cells: number }>()
+    for (const { cell } of cells) {
+      const key = JSON.stringify(cell)
+      const group = groups.get(key)
+      if (group) group.cells++
+      else groups.set(key, { cell, cells: 1 })
+    }
+    const missing: Json[] = []
+    for (const { cell, cells: n } of groups.values()) {
+      const need = isTool(cell) ? 1 : n * rounds
+      const have = bot.inventory.filter((i) => fits(i, cell)).reduce((sum, i) => sum + i.count, 0)
+      if (have < need) missing.push({ count: need - have, ...(typeof cell.ore === 'string' ? { ore: cell.ore } : { id: cell.id, ...(cell.meta !== undefined ? { meta: cell.meta } : {}) }) })
+    }
+    if (missing.length > 0) return { error: { code: 'no_material', message: `the inventory lacks ingredients for ${rounds} round(s) of this recipe`, detail: { missing } }, result: { crafted: 0, freeSlots } }
+    // 摆不摆得进 2×2：占的行、列各不超过两排
+    const rows = cells.map((c) => Math.floor(c.g / 3))
+    const columns = cells.map((c) => c.g % 3)
+    const pocket = Math.max(...rows) - Math.min(...rows) <= 1 && Math.max(...columns) - Math.min(...columns) <= 1
+    if (!pocket) {
+      const here = this.blockOf(bot)
+      const table = positions(p.table)[0] ?? this.craftingTables.find((t) => Math.max(Math.abs(t.x - here.x), Math.abs(t.y - here.y), Math.abs(t.z - here.z)) <= CRAFT_TABLE_SEARCH)
+      if (!table) return { error: { code: 'invalid', message: `this recipe needs a crafting table and none is within ${CRAFT_TABLE_SEARCH} blocks; give the position of one` }, result: { crafted: 0, freeSlots } }
+    }
+    // “游戏”出什么：配方书里 gives 那个物品的合成配方，原料的份数对得上才算
+    const gives = p.gives as Json | undefined
+    const entry = gives ? this.recipeEntry(gives.id, typeof gives.meta === 'number' ? gives.meta : 0) : undefined
+    const recipe = entry?.crafting?.find(
+      (r) => !r.unreadable && r.ingredients.length === groups.size && r.ingredients.every((ing) => [...groups.values()].some((group) => (ing.tool ? 1 : ing.count) === (isTool(group.cell) ? 1 : group.cells) && (ing.ore !== undefined ? group.cell.ore === ing.ore : group.cell.id === ing.id && (ing.meta === undefined || group.cell.meta === ing.meta)))),
+    )
+    if (!entry || !recipe) return { error: { code: 'invalid', message: `laid out like this the crafting grid gives ${gives ? 'something else than' : 'nothing; expected'} ${gives ? `${String(gives.id)}/${String(gives.meta ?? 0)}` : 'a product'}` }, result: { crafted: 0, freeSlots } }
+    for (const { cell, cells: n } of groups.values()) if (!isTool(cell)) takeItems(bot.inventory, (i) => fits(i, cell), n * rounds)
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    const crafted = recipe.gives * rounds
+    putInInventory(bot, entry, crafted)
+    return { result: { crafted, item: { id: entry.id, meta: entry.meta, name: entry.name }, freeSlots: 36 - bot.inventory.length } }
+  }
+
   /** craft 任务做完时的样子：原料从背包里用掉（工具留着），成品进背包。 */
   private craft(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+    if (Array.isArray(task.params.grid)) return this.craftGrid(bot, task)
     const plan = this.craftPlan(bot, task)
     if ('error' in plan) return plan
     for (const ing of plan.recipe.ingredients) {
@@ -1517,7 +1695,12 @@ export class MockBridge {
         result: { put: 0, outputs: [], freeSlots },
       }
     }
-    const has = (need: Json): number => given.filter((g) => g.id === need.id && (g.meta === undefined || g.meta === need.meta)).reduce((n, g) => n + g.count, 0)
+    // 编程电路可以不带在身上：circuit 参数像玩家点机器界面上的电路格一样直接设（做完恢复原样）
+    const circuit = typeof p.circuit === 'number' ? p.circuit : undefined
+    const has = (need: Json): number =>
+      need.id === 'gregtech:gt.integrated_circuit' && circuit !== undefined && need.meta === circuit
+        ? 1
+        : given.filter((g) => g.id === need.id && (g.meta === undefined || g.meta === need.meta)).reduce((n, g) => n + g.count, 0)
     const recipe = this.recipeBook
       .flatMap((e) => e.machines ?? [])
       .find(
@@ -1877,6 +2060,8 @@ function describeMachine(m: MockMachine): Json {
     storedEU: m.storedEU,
     inputVoltage: m.inputVoltage,
     ...(m.switchedOff ? { switchedOff: true } : {}),
+    ...(m.id !== undefined ? { id: m.id, meta: m.meta ?? 0 } : {}),
+    ...(m.recipeKey !== undefined ? { recipeKey: m.recipeKey } : {}),
   }
 }
 
@@ -2266,7 +2451,7 @@ function readNbt(buf: Buffer): Json {
  * 把一个 Schematica 的 .schematic 文件读成假图纸。和真实 mod 一样：方块按文件自带的注册名（SchematicaMapping）对应，
  * 不是能用的图纸时以 bad_request 说明原因（原话照真实 mod 的）。
  */
-function readSchematic(name: string, bytes: Buffer): MockBlueprint {
+export function readSchematic(name: string, bytes: Buffer): MockBlueprint {
   const bad = (message: string) => new RpcError('bad_request', message)
   let tag: Json
   try {

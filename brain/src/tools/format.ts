@@ -1,6 +1,7 @@
 // 把协议数据排成给模型看的紧凑文本。agent 的状态快照和工具结果共用。
 
 import type {
+  AttachedBlock,
   BlueprintByHand,
   BlueprintCheck,
   BlueprintEntry,
@@ -12,8 +13,10 @@ import type {
   InventoryItem,
   Item,
   ItemSearchHit,
+  MachineHatch,
   MachineInfo,
   MachineRecipe,
+  PlayerView,
   QuestDetail,
   QuestHit,
   QuestItem,
@@ -102,9 +105,44 @@ export function displayName(name: string | undefined): string | undefined {
   return name && name.length > 0 && !isUntranslatedName(name) ? name : undefined
 }
 
+/** 物品表里查名字用的接口（packdata 的 ItemTable 满足）。 */
+export interface LocalNames {
+  get(id: string, meta?: number): { name: string } | undefined
+  byEnglishName(id: string, english: string): { name: string } | undefined
+}
+
+/**
+ * 本地物品表（中文名）。大脑启动时设一次（main.ts）；没设（没有本地资料）时，名字就用服务器给的英文名。
+ * 放在模块里而不是一层层传：服务器回来的东西到处都在排版（背包、箱子、任务结果、事件），每一处都该用同一份名字。
+ */
+let localNames: LocalNames | undefined
+
+export function useLocalNames(names: LocalNames | undefined): void {
+  localNames = names
+}
+
+/**
+ * 一样东西给模型看的名字：有本地物品表就用中文名，否则是服务器给的英文名。
+ * - 先拿服务器给的英文名在同一个 id 下对（世界里的方块、带附加数据的物品只有这个办法对得准）；
+ * - 再按 id + meta 查（block 为 true 时不查：方块的 meta 是朝向之类，不是物品的 meta）；
+ * - 都没有就是服务器给的名字（没翻译的语言键不算名字）。
+ */
+export function nameOf(x: { id?: unknown; meta?: unknown; name?: unknown }, opts: { block?: boolean } = {}): string | undefined {
+  const server = typeof x.name === 'string' ? displayName(x.name) : undefined
+  if (localNames && typeof x.id === 'string') {
+    const byName = server !== undefined ? localNames.byEnglishName(x.id, server) : undefined
+    if (byName) return byName.name
+    if (!opts.block) {
+      const exact = localNames.get(x.id, typeof x.meta === 'number' ? x.meta : undefined)
+      if (exact) return exact.name
+    }
+  }
+  return server
+}
+
 export function formatItem(m: MergedItem): string {
   let s = `${m.count}× ${itemKey(m)}`
-  const name = displayName(m.name)
+  const name = nameOf(m)
   if (name) s += ` "${name}"`
   if (m.minDurability !== undefined) s += ` (${Math.round(m.minDurability * 100)}% durability)`
   return s
@@ -243,10 +281,36 @@ export function formatServerInfo(info: ServerInfo, botName: string, botDim: numb
 
 export function formatContainer(c: ContainerInfo, itemLimit: number): string {
   // 抽屉（Storage Drawers）标出来：它的“格”是抽屉格，数量是真实库存，一格可以上万
-  const drawers = c.kind === 'drawers'
-  const kind = drawers ? ' [drawers]' : c.kind ? ` [${c.kind}]` : ''
+  const drawers = c.kind === 'drawers' || c.kind === 'drawer_controller'
+  const kind = c.kind === 'drawers' ? ' [drawers]' : c.kind === 'drawer_controller' ? ' [drawer controller]' : c.kind ? ` [${c.kind}]` : ''
   const slots = c.slots !== undefined ? ` ${c.usedSlots ?? '?'}/${c.slots} ${drawers ? 'drawer slots' : 'slots'} used` : ''
-  return `${formatPos(c)} ${displayName(c.name) ?? c.id} [${c.id}]${kind}${slots}: ${formatItems(c.items ?? [], itemLimit)}`
+  const head = `${formatPos(c)} ${nameOf(c, { block: true }) ?? c.id} [${c.id}]${kind}${slots}`
+  const notes: string[] = []
+  // 抽屉管理器自己不装东西：它管的东西用 list_drawers 看
+  if (c.kind === 'drawer_controller') notes.push(`manages ${c.drawers ?? '?'} drawer block(s); see what they hold with list_drawers at this position`)
+  if (c.controller) notes.push(`managed by the drawer controller at ${formatPos(c.controller)}`)
+  const auto = attachedText(c.attached)
+  if (auto) notes.push(auto)
+  const note = notes.length > 0 ? ` (${notes.join('; ')})` : ''
+  if (c.kind === 'drawer_controller') return `${head}${note}`
+  const more = count(c.moreKinds) > 0 ? `, … and ${c.moreKinds} more kinds the server did not list` : ''
+  return `${head}${note}: ${formatItems(c.items ?? [], itemLimit)}${more}`
+}
+
+const SEEN_KINDS: Record<string, string> = { container: 'container', drawers: 'drawers', drawer_controller: 'drawer controller', machine: 'machine' }
+
+/** 一个玩家站在哪、朝哪看、准星指着什么、面前有哪些容器（world.player）。给模型看的英文。 */
+export function formatPlayerView(name: string, view: PlayerView): string {
+  const lines = [`${name} is in ${dimName(view.dim)} at ${formatPos(view.block ?? view.pos)}${view.facing ? `, facing ${view.facing}` : ''}.`]
+  const seen = (b: NonNullable<PlayerView['lookingAt']>): string => {
+    const kind = b.kind ? ` (${SEEN_KINDS[b.kind] ?? b.kind})` : ''
+    const auto = attachedText(b.attached)
+    return `${nameOf(b, { block: true }) ?? b.id ?? 'a block'} at ${formatPos(b)}${kind}${typeof b.dist === 'number' ? `, ${b.dist.toFixed(0)} blocks from them` : ''}${auto ? `; ${auto}` : ''}`
+  }
+  lines.push(view.lookingAt ? `Crosshair on: ${seen(view.lookingAt)}.` : 'Crosshair on nothing within reach of sight.')
+  const ahead = (view.ahead ?? []).filter((b) => !(view.lookingAt && b.x === view.lookingAt.x && b.y === view.lookingAt.y && b.z === view.lookingAt.z))
+  if (ahead.length > 0) lines.push(`Containers in front of them, most directly ahead first:\n${ahead.map((b) => `- ${seen(b)}`).join('\n')}`)
+  return lines.join('\n')
 }
 
 export function formatEntities(entities: readonly EntityInfo[]): string {
@@ -712,8 +776,9 @@ function idText(x: { id?: unknown; meta?: unknown }): string {
   return typeof x.meta === 'number' ? itemKey({ id: String(x.id), meta: x.meta }) : `${String(x.id)} (any meta)`
 }
 
-function quoted(name: unknown): string {
-  const shown = typeof name === 'string' ? displayName(name) : undefined
+/** 名字加引号（前面带一个空格）；没有名字就是空的。给的是带 id 的东西时用 nameOf（有中文名用中文名），只给了名字就用它。 */
+function quoted(x: unknown, opts: { block?: boolean } = {}): string {
+  const shown = typeof x === 'string' ? displayName(x) : isObject(x) ? nameOf(x, opts) : undefined
   return shown ? ` "${shown}"` : ''
 }
 
@@ -730,7 +795,7 @@ export function formatItemSearch(query: string, hits: readonly ItemSearchHit[]):
     if (count(r.machine) > 0) made.push(`${r.machine} machine`)
     if (count(r.smelting) > 0) made.push(`${r.smelting} smelting`)
     const ores = (h.ores ?? []).length > 0 ? `; ore names: ${h.ores!.slice(0, 6).join(', ')}${h.ores!.length > 6 ? ', …' : ''}` : ''
-    return `- ${itemKey({ id: h.id, meta: count(h.meta) })}${quoted(h.name)}: ${made.length > 0 ? `recipes: ${made.join(', ')}` : 'no known recipe'}${ores}`
+    return `- ${itemKey({ id: h.id, meta: count(h.meta) })}${quoted(h)}: ${made.length > 0 ? `recipes: ${made.join(', ')}` : 'no known recipe'}${ores}`
   })
   return `${hits.length} item(s) match "${query}", best match first (written as id or id/meta):\n${lines.join('\n')}`
 }
@@ -740,7 +805,7 @@ export function ingredientText(ing: RecipeIngredient | Record<string, unknown>):
   const n = count(ing.count)
   let s: string
   if (typeof ing.id === 'string') {
-    s = `${n}× ${idText(ing)}${quoted(ing.name)}`
+    s = `${n}× ${idText(ing)}${quoted(ing)}`
   } else {
     // 矿辞（或一组可以互相替换的物品）：name 是 “Steel Screw (any screwSteel)” 这样的，去掉后缀就是 example 的名字
     const example = isObject(ing.example) ? ing.example : undefined
@@ -763,7 +828,7 @@ function machineRecipeText(r: MachineRecipe): string {
   const head = [r.machine, power, typeof r.seconds === 'number' ? `${r.seconds} s` : ''].filter((x) => x.length > 0).join(', ')
   const fluid = (f: { name: string; mb: number }) => `${f.mb} mB ${f.name}`
   const inputs = [
-    ...(r.inputs ?? []).map((i) => (i.notConsumed === true ? `${itemKey(i)}${quoted(i.name)} (stays in the machine, not used up)` : kindText(i.count, i))),
+    ...(r.inputs ?? []).map((i) => (i.notConsumed === true ? `${itemKey(i)}${quoted(i)} (stays in the machine, not used up)` : kindText(i.count, i))),
     ...(r.fluidInputs ?? []).map(fluid),
   ]
   const outputs = [...(r.outputs ?? []).map((o) => kindText(o.count, o)), ...(r.fluidOutputs ?? []).map(fluid)]
@@ -780,7 +845,7 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
   const crafting = r.crafting ?? []
   const machines = r.machines ?? []
   const smelted = r.smeltedFrom ?? []
-  const what = `${itemKey({ id: item.id, meta: count(item.meta) })}${quoted(item.name)}`
+  const what = `${itemKey({ id: item.id, meta: count(item.meta) })}${quoted(item)}`
   const totalCrafting = Math.max(count(total.crafting), crafting.length)
   const totalMachines = Math.max(count(total.machines), machines.length)
   const totalSmelting = Math.max(count(total.smelting), smelted.length)
@@ -817,7 +882,7 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
     if (totalMachines > machines.length) {
       line += opts.machineFilter
         ? ` ${machines.length} shown for "${opts.machineFilter}".`
-        : ` ${machines.length} of ${totalMachines} shown; give "machine" to see the recipes of one machine.`
+        : ` ${machines.length} of ${totalMachines} shown; give "way" (a machine name) to see the recipes of one machine.`
     }
     lines.push(line)
   }
@@ -877,9 +942,9 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
 export const QUEST_LINES_SHOWN = 120
 
 /** 任务要的或奖励的一样物品。任务书里存的不一定齐全：id、meta、名字都可能缺。 */
-function questItemText(i: QuestItem): string {
+export function questItemText(i: QuestItem): string {
   const n = count(i.count) || 1
-  const what = typeof i.id === 'string' ? `${idText(i)}${quoted(i.name)}` : quoted(i.name).trim() || 'an unknown item'
+  const what = typeof i.id === 'string' ? `${idText(i)}${quoted(i)}` : quoted(i.name).trim() || 'an unknown item'
   return `${n}× ${what}${typeof i.ore === 'string' && i.ore.length > 0 ? ` (or any ${i.ore})` : ''}`
 }
 
@@ -910,7 +975,10 @@ export function formatQuestSearch(
   if (asked.query) filters.push(`words "${asked.query}"`)
   const what = `${filters.length > 0 ? ` (${filters.join('; ')})` : ''}${asked.player ? ` for ${asked.player}` : ''}`
   if (quests.length === 0) {
-    const english = /^[\x20-\x7e]*$/.test(`${asked.query ?? ''}${asked.line ?? ''}`) ? '' : ' The quest book is in English: search with English words.'
+    // 这个函数只在本地没有任务书资料、搜索落到服务器上时用：服务器那本是英文的
+    const english = /^[\x20-\x7e]*$/.test(`${asked.query ?? ''}${asked.line ?? ''}`)
+      ? ''
+      : " The local quest book data is not loaded, so this search ran on the game server, whose quest book is in English: search with English words."
     return `No quest matches${what}.${english}`
   }
   const total = Math.max(count(res.total), quests.length)
@@ -968,50 +1036,80 @@ export function formatQuest(q: QuestDetail, player: string | undefined): string 
 
 // ── 机器 ──
 
-/** 一台机器现在的状态：等级、有没有电、是不是正在忙、是不是被关掉了。 */
-function machineStateText(m: MachineInfo | Record<string, unknown>): string {
+/** 配方页的编号 → 页名（配方册里的中文名）。 */
+export type WayName = (key: string) => string | undefined
+
+/** 一台机器现在的状态：等级、有没有电、是不是正在忙、是不是被关掉了；多方块还有结构完不完整、炉温。 */
+function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: WayName): string {
   if (m.unreadable === true) return 'its state cannot be read'
   const parts: string[] = []
-  if (typeof m.recipes === 'string') parts.push(`runs ${m.recipes} recipes`)
-  if (typeof m.tier === 'string') parts.push(`tier ${m.tier}`)
+  if (m.kind === 'multiblock') parts.push(m.formed === false ? 'multiblock, STRUCTURE NOT COMPLETE (cannot be used)' : 'multiblock, formed')
+  // 跑哪种配方：配方册里那一页的名字（find_recipes 里的 way 就是它），没有配方册时是身体给的英文
+  const way = typeof m.recipeKey === 'string' ? wayName?.(m.recipeKey) : undefined
+  if (way !== undefined) parts.push(`runs "${way}" recipes`)
+  else if (typeof m.recipes === 'string') parts.push(`runs ${m.recipes} recipes`)
+  if (typeof m.tier === 'string') parts.push(`tier ${m.tier}${m.kind === 'multiblock' && typeof m.inputVoltage === 'number' ? ` (${m.inputVoltage} V)` : ''}`)
+  if (typeof m.heat === 'number') parts.push(`coil heat ${m.heat} K`)
+  if (typeof m.circuit === 'number') parts.push(`programmed circuit ${m.circuit} set`)
   if (typeof m.storedEU === 'number') parts.push(m.storedEU > 0 ? `has power (${m.storedEU} EU stored)` : 'NO POWER (0 EU stored)')
   if (m.switchedOff === true) parts.push('SWITCHED OFF')
   if (m.active === true) {
     const done = count(m.maxProgress) > 0 ? ` (${Math.round((count(m.progress) * 100) / count(m.maxProgress))}% of the current item done)` : ''
     parts.push(`BUSY${done}`)
   } else if (m.active === false) {
-    parts.push('idle')
+    parts.push(typeof m.idleReason === 'string' && m.idleReason.length > 0 ? `idle (it says: ${m.idleReason})` : 'idle')
   }
   return parts.join(', ')
 }
 
+/** 紧挨着一个容器、会自己送料抽料的方块：写出来提醒这是自动化的一环。 */
+export function attachedText(attached: readonly AttachedBlock[] | undefined): string {
+  if (!attached || attached.length === 0) return ''
+  return `AUTOMATED: ${attached.map((a) => `${a.name ?? a.kind ?? 'pipe'} at ${formatPos(a)}`).join(', ')} feeds or drains it`
+}
+
+/** 多方块机器的一个总线或仓。 */
+function hatchLine(h: MachineHatch): string {
+  const parts: string[] = [`${h.kind ?? 'hatch'} ${formatPos(h)}`]
+  if (h.slots !== undefined) parts.push(`${h.usedSlots ?? '?'}/${h.slots} slots used`)
+  if (typeof h.circuit === 'number') parts.push(`circuit ${h.circuit}`)
+  if (h.capacity !== undefined) parts.push(h.fluid ? `${h.amount ?? 0}/${h.capacity} mB ${h.fluidName ?? h.fluid}` : `empty (${h.capacity} mB)`)
+  const passes = (h.passesTo ?? []).map((p) => `${p.name ?? 'container'} at ${formatPos(p)}`)
+  if (passes.length > 0) parts.push(`keeps nothing: pushes into ${passes.join(', ')}`)
+  const auto = attachedText(h.attached)
+  if (auto) parts.push(auto)
+  return `    ${parts.join(', ')}`
+}
+
 /** world.machines 的结果：每台机器的坐标、名字、跑哪种配方、等级、有没有电、是不是正在忙。 */
-export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string }): string {
+export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string; wayName?: WayName }): string {
   const machines = res.machines ?? []
   const filter = asked.name ? ` whose name or recipe type contains "${asked.name}"` : ''
   if (machines.length === 0) {
     return (
-      `No GregTech single-block machine${filter} within ${asked.radius} blocks of you (only loaded chunks are searched). ` +
+      `No GregTech machine${filter} within ${asked.radius} blocks of you (only loaded chunks are searched). ` +
       (asked.name ? 'Look again without "name" to see every machine here. ' : '') +
-      'Multiblock machines, steam machines and machines of other mods are never listed and cannot be used.'
+      'Steam machines and machines of other mods are never listed and cannot be used.'
     )
   }
   const total = Math.max(count(res.total), machines.length)
-  const lines = machines.map((m) => {
+  const lines: string[] = []
+  for (const m of machines) {
     const far = typeof m.dist === 'number' ? `, ${Math.round(m.dist)} blocks away` : ''
-    return `- ${formatPos(m)}${quoted(m.name) || ' machine'}: ${machineStateText(m)}${far}`
-  })
-  const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown)` : ''
+    lines.push(`- ${formatPos(m)}${quoted(m) || ' machine'}: ${machineStateText(m, asked.wayName)}${far}`)
+    for (const h of [...(m.inputBuses ?? []), ...(m.inputHatches ?? []), ...(m.outputBuses ?? []), ...(m.outputHatches ?? [])]) lines.push(hatchLine(h))
+  }
+  const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown: give "name" or a smaller radius to see the others)` : ''
   return (
-    `${machines.length} single-block machine(s)${filter} within ${asked.radius} blocks of you${more}, nearest first. ` +
-    `A machine can run a recipe when its recipe type is the recipe's machine, its tier is at least the recipe's tier, it has power and is idle:\n${lines.join('\n')}`
+    `${machines.length} GregTech machine(s)${filter} within ${asked.radius} blocks of you${more}, nearest first. ` +
+    `A machine can run a recipe when it runs that kind of recipe, its tier is at least the recipe's, it has power and is idle:\n${lines.join('\n')}`
   )
 }
 
 /** process 任务失败时的 detail：那台机器的状态，加上据此最可能的原因。 */
 export function processErrorLines(detail: Record<string, unknown>): string[] {
   const where = typeof detail.x === 'number' ? ` at ${formatPos(detail as { x: number; y: number; z: number })}` : ''
-  let line = `machine${quoted(detail.name)}${where}: ${machineStateText(detail)}`
+  let line = `machine${quoted(detail)}${where}: ${machineStateText(detail)}`
   if (detail.storedEU === 0) line += '. It has no power, so it cannot run anything: tell the owner'
   else if (detail.switchedOff === true) line += '. Someone switched it off: tell the owner'
   else if (detail.active === true) line += '. It is busy with something else: wait, or use another machine'

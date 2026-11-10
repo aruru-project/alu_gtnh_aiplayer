@@ -32,6 +32,10 @@ export interface ActivityEntry {
   isError?: boolean
   /** 属于哪一轮决策。 */
   turn?: number
+  /** 这条工具结果带的图（store/pictures.ts 里的编号）。面板在这一条下面显示出来。 */
+  pictures?: string[]
+  /** pictures 里哪几张还存着画它用的盒子：面板给这几张加一个“三维预览”。 */
+  scenes?: string[]
 }
 
 export type ActivityInput = Omit<ActivityEntry, 'id' | 'time'> & { time?: number }

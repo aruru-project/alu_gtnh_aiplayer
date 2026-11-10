@@ -241,6 +241,74 @@ ul.plain li .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 }
 .card details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 
+/* ── 图纸：草稿和图片 ── */
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; border: 1px solid var(--border); vertical-align: -1px; }
+.draft-picture {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.viewer3d {
+  display: block;
+  width: 100%;
+  height: min(62vh, 520px);
+  min-height: 300px;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  touch-action: none;
+  cursor: grab;
+}
+.viewer3d:active { cursor: grabbing; }
+.log-viewer { max-width: 760px; }
+.draft-thumb { width: 56px; height: 40px; object-fit: contain; border-radius: 4px; cursor: pointer; flex: none; }
+ul.plain li.with-thumb { align-items: center; }
+.log-picture { display: block; max-width: min(100%, 360px); max-height: 260px; margin-top: 4px; border: 1px solid var(--border); border-radius: 6px; }
+.row > input[type="range"] { flex: 1; min-width: 120px; }
+.row > select { width: auto; }
+.thumb { width: 44px; height: 44px; object-fit: contain; background: var(--code-bg); border-radius: 4px; image-rendering: pixelated; align-self: center; }
+
+/* ── 页头的模型切换 ── */
+.model-switch { display: flex; align-items: center; gap: 6px; margin: 0; }
+.model-switch select { width: auto; max-width: min(46vw, 320px); padding: 4px 8px; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap > .fill { min-width: 0; }
+/* 一行放不下时把后面的内容换到下一行；占一整行的块 */
+ul.plain li.wrap { flex-wrap: wrap; }
+ul.plain li.wrap > .field-wide { flex-basis: 100%; }
+ul.plain li.wrap > .field-wide:empty { display: none; }
+ul.plain li.block { display: block; }
+
+/* ── 意见簿 ── */
+.tabs button .count {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bad);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+a.button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.button:hover { border-color: var(--accent); }
+ul.plain li.current { background: var(--code-bg); }
+p.pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* ── 提示条 ── */
 .toast {
   position: fixed;

@@ -2,6 +2,7 @@
 // 压缩只整轮整轮地切，所以工具调用和结果永远成对。
 
 import path from 'node:path'
+import { withoutImages } from '../llm/index.ts'
 import type { Message } from '../llm/index.ts'
 import { isRecord, readJson, writeJsonAtomic } from './files.ts'
 
@@ -58,8 +59,12 @@ export class HistoryStore {
     return this.state.nextTurnId++
   }
 
+  /**
+   * 一轮结束，记进历史。这一轮里给模型看过的图不存：换成一句占位文字。
+   * 图很贵，留在历史里的话之后每一轮都要为同一张图再付一次钱；要再看，它会重新要。
+   */
   appendTurn(turn: Turn): void {
-    this.state.turns.push(turn)
+    this.state.turns.push({ ...turn, messages: withoutImages(turn.messages) })
     this.save()
   }
 

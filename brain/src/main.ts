@@ -1,7 +1,7 @@
 // 组装并启动大脑服务。
 //   node src/main.ts
 // 环境变量：AIPLAYER_DATA_DIR、AIPLAYER_PANEL_HOST、AIPLAYER_PANEL_PORT、
-//          AIPLAYER_BRIDGE_HOST、AIPLAYER_BRIDGE_PORT、AIPLAYER_BRIDGE_TOKEN、AIPLAYER_BRIDGE_TOKEN_FILE
+//          AIPLAYER_BRIDGE_HOST、AIPLAYER_BRIDGE_PORT、AIPLAYER_BRIDGE_TOKEN、AIPLAYER_BRIDGE_TOKEN_FILE、AIPLAYER_PACKDATA
 
 import path from 'node:path'
 import { Agent } from './agent/agent.ts'
@@ -12,11 +12,16 @@ import { BridgeApi } from './bridge/api.ts'
 import { BridgeClient } from './bridge/client.ts'
 import { readBridgeToken } from './bridge/token.ts'
 import type { ResumeState } from './bridge/client.ts'
-import { createClient, testConnection } from './llm/index.ts'
+import { DesignWorkspace } from './design/index.ts'
+import { createClient, listRemoteModels, testConnection } from './llm/index.ts'
 import type { LlmClient } from './llm/index.ts'
+import { loadPackData } from './packdata/index.ts'
+import { useLocalNames } from './tools/format.ts'
 import { PanelServer } from './panel/server.ts'
 import { ActivityLog } from './store/activity-log.ts'
-import { ConfigStore, overridesFromEnv } from './store/config.ts'
+import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
+import { FeedbackStore } from './store/feedback.ts'
+import { PictureStore } from './store/pictures.ts'
 import type { BrainConfig } from './store/config.ts'
 import { ensureDir, isRecord } from './store/files.ts'
 import { HistoryStore } from './store/history.ts'
@@ -79,8 +84,30 @@ async function main(): Promise<void> {
   const history = new HistoryStore(dataDir)
   const usage = new UsageStore(dataDir)
   const reminderStore = new ReminderStore(dataDir)
+  // 意见簿：存之前把这台大脑上真正的密钥从附带的现场里抹掉（正常不会出现在里面，这是兜底）
+  const feedback = new FeedbackStore(dataDir, {
+    secrets: () => {
+      const c = config.get()
+      const bridgeSettings = config.bridgeSettings()
+      let bridgeToken = bridgeSettings.token
+      try {
+        bridgeToken ||= readBridgeToken(bridgeSettings, BRAIN_ROOT) ?? ''
+      } catch {
+        /* 口令文件读不到：那就没有可抹的 */
+      }
+      return [c.panel.password, c.panel.sessionSecret, bridgeToken, ...c.providers.flatMap((p) => [p.apiKey, ...Object.values(p.extraHeaders ?? {})])]
+    },
+  })
   const resumeFile = new JsonFile<ResumeState | undefined>(path.join(dataDir, 'bridge-state.json'), parseResume, { throttleMs: 250 })
   const agentStateFile = new JsonFile<PersistedAgentState>(path.join(dataDir, 'agent-state.json'), parseAgentState)
+
+  // ── 本地资料（任务书、物品表）：启动时读一次；没有的部分，相关工具改问服务器 ──
+  const packdata = loadPackData(path.resolve(BRAIN_ROOT, config.packdataDir()), (message) => info(`[packdata] ${message}`))
+  // ── 自己出设计：跑程序的沙箱、图纸草稿（drafts/）、主人传的图片（images/）──
+  // 服务器回来的东西（背包、箱子、任务结果、事件）给模型看时，名字都用本地物品表里的中文名
+  useLocalNames(packdata.items)
+  const design = new DesignWorkspace({ dataDir, packdata })
+  const pictures = new PictureStore(dataDir)
 
   // ── bridge ──
   const bridgeClient = new BridgeClient({
@@ -128,10 +155,23 @@ async function main(): Promise<void> {
   agent = new Agent({
     settings: () => toAgentSettings(config.get()),
     llm: () => llm,
+    modelName: () => {
+      const active = config.activeSelection()
+      return active ? `${active.provider.label} / ${modelDisplayName(active.model)}` : undefined
+    },
+    canSeeImages: () => config.activeSelection()?.model.vision === true,
+    pictures,
     bridge,
     tools: ALL_TOOLS,
     memory,
     manuals,
+    packdata,
+    design,
+    feedback,
+    versions: () => {
+      const mod = bridgeClient.status().hello?.modVersion
+      return { brain: VERSION, ...(mod !== undefined ? { mod } : {}) }
+    },
     reminders,
     history,
     log,
@@ -211,12 +251,17 @@ async function main(): Promise<void> {
     log,
     history,
     manuals,
+    design,
+    feedback,
+    pictures,
+    ...(packdata.textures ? { textures: packdata.textures } : {}),
     bridge,
     bridgeStatus: () => bridgeClient.status(),
     agent,
     reminders,
     // 测试连接也花 token，一样记账
     testConnection: (provider) => testConnection(provider, { onUsage: (record) => usage.add(record.usage) }),
+    listModels: (provider) => listRemoteModels(provider),
   })
   const want = config.panelAddress()
   const bound = await panel.listen(want.host, want.port)

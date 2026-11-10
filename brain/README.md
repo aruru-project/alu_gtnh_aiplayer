@@ -11,7 +11,7 @@ GTNH 服务器里那个 AI 玩家的“大脑”：一个独立的后台进程�
 
 ```sh
 cd brain
-node src/main.ts          # 或 npm start
+npm start                 # 等于 node --disable-sigusr1 src/main.ts
 ```
 
 首次启动会在标准输出打印面板地址和随机生成的访问口令：
@@ -38,7 +38,7 @@ node src/main.ts          # 或 npm start
 npm run dev:testserver
 ```
 
-它等于 `AIPLAYER_PANEL_HOST=0.0.0.0 AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts`。
+它等于 `AIPLAYER_PANEL_HOST=0.0.0.0 AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node --disable-sigusr1 src/main.ts`。
 数据目录是单独的 `brain/data/testserver/`，所以测试服上的记忆、对话历史、续传位置不会和正式运行的（`brain/data/`）混在一起；模型服务商和面板口令两边各配各的。
 
 | 环境变量 | 作用 | 默认 |
@@ -48,8 +48,27 @@ npm run dev:testserver
 | `AIPLAYER_BRIDGE_HOST` / `AIPLAYER_BRIDGE_PORT` | 身体的 bridge 地址 | `127.0.0.1` / `25590` |
 | `AIPLAYER_BRIDGE_TOKEN_FILE` | bridge 口令文件（相对路径相对 `brain/`） | 无，不配就不连 |
 | `AIPLAYER_BRIDGE_TOKEN` | 直接给 bridge 口令（优先于文件） | – |
+| `AIPLAYER_PACKDATA` | 本地资料（任务书等）的目录（相对路径相对 `brain/`） | `brain/packdata/` |
 
 环境变量优先于 `config.json`，而且不会写回文件；被环境变量盖住的项，面板“设置”页会标出来。面板自己的监听地址和 bridge 的主机只能在 `config.json`（`panel`、`bridge` 两节）或环境变量里改，改完要重启大脑。
+
+### 本地资料（任务书）
+
+任务书的内容（章节、任务的名称和描述、前置、要求、奖励）大脑读本地的一份中文资料，只有“谁做完了哪些”问服务器。资料从客户端整合包生成，不进 git：
+
+```sh
+tools/make-packdata.py quests --client <客户端包.zip> --out brain/packdata    # 在仓库根目录执行，不到一秒
+```
+
+大脑启动时读一次（日志里 `[packdata]` 开头的几行说读到了什么），所以重新生成后要重启大脑。目录不在、文件不全时照常启动，任务书工具退回去问服务器，那边的文字是英文的。
+目录里有 `items.jsonl`（物品表）时，任务要的和奖励的物品会带上中文名；有 `blocks.jsonl`（方块颜色表）时，它做像素画就用这张表配色、简图按它上色，没有就用内置的 16 色羊毛和 16 色染色粘土。文件格式见 `docs/PACKDATA.md`。
+有了 `blocks.jsonl` 以后可以再生成方块贴图（面板的三维预览用，没有就按颜色画）：
+
+```sh
+tools/make-packdata.py textures --client <客户端包.zip> --jar <原版 minecraft-1.7.10-client.jar> --out brain/packdata    # 四秒左右
+```
+
+资料放在别处时用环境变量 `AIPLAYER_PACKDATA` 或 `config.json` 的 `packdataDir` 指过去。
 
 bot 的皮肤不归大脑管：服务器上的 PierceSkinRestorer 认 bot，主人在控制台执行 `skin <bot名> set <正版用户名>` 即可。
 
@@ -74,27 +93,38 @@ AIPLAYER_DATA_DIR=/tmp/aiplayer-demo AIPLAYER_BRIDGE_PORT=25600 AIPLAYER_BRIDGE_
 
 | 文件 | 内容 | 删掉会怎样 |
 |---|---|---|
-| `config.json` | 面板口令、bridge 地址、bot 的名字/别名/主人/人设/上限、所有服务商配置（**含 API key 明文**） | 回到初始状态，重新生成口令 |
+| `config.json` | 面板口令、bridge 地址、bot 的名字/别名/主人/人设/上限、所有服务商和它们下面的模型（**含 API key 明文**）、现在用哪个 | 回到初始状态，重新生成口令 |
+| `config.json.v1.bak` | 旧格式的配置（一个服务商只有一个模型）被自动转成新格式之前的原样，只留一次 | 没影响；想退回旧版本的大脑时用得上 |
 | `memory.json` | 它自己记的笔记（键 → 文本） | 它忘掉地点和长期要求 |
 | `history.json` | 对话历史（按“轮”存）和更早部分的摘要 | 它不记得聊过什么、做到哪一步 |
 | `usage.json` | 每天的调用次数和 token 数（留 90 天） | 今日用量归零 |
 | `reminders.json` | 它给自己定的、还没到点的提醒 | 提醒丢失 |
 | `bridge-state.json` | 上次见到的 `serverEpoch` 和 `lastSeq`，断线续传用 | 下次连接不补发错过的事件 |
 | `agent-state.json` | 它启动后还没结束的任务 id、已处理过的任务结束、已排队但没处理完的事件 | 重启时正排着队的事会丢 |
+| `feedback.jsonl` | 意见簿：它自己记下的反馈。只追加不改写，一行是一件事（新记一条、同一个问题又来一次、状态改了） | 记过的反馈没了 |
+| `drafts/*.json` | 图纸草稿：它自己写程序设计出来、还没发到游戏里的建筑（连同生成它的程序） | 草稿没了；已经发布到游戏里的图纸不受影响 |
+| `images/*.png`、`*.rgba` | 你在面板“图纸”页传给它的图片，和解好的像素 | 它读不到这些图了 |
+| `pictures/*.png`、`*.json` | 它看过的图（世界和草稿的简图、你传的图片放大后的样子），给“对话”页的日志显示用；简图旁边的 `.json` 是画它用的方块数据，三维预览用。只留最近 80 张 | 日志里那些图显示“已经清理掉了” |
 | `manuals/*.md` | 你在面板“手册”页写的手册，和你改过的默认手册（同名的盖住 `brain/manuals/` 里默认的那本） | 你写的手册没了；改过的默认手册恢复成默认的 |
 | `logs/activity-YYYY-MM-DD.jsonl` | 面板“对话”页的日志（聊天、模型文本、工具调用和结果、错误），留 14 天 | 面板上看不到之前的记录 |
 
 ## 面板
 
-默认 `http://127.0.0.1:28765/`，只监听本机；把 `AIPLAYER_PANEL_HOST` 设成 `0.0.0.0`（`npm run dev:testserver` 和 systemd 模板已经这样设）后，局域网里用 `http://这台机器的地址:28765/` 打开。八个页面：
+默认 `http://127.0.0.1:28765/`，只监听本机；把 `AIPLAYER_PANEL_HOST` 设成 `0.0.0.0`（`npm run dev:testserver` 和 systemd 模板已经这样设）后，局域网里用 `http://这台机器的地址:28765/` 打开。九个页面：
 
 - **概览**：bridge 连接状态、bot 的位置/血量/背包、当前任务和队列（可取消）、当前模型和最近一次调用结果、今日用量、提醒、清空对话历史。
-- **对话**：实时日志（聊天、它说的话、模型的文本、工具调用和结果、错误）；下面的输入框以主人身份直接给它下指令（只有它看得到，不进游戏聊天）。
-- **模型**：服务商增删改、选当前使用的、测试连接。改完立刻生效。
+- **对话**：实时日志（聊天、它说的话、模型的文本、工具调用和结果、错误）；下面的输入框以主人身份直接给它下指令（只有它看得到，不进游戏聊天）。工具结果带图的（它看了世界的一块地方、一张草稿、一张你传的图片），图直接显示在那一条下面，点开是原图：你看到的就是它看到的那张（它的模型看不了图时图也照样有）。世界和草稿的简图下面还有一个“三维预览”按钮，点开是同一块地方可以拖着转的立体图。
+- **模型**：服务商（接口类型、地址、API key）和它下面的模型分开管。一个服务商可以有好几个模型，各有各的名字和设置（输出上限、温度、超时、思考相关的额外请求参数、按模型走的开关）；同一个模型可以存两份不同的设置来对比（“复制”）。模型名可以从接口拉列表来挑，拉不到就手填。每个模型都能单独测试连接。
+  现在用哪个，在这里点“用这个”，或者在**页面顶上的下拉框**里直接换：不用重启，下一轮决策起生效。对话日志里每一轮开头写着用的是哪个服务商的哪个模型。
+  每个模型有一个“能看图”开关，默认关。开着，它要看的图会真的发给它；关着，同样的工具只给文字说明。开着时“测试连接”会带一张小图去试，模型其实不收图的话当场就报出来。
 - **AI 玩家**：名字、别名、主人名单、什么时候回应聊天、各项上限、人设提示词（也就是核心提示词，可恢复默认）；上线/下线；无敌和饥饿开关（“会饿”打开后它会饿死，因为它不会吃东西）。上线、下线的选择会被记住；它被踢下线也算“下线”，要回来得有人在这里点“上线”。
 - **记忆**：查看、编辑、删除它的笔记。
 - **手册**：看每本手册的名字、“什么时候看”那一句和正文；改默认手册（存下来的是你的一份，随时可以“恢复默认”）；新写、改名、删除自己的手册（比如“基地布局”“材料仓库在哪”）。改完立刻生效：它下次要用时读到的就是新的。
-- **图纸**：列出游戏服务器上的图纸（Schematica 的 `.schematic` 文件：名字、尺寸、方块数，读不了的显示原因），上传本地文件（最大 2 MiB，同名覆盖），删除。图纸存在游戏服务器的 `config/aiplayer/schematics/` 里，面板只是经 bridge 转手，所以要连着游戏才能用；文件是不是能用的图纸由身体判断。
+- **图纸**：三块，各管各的。
+  - 草稿：它自己写程序设计出来的建筑，还只在大脑这边。列表里每张有一张小图；点“查看”先是三维预览：用游戏里的贴图，拖动旋转、滚轮缩放，滑块一层层剖开，“完整外观 / 剖开看里面 / 从正上方看”三个预设。下拉框里还有大脑画的四种简图（立体图、俯视图、立面图、一层层看），那是它自己用 `view_draft` 看到的样子。再下面是材料表和生成它的程序。你觉得行，跟它说一声，或者直接点“发布到游戏”；不要的删掉。
+  - 图片：传给它做像素画、当参考的图。什么格式都行，浏览器会先缩到最长边 256 像素以内、转成 PNG 再传；聊天里跟它说图片的名字就行。
+  - 服务器上的图纸：列出游戏服务器上的图纸（Schematica 的 `.schematic` 文件：名字、尺寸、方块数，读不了的显示原因），上传本地文件（最大 2 MiB，同名覆盖），删除。它们存在游戏服务器的 `config/aiplayer/schematics/` 里，面板只是经 bridge 转手，所以这一块要连着游戏才能用；草稿和图片不用。
+- **意见簿**：它干活时觉得哪里有问题（没有合适的工具、工具的结果不对或看不懂、同一件事反复失败、手册和实际对不上、你让做的它做不到），会自己用 `report_problem` 记一条；大脑自动附上当时的现场（这一轮的指令原文、最近几次工具调用和结果、相关任务和失败码、大脑和 mod 的版本）。这一页列出来（新的在前，可按类别和状态筛），点开看详情，标成已处理，或者把筛出来的导出成一个 JSON 文件。导航上的数字是你还没看过的条数。
 - **设置**：bridge 的端口和口令文件路径（保存后立刻重连）、修改面板口令（要先输入当前口令）。
 
 安全方面：
@@ -113,7 +143,11 @@ src/
   main.ts          组装并启动
   llm/             模型调用层：统一的“消息 + 工具”请求 ↔ 各家接口。不知道 Minecraft，也不知道 agent
   agent/           agent 循环：收事件、决定要不要叫醒模型、跑一轮决策、压缩历史。不发 HTTP，不碰 socket
-  tools/           模型能用的工具：名字、参数 schema、执行函数。只调 bridge，不含策略
+  tools/           模型能用的工具：名字、参数 schema、执行函数。只调 bridge 和本地资料，不含策略
+  packdata/        本地资料：读 brain/packdata/ 里的文件（任务书、物品表、方块颜色表、方块贴图的目录），建索引，回答查询。不碰 bridge
+  script/          跑模型写的程序的沙箱：起受限的子进程（sandbox.ts）、子进程入口（runner.mjs）、程序能用的 API（prelude.js）
+  design/          它自己出设计的家当：图纸草稿的检查和存取、文字预览、转成 .schematic、PNG 解码、主人传的图片
+  render/          简图：把草稿或世界里的一块地方按方块颜色画成 PNG（等轴测、俯视、立面、分层），带说明和图例。纯软件画，不依赖任何图形库
   bridge/          协议客户端：连接、握手、重连续传、请求超时、事件分发；协议方法的有类型封装
   panel/           面板的 HTTP API 和静态页面（panel/public/，手写的 HTML/CSS/JS）
   store/           配置、记忆、历史、用量、提醒、活动日志、手册的落盘
@@ -121,14 +155,16 @@ manuals/           随代码发布的默认手册（Markdown，一类活一本�
 test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型服务（mock-llm.ts）
 ```
 
-依赖方向：`main` → `panel` / `agent` → `tools` → `bridge`；`agent` → `llm`；谁都可以用 `store`。`llm/` 不导入其他任何一层。
+依赖方向：`main` → `panel` / `agent` → `tools` → `bridge` / `packdata` / `design` / `render` → `script`；`agent` → `llm`；谁都可以用 `store`。`llm/` 和 `packdata/` 不导入其他任何一层；`render/` 只用 `packdata/` 的方块颜色表和 `design/` 的草稿类型。
+
+`script/` 里的 `runner.mjs` 和 `prelude.js` 是纯 JavaScript：前者是沙箱子进程的入口，后者是在 `node:vm` 上下文里求值的源码，都不经过类型检查，靠 `test/design.test.ts` 管。沙箱保证什么、不保证什么，见 `docs/SCRIPTS.md`。
 
 ### 提示词和手册
 
 每次调模型的系统提示词 = **核心提示词** + 程序生成的几节（手册目录、名字、主人、记忆）。
 
-- 核心提示词（`agent/prompt.ts` 的 `DEFAULT_PERSONA`，一千三百字左右）只放任何时候都用得上的：它是谁、怎么说话和汇报、任务怎么运作、底线。面板“AI 玩家”页的“人设提示词”改的就是它；自定义过的照旧整段替换默认的，后面那几节照样附上。
-- 各类活具体怎么做写在**手册**里：`brain/manuals/*.md` 是默认的（`blueprint` 照图纸盖、`crafting` 办目标、`containers` 箱子和抽屉、`terrain` 地形活、`travel` 走路和传送、`quests` 任务书、`failures` 失败和重启），数据目录的 `manuals/` 是主人写的，同名时主人的盖住默认的。文件第一行是一句“什么时候看这本”，其余是正文。
+- 核心提示词（`agent/prompt.ts` 的 `DEFAULT_PERSONA`，一千五百字左右）只放任何时候都用得上的：它是谁、怎么说话和汇报、任务怎么运作、底线、什么时候往意见簿里记一条。面板“AI 玩家”页的“人设提示词”改的就是它；自定义过的照旧整段替换默认的，后面那几节照样附上。
+- 各类活具体怎么做写在**手册**里：`brain/manuals/*.md` 是默认的（`blueprint` 照图纸盖、`crafting` 办目标、`containers` 箱子和抽屉、`terrain` 地形活、`travel` 走路和传送、`quests` 任务书、`design` 自己写程序出设计、`pictures` 看图、`failures` 失败和重启），数据目录的 `manuals/` 是主人写的，同名时主人的盖住默认的。文件第一行是一句“什么时候看这本”，其余是正文。
 - 提示词里只列每本手册的名字和那一句；模型要干那类事时用 `read_manual` 读整本（`list_manuals` 列目录）。手册整本给模型，不受“单个工具结果上限”截断，所以正文有自己的上限（8000 字符）。
 - 每一轮的“当前状态”里有一行写明哪几本手册的原文现在还在对话历史里。这是程序从历史里数出来的：历史压缩把较早的手册原文换成了一句“要用时重新读”的、主人后来改过内容的，都不算，模型要用时会重新读。
 - 加一类新的活：在 `brain/manuals/` 里放一个 `名字.md`，第一行写什么时候看。不用改代码。
@@ -151,6 +187,37 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 - 断线期间补发的、超过 10 分钟的旧聊天只当背景。
 - bot 不在线时聊天不叫醒它（它说不了话）；面板指令照常。
 - 受伤只在血量 ≤ 6 时叫醒，一分钟最多一次。
+
+### 看图：简图怎么画、怎么给模型
+
+它“看”东西靠三个工具，返回的都是一张 PNG 加一段文字说明：
+
+| 工具 | 看什么 |
+|---|---|
+| `view_area` | 世界里的一个盒子（两个对角，每边最多 64 格；不给就是自己周围）。方块数据来自协议的 `world.blocks` |
+| `view_draft` 加 `picture` | 一张图纸草稿（`x1`…`z2` 可以裁，比如用 `y2` 把屋顶切掉看里面） |
+| `view_image` | 主人在面板上传的图片（小图放大到看得清，透明处垫灰白格子） |
+
+简图由 `render/` 画，四种看法：`iso` 等轴测（站在四个角之一，顶面和两个侧面明暗不同）、`top` 俯视（上北下南，高处亮）、`side` 立面（站在四边之一，远处暗）、`layer` 只看一层。整张图最长边不超过 1024 像素，范围大了每格自动画小。图上有一段说明（范围、每格几个像素、朝向）和图例（色块、注册名、数量），俯视和立面带坐标刻度；自己和范围里的其他玩家标成品红和青色的记号。
+
+这是**按方块颜色画的示意图，不是游戏画面**：没有贴图和光影，楼梯、栅栏、火把这类不是整块的方块只是画小一点，实体不画。颜色从哪来见 `docs/PACKDATA.md` 的“方块颜色”。
+
+把图给模型看是一条通用的路，以后别的来源（比如真实截图）照着走就行：
+
+1. 工具在结果里带 `images`（`tools/types.ts` 的 `ToolImage`：一句说明 + PNG/JPEG 的内容），同时 `content` 里要有不看图也读得懂的文字。
+2. agent 把每张图存一份到数据目录的 `pictures/`（面板的对话日志显示用），然后看当前模型的“能看图”开关：开着就把图挂在这条工具结果上（`llm/types.ts` 的 `ToolResultPart.images`），关着就不挂——工具自己从 `ctx.canSeeImages()` 知道这一点，会在文字里写明“看不了图”并多给一些文字说明。
+3. 适配器把图翻成各家的写法：Anthropic 兼容是 `tool_result` 内容里的图片块；OpenAI 兼容的 tool 消息只能是文字，图放在紧跟其后的一条 user 消息里（`image_url` 的 data URI）。
+4. **图只在产生它的那一轮里跟着**，而且一轮里同时最多 4 张（`agent.ts` 的 `LIVE_IMAGES_MAX`，再要新的，最早的换掉）。一轮结束存进历史时，所有的图都换成一句占位文字（`[picture seen earlier, no longer attached: …]`，`llm/messages.ts`）：之后每一轮不会为同一张图再付一次钱，`history.json` 里也没有图的内容。它要再看就重新要一张。
+5. 图只在模型主动调这三个工具时才有，不会自动塞进每一轮。
+
+### 面板上的三维预览
+
+给主人看的，不是给模型看的。`panel/public/viewer3d.js`：手写的 WebGL，没有用任何库。
+
+- 数据：`GET /api/drafts/model?name=`（草稿）和 `GET /api/pictures/model?id=`（对话日志里的一张简图，画那张图时把方块存了一份）。格式是 `render/scene.ts` 的 `Scene`：盒子的尺寸、每一格是哪种方块（“下标, 连续几格”），每种方块怎么画——贴图在图集的第几格，或者没有贴图时的颜色，透不透，是不是整块。
+- 贴图：本地资料里的图集（`docs/PACKDATA.md` 的“方块贴图”），面板从 `GET /api/textures/atlas.png` 取。颜色表里没有的常见原版方块（草方块、水、树叶、玻璃）用内置的贴图名和染色（`render/looks.ts`）；别的没有贴图的方块（机器、别的模组的非整块方块）按颜色画。没有图集时全部按颜色画。
+- 文件里分两半：`buildMesh` 把盒子变成三角形（哪些面露在外面、剖到第几层、贴图坐标），是纯计算，`test/viewer3d.test.ts` 管着；`createViewer` 管画布、镜头和按钮，是在浏览器里手动看的。
+- 页面上同时最多开两个（图纸页一个、对话日志里一个）：浏览器能开的 WebGL 画布有限，开新的会把旧的关掉。
 
 ### 游戏指令在哪改
 
@@ -175,7 +242,8 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
    export const myProvider: Adapter = {
      label: '面板下拉框里显示的名字',
      baseUrlExample: 'https://api.example.com/v1',
-     options: [],                                  // 适配器自己的开关；面板会按这里的说明自动画出表单
+     options: [],                                  // 适配器自己的开关；面板会按这里的说明自动画出表单。scope: 'provider' 的跟着服务商，其余跟着模型
+     // listModels: async (config, deps) => [...],  // 可选：问接口它有哪些模型（面板填模型名时用）
      create: (config: ProviderConfig, deps) => ({
        async generate(req: GenerateRequest): Promise<GenerateResult> {
          // normalizeMessages 已经保证：角色交替、工具结果紧跟工具调用且排在文本前、没有空内容。
@@ -200,6 +268,8 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 就这两处。`ProviderKind` 类型、配置校验、面板的“接口类型”下拉框和开关表单都从这张表生成；agent 循环、面板、存储都不用改。
 
+适配器拿到的 `ProviderConfig` 是“一家接口加一个模型”：存盘时服务商和模型是分开的（`store/config.ts` 的 `StoredProvider` / `ModelConfig`），调用前由 `resolveModel` 把服务商的地址、key、请求头和那个模型自己的设置合成一份。所以适配器不用知道一个服务商下面有几个模型。
+
 写适配器时注意：
 
 - `postJson` 已经处理了超时、打断，并把失败归成统一的 `LlmError`（auth / rate_limit / overloaded / bad_request / context_length / network / timeout / server / aborted）。重试、用量回调由 `createClient` 统一包在外面，适配器里不用管。
@@ -221,7 +291,11 @@ npm run typecheck   # tsc --noEmit
   图纸那部分（`blueprint.list/check/put/remove` 和 `blueprint` 任务）是照协议和 mod 的源码写的，还没有对着测试服校对过：它读得了真的 `.schematic` 文件，拿假地形逐格对比，任务“做完”时按背包和 `supply` 里的材料算结果（不够就是 `no_material`）；够不着、没工具、背包满这些情况不模拟。
   物品、配方、库存那部分（`item.search`、`recipe.find`、`world.stock` 和 `craft` 任务）同样是照协议和 mod 的源码写的、没对着测试服校对过：一本十来种物品的假配方书（`defaultRecipeBook()`，够走一遍“做一个 Copter Blades”），`withdraw` 和 `craft` 会真的增减箱子和背包里的东西；`recipesReady = false` 时前两个方法返回 `busy`。`world.machines` 和 `process` 任务也在这部分：机器有电、空闲、等级够、给的原料凑得出它的一条配方（不带流体）才开工，否则像真实 mod 那样以 `invalid` 失败并带上机器状态。
   任务书（`quest.lines/search/get`）也是照协议和 mod 的源码写的：两章六个任务，自带 Steve 的进度；`questBook = undefined` 就是服务器没装任务书。
+  `quest.progress`（谁做完了哪些）是照约定写的，真实 mod 实现之后还没对过。
+- `test/fixture-pack.ts`：一个只有任务书的小“客户端整合包”，文件形状照真实的 GTNH 客户端包抄的。`packdata.test.ts` 和一场端到端测试拿它跑 `tools/make-packdata.py`，再让大脑读生成出来的资料；这些测试要 `python3`，没有时会跳过并写明。
 - `test/mock-llm.ts`：一个 HTTP 服务，同时会说 OpenAI chat completions 和 Anthropic messages 两种线格式，按脚本回应。它像真实接口那样拒绝格式不对的请求（工具调用没有紧跟结果、角色不交替等，回 400），所以适配器漏了整理、历史压缩把配对拆散时，测试会失败。
+- `test/design.test.ts`：模型写的程序 → 沙箱 → 草稿 → 预览 → 发布。沙箱那几条是真的起子进程去试：死循环、吃内存、读配置文件、写文件、起进程、联网，都要被拦住而大脑没事。`.schematic` 由模拟 bridge 里那个照 mod 写的读取器读回来，另外和 `tools/make-test-schematic.py` 做的参考文件对了一遍（这一条要 `python3`）。
+- `test/feedback.test.ts`：意见簿——模型在一轮里记一条时附带的现场、同一个问题合并计数、太长的裁短、密钥被抹掉、重启后还在。
 - `test/e2e.test.ts`：模拟 bridge + 模拟模型 + 真实启动 `src/main.ts` 子进程，像主人那样登录面板、配模型、让 bot 上线，然后从一条聊天走到任务启动、任务结束再唤醒、`say` 回话。
 
 `npm test` 不碰真实的模型接口，也不连这台机器上的游戏服务器。
@@ -280,5 +354,8 @@ journalctl --user -u aiplayer-brain -f      # 首次启动的面板口令在这�
 - 一个大脑进程只管一个 bot。
 - 面板自己的监听地址、bridge 的主机不能在面板上改（改 `config.json` 或用环境变量）。
 - 协议里的 `bot.look`、`bot.drop`、`bot.remove` 和任务 `wait` 有封装（`bridge/api.ts`）但没有做成给模型用的工具；没有删除 home 的工具。
-- 任务书只能查（`list_quest_lines` / `find_quests` / `get_quest`）：它替不了谁提交任务或领奖励。
+- 任务书只能查（`list_quest_lines` / `find_quests` / `get_quest`）：它替不了谁提交任务或领奖励。读本地资料时，进度只到“这个任务做完没有、奖励领了没有”：看不到一个任务里哪几个子任务已经完成。
+- 本地资料只在启动时读一次；重新生成后要重启大脑。
+- 它自己出设计（`run_program` 等几个工具）：程序只做计算，动不了世界；沙箱不是对付恶意代码的硬隔离，网络没有在进程一层堵住（`docs/SCRIPTS.md` 写了真实的边界）。
+- 简图和三维预览都是示意：颜色表里没有的方块（机器、别的模组的非整块方块）颜色是配的，图例里带 `?`；半砖一律画在下半格，楼梯画成整块，门、活板门不分开合，方块的朝向（原木横放、机器的正面）不分；实体和掉落物不画。给模型看的简图只用颜色，不用贴图。模型的“能看图”要主人自己在面板上开，大脑不会去探测模型到底能不能看。
 - 机器只会用 GregTech 的单方块加工机器（`find_machines` / `process_items`）：多方块机器、蒸汽机器、别的 mod 的机器和原版熔炉用不了；配方要流体的，得机器已经接好流体。

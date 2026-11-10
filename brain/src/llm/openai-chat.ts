@@ -4,9 +4,12 @@
 //   maxTokensField   'max_tokens'（默认）| 'max_completion_tokens'
 //   systemRole       'system'（默认）| 'developer'
 //   replayReasoning  false（默认）| true —— 是否把响应里的 reasoning_content 等字段在后续请求里带回去
+//
+// 图片：这个接口只让 user 消息带图（tool 消息的内容只能是文字）。所以工具结果里的图放在紧跟其后的一条 user 消息里，
+// 每张图前面有一句“这是上面哪个工具结果的图”；tool 消息里留一句“图在下一条消息里”。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, joinUrl, postJson } from './http.ts'
+import { asNumber, asRecord, getJson, joinUrl, postJson } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -14,13 +17,17 @@ import type {
   AssistantPart,
   GenerateRequest,
   GenerateResult,
+  ImageAttachment,
   LlmClient,
   ProviderConfig,
+  RemoteModel,
   StopReason,
   Usage,
 } from './types.ts'
 
 export const OPENAI_CHAT_KIND = 'openai-chat'
+/** 拉模型列表不该等很久：这只是填表时的一个方便。 */
+const LIST_MODELS_TIMEOUT_MS = 15_000
 
 /** 各家兼容接口放“思考过程”的字段名。原样存进 OpaquePart。 */
 const REASONING_FIELDS = ['reasoning_content', 'reasoning', 'reasoning_details'] as const
@@ -46,6 +53,11 @@ export function openAiEndpoint(baseUrl: string): string {
 }
 
 type WireMessage = Record<string, unknown>
+type WirePart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+
+function imagePart(image: ImageAttachment): WirePart {
+  return { type: 'image_url', image_url: { url: `data:${image.mediaType};base64,${image.data}` } }
+}
 
 export function buildOpenAiBody(config: ProviderConfig, req: GenerateRequest): Record<string, unknown> {
   const options = readOptions(config)
@@ -84,19 +96,31 @@ export function buildOpenAiBody(config: ProviderConfig, req: GenerateRequest): R
       wire.push(out)
     } else {
       // normalizeMessages 已保证工具结果在前
-      const texts: string[] = []
+      const parts: WirePart[] = []
+      let pictures = 0
       for (const p of m.content) {
         if (p.type === 'tool_result') {
+          const images = p.images ?? []
+          const note = images.length > 0 ? `\n[${images.length === 1 ? 'The picture is' : `The ${images.length} pictures are`} in the next message.]` : ''
           wire.push({
             role: 'tool',
             tool_call_id: p.toolCallId,
-            content: p.isError ? `ERROR: ${p.content}` : p.content,
+            content: `${p.isError ? `ERROR: ${p.content}` : p.content}${note}`,
           })
+          for (const image of images) {
+            parts.push({ type: 'text', text: `[Picture from the tool result above: ${image.label}]` }, imagePart(image))
+            pictures++
+          }
+        } else if (p.type === 'image') {
+          parts.push(imagePart(p.image))
+          pictures++
         } else {
-          texts.push(p.text)
+          parts.push({ type: 'text', text: p.text })
         }
       }
-      if (texts.length > 0) wire.push({ role: 'user', content: texts.join('\n\n') })
+      // 没有图时还是一整段文字（和以前一样）；有图时才用分段的写法
+      if (pictures > 0) wire.push({ role: 'user', content: parts })
+      else if (parts.length > 0) wire.push({ role: 'user', content: parts.map((part) => (part.type === 'text' ? part.text : '')).join('\n\n') })
     }
   }
 
@@ -224,6 +248,29 @@ function createOpenAiClient(config: ProviderConfig, deps: AdapterDeps): LlmClien
   }
 }
 
+/** GET {baseUrl}/models：OpenAI 兼容接口的模型列表，形状是 {data:[{id}]}。 */
+async function listOpenAiModels(config: ProviderConfig, deps: AdapterDeps & { signal?: AbortSignal }): Promise<RemoteModel[]> {
+  const base = config.baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '')
+  const { json } = await getJson({
+    fetch: deps.fetch,
+    url: joinUrl(base, '/models'),
+    headers: { authorization: `Bearer ${config.apiKey}`, ...(config.extraHeaders ?? {}) },
+    timeoutMs: LIST_MODELS_TIMEOUT_MS,
+    signal: deps.signal,
+  })
+  const root = asRecord(json) ?? {}
+  // 有的兼容服务直接给一个数组
+  const list = Array.isArray(json) ? json : Array.isArray(root.data) ? root.data : Array.isArray(root.models) ? root.models : undefined
+  if (!list) throw new LlmError('server', 'the response has no list of models')
+  const models: RemoteModel[] = []
+  for (const item of list) {
+    const m = asRecord(item)
+    const id = typeof item === 'string' ? item : typeof m?.id === 'string' ? m.id : typeof m?.name === 'string' ? m.name : ''
+    if (id.length > 0) models.push({ id })
+  }
+  return models
+}
+
 export const openaiChat: Adapter = {
   label: 'OpenAI 兼容（Chat Completions）',
   baseUrlExample: 'https://api.openai.com/v1',
@@ -250,4 +297,5 @@ export const openaiChat: Adapter = {
     },
   ],
   create: createOpenAiClient,
+  listModels: listOpenAiModels,
 }

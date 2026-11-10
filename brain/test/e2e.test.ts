@@ -8,9 +8,10 @@ import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { it } from 'node:test'
-import { makeSchematic, tmpDir, waitFor } from './helpers.ts'
+import { buildFixturePackdata, pythonMissing } from './fixture-pack.ts'
+import { encodePng, makeSchematic, tmpDir, waitFor } from './helpers.ts'
 import { MockBridge } from './mock-bridge.ts'
-import { MockLlm } from './mock-llm.ts'
+import { MockLlm, imagesInRequest } from './mock-llm.ts'
 
 const BRAIN_ROOT = path.resolve(import.meta.dirname, '..')
 
@@ -20,7 +21,7 @@ interface Brain {
   exited: Promise<number | null>
 }
 
-function startBrain(dataDir: string, bridge: MockBridge): Brain {
+function startBrain(dataDir: string, bridge: MockBridge, opts: { packdata?: string } = {}): Brain {
   const env = { ...process.env }
   delete env.NODE_USE_ENV_PROXY
   const child = spawn(process.execPath, ['src/main.ts'], {
@@ -33,6 +34,8 @@ function startBrain(dataDir: string, bridge: MockBridge): Brain {
       AIPLAYER_BRIDGE_HOST: '127.0.0.1',
       AIPLAYER_BRIDGE_PORT: String(bridge.port),
       AIPLAYER_BRIDGE_TOKEN: bridge.token,
+      // 开发机上的 brain/packdata 是真实整合包生成的，不能混进测试：没指定就指向一个不存在的目录
+      AIPLAYER_PACKDATA: opts.packdata ?? path.join(dataDir, 'no-packdata'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -438,7 +441,106 @@ it('端到端：主人只给目标（做一个 Copter Blades）→ 它查物品�
   assert.equal(await brain.exited, 0, diag())
 })
 
-it('端到端：主人在面板写了一本手册，然后问“任务书下一步做什么” → 它先翻手册再查任务书 → 把能做的任务告诉主人', async (t) => {
+it('端到端：大脑带着本地配方册启动，主人指着箱子说“做一个直升机桨叶” → 它用中文名找到物品、看到所有做法和附近做得了的、照配方的编号合成（摆法是大脑给身体的）→ 做成', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  // 一本小配方册：桨叶是手工 3×3（四个柄、三个“任何 screwSteel”、一把螺丝刀），和模拟服务器上的配方是同一条
+  const packdata = path.join(tmp.dir, 'packdata')
+  fs.mkdirSync(packdata)
+  const GT = 'gregtech:gt.metaitem.01'
+  fs.writeFileSync(
+    path.join(packdata, 'items.jsonl'),
+    [
+      { id: 'adventurebackpack:backpackComponent', meta: 6, name: '直升机桨叶', en: 'Copter Blades' },
+      { id: 'IC2:itemRecipePart', meta: 12, name: '精炼铁柄', en: 'Shaft (Refined Iron)' },
+      { id: GT, meta: 27305, name: '钢螺丝', en: 'Steel Screw', ores: ['screwSteel'] },
+      { id: 'gregtech:gt.metatool.01', meta: 22, name: '螺丝刀', en: 'Screwdriver', ores: ['craftingToolScrewdriver'] },
+      { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
+    ]
+      .map((i) => JSON.stringify(i))
+      .join('\n'),
+  )
+  fs.writeFileSync(path.join(packdata, 'handlers.json'), JSON.stringify([{ key: 'codechicken.nei.recipe.ShapedRecipeHandler', name: '有序合成', grid: true, machines: [], recipes: 1, read: 'all' }]))
+  const shaft = (g: number) => ({ id: 'IC2:itemRecipePart', meta: 12, n: 1, g })
+  const screw = (g: number) => ({ ore: 'screwSteel', n: 1, g, any: [[GT, 27305]], more: 0 })
+  fs.writeFileSync(
+    path.join(packdata, 'recipes.jsonl'),
+    `${JSON.stringify({ h: 'codechicken.nei.recipe.ShapedRecipeHandler', in: [shaft(0), screw(1), shaft(2), screw(3), screw(5), shaft(6), { ore: 'craftingToolScrewdriver', n: 1, g: 7, any: [['gregtech:gt.metatool.01', 22]], more: 0 }, shaft(8)], out: [{ id: 'adventurebackpack:backpackComponent', meta: 6, n: 1 }] })}\n`,
+  )
+  const brain = startBrain(tmp.dir, bridge, { packdata })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(brain.output(), /\[packdata\] 配方册：1 条配方、1 个配方页/)
+  /** 第 n 次请求里模型看到的最后一条消息里的文字。 */
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+  const chest = bridge.containers[0]!
+  const at = { x: chest.x, y: chest.y, z: chest.z }
+
+  // 1. 一轮里：找物品 → 看做法 → 取料 → 合成（后两步排队）
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_item', input: { query: '直升机桨叶' } }] },
+    { toolCalls: [{ name: 'find_recipes', input: { id: 'adventurebackpack:backpackComponent', meta: 6 } }] },
+    {
+      toolCalls: [
+        { name: 'withdraw_items', input: { container: at, items: [{ id: 'IC2:itemRecipePart', meta: 12, count: 4 }, { id: GT, meta: 27305, count: 3 }, { id: 'gregtech:gt.metatool.01', count: 1 }] } },
+        { name: 'craft_item', input: { recipe: 0, queue: true } },
+      ],
+    },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '做一个直升机桨叶')
+  await waitFor('first turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 主人说话时指着什么：身体给的，整理成一行跟在那句话下面（箱子的名字是物品表里的中文名）
+  assert.match(seen(0), /Steve 私聊你：做一个直升机桨叶\n {2}（Steve 站在 \(12,64,3\) 面朝北，指着 箱子 \(12,64,-4\)［容器］；面前还有：Oak Drawers 1x2 \(14,64,-4\)［抽屉］）/)
+  // 找物品：读的是本地物品表，没有问服务器
+  assert.equal(seen(1), '"直升机桨叶" matches 1 item(s), most alike first.\n- 直升机桨叶 [adventurebackpack:backpackComponent/6]: 1 recipe(s) make it; used in none')
+  assert.equal(bridge.requestsOf('item.search').length + bridge.requestsOf('recipe.find').length, 0)
+  // 看做法：配方册里的那一条，附近有工作台
+  assert.deepEqual(seen(2).split('\n').slice(0, 3), [
+    '直升机桨叶 [adventurebackpack:backpackComponent/6] can be made 1 way(s), 1 recipe(s) in all. Ways you can use now come first:',
+    '1. 有序合成 — 1 recipe(s); CAN CRAFT NOW (crafting table at (8,64,-4))',
+    '   #0: 4× 精炼铁柄 [IC2:itemRecipePart/12] + 3× any screwSteel (e.g. 钢螺丝 [gregtech:gt.metaitem.01/27305]); needs tool any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22]) (worn, not used up) → 1× 直升机桨叶 — needs a crafting table (3x3)',
+  ])
+  // 合成任务：摆法是大脑照配方册给的，不是让服务器自己找配方
+  const craft = bridge.requestsOf('task.start').map((r) => r.task as Record<string, unknown>).find((task) => task.type === 'craft')!
+  const S = { id: 'IC2:itemRecipePart', meta: 12 }
+  const W = { ore: 'screwSteel' }
+  assert.deepEqual(craft, { type: 'craft', grid: [S, W, S, W, null, W, S, { ore: 'craftingToolScrewdriver' }, S], gives: { id: 'adventurebackpack:backpackComponent', meta: 6 }, rounds: 1 })
+
+  // 2. 两个任务做完：它被叫醒，结果里的东西叫的是中文名
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '直升机桨叶做好了。' } }] }, { text: '' })
+  const tasks = bridge.requestsOf('task.start').length
+  assert.equal(tasks, 2)
+  bridge.finishTask('Alu')
+  await waitFor('withdraw ended', () => bridge.bots.get('Alu')!.task?.type === 'craft' || bridge.bots.get('Alu')!.task === null, 5000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('woken for the withdraw', () => llm.requests.length >= 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  bridge.finishTask('Alu')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('直升机桨叶做好了')), 10_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
+  const ended = llm.requests.map((_, n) => seen(n)).find((text) => /（craft）完成了/.test(text))!
+  assert.match(ended, /crafted 1× adventurebackpack:backpackComponent\/6 "直升机桨叶"/)
+  // 背包里真的多了一个，用掉的是柄和螺丝，螺丝刀还在
+  const inventory = bridge.bots.get('Alu')!.inventory
+  const count = (id: string, meta: number) => inventory.filter((i) => i.id === id && i.meta === meta).reduce((n, i) => n + i.count, 0)
+  assert.deepEqual([count('adventurebackpack:backpackComponent', 6), count('IC2:itemRecipePart', 12), count(GT, 27305), count('gregtech:gt.metatool.01', 22)], [1, 0, 0, 1])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人在面板写了一本手册，然后问“任务书下一步做什么” → 它先翻手册再查任务书（本地没有资料，问的是服务器）→ 把能做的任务告诉主人', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })
   const llm = new MockLlm()
@@ -504,7 +606,9 @@ it('端到端：主人在面板写了一本手册，然后问“任务书下一�
   assert.match(seen(0), /手册：这段对话里现在没有任何一本手册的内容/)
   // 读到的是整本任务书手册
   assert.match(seen(1), /Manual \\"quests\\": /)
-  assert.match(seen(1), /任务书里的文字是英文的/)
+  assert.match(seen(1), /任务书的内容你本地有一份中文的/)
+  // 这个大脑启动时没有本地资料（日志里说了一句），所以任务书是问服务器的
+  assert.match(brain.output(), /\[packdata\] 没有本地资料（[^）]*no-packdata 不存在）：任务书改问服务器/)
   // 没设主人名单：看刚才跟它说话的那个人的进度
   assert.deepEqual(bridge.requestsOf('quest.search'), [{ state: 'available', player: 'Steve' }])
   assert.match(seen(2), /3 quest\(s\) match \(state available\) for Steve:/)
@@ -519,6 +623,430 @@ it('端到端：主人在面板写了一本手册，然后问“任务书下一�
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：大脑带着本地任务书资料启动，主人问“任务书下一步做什么” → 它查的是本地的中文任务书，只向服务器问谁做完了哪些', { skip: pythonMissing() }, async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  // 资料是生成器从一个小客户端包里生成的，和模拟 bridge 自带的那本任务书是同一本（Steve 做完了 1 和 2）
+  const { packdata } = buildFixturePackdata(tmp.dir)
+  const dataDir = path.join(tmp.dir, 'data')
+  fs.mkdirSync(dataDir)
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(dataDir, 'config.json'),
+    JSON.stringify({
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(dataDir, bridge, { packdata })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(brain.output(), /\[packdata\] 任务书：12 个任务、3 章（来自 Fixture-client\.zip/, diag())
+
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_quests', input: { state: 'available' } }] },
+    { toolCalls: [{ name: 'get_quest', input: { id: '4a' } }] },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '能做的有 6 个，比如“飞向天空”：做个直升机背包。' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '任务书下一步做什么')
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
+
+  // 能做的 6 个是按前置和 Steve 做完的 1、2 算出来的；任务名、章节名是中文
+  assert.match(seen(1), /6 quest\(s\) match \(state available\) for Steve:/)
+  assert.match(seen(1), /- 43 \\"导线，奇怪？\\" \[第0\.5阶 - 蒸汽时代\] \(main\): available/)
+  assert.equal(/基础制作：马达/.test(seen(1)), false, 'a locked quest is not listed as available')
+  assert.match(seen(2), /Quest 4a \\"飞向天空\\" \(Take to the Skies\), chapters \\"游历四方……\\", \\"第0\.5阶 - 蒸汽时代\\"\. State for Steve: available/)
+  assert.match(seen(2), /- retrieval, the items are kept: 1× adventurebackpack:copterPack/)
+  assert.match(seen(2), /直升机背包能让你在基地上空悬停/)
+  // 向服务器只问了进度，而且两次查询只问一次；任务的内容一个字都没问
+  assert.deepEqual(bridge.requestsOf('quest.progress'), [{ player: 'Steve' }])
+  assert.deepEqual(bridge.requests.map((r) => r.method).filter((m) => /^quest\.(lines|search|get)$/.test(m)), [])
+  assert.deepEqual(bridge.commandLog[0], { bot: 'Alu', command: 'tell Steve 能做的有 6 个，比如“飞向天空”：做个直升机背包。' })
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人在面板传一张图，叫它做成像素画 → 它写程序出草稿、报给主人 → 主人同意后发布成图纸、对比、开工', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [{ id: 'mock', label: 'mock', kind: 'openai-chat', baseUrl: llm.openaiBaseUrl, apiKey: 'k', model: 'gpt-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+
+  // 1. 主人在面板“图纸”页传一张 3×3 的小图：一个红心（红色正好是红色羊毛的颜色），其余透明
+  const R = [151, 52, 49, 255]
+  const O = [0, 0, 0, 0]
+  const heart = encodePng({ width: 3, height: 3, rgba: Buffer.from([R, O, R, R, R, R, O, R, O].flat()) })
+  const uploaded = await call('POST', '/images', { name: 'heart', data: heart.toString('base64') })
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded.json))
+
+  // 2. 主人叫它做成像素画：它看有哪些图 → 写程序出草稿 → 把样子、材料告诉主人，等他点头
+  const program = [
+    "const img = image('heart')",
+    'const b = blueprint(img.width, img.height, 1)',
+    'for (let y = 0; y < img.height; y++) {',
+    '  for (let x = 0; x < img.width; x++) {',
+    '    const [r, g, bl, a] = img.pixel(x, y)',
+    '    if (a >= 128) b.set(x, img.height - 1 - y, 0, nearestBlock(r, g, bl))',
+    '  }',
+    '}',
+    "b.save('heart-art')",
+  ].join('\n')
+  llm.enqueue(
+    { toolCalls: [{ name: 'list_images', input: {} }] },
+    { toolCalls: [{ name: 'run_program', input: { code: program } }] },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '画好了：3×3 的红心，要 6 块红色羊毛，立在 40 65 40。你去面板图纸页看看草稿，行我就盖。' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '把我传的 heart 那张图做成像素画，竖着立起来')
+  await waitFor('brain asked Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('first turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
+  // 提示词里指了路：手册目录里有 design
+  assert.match(JSON.stringify(llm.requests[0]!.body.messages[0]), /- design：[^\\]+/)
+  assert.match(seen(1), /1 image\(s\) \(name: width×height in pixels\):\\n- heart: 3×3/)
+  assert.match(seen(2), /Saved draft \\"heart-art\\": 3×3×1 \(x east-west × y up × z north-south\), 6 block\(s\) of 1 kind\(s\)\./)
+  assert.match(seen(2), /- 6× minecraft:wool\/14 \\"红色羊毛\\"/)
+  // 预览是从南面看的整幅画：和图片一样，上面两个角、下面一个尖
+  assert.match(seen(2), /z=0:\\nA\.A\\nAAA\\n\.A\./)
+  // 这时游戏里还什么都没有；主人在面板上看得到这张草稿
+  assert.equal(bridge.requestsOf('blueprint.put').length, 0)
+  assert.deepEqual((await call('GET', '/drafts')).json.drafts.map((d: { name: string }) => d.name), ['heart-art'])
+
+  // 3. 主人同意：发布成图纸 → 对比 → 开工
+  llm.enqueue(
+    { toolCalls: [{ name: 'publish_draft', input: { name: 'heart-art' } }] },
+    { toolCalls: [{ name: 'check_blueprint', input: { name: 'heart-art', x: 40, y: 65, z: 40 } }] },
+    { toolCalls: [{ name: 'build_blueprint', input: { name: 'heart-art', x: 40, y: 65, z: 40 } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '可以，盖吧')
+  const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'heart-art', x: 40, y: 65, z: 40 }, mode: 'replace' })
+  await waitFor('second turn finished', () => llm.requests.length === 8, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 身体收到的图纸，照它的读法就是那个红心
+  const blueprint = bridge.blueprints.get('heart-art')
+  assert.ok(blueprint && !('error' in blueprint), diag())
+  assert.deepEqual(blueprint.size, { x: 3, y: 3, z: 1 })
+  assert.deepEqual(blueprint.kinds.map((k) => `${k.id}/${k.meta}`), ['minecraft:air/0', 'minecraft:wool/14'])
+  // 最下面一层（y=0）是尖，最上面一层（y=2）是两个角
+  assert.deepEqual([...blueprint.cells], [0, 1, 0, 1, 1, 1, 1, 0, 1])
+  assert.match(seen(5), /Published draft \\"heart-art\\" as blueprint \\"heart-art\\" on the server \(3×3×1, 6 blocks\)/)
+  // 对比的结果：6 块红色羊毛都还要放
+  assert.match(seen(6), /- 6× minecraft:wool\/14/)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：它干活时往意见簿里记了一条 → 主人在面板上看得到，带着这一轮的原话、刚才的工具调用和两边的版本', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'sk-e2e-anthropic-key-0002', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  llm.enqueue(
+    { toolCalls: [{ name: 'list_containers', input: { radius: 8 } }] },
+    {
+      toolCalls: [
+        {
+          name: 'report_problem',
+          input: { title: '看不出附魔书是什么附魔', category: 'missing_tool', goal: '把时运书拿给主人', problem: 'list_containers 只给物品 id', wish: '带上 NBT 摘要' },
+        },
+      ],
+    },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '我分不出哪本是时运，你自己来拿一下' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '把箱子里那本时运书给我')
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 主人打开面板：导航上有个 1，意见簿里是这一条
+  const res = await fetch(`${origin}/api/login`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'preset-password-for-e2e' }) })
+  const cookie = res.headers.getSetCookie()[0]!.split(';')[0]!
+  const get = async (route: string) => (await (await fetch(`${origin}/api${route}`, { headers: { cookie } })).json()) as any
+  assert.deepEqual((await get('/overview')).feedback, { unread: 1 })
+  const listed = await get('/feedback')
+  assert.deepEqual(listed.reports.map((r: Record<string, unknown>) => [r.id, r.title, r.category, r.status]), [['f1', '看不出附魔书是什么附魔', 'missing_tool', 'new']])
+  const report = await get('/feedback/view?id=f1')
+  assert.deepEqual([report.goal, report.problem, report.wish], ['把时运书拿给主人', 'list_containers 只给物品 id', '带上 NBT 摘要'])
+  assert.deepEqual([report.context.bot, report.context.brainVersion, report.context.modVersion], ['Alu', '0.1.0', 'v0.1.0-mock'])
+  assert.match(report.context.instruction, /Steve 私聊你：把箱子里那本时运书给我/)
+  assert.deepEqual(report.context.recentTools.map((c: { tool: string; input: string }) => [c.tool, c.input]), [['list_containers', '{"radius":8}']])
+  // 存在数据目录里；里面没有 API key
+  const saved = fs.readFileSync(path.join(tmp.dir, 'feedback.jsonl'), 'utf8')
+  assert.match(saved, /看不出附魔书是什么附魔/)
+  assert.equal(saved.includes('sk-e2e-anthropic-key-0002'), false)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：一个服务商配两个模型，主人在面板上换了模型 → 不用重启，下一轮用的就是新模型和它自己的设置；日志里每一轮写着用的是哪个', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      version: 2,
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [
+        {
+          id: 'mock',
+          label: '模拟接口',
+          kind: 'openai-chat',
+          baseUrl: llm.openaiBaseUrl,
+          apiKey: 'sk-e2e-switch-key-0003',
+          models: [
+            { id: 'fast', name: 'gpt-fast', maxOutputTokens: 1111 },
+            { id: 'think', name: 'gpt-think', label: '思考版', maxOutputTokens: 2222, extraBody: { reasoning_effort: 'high' }, options: { maxTokensField: 'max_completion_tokens' } },
+          ],
+        },
+      ],
+      activeProviderId: 'mock',
+      activeModelId: 'fast',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+
+  // 1. 第一轮：用的是当前选中的 gpt-fast 和它的输出上限
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '在' } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '在吗')
+  await waitFor('first turn finished', () => llm.requests.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.deepEqual([llm.requests[0]!.body.model, llm.requests[0]!.body.max_tokens, llm.requests[0]!.body.reasoning_effort], ['gpt-fast', 1111, undefined])
+
+  // 2. 主人在页头把模型换成“思考版”：页头的列表里两个都在；换完概览上就是它
+  const before = (await call('GET', '/overview')).json
+  assert.deepEqual(before.models.map((m: { modelId: string; label: string }) => [m.modelId, m.label]), [['fast', 'gpt-fast'], ['think', '思考版']])
+  assert.equal(before.provider.modelId, 'fast')
+  const switched = await call('POST', '/models/use', { providerId: 'mock', modelId: 'think' })
+  assert.equal(switched.status, 200, JSON.stringify(switched.json))
+  assert.deepEqual([(await call('GET', '/overview')).json.provider.model, (await call('GET', '/overview')).json.provider.modelLabel], ['gpt-think', '思考版'])
+
+  // 3. 大脑没重启；下一轮发出去的请求用的就是新模型和它自己的设置（输出上限的字段名、思考参数）
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '还在' } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '还在吗')
+  await waitFor('second turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const second = llm.requests[2]!.body
+  assert.deepEqual([second.model, second.max_completion_tokens, second.max_tokens, second.reasoning_effort], ['gpt-think', 2222, undefined, 'high'])
+  assert.equal(llm.requests[2]!.headers.authorization, 'Bearer sk-e2e-switch-key-0003')
+
+  // 4. 日志里每一轮写着用的是哪个服务商的哪个模型，换模型也记了一笔
+  const log = ((await call('GET', '/log')).json.entries as { kind: string; text: string }[]).map((e) => e.text)
+  assert.ok(log.some((text) => /^第 \d+ 轮开始（模拟接口 \/ gpt-fast）：Steve 私聊你：在吗/.test(text)), log.join('\n'))
+  assert.ok(log.some((text) => /^第 \d+ 轮开始（模拟接口 \/ 思考版）：Steve 私聊你：还在吗/.test(text)), log.join('\n'))
+  assert.ok(log.includes('在面板上把模型换成了 模拟接口 / 思考版，下一轮起生效。'))
+
+  // 5. 添加模型时可以问接口它有哪些：用的是存着的 key
+  llm.modelList = [{ id: 'gpt-think' }, { id: 'gpt-fast' }, { id: 'gpt-other' }]
+  const remote = await call('POST', '/providers/remote-models', { id: 'mock' })
+  assert.deepEqual(remote.json, { ok: true, models: [{ id: 'gpt-fast' }, { id: 'gpt-other' }, { id: 'gpt-think' }] })
+  assert.equal(llm.modelListRequests[0]!.headers.authorization, 'Bearer sk-e2e-switch-key-0003')
+  // 接口没有这个功能时：说明原因，不是一个 500
+  llm.modelList = { status: 404, message: 'no such route' }
+  const none = await call('POST', '/providers/remote-models', { id: 'mock' })
+  assert.deepEqual([none.status, none.json.ok, none.json.error.status], [200, false, 404])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的模型真的收到这张图（下一轮不再重发）；换成看不了图的模型就只给文字；面板上看得到它看的图', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      version: 2,
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [
+        { id: 'ant', label: '能看图的', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'sk-e2e-vision-key-0004', models: [{ id: 'eyes', name: 'claude-eyes', vision: true }] },
+        { id: 'oa', label: '只认字的', kind: 'openai-chat', baseUrl: llm.openaiBaseUrl, apiKey: 'sk-e2e-vision-key-0005', models: [{ id: 'text', name: 'gpt-text' }, { id: 'eyes', name: 'gpt-eyes', vision: true }] },
+      ],
+      activeProviderId: 'ant',
+      activeModelId: 'eyes',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}\n--- rejected by the mock llm ---\n${JSON.stringify(llm.rejected)}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+  const isPng = (bytes: Buffer) => bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  /** 让它看一眼周围，等这一轮跑完；返回这一轮发给模型的请求。 */
+  const look = async (words: string, input: Record<string, unknown>) => {
+    const before = llm.requests.length
+    llm.enqueue({ toolCalls: [{ name: 'view_area', input }] }, { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '看到了' } }] }, { text: '' })
+    bridge.whisper('Alu', 'Steve', words)
+    await waitFor(`turn "${words}" finished`, () => llm.requests.length === before + 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+    return llm.requests.slice(before)
+  }
+
+  // 1. Anthropic 兼容、能看图：身体被问到了那个盒子，图放在 tool_result 里发给了模型（模拟服务像真实接口那样检查过这张图）
+  const first = await look('看看你周围', { radius: 6 })
+  assert.deepEqual(llm.rejected, [], diag())
+  // bot 站在 (10, 64, -4)：四周各 6 格，脚下 3 层，往上 8 层
+  assert.deepEqual(bridge.requestsOf('world.blocks'), [{ x1: 4, z1: -10, x2: 16, z2: 2, y1: 61, y2: 72, dim: 0 }])
+  assert.deepEqual(first.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  const sent = imagesInRequest(first[1]!)[0]!
+  assert.equal(sent.mediaType, 'image/png')
+  assert.ok(isPng(sent.bytes) && sent.bytes.length > 1000)
+  const result = first[1]!.body.messages.at(-1).content[0]
+  assert.equal(result.type, 'tool_result')
+  assert.match(result.content[0].text, /^Picture of x 4\.\.16, y 61\.\.72, z -10\.\.2 \(13×12×13 blocks\): iso view from the southeast corner/)
+  // 假世界里 y=64 是草地、往下是石头，bot 旁边有箱子和机器；自己被标在图上
+  assert.match(result.content[0].text, /- the magenta marker is you \(Alu\)/)
+  // （草地那一层有 4 格是箱子、抽屉、工作台和机器）
+  assert.match(result.content[0].text, /- 507× minecraft:stone \(gray\)\n- 165× minecraft:grass \(green top, brown sides\)\n/)
+  assert.match(result.content[0].text, /- 1× gregtech:gt\.blockmachines \([a-z ]+; colour made up, not its real colour\)/)
+  assert.deepEqual(result.content[1].source.media_type, 'image/png')
+
+  // 2. 下一轮：之前那张图不再发，原处是一句占位文字；这一轮新要的图照常发
+  const second = await look('再从上面看看', { radius: 6, view: 'top' })
+  assert.deepEqual(llm.rejected, [], diag())
+  assert.deepEqual(second.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  assert.equal(JSON.stringify(second[0]!.body).includes(sent.bytes.toString('base64').slice(0, 300)), false)
+  assert.match(JSON.stringify(second[0]!.body), /\[picture seen earlier, no longer attached: iso view from the southeast corner of the world at x 4\.\.16, y 61\.\.72, z -10\.\.2\./)
+
+  // 3. 面板上：对话日志里这两条结果各带一张图，按编号取得到，就是发给模型的那张
+  const entries = ((await call('GET', '/log')).json.entries as { kind: string; who?: string; pictures?: string[] }[]).filter((e) => e.kind === 'tool_result' && e.who === 'view_area')
+  assert.deepEqual(entries.map((e) => e.pictures?.length), [1, 1])
+  const shown = await fetch(`${origin}/api/pictures/file?id=${entries[0]!.pictures![0]}`, { headers: { cookie } })
+  assert.equal(shown.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await shown.arrayBuffer()), sent.bytes)
+
+  // 4. 换成看不了图的模型（OpenAI 兼容）：同一个工具只给文字，请求里一张图都没有
+  assert.equal((await call('POST', '/models/use', { providerId: 'oa', modelId: 'text' })).status, 200)
+  const blind = await look('现在呢', { radius: 6 })
+  assert.deepEqual(llm.rejected, [], diag())
+  assert.deepEqual(blind.map((r) => [r.api, imagesInRequest(r).length]), [['openai', 0], ['openai', 0], ['openai', 0]])
+  const words = blind[1]!.body.messages.at(-1)
+  assert.equal(words.role, 'tool')
+  assert.match(words.content, /^No picture is attached: the model you are running on cannot see pictures/)
+  assert.match(words.content, /\nLayer by layer, from the bottom up:\ny=61\.\.63: 169 of 169 cells filled: 169 stone\n/)
+
+  // 5. 同一家换成能看图的那个模型：OpenAI 的写法是图放在紧跟工具结果的一条 user 消息里
+  assert.equal((await call('POST', '/models/use', { providerId: 'oa', modelId: 'eyes' })).status, 200)
+  const again = await look('再看一眼', { radius: 6, view: 'side', from: 'south' })
+  assert.deepEqual(llm.rejected, [], diag())
+  assert.deepEqual(again.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  const tail = again[1]!.body.messages.slice(-2)
+  assert.deepEqual([tail[0].role, tail[1].role, tail[1].content.map((part: { type: string }) => part.type)], ['tool', 'user', ['text', 'image_url']])
+  assert.match(tail[0].content, /\[The picture is in the next message\.\]$/)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+  // 落盘的历史里没有任何一张图的内容
+  const history = fs.readFileSync(path.join(tmp.dir, 'history.json'), 'utf8')
+  assert.equal(history.includes('iVBORw0KGgo'), false)
+  assert.ok(history.includes('picture seen earlier, no longer attached'))
 })
 
 it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机器、取料、用车床加工 → 取回产物后告诉主人；没电的机器开不了工', async (t) => {

@@ -1,6 +1,8 @@
 // 面板前端。手写的原生 JS，没有框架和构建步骤。
 // 所有来自服务器的文字都用 textContent 放进页面，不拼 HTML。
 
+import { createViewer } from './viewer3d.js'
+
 // ── 小工具 ──
 
 const $ = (selector, root = document) => root.querySelector(selector)
@@ -277,6 +279,36 @@ function renderOverview(o) {
     btn.addEventListener('click', () => act(btn, () => api('POST', '/tasks/cancel', { id }), `已取消 ${id}`).then(refreshOverview))
     return btn
   }
+  // 例程：它写的程序在后台一步步调工具（一次搬几十样东西这类活）。跑着的时候可以在这里停
+  const routine = o.agent?.routine
+  const ROUTINE_STATES = { running: '正在跑', done: '跑完了', failed: '出错停了', stopped: '被停掉了', limit: '到上限停了' }
+  let routineBlock = null
+  if (routine) {
+    const stopBtn = h('button', { type: 'button', class: 'small danger', text: '停止例程' })
+    stopBtn.addEventListener('click', () => act(stopBtn, () => api('POST', '/routine/stop', {}), '已停止例程').then(refreshOverview))
+    const now = routine.current ? `正等着：${routine.current.tool}${routine.current.taskId ? `（任务 ${routine.current.taskId}）` : ''}` : ''
+    routineBlock = h(
+      'div',
+      null,
+      h(
+        'div',
+        { class: 'row' },
+        h('span', { class: `badge ${routine.status === 'done' ? 'ok' : routine.status === 'running' ? '' : 'bad'}`, text: ROUTINE_STATES[routine.status] ?? routine.status }),
+        h('span', { class: 'grow', text: `例程 ${routine.id}（${routine.name}）：调了 ${routine.calls} 次工具，开了 ${routine.actions} 个任务。${now}` }),
+        h('span', { class: 'spacer' }),
+        routine.status === 'running' ? stopBtn : null,
+      ),
+      routine.ending && routine.status !== 'running' ? h('p', { class: 'muted', text: routine.ending }) : null,
+      (routine.recent ?? []).length > 0 || (routine.logs ?? []).length > 0
+        ? h(
+            'details',
+            null,
+            h('summary', { text: '最近几步和它的日志' }),
+            h('pre', { class: 'manual-text mono', text: [...(routine.recent ?? []).map((c) => `#${c.n} ${c.tool} ${c.input} → ${c.ok ? '' : '失败：'}${c.result}`), ...(routine.logs ?? []).map((l) => `log: ${l}`)].join('\n') }),
+          )
+        : null,
+    )
+  }
   const active = tasks?.active
   const ratio = active?.progress && active.progress.total > 0 ? Math.min(1, active.progress.done / active.progress.total) : null
   const bar = h('div', { class: 'progress' }, h('div'))
@@ -285,6 +317,7 @@ function renderOverview(o) {
     'div',
     { class: 'card' },
     h('div', { class: 'row' }, h('h2', { text: '任务' }), h('span', { class: 'spacer' }), cancelAll),
+    routineBlock,
     !tasks
       ? h('p', { class: 'muted', text: '拿不到任务列表。' })
       : [
@@ -339,7 +372,7 @@ function renderOverview(o) {
     { class: 'card' },
     h('h2', { text: '模型' }),
     kv([
-      ['当前使用', o.provider ? `${o.provider.label}（${o.provider.model}）` : h('span', { class: 'error', text: '还没配置。去“模型”页添加。' })],
+      ['当前使用', o.provider ? `${o.provider.label} / ${o.provider.modelLabel}${o.provider.modelLabel !== o.provider.model ? `（${o.provider.model}）` : ''}` : h('span', { class: 'error', text: '还没配置。去“模型”页添加。' })],
       ['大脑状态', a.outage ? h('span', { class: 'error', text: `模型接口故障，已连续失败 ${a.outage.failures} 次，${when(a.outage.nextRetryAt)} 再试` }) : a.busy ? '正在思考' : '空闲'],
       a.outage ? ['失败原因', h('span', { class: 'error', text: a.outage.lastError })] : null,
       a.pending > 0 ? ['等待处理', `${a.pending} 件事`] : null,
@@ -388,6 +421,8 @@ async function refreshOverview() {
     const o = await api('GET', '/overview')
     overview = o
     renderBadges(o)
+    renderModelSwitch(o)
+    setFeedbackCount(o.feedback?.unread ?? 0)
     // 内容没变就不重画，免得正要点的按钮被换掉
     const key = JSON.stringify({ ...o, time: 0 })
     if (currentTab === 'overview' && key !== overviewKey) {
@@ -433,6 +468,22 @@ function renderEntry(e) {
   if (e.detail) {
     body.append(h('details', null, h('summary', { text: e.kind === 'turn' ? '给模型看的内容' : '详情' }), h('pre', { text: e.detail })))
   }
+  // 这条工具结果带的图：它看的（或者本来要给它看的）就是这张
+  for (const id of e.pictures ?? []) {
+    const src = `/api/pictures/file?id=${encodeURIComponent(id)}`
+    const img = h('img', { class: 'log-picture', src, alt: '工具结果带的图', loading: 'lazy' })
+    const link = h('a', { href: src, target: '_blank', rel: 'noopener', title: '点开看原图' }, img)
+    img.addEventListener('error', () => link.replaceWith(h('span', { class: 'muted', text: '（这张图已经清理掉了）' })))
+    const box = h('div', null, link)
+    // 简图还存着画它用的方块数据：可以打开一个能拖着转的三维预览
+    if ((e.scenes ?? []).includes(id)) {
+      const holder = h('div', { class: 'log-viewer' })
+      const openBtn = h('button', { type: 'button', class: 'small', text: '三维预览' })
+      openBtn.addEventListener('click', () => toggleLogViewer(id, holder, openBtn))
+      box.append(h('div', { class: 'row' }, openBtn), holder)
+    }
+    body.append(box)
+  }
   return h(
     'div',
     { class: `entry kind-${e.kind}${e.isError ? ' is-error' : ''}` },
@@ -440,6 +491,28 @@ function renderEntry(e) {
     h('span', { class: 'tag', text: KIND_LABELS[e.kind] ?? e.kind }),
     body,
   )
+}
+
+/** 对话日志里同时只开一个三维预览（浏览器能开的 WebGL 画布有限）：开新的就把旧的收起来。 */
+let logViewer = null
+
+function closeLogViewer() {
+  if (!logViewer) return
+  logViewer.viewer?.destroy()
+  logViewer.holder.replaceChildren()
+  logViewer.button.textContent = '三维预览'
+  logViewer = null
+}
+
+async function toggleLogViewer(id, holder, button) {
+  const wasOpen = logViewer?.id === id
+  closeLogViewer()
+  if (wasOpen) return
+  const scene = await act(button, () => api('GET', `/pictures/model?id=${encodeURIComponent(id)}`))
+  if (!scene) return
+  closeLogViewer()
+  button.textContent = '收起三维预览'
+  logViewer = { id, holder, button, viewer: createViewer(holder, scene) }
 }
 
 function appendEntry(e) {
@@ -510,9 +583,11 @@ $('#chat-input').addEventListener('keydown', (ev) => {
 })
 
 // ── 模型 ──
+// 服务商（接口类型、地址、key）和它下面的模型分开：一个服务商可以有好几个模型，各有各的设置；现在用哪一个随时能换。
 
-let providerState = { providers: [], activeProviderId: '', adapters: [] }
-let editingProvider = null // 正在编辑的服务商 id；'new' 表示新增
+let providerState = { providers: [], activeProviderId: '', activeModelId: '', adapters: [] }
+/** 正在填的表单：null 没在填；{ provider: 'new' | id } 在填服务商；{ provider: id, model: 'new' | id, from? } 在填它下面的一个模型。 */
+let editingModels = null
 const testResults = new Map()
 
 function parseJsonField(text, label) {
@@ -528,60 +603,167 @@ function parseJsonField(text, label) {
   return value
 }
 
+const modelLabel = (m) => m.label || m.name
+const formField = (text, input, hint) => h('div', null, h('label', { for: input.id, text }), input, hint ? h('p', { class: 'hint', text: hint }) : null)
+
+function applyProviderState(next) {
+  providerState = next
+  editingModels = null
+  renderProviders()
+  refreshOverview()
+}
+
+/** 适配器的开关画成表单项。scope 是 provider 或 model：只画跟着它走的那些。返回一个读出当前值的函数。 */
+function optionFields(box, kind, scope, current) {
+  const adapter = providerState.adapters.find((a) => a.kind === kind)
+  const readers = new Map()
+  box.replaceChildren(
+    ...(adapter?.options ?? [])
+      .filter((opt) => (opt.scope ?? 'model') === scope)
+      .map((opt) => {
+        const value = current && opt.key in current ? current[opt.key] : opt.default
+        if (opt.type === 'boolean') {
+          const input = h('input', { type: 'checkbox', checked: value === true })
+          readers.set(opt.key, () => input.checked)
+          return h('div', null, h('label', { class: 'check' }, input, ` ${opt.key}`), h('p', { class: 'hint', text: opt.description }))
+        }
+        const input = h('select', null, (opt.values ?? []).map((v) => h('option', { value: v, text: v, selected: v === value })))
+        readers.set(opt.key, () => input.value)
+        return h('div', null, h('label', { text: opt.key }), input, h('p', { class: 'hint', text: opt.description }))
+      }),
+  )
+  return () => Object.fromEntries([...readers.entries()].map(([key, read]) => [key, read()]))
+}
+
+/**
+ * 模型名的输入框，带一个“从接口拉取”：拉到了就能在输入框里挑，拉不到写明原因，照样可以手填。
+ * providerDraft() 给出问哪一家：已保存的给 { id }，正在填的给整份草稿。
+ */
+function modelNameField(id, value, providerDraft) {
+  const list = h('datalist', { id: `${id}-list` })
+  const input = h('input', { id, type: 'text', value: value ?? '', placeholder: '模型名，照服务商文档填，或者从接口拉取', spellcheck: false, autocomplete: 'off' })
+  input.setAttribute('list', list.id)
+  const note = h('p', { class: 'hint', text: '发给接口的模型名。' })
+  const fetchBtn = h('button', { type: 'button', class: 'small', text: '从接口拉取' })
+  fetchBtn.addEventListener('click', async () => {
+    note.className = 'hint'
+    note.textContent = '正在问接口有哪些模型…'
+    let draft
+    try {
+      draft = providerDraft()
+    } catch (e) {
+      note.className = 'error'
+      note.textContent = e.message
+      return
+    }
+    const res = await act(fetchBtn, () => api('POST', '/providers/remote-models', draft))
+    if (!res) {
+      note.textContent = '发给接口的模型名。'
+    } else if (res.ok) {
+      list.replaceChildren(...res.models.map((m) => h('option', { value: m.id, label: m.label ?? '' })))
+      note.textContent = res.models.length > 0 ? `接口说有 ${res.models.length} 个模型：点输入框挑一个，或者打几个字筛。` : '接口回了一个空的列表，手填吧。'
+    } else {
+      note.className = 'error'
+      note.textContent = `没拉到（${res.error.kind}${res.error.status ? `，HTTP ${res.error.status}` : ''}）：${res.error.message}。手填模型名也行。`
+    }
+  })
+  return { input, node: h('div', null, h('label', { for: id, text: '模型名' }), h('div', { class: 'row nowrap' }, h('div', { class: 'fill' }, input), fetchBtn), list, note) }
+}
+
+function testResultBox(res) {
+  return res.ok
+    ? h('div', { class: 'test-result ok', text: `连接正常：${(res.durationMs / 1000).toFixed(1)} 秒，模型 ${res.model}，回复“${res.reply}”${res.withPicture ? '。请求里带了一张小图，接口收下了' : ''}` })
+    : h('div', { class: 'test-result bad', text: `连接失败（${res.error.kind}${res.error.status ? `，HTTP ${res.error.status}` : ''}）：${res.error.message}${res.withPicture ? '。这次请求里带了一张小图（这个模型标着“能看图”）：如果它其实不收图，把“能看图”关掉再试' : ''}` })
+}
+
+/** 服务商的表单：接口类型、地址、key 这些一家只有一份的东西。新建时可以顺手填上第一个模型。 */
 function providerForm(provider) {
   const isNew = !provider
   const adapters = providerState.adapters
-  const p = provider ?? { kind: adapters[0]?.kind, label: '', baseUrl: '', model: '', options: {} }
+  const p = provider ?? { kind: adapters[0]?.kind, label: '', baseUrl: '', options: {} }
   const form = h('form', { class: 'stack' })
-  const fields = h('div', { class: 'fields' })
   const kind = h('select', { id: 'pf-kind' }, adapters.map((a) => h('option', { value: a.kind, text: a.label, selected: a.kind === p.kind })))
-  const label = h('input', { id: 'pf-label', type: 'text', value: p.label ?? '', placeholder: '给自己看的名字，例如“主力”' })
+  const label = h('input', { id: 'pf-label', type: 'text', value: p.label ?? '', placeholder: '给自己看的名字，例如“官方接口”' })
   const baseUrl = h('input', { id: 'pf-url', type: 'url', value: p.baseUrl ?? '', required: true })
   const apiKey = h('input', { id: 'pf-key', type: 'password', autocomplete: 'off', placeholder: p.apiKeySet ? `已设置（${p.apiKeyMasked}），留空表示不修改` : '还没设置' })
-  const model = h('input', { id: 'pf-model', type: 'text', value: p.model ?? '', required: true, placeholder: '模型名，照服务商文档填' })
-  const maxOut = h('input', { id: 'pf-max', type: 'number', min: 1, value: p.maxOutputTokens ?? '', placeholder: '留空用接口默认值' })
-  const temp = h('input', { id: 'pf-temp', type: 'number', min: 0, max: 2, step: 0.1, value: p.temperature ?? '', placeholder: '留空用接口默认值' })
-  const timeout = h('input', { id: 'pf-timeout', type: 'number', min: 1, value: p.timeoutMs ? Math.round(p.timeoutMs / 1000) : '', placeholder: '默认 120' })
   const headers = h('textarea', { id: 'pf-headers', class: 'mono', rows: 2, placeholder: '{"anthropic-beta": "…"}', value: p.extraHeaders ? JSON.stringify(p.extraHeaders, null, 2) : '' })
-  const extraBody = h('textarea', { id: 'pf-body', class: 'mono', rows: 3, placeholder: '{"reasoning_effort": "low"}', value: p.extraBody ? JSON.stringify(p.extraBody, null, 2) : '' })
   const optionsBox = h('div', { class: 'fields field-wide' })
-  const optionInputs = new Map()
-
+  let readOptions = () => ({})
   const renderOptions = () => {
     const adapter = adapters.find((a) => a.kind === kind.value)
     baseUrl.placeholder = adapter ? `例如 ${adapter.baseUrlExample}` : ''
-    optionInputs.clear()
-    optionsBox.replaceChildren(
-      ...(adapter?.options ?? []).map((opt) => {
-        const current = kind.value === p.kind && p.options && opt.key in p.options ? p.options[opt.key] : opt.default
-        if (opt.type === 'boolean') {
-          const input = h('input', { type: 'checkbox', checked: current === true })
-          optionInputs.set(opt.key, () => input.checked)
-          return h('div', null, h('label', { class: 'check' }, input, ` ${opt.key}`), h('p', { class: 'hint', text: opt.description }))
-        }
-        const input = h('select', null, (opt.values ?? []).map((v) => h('option', { value: v, text: v, selected: v === current })))
-        optionInputs.set(opt.key, () => input.value)
-        return h('div', null, h('label', { text: opt.key }), input, h('p', { class: 'hint', text: opt.description }))
-      }),
-    )
+    readOptions = optionFields(optionsBox, kind.value, 'provider', kind.value === p.kind ? p.options : undefined)
   }
   kind.addEventListener('change', renderOptions)
   renderOptions()
 
   const collect = () => {
-    const out = {
-      kind: kind.value,
-      label: label.value.trim(),
-      baseUrl: baseUrl.value.trim(),
-      apiKey: apiKey.value, // 留空 = 不修改
-      model: model.value.trim(),
-      options: Object.fromEntries([...optionInputs.entries()].map(([key, read]) => [key, read()])),
-    }
+    const out = { kind: kind.value, label: label.value.trim(), baseUrl: baseUrl.value.trim(), apiKey: apiKey.value, options: readOptions() } // key 留空 = 不修改
+    const eh = parseJsonField(headers.value, '额外请求头')
+    if (eh) out.extraHeaders = eh
+    return out
+  }
+  // 新建时顺手填第一个模型（可以空着，之后再加）
+  const first = isNew ? modelNameField('pf-model', '', collect) : null
+
+  const saveBtn = h('button', { type: 'submit', class: 'primary', text: isNew ? '添加' : '保存' })
+  const cancelBtn = h('button', { type: 'button', text: '取消' })
+  cancelBtn.addEventListener('click', () => {
+    editingModels = null
+    renderProviders()
+  })
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const saved = await act(
+      saveBtn,
+      () => {
+        const body = collect()
+        if (first && first.input.value.trim()) body.model = first.input.value.trim()
+        return isNew ? api('POST', '/providers', body) : api('PUT', `/providers/${provider.id}`, body)
+      },
+      '已保存',
+    )
+    if (saved) applyProviderState(saved)
+  })
+
+  form.append(
+    h(
+      'div',
+      { class: 'fields' },
+      formField('接口类型', kind),
+      formField('显示名', label),
+      h('div', { class: 'field-wide' }, h('label', { for: 'pf-url', text: '服务地址' }), baseUrl),
+      formField('API key', apiKey, '只写不读：保存后这里只显示掩码。'),
+      first ? first.node : null,
+      optionsBox,
+      h('div', { class: 'field-wide' }, h('label', { for: 'pf-headers', text: '额外请求头（JSON 对象，可留空）' }), headers),
+    ),
+    isNew ? h('p', { class: 'hint', text: '输出上限、温度、思考相关的参数是跟着模型走的：添加以后在模型上设。' }) : null,
+    h('div', { class: 'row' }, saveBtn, cancelBtn),
+  )
+  return form
+}
+
+/** 一个模型的表单：模型名，和跟着这个模型走的设置。 */
+function modelForm(provider, model, isNew) {
+  const m = model ?? { name: '', label: '', options: {} }
+  const form = h('form', { class: 'stack' })
+  const name = modelNameField('mf2-name', m.name, () => ({ id: provider.id }))
+  name.input.required = true
+  const label = h('input', { id: 'mf2-label', type: 'text', value: m.label ?? '', maxLength: 60, placeholder: '可以空着，空着就显示模型名' })
+  const maxOut = h('input', { id: 'mf2-max', type: 'number', min: 1, value: m.maxOutputTokens ?? '', placeholder: '留空用接口默认值' })
+  const temp = h('input', { id: 'mf2-temp', type: 'number', min: 0, max: 2, step: 0.1, value: m.temperature ?? '', placeholder: '留空用接口默认值' })
+  const timeout = h('input', { id: 'mf2-timeout', type: 'number', min: 1, value: m.timeoutMs ? Math.round(m.timeoutMs / 1000) : '', placeholder: '默认 120' })
+  const extraBody = h('textarea', { id: 'mf2-body', class: 'mono', rows: 3, placeholder: '{"reasoning_effort": "low"}', value: m.extraBody ? JSON.stringify(m.extraBody, null, 2) : '' })
+  const optionsBox = h('div', { class: 'fields field-wide' })
+  const readOptions = optionFields(optionsBox, provider.kind, 'model', m.options)
+  const vision = h('input', { id: 'mf2-vision', type: 'checkbox', checked: m.vision === true })
+
+  const collect = () => {
+    const out = { name: name.input.value.trim(), label: label.value.trim(), options: readOptions(), vision: vision.checked }
     if (maxOut.value !== '') out.maxOutputTokens = Number(maxOut.value)
     if (temp.value !== '') out.temperature = Number(temp.value)
     if (timeout.value !== '') out.timeoutMs = Number(timeout.value) * 1000
-    const eh = parseJsonField(headers.value, '额外请求头')
-    if (eh) out.extraHeaders = eh
     const eb = parseJsonField(extraBody.value, '额外请求参数')
     if (eb) out.extraBody = eb
     return out
@@ -591,109 +773,154 @@ function providerForm(provider) {
   const testBtn = h('button', { type: 'button', text: '测试连接' })
   testBtn.addEventListener('click', async () => {
     result.replaceChildren(h('p', { class: 'muted', text: '正在测试…' }))
-    const res = await act(testBtn, () => api('POST', '/providers/test', { ...collect(), ...(isNew ? {} : { id: provider.id }) }))
+    const res = await act(testBtn, () => api('POST', '/providers/test', { id: provider.id, ...collect() }))
     result.replaceChildren(res ? testResultBox(res) : '')
   })
   const saveBtn = h('button', { type: 'submit', class: 'primary', text: isNew ? '添加' : '保存' })
   const cancelBtn = h('button', { type: 'button', text: '取消' })
   cancelBtn.addEventListener('click', () => {
-    editingProvider = null
+    editingModels = null
     renderProviders()
   })
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault()
-    const saved = await act(saveBtn, () => (isNew ? api('POST', '/providers', collect()) : api('PUT', `/providers/${provider.id}`, collect())), '已保存')
-    if (saved) {
-      providerState = saved
-      editingProvider = null
-      renderProviders()
-      refreshOverview()
-    }
+    const saved = await act(saveBtn, () => (isNew ? api('POST', `/providers/${provider.id}/models`, collect()) : api('PUT', `/providers/${provider.id}/models/${model.id}`, collect())), '已保存')
+    if (saved) applyProviderState(saved)
   })
-
-  const field = (text, input, hint) => h('div', null, h('label', { for: input.id, text }), input, hint ? h('p', { class: 'hint', text: hint }) : null)
-  fields.append(
-    field('接口类型', kind),
-    field('显示名', label),
-    h('div', { class: 'field-wide' }, h('label', { for: 'pf-url', text: '服务地址' }), baseUrl),
-    field('API key', apiKey, '只写不读：保存后这里只显示掩码。'),
-    field('模型名', model),
-    field('输出上限（token）', maxOut),
-    field('温度', temp),
-    field('超时（秒）', timeout),
-    optionsBox,
-    h('div', { class: 'field-wide' }, h('label', { for: 'pf-headers', text: '额外请求头（JSON 对象，可留空）' }), headers),
-    h('div', { class: 'field-wide' }, h('label', { for: 'pf-body', text: '额外请求参数（JSON 对象，浅合并进请求体，可留空）' }), extraBody),
+  form.append(
+    h(
+      'div',
+      { class: 'fields' },
+      name.node,
+      formField('显示名', label, '同一个模型想存两份不同的设置（比如开不开思考）来对比，就靠它区分。'),
+      formField('输出上限（token）', maxOut),
+      formField('温度', temp),
+      formField('超时（秒）', timeout, '想得久的模型给长一点。'),
+      h(
+        'div',
+        null,
+        h('label', { class: 'check' }, vision, ' 这个模型能看图'),
+        h('p', { class: 'hint', text: '开着：它要看的图（世界和草稿的简图、你传的图片）会真的发给它。关着：只给它文字说明。图比文字费得多；模型其实不收图的话，“测试连接”会报出来。' }),
+      ),
+      optionsBox,
+      h(
+        'div',
+        { class: 'field-wide' },
+        h('label', { for: 'mf2-body', text: '额外请求参数（JSON 对象，浅合并进请求体，可留空）' }),
+        extraBody,
+        h('p', { class: 'hint', text: '思考相关的参数放这里，照服务商的文档写，例如 {"reasoning_effort": "high"} 或 {"thinking": {"type": "enabled", "budget_tokens": 2048}}。' }),
+      ),
+    ),
+    h('div', { class: 'row' }, saveBtn, testBtn, cancelBtn),
+    result,
   )
-  form.append(fields, h('div', { class: 'row' }, saveBtn, testBtn, cancelBtn), result)
   return form
 }
 
-function testResultBox(res) {
-  return res.ok
-    ? h('div', { class: 'test-result ok', text: `连接正常：${(res.durationMs / 1000).toFixed(1)} 秒，模型 ${res.model}，回复“${res.reply}”` })
-    : h('div', { class: 'test-result bad', text: `连接失败（${res.error.kind}${res.error.status ? `，HTTP ${res.error.status}` : ''}）：${res.error.message}` })
+/** 一句话说明一个模型的设置。 */
+function modelSummary(m) {
+  const parts = []
+  if (m.label && m.label !== m.name) parts.push(m.name)
+  if (m.vision) parts.push('能看图')
+  if (m.maxOutputTokens) parts.push(`输出上限 ${num(m.maxOutputTokens)}`)
+  if (m.temperature !== undefined) parts.push(`温度 ${m.temperature}`)
+  if (m.extraBody) parts.push(`额外参数 ${Object.keys(m.extraBody).join('、')}`)
+  return parts.join(' · ')
 }
 
 function renderProviders() {
   const root = $('#tab-models')
-  const { providers, activeProviderId, adapters } = providerState
+  const { providers, activeProviderId, activeModelId, adapters } = providerState
   const kindLabel = (kind) => adapters.find((a) => a.kind === kind)?.label ?? kind
-  const addBtn = h('button', { type: 'button', class: 'primary', text: '添加服务商', disabled: editingProvider !== null })
+  const busy = editingModels !== null
+  const addBtn = h('button', { type: 'button', class: 'primary', text: '添加服务商', disabled: busy })
   addBtn.addEventListener('click', () => {
-    editingProvider = 'new'
+    editingModels = { provider: 'new' }
     renderProviders()
   })
 
-  const cards = providers.map((p) => {
-    if (editingProvider === p.id) return h('div', { class: 'card' }, h('h2', { text: `编辑：${p.label}` }), providerForm(p))
-    const isActive = p.id === activeProviderId
-    const result = h('div')
-    if (testResults.has(p.id)) result.append(testResultBox(testResults.get(p.id)))
-    const useBtn = h('button', { type: 'button', class: 'small', text: '设为当前', disabled: isActive })
+  const modelRow = (p, m) => {
+    const key = `${p.id}/${m.id}`
+    if (editingModels?.provider === p.id && editingModels.model === m.id) return h('li', { class: 'block' }, h('h3', { text: `编辑模型：${modelLabel(m)}` }), modelForm(p, m, false))
+    const isActive = p.id === activeProviderId && m.id === activeModelId
+    const result = h('div', { class: 'field-wide' })
+    if (testResults.has(key)) result.append(testResultBox(testResults.get(key)))
+    const useBtn = h('button', { type: 'button', class: 'small', text: '用这个', disabled: isActive })
     useBtn.addEventListener('click', async () => {
-      const next = await act(useBtn, () => api('POST', `/providers/${p.id}/activate`, {}), `现在用 ${p.label}`)
-      if (next) {
-        providerState = next
-        renderProviders()
-        refreshOverview()
-      }
+      const next = await act(useBtn, () => api('POST', '/models/use', { providerId: p.id, modelId: m.id }), `换成了 ${p.label} / ${modelLabel(m)}，下一轮起生效`)
+      if (next) applyProviderState(next)
     })
-    const testBtn = h('button', { type: 'button', class: 'small', text: '测试连接' })
+    const testBtn = h('button', { type: 'button', class: 'small', text: '测试' })
     testBtn.addEventListener('click', async () => {
       result.replaceChildren(h('p', { class: 'muted', text: '正在测试…' }))
-      const { apiKeySet, apiKeyMasked, ...rest } = p
-      const res = await act(testBtn, () => api('POST', '/providers/test', { ...rest, apiKey: '' }))
-      if (res) testResults.set(p.id, res)
+      const res = await act(testBtn, () => api('POST', '/providers/test', { id: p.id, modelId: m.id }))
+      if (res) testResults.set(key, res)
       result.replaceChildren(res ? testResultBox(res) : '')
     })
-    const editBtn = h('button', { type: 'button', class: 'small', text: '编辑', disabled: editingProvider !== null })
+    const editBtn = h('button', { type: 'button', class: 'small', text: '编辑', disabled: busy })
     editBtn.addEventListener('click', () => {
-      editingProvider = p.id
+      editingModels = { provider: p.id, model: m.id }
+      renderProviders()
+    })
+    // 复制一份：同一个模型换一组设置来对比
+    const copyBtn = h('button', { type: 'button', class: 'small', text: '复制', disabled: busy })
+    copyBtn.addEventListener('click', () => {
+      editingModels = { provider: p.id, model: 'new', from: { ...m, label: `${modelLabel(m)}（副本）` } }
       renderProviders()
     })
     const delBtn = h('button', { type: 'button', class: 'small danger', text: '删除' })
     delBtn.addEventListener('click', async () => {
-      if (!confirm(`删除服务商“${p.label}”？它的 API key 也会一起删掉。`)) return
-      const next = await act(delBtn, () => api('DELETE', `/providers/${p.id}`, {}), '已删除')
+      if (!confirm(`从“${p.label}”下面删掉模型“${modelLabel(m)}”？`)) return
+      const next = await act(delBtn, () => api('DELETE', `/providers/${p.id}/models/${m.id}`, {}), '已删除')
       if (next) {
-        providerState = next
-        testResults.delete(p.id)
-        renderProviders()
-        refreshOverview()
+        testResults.delete(key)
+        applyProviderState(next)
       }
     })
     return h(
+      'li',
+      { class: 'wrap' },
+      isActive ? h('span', { class: 'badge ok', text: '当前使用' }) : null,
+      h('div', { class: 'grow' }, h('span', { class: 'mono', text: modelLabel(m) }), modelSummary(m) ? h('span', { class: 'muted', text: `  ${modelSummary(m)}` }) : null),
+      useBtn,
+      testBtn,
+      editBtn,
+      copyBtn,
+      delBtn,
+      result,
+    )
+  }
+
+  const cards = providers.map((p) => {
+    if (editingModels?.provider === p.id && editingModels.model === undefined) return h('div', { class: 'card' }, h('h2', { text: `编辑服务商：${p.label}` }), providerForm(p))
+    const editBtn = h('button', { type: 'button', class: 'small', text: '编辑', disabled: busy })
+    editBtn.addEventListener('click', () => {
+      editingModels = { provider: p.id }
+      renderProviders()
+    })
+    const delBtn = h('button', { type: 'button', class: 'small danger', text: '删除' })
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除服务商“${p.label}”？它的 API key 和下面的 ${p.models.length} 个模型也会一起删掉。`)) return
+      const next = await act(delBtn, () => api('DELETE', `/providers/${p.id}`, {}), '已删除')
+      if (next) applyProviderState(next)
+    })
+    const addModelBtn = h('button', { type: 'button', class: 'small', text: '添加模型', disabled: busy })
+    addModelBtn.addEventListener('click', () => {
+      editingModels = { provider: p.id, model: 'new' }
+      renderProviders()
+    })
+    const adding = editingModels?.provider === p.id && editingModels.model === 'new'
+    return h(
       'div',
       { class: 'card' },
-      h('div', { class: 'provider-head' }, h('span', { class: 'name', text: p.label }), isActive ? h('span', { class: 'badge ok', text: '当前使用' }) : null, h('span', { class: 'spacer' }), useBtn, testBtn, editBtn, delBtn),
+      h('div', { class: 'provider-head' }, h('span', { class: 'name', text: p.label }), h('span', { class: 'badge', text: kindLabel(p.kind) }), h('span', { class: 'spacer' }), editBtn, delBtn),
       kv([
-        ['接口类型', kindLabel(p.kind)],
         ['服务地址', h('span', { class: 'mono', text: p.baseUrl })],
-        ['模型名', h('span', { class: 'mono', text: p.model })],
         ['API key', p.apiKeySet ? h('span', { class: 'mono', text: `已设置 ${p.apiKeyMasked}` }) : h('span', { class: 'error', text: '没设置' })],
       ]),
-      result,
+      h('div', { class: 'row' }, h('h3', { class: 'spacer', text: `模型（${p.models.length}）` }), addModelBtn),
+      p.models.length === 0 && !adding ? h('p', { class: 'muted', text: '这个服务商下面还没有模型。' }) : h('ul', { class: 'plain' }, p.models.map((m) => modelRow(p, m))),
+      adding ? h('div', null, h('h3', { text: '添加模型' }), modelForm(p, editingModels.from ?? null, true)) : null,
     )
   })
 
@@ -701,22 +928,55 @@ function renderProviders() {
     h(
       'div',
       { class: 'stack' },
-      h('div', { class: 'row' }, h('p', { class: 'muted', text: '可以存多条，选一条为当前使用。改完当前这条会立刻生效，不用重启。' }), h('span', { class: 'spacer' }), addBtn),
-      editingProvider === 'new' ? h('div', { class: 'card' }, h('h2', { text: '添加服务商' }), providerForm(null)) : null,
-      providers.length === 0 && editingProvider !== 'new' ? h('div', { class: 'card' }, h('p', { text: '还没有模型服务。它现在没法思考。' })) : null,
+      h('div', { class: 'row' }, h('p', { class: 'muted', text: '一个服务商（接口地址和 key）下面可以放好几个模型。现在用哪个，在这里点“用这个”，或者在页面顶上直接换；换了以后下一轮起生效，不用重启。' }), h('span', { class: 'spacer' }), addBtn),
+      editingModels?.provider === 'new' ? h('div', { class: 'card' }, h('h2', { text: '添加服务商' }), providerForm(null)) : null,
+      providers.length === 0 && editingModels?.provider !== 'new' ? h('div', { class: 'card' }, h('p', { text: '还没有模型服务。它现在没法思考。' })) : null,
       cards,
     ),
   )
 }
 
 async function enterModels() {
-  if (editingProvider !== null) return // 正在填表，别把表单冲掉
+  if (editingModels !== null) return // 正在填表，别把表单冲掉
   const data = await act(null, () => api('GET', '/providers'))
   if (data) {
     providerState = data
     renderProviders()
   }
 }
+
+// ── 页头的模型切换：现在用哪个一眼看得到，一下换得了 ──
+
+let modelSwitchKey = ''
+
+function renderModelSwitch(o) {
+  const select = $('#model-switch')
+  const choices = o.models ?? []
+  const current = o.provider ? `${o.provider.id}/${o.provider.modelId}` : ''
+  const key = JSON.stringify([choices, current])
+  // 列表和当前的都没变就不动它；正开着下拉在挑的时候也不动
+  if (key === modelSwitchKey || document.activeElement === select) return
+  modelSwitchKey = key
+  const options = choices.map((c) => h('option', { value: `${c.providerId}/${c.modelId}`, text: `${c.providerLabel} / ${c.label}`, selected: `${c.providerId}/${c.modelId}` === current }))
+  if (current === '') options.unshift(h('option', { value: '', text: choices.length === 0 ? '还没配模型' : '还没选模型', selected: true }))
+  select.replaceChildren(...options)
+  select.disabled = choices.length === 0
+}
+
+$('#model-switch').addEventListener('change', async (ev) => {
+  const select = ev.currentTarget
+  const [providerId, modelId] = select.value.split('/')
+  if (!providerId || !modelId) return
+  const chosen = select.selectedOptions[0]?.textContent ?? ''
+  const next = await act(select, () => api('POST', '/models/use', { providerId, modelId }), `换成了 ${chosen}，下一轮起生效`)
+  select.blur()
+  modelSwitchKey = ''
+  if (next && editingModels === null) {
+    providerState = next
+    if (currentTab === 'models') renderProviders()
+  }
+  refreshOverview()
+})
 
 // ── AI 玩家 ──
 
@@ -1034,23 +1294,362 @@ function fileToBase64(file) {
 const fileSize = (bytes) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KiB` : `${Number((bytes / 1024 / 1024).toFixed(1))} MiB`)
 const blueprintSize = (b) => (b.size ? `${b.size.x}×${b.size.y}×${b.size.z}` : '')
 
-async function enterBlueprints() {
+/** “图纸”页分三块，各管各的：草稿和图片在大脑这边，没连上游戏也看得到；服务器上的图纸要连着游戏。 */
+function enterBlueprints() {
   const root = $('#tab-blueprints')
+  if (!$('#bp-drafts')) {
+    root.replaceChildren(h('div', { class: 'stack' }, h('div', { id: 'bp-drafts', class: 'stack' }), h('div', { id: 'bp-images', class: 'stack' }), h('div', { id: 'bp-server', class: 'stack' })))
+  }
+  loadDrafts()
+  loadImages()
+  loadServerBlueprints()
+}
+
+/** 某一块没拿到数据时：原因留在页面上，带一个重试。 */
+function sectionError(root, title, message, hint, retry) {
+  const button = h('button', { type: 'button', text: '重试' })
+  button.addEventListener('click', retry)
+  root.replaceChildren(h('div', { class: 'card' }, h('h2', { text: title }), h('p', { class: 'error', text: message }), hint ? h('p', { class: 'hint', text: hint }) : null, h('div', { class: 'row' }, button)))
+}
+
+// ── 图纸：草稿（它自己设计的，还没发到游戏里）──
+
+/** 正在看的那张草稿：服务器给的内容，现在怎么看（哪种图、站在哪个角或哪一面、第几层）。 */
+let draftView = null
+
+async function loadDrafts() {
+  try {
+    renderDrafts(await api('GET', '/drafts'))
+  } catch (e) {
+    if (e.status === 401) return
+    sectionError($('#bp-drafts'), '草稿', `拿不到草稿列表：${e.message}`, '', loadDrafts)
+  }
+}
+
+function renderDrafts(data) {
+  const root = $('#bp-drafts')
+  const list = data.drafts ?? []
+  const row = (d) => {
+    const viewBtn = h('button', { type: 'button', class: 'small', text: '查看' })
+    viewBtn.addEventListener('click', () => act(viewBtn, () => openDraft(d.name)))
+    const publishBtn = h('button', { type: 'button', class: 'small', text: '发布到游戏' })
+    publishBtn.addEventListener('click', async () => {
+      if (!confirm(`把草稿“${d.name}”发成游戏服务器上的图纸？同名的图纸会被覆盖。发了以后它就可以照着盖。`)) return
+      const res = await act(publishBtn, () => api('POST', '/drafts/publish', { name: d.name }))
+      if (!res) return
+      toast(`已发布成图纸 ${res.saved?.name ?? d.name}`)
+      loadServerBlueprints()
+    })
+    const delBtn = h('button', { type: 'button', class: 'small danger', text: '删除' })
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除草稿“${d.name}”？已经发布到游戏里的图纸不受影响。`)) return
+      const next = await act(delBtn, () => api('DELETE', '/drafts', { name: d.name }), `已删除 ${d.name}`)
+      if (next) renderDrafts(next)
+    })
+    const thumb = h('img', { class: 'draft-thumb', src: draftPictureUrl(d, { plain: 1, size: 96 }), alt: '', loading: 'lazy' })
+    thumb.addEventListener('click', () => act(viewBtn, () => openDraft(d.name)))
+    return h(
+      'li',
+      { class: 'with-thumb' },
+      thumb,
+      h('div', { class: 'grow' }, h('span', { class: 'mono', text: d.name })),
+      h('span', { class: 'muted', title: '东西向（x）× 高（y）× 南北向（z）', text: `${d.size.x}×${d.size.y}×${d.size.z}，${num(d.blocks)} 个方块，${when(d.savedAt)}` }),
+      viewBtn,
+      publishBtn,
+      delBtn,
+    )
+  }
+  const listCard = h(
+    'div',
+    { class: 'card' },
+    h('h2', { text: `草稿（${list.length}）` }),
+    h('p', { class: 'muted', text: '它自己写程序设计出来的建筑，现在还只在大脑这边，游戏里什么都没有。你看过觉得行，跟它说一声，或者在这里点“发布到游戏”。' }),
+    list.length === 0 ? h('p', { class: 'muted', text: '还没有草稿。可以让它“设计一个可爱的小屋”，或者传一张图片让它做像素画。' }) : h('ul', { class: 'plain' }, list.map(row)),
+    h('p', { class: 'hint', text: `最多留 ${data.max ?? 40} 张。发布以后草稿还在，不要了再删。` }),
+  )
+  // 整块重画：先把开着的三维预览关掉，把 WebGL 画布还回去
+  closeDraftViewer3d()
+  root.replaceChildren(listCard, h('div', { id: 'draft-viewer' }))
+  if (draftView && list.some((d) => d.name === draftView.data.name)) renderDraftViewer()
+  else draftView = null
+}
+
+/** 草稿的图的地址。图是大脑画的，和它（模型）用 view_draft 要到的是同一种；带上存盘时间，草稿重存以后图跟着换。 */
+function draftPictureUrl(draft, params) {
+  const q = new URLSearchParams({ name: draft.name, t: String(draft.savedAt ?? 0), ...params })
+  return `/api/drafts/picture?${q}`
+}
+
+async function openDraft(name) {
+  const data = await api('GET', `/drafts/view?name=${encodeURIComponent(name)}`)
+  closeDraftViewer3d()
+  draftView = { data, view: '3d', corner: 0, side: 'south', layer: 0, model: null }
+  renderDraftViewer()
+  $('#draft-viewer').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+const DRAFT_VIEWS = { '3d': '三维（可以拖着转）', iso: '立体图', top: '俯视图', side: '立面图', layer: '一层层看' }
+
+/** 草稿的三维预览（同时只有一个）。换一种看法、换一张草稿、收起时关掉，把 WebGL 画布还回去。 */
+let draftViewer3d = null
+
+function closeDraftViewer3d() {
+  draftViewer3d?.destroy()
+  draftViewer3d = null
+}
+const DRAFT_CORNERS = [
+  { from: 'southeast', label: '站在东南角看：左边是南面，右边是东面' },
+  { from: 'southwest', label: '站在西南角看：左边是西面，右边是南面' },
+  { from: 'northwest', label: '站在西北角看：左边是北面，右边是西面' },
+  { from: 'northeast', label: '站在东北角看：左边是东面，右边是北面' },
+]
+const DRAFT_SIDES = { south: '从南面看（朝北）', west: '从西面看（朝东）', north: '从北面看（朝南）', east: '从东面看（朝西）' }
+const rgb = (c, shade = 1) => `rgb(${Math.round(c[0] * shade)}, ${Math.round(c[1] * shade)}, ${Math.round(c[2] * shade)})`
+
+function renderDraftViewer() {
+  const root = $('#draft-viewer')
+  if (!root || !draftView) return
+  const { data } = draftView
+  const size = data.size
+  draftView.layer = Math.max(0, Math.min(size.y - 1, draftView.layer))
+
+  const swatch = (k) => {
+    const dot = h('span', { class: 'swatch', title: k.colorKnown ? '' : '颜色表里没有这种方块，这个颜色只是用来区分' })
+    dot.style.backgroundColor = rgb(k.color)
+    return dot
+  }
+  const materials = [...data.kinds].sort((a, b) => b.count - a.count)
+  const unknown = materials.filter((k) => !k.colorKnown).length
+
+  closeDraftViewer3d()
+  const stage3d = h('div')
+  // 图是大脑画的：换一种看法就是换一个地址
+  const picture = h('img', { class: 'draft-picture', alt: `草稿 ${data.name} 的图`, hidden: draftView.view === '3d' })
+  const failed = h('p', { class: 'error', hidden: true, text: '这张图没画出来，换一种看法试试，或者刷新页面。' })
+  picture.addEventListener('error', () => (failed.hidden = false))
+  picture.addEventListener('load', () => (failed.hidden = true))
+  const controls = h('div', { class: 'row' })
+  const show = async () => {
+    const v = draftView
+    if (v.view === '3d') {
+      // 方块数据取一次就够了，换别的看法再回来不用重取
+      try {
+        v.model ??= await api('GET', `/drafts/model?name=${encodeURIComponent(data.name)}`)
+      } catch (e) {
+        stage3d.replaceChildren(h('p', { class: 'error', text: `三维预览的数据没取到：${e.message}` }))
+        return
+      }
+      if (draftView !== v || v.view !== '3d' || !stage3d.isConnected) return
+      draftViewer3d = createViewer(stage3d, v.model)
+      return
+    }
+    const params = { view: v.view }
+    if (v.view === 'iso') params.from = DRAFT_CORNERS[v.corner].from
+    if (v.view === 'side') params.from = v.side
+    if (v.view === 'layer') params.layer = v.layer
+    picture.src = draftPictureUrl(data, params)
+  }
+  const viewSelect = h('select', { 'aria-label': '怎么看' }, Object.entries(DRAFT_VIEWS).map(([key, label]) => h('option', { value: key, text: label, selected: key === draftView.view })))
+  viewSelect.addEventListener('change', () => {
+    draftView.view = viewSelect.value
+    renderDraftViewer()
+  })
+  controls.append(viewSelect)
+  if (draftView.view === '3d') {
+    controls.append(h('span', { class: 'muted', text: '用的是游戏里的贴图（有贴图的方块）。下面几种看法是大脑画的简图，它自己看到的是那种。' }))
+  } else if (draftView.view === 'iso') {
+    const facing = h('span', { class: 'muted', text: DRAFT_CORNERS[draftView.corner].label })
+    const turnBtn = h('button', { type: 'button', class: 'small', text: '转一下' })
+    turnBtn.addEventListener('click', () => {
+      draftView.corner = (draftView.corner + 1) % DRAFT_CORNERS.length
+      facing.textContent = DRAFT_CORNERS[draftView.corner].label
+      show()
+    })
+    controls.append(turnBtn, facing)
+  } else if (draftView.view === 'side') {
+    const sideSelect = h('select', { 'aria-label': '从哪一面看' }, Object.entries(DRAFT_SIDES).map(([key, label]) => h('option', { value: key, text: label, selected: key === draftView.side })))
+    sideSelect.addEventListener('change', () => {
+      draftView.side = sideSelect.value
+      show()
+    })
+    controls.append(sideSelect, h('span', { class: 'muted', text: '远处的颜色暗一些。' }))
+  } else if (draftView.view === 'layer') {
+    const where = h('span', { class: 'muted' })
+    const slider = h('input', { type: 'range', min: 0, max: size.y - 1, step: 1, value: draftView.layer, 'aria-label': '看第几层' })
+    const label = () => (where.textContent = `第 ${draftView.layer + 1} / ${size.y} 层（从下往上数），上北下南，左西右东。`)
+    // 拖的时候只改字，松手才换图（一层一张图）
+    slider.addEventListener('input', () => {
+      draftView.layer = Number(slider.value)
+      label()
+    })
+    slider.addEventListener('change', show)
+    label()
+    controls.append(slider, where)
+  } else {
+    controls.append(h('span', { class: 'muted', text: '从正上方看：上北下南，左西右东；高的地方亮一些。' }))
+  }
+  const closeBtn = h('button', { type: 'button', class: 'small quiet', text: '收起' })
+  closeBtn.addEventListener('click', () => {
+    closeDraftViewer3d()
+    draftView = null
+    root.replaceChildren()
+  })
+  root.replaceChildren(
+    h(
+      'div',
+      { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { class: 'spacer', text: `草稿：${data.name}` }), closeBtn),
+      h('p', { class: 'muted', text: `东西向 ${size.x} 格 × 高 ${size.y} 格 × 南北向 ${size.z} 格，${num(data.blocks)} 个方块，${data.kinds.length} 种。${when(data.savedAt)} 存的。` }),
+      controls,
+      stage3d,
+      picture,
+      failed,
+      draftView.view === '3d' ? null : h('p', { class: 'hint', text: '这是按方块颜色画的示意图，不是游戏里的样子：没有贴图，楼梯、栅栏这类只是画小一点。它（模型能看图时）看到的也是这种图。' }),
+      h('h3', { text: '要用的材料' }),
+      h('div', { class: 'items' }, materials.map((k) => h('span', { class: 'item', title: k.key }, swatch(k), ` ${k.name ?? k.key} × ${num(k.count)}`))),
+      unknown > 0 ? h('p', { class: 'hint', text: `有 ${unknown} 种方块不在颜色表里，图上给它们配的颜色只是用来区分，不是真实的颜色。` }) : null,
+      data.program ? h('details', null, h('summary', { text: '生成它的程序' }), h('pre', { class: 'manual-text mono', text: data.program })) : null,
+    ),
+  )
+  // 放进页面以后再画：三维预览要量画布的大小
+  show()
+}
+
+// ── 图纸：图片（给它做像素画、当参考）──
+
+async function loadImages() {
+  try {
+    renderImages(await api('GET', '/images'))
+  } catch (e) {
+    if (e.status === 401) return
+    sectionError($('#bp-images'), '图片', `拿不到图片列表：${e.message}`, '', loadImages)
+  }
+}
+
+/** 浏览器这边把图缩到最长边不超过 maxSide，转成 PNG。本来就够小的原样画上去，不重新采样（像素图不会糊）。 */
+async function shrinkToPng(file, maxSide) {
+  let bitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    throw new Error('这个文件浏览器认不出是图片')
+  }
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+  const ctx = canvas.getContext('2d')
+  ctx.imageSmoothingEnabled = scale < 1
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close?.()
+  const url = canvas.toDataURL('image/png')
+  return { data: url.slice(url.indexOf(',') + 1), width: canvas.width, height: canvas.height, from: `${bitmap.width}×${bitmap.height}` }
+}
+
+function renderImages(data) {
+  const root = $('#bp-images')
+  const list = data.images ?? []
+  const maxSide = data.maxSide ?? 256
+
+  const file = h('input', { id: 'img-file', type: 'file', accept: 'image/*' })
+  const name = h('input', { id: 'img-name', type: 'text', maxLength: 40, placeholder: '选好文件后自动填上，可以改', spellcheck: false })
+  const note = h('p', { class: 'hint', text: '还没选文件。' })
+  const uploadBtn = h('button', { type: 'submit', class: 'primary', text: '上传', disabled: true })
+  let ready = null
+  file.addEventListener('change', async () => {
+    const chosen = file.files?.[0]
+    ready = null
+    uploadBtn.disabled = true
+    if (!chosen) {
+      note.className = 'hint'
+      note.textContent = '还没选文件。'
+      return
+    }
+    // 名字里只留字母、数字、汉字、下划线和连字符
+    name.value = chosen.name.replace(/\.[^.]*$/, '').replace(/[^\p{L}\p{N}_-]+/gu, '_').replace(/^[_-]+/, '').slice(0, 40) || 'image'
+    try {
+      ready = await shrinkToPng(chosen, maxSide)
+      note.className = 'hint'
+      note.textContent = ready.from === `${ready.width}×${ready.height}` ? `${chosen.name}，${ready.width}×${ready.height} 像素。` : `${chosen.name}，原图 ${ready.from}，会缩成 ${ready.width}×${ready.height} 像素再传。`
+      uploadBtn.disabled = false
+    } catch (e) {
+      note.className = 'error'
+      note.textContent = e.message
+    }
+  })
+  const form = h('form', { class: 'card' })
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const wanted = name.value.trim()
+    if (!ready || !wanted) {
+      toast('先选一张图片，并给它一个名字', true)
+      return
+    }
+    if (list.some((i) => i.name === wanted) && !confirm(`已经有一张叫“${wanted}”的图片，用这张覆盖它？`)) return
+    uploadBtn.disabled = true
+    try {
+      const next = await api('POST', '/images', { name: wanted, data: ready.data })
+      toast(`已上传 ${next.saved?.name ?? wanted}`)
+      renderImages(next)
+    } catch (e) {
+      note.className = 'error'
+      note.textContent = `没传上去：${e.message}`
+      uploadBtn.disabled = false
+    }
+  })
+  form.append(
+    h('h2', { text: '上传图片' }),
+    h('p', { class: 'muted', text: `给它做像素画、或者当参考用的图。什么格式都行：浏览器会先把它缩到最长边 ${maxSide} 像素以内，再传给大脑。聊天里跟它说图片的名字就行。` }),
+    h(
+      'div',
+      { class: 'fields' },
+      h('div', null, h('label', { for: 'img-file', text: '文件' }), file, note),
+      h('div', null, h('label', { for: 'img-name', text: '图片名字' }), name, h('p', { class: 'hint', text: '字母、数字、汉字、下划线和连字符。它和你都用这个名字指这张图。' })),
+    ),
+    h('div', { class: 'row' }, uploadBtn),
+  )
+
+  const row = (i) => {
+    const delBtn = h('button', { type: 'button', class: 'small danger', text: '删除' })
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除图片“${i.name}”？`)) return
+      const next = await act(delBtn, () => api('DELETE', '/images', { name: i.name }), `已删除 ${i.name}`)
+      if (next) renderImages(next)
+    })
+    return h(
+      'li',
+      null,
+      h('img', { class: 'thumb', alt: '', loading: 'lazy', src: `/api/images/file?name=${encodeURIComponent(i.name)}&t=${i.uploadedAt}` }),
+      h('div', { class: 'grow' }, h('span', { class: 'mono', text: i.name })),
+      h('span', { class: 'muted', text: `${i.width}×${i.height} 像素，${fileSize(i.bytes)}，${when(i.uploadedAt)}` }),
+      delBtn,
+    )
+  }
+  const listCard = h(
+    'div',
+    { class: 'card' },
+    h('h2', { text: `图片（${list.length}）` }),
+    list.length === 0 ? h('p', { class: 'muted', text: '还没有图片。' }) : h('ul', { class: 'plain' }, list.map(row)),
+    h('p', { class: 'hint', text: `最多留 ${data.max ?? 30} 张，存在大脑的数据目录里。` }),
+  )
+  root.replaceChildren(form, listCard)
+}
+
+// ── 图纸：游戏服务器上的 ──
+
+async function loadServerBlueprints() {
   try {
     renderBlueprints(await api('GET', '/blueprints'))
   } catch (e) {
     // 图纸存在游戏服务器上，没连上游戏就看不到：把原因留在页面上，而不是一闪而过
     if (e.status === 401) return
-    const retry = h('button', { type: 'button', text: '重试' })
-    retry.addEventListener('click', enterBlueprints)
-    root.replaceChildren(
-      h('div', { class: 'card' }, h('h2', { text: '图纸' }), h('p', { class: 'error', text: `拿不到图纸列表：${e.message}` }), h('p', { class: 'hint', text: '图纸存在游戏服务器上，要先连上游戏才能看和上传。' }), h('div', { class: 'row' }, retry)),
-    )
+    sectionError($('#bp-server'), '服务器上的图纸', `拿不到图纸列表：${e.message}`, '图纸存在游戏服务器上，要先连上游戏才能看和上传。', loadServerBlueprints)
   }
 }
 
 function renderBlueprints(data) {
-  const root = $('#tab-blueprints')
+  const root = $('#bp-server')
   const list = data.blueprints ?? []
   const maxBytes = data.maxBytes ?? 2 * 1024 * 1024
 
@@ -1133,7 +1732,151 @@ function renderBlueprints(data) {
     h('p', { class: 'hint', text: `尺寸是 东西向（x）× 高（y）× 南北向（z）。${data.folder ? `文件在游戏服务器的 ${data.folder} 里，直接放进去也行，不用重启。` : ''}盖的时候不旋转、不镜像。` }),
   )
 
-  root.replaceChildren(h('div', { class: 'stack' }, form, listCard))
+  root.replaceChildren(form, listCard)
+}
+
+// ── 意见簿 ──
+
+const FEEDBACK_CATEGORY_LABELS = { missing_tool: '缺工具', tool_problem: '工具有问题', data_or_manual: '资料或手册有问题', cannot_do: '做不到', other: '其他' }
+const FEEDBACK_STATUS_LABELS = { new: '没看过', seen: '看过，没处理', handled: '已处理' }
+const FEEDBACK_STATUS_TONES = { new: 'warn', seen: '', handled: 'ok' }
+/** 列表现在按什么筛、正在看哪一条。 */
+const feedbackView = { category: '', status: 'open', openId: null }
+
+/** 导航上“意见簿”旁边的数字：主人还没看过的条数。 */
+function setFeedbackCount(n) {
+  const el = $('#feedback-count')
+  el.hidden = !(n > 0)
+  el.textContent = n > 0 ? String(n) : ''
+}
+
+const feedbackQuery = () => {
+  const q = new URLSearchParams()
+  if (feedbackView.category) q.set('category', feedbackView.category)
+  if (feedbackView.status) q.set('status', feedbackView.status)
+  const text = q.toString()
+  return text ? `?${text}` : ''
+}
+
+async function enterFeedback() {
+  const data = await act(null, () => api('GET', `/feedback${feedbackQuery()}`))
+  if (data) renderFeedback(data)
+}
+
+async function openFeedback(id) {
+  let report = await api('GET', `/feedback/view?id=${encodeURIComponent(id)}`)
+  // 点开就算看过了
+  if (report.status === 'new') report = (await api('POST', '/feedback/status', { id, status: 'seen' })).report
+  feedbackView.openId = id
+  await enterFeedback()
+  renderFeedbackDetail(report)
+}
+
+function renderFeedback(data) {
+  const root = $('#tab-feedback')
+  setFeedbackCount(data.unread)
+  const list = data.reports ?? []
+
+  const category = h(
+    'select',
+    { 'aria-label': '按类别筛' },
+    h('option', { value: '', text: '全部类别' }),
+    Object.entries(FEEDBACK_CATEGORY_LABELS).map(([value, text]) => h('option', { value, text, selected: value === feedbackView.category })),
+  )
+  const status = h(
+    'select',
+    { 'aria-label': '按状态筛' },
+    [
+      ['open', '还没处理的'],
+      ['new', '没看过的'],
+      ['handled', '已处理的'],
+      ['', '全部'],
+    ].map(([value, text]) => h('option', { value, text, selected: value === feedbackView.status })),
+  )
+  category.addEventListener('change', () => {
+    feedbackView.category = category.value
+    enterFeedback()
+  })
+  status.addEventListener('change', () => {
+    feedbackView.status = status.value
+    enterFeedback()
+  })
+  // 导出的就是现在筛出来的这些，连同每条附带的现场
+  const exportLink = h('a', { class: 'button', href: `/api/feedback/export${feedbackQuery()}`, download: '', text: `导出这 ${list.length + (data.more ?? 0)} 条` })
+
+  const row = (r) => {
+    const open = h('button', { type: 'button', class: 'small', text: '看详情' })
+    open.addEventListener('click', () => act(open, () => openFeedback(r.id)))
+    return h(
+      'li',
+      { class: r.id === feedbackView.openId ? 'current' : '' },
+      h('span', { class: `badge ${FEEDBACK_STATUS_TONES[r.status] ?? ''}`, text: FEEDBACK_STATUS_LABELS[r.status] ?? r.status }),
+      h('div', { class: 'grow' }, h('span', { text: r.title }), r.count > 1 ? h('span', { class: 'muted', text: `  ×${r.count}` }) : null),
+      h('span', { class: 'badge', text: FEEDBACK_CATEGORY_LABELS[r.category] ?? r.category }),
+      h('span', { class: 'muted', text: when(r.lastTime) }),
+      open,
+    )
+  }
+  const listCard = h(
+    'div',
+    { class: 'card' },
+    h('h2', { text: `意见簿（共 ${num(data.total)} 条，${num(data.unread)} 条没看过）` }),
+    h('p', { class: 'muted', text: '它干活时觉得哪里有问题——没有合适的工具、工具的结果不对、手册和实际对不上、你让做的它做不到——自己记在这里的。同一个问题一天之内再记，只加次数。' }),
+    h('div', { class: 'row' }, category, status, h('span', { class: 'spacer' }), list.length > 0 ? exportLink : null),
+    list.length === 0 ? h('p', { class: 'muted', text: data.total === 0 ? '还没有记录。' : '这个筛选下没有记录。' }) : h('ul', { class: 'plain' }, list.map(row)),
+    data.more > 0 ? h('p', { class: 'hint', text: `还有更早的 ${data.more} 条没列出来；导出的文件里有全部。` }) : null,
+  )
+  root.replaceChildren(h('div', { class: 'stack' }, listCard, h('div', { id: 'feedback-detail' })))
+}
+
+function renderFeedbackDetail(r) {
+  const root = $('#feedback-detail')
+  if (!root) return
+  const c = r.context ?? {}
+  const handled = r.status === 'handled'
+  const toggle = h('button', { type: 'button', class: handled ? '' : 'primary', text: handled ? '改回没处理' : '标成已处理' })
+  toggle.addEventListener('click', async () => {
+    const res = await act(toggle, () => api('POST', '/feedback/status', { id: r.id, status: handled ? 'seen' : 'handled' }), handled ? '已改回没处理' : '已标成处理过')
+    if (!res) return
+    await enterFeedback()
+    renderFeedbackDetail(res.report)
+  })
+  const part = (title, text) => (text ? [h('h3', { text: title }), h('p', { class: 'pre', text })] : null)
+  const tools = c.recentTools ?? []
+  const tasks = c.tasks ?? []
+  root.replaceChildren(
+    h(
+      'div',
+      { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { class: 'spacer', text: r.title }), toggle),
+      h(
+        'p',
+        { class: 'muted' },
+        `${r.id} · ${FEEDBACK_CATEGORY_LABELS[r.category] ?? r.category} · ${FEEDBACK_STATUS_LABELS[r.status] ?? r.status} · ${dateTime(r.time)} 记的`,
+        r.count > 1 ? `，一共记了 ${r.count} 次，最近一次 ${dateTime(r.lastTime)}` : '',
+      ),
+      part('它当时想做什么', r.goal),
+      part('遇到了什么', r.problem),
+      part('它希望有什么', r.wish),
+      h('h3', { text: '当时的现场（大脑自动附上的）' }),
+      kv([
+        ['谁', c.bot],
+        ['版本', `大脑 ${c.brainVersion ?? '?'}，mod ${c.modVersion ?? '?'}`],
+        ['第几轮', c.turn === undefined ? '–' : String(c.turn)],
+        ['相关任务', tasks.length === 0 ? '–' : tasks.map((t) => `${t.id}${t.type ? `（${t.type}）` : ''}${t.state ? ` ${TASK_STATES[t.state] ?? t.state}` : ''}${t.error ? `：${t.error}` : ''}`).join('；')],
+      ]),
+      part('这一轮是被什么叫醒的', c.instruction),
+      tools.length === 0
+        ? null
+        : h(
+            'details',
+            { open: true },
+            h('summary', { text: `记这条之前最近的 ${tools.length} 次工具调用` }),
+            tools.map((t) => h('pre', { class: 'manual-text mono', text: `${t.tool} ${t.input}\n→ ${t.isError ? '[出错] ' : ''}${t.result}` })),
+          ),
+    ),
+  )
+  root.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
 // ── 设置 ──
@@ -1250,6 +1993,7 @@ const TABS = {
   memory: { enter: enterMemory },
   manuals: { enter: enterManuals },
   blueprints: { enter: enterBlueprints },
+  feedback: { enter: enterFeedback },
   settings: { enter: enterSettings },
 }
 

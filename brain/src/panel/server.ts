@@ -13,11 +13,18 @@ import { DEFAULT_PERSONA } from '../agent/prompt.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { BridgeStatus } from '../bridge/client.ts'
 import { BridgeError } from '../bridge/protocol.ts'
+import { DRAFTS_MAX, DRAFT_MAX_SIDE, DesignStoreError, IMAGES_MAX, IMAGE_MAX_BYTES, IMAGE_MAX_SIDE, SCHEMATIC_MAX_BYTES, blockCount, kindKey, materialsOf, storeDraft, toSchematic } from '../design/index.ts'
+import type { DesignWorkspace } from '../design/index.ts'
 import { listAdapters } from '../llm/index.ts'
-import type { ProviderConfig, TestConnectionResult } from '../llm/index.ts'
+import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../llm/index.ts'
+import type { TextureAtlas } from '../packdata/index.ts'
+import { BlockLooks, CORNERS, GridError, PICTURE_MAX_SIZE, SIDES, gridFromBlocks, gridFromDraft, renderView, sceneOf } from '../render/index.ts'
+import type { Corner, Scene, Side, ViewSpec, VoxelGrid } from '../render/index.ts'
 import type { ActivityEntry, ActivityLog } from '../store/activity-log.ts'
-import { isValidPlayerName, maskSecret, sanitizeProvider } from '../store/config.ts'
-import type { ConfigStore } from '../store/config.ts'
+import { isValidPlayerName, maskSecret, modelDisplayName, resolveModel, sanitizeModel, sanitizeProvider } from '../store/config.ts'
+import type { ConfigStore, ModelConfig, StoredProvider } from '../store/config.ts'
+import { FEEDBACK_CATEGORIES } from '../store/feedback.ts'
+import type { FeedbackCategory, FeedbackReport, FeedbackStatus, FeedbackStore } from '../store/feedback.ts'
 import { isRecord } from '../store/files.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { MANUAL_BODY_MAX_CHARS, MANUAL_NAME_MAX_CHARS, MANUAL_SUMMARY_MAX_CHARS, ManualError, USER_MANUALS_MAX } from '../store/manuals.ts'
@@ -43,6 +50,14 @@ export interface PanelDeps {
   log: ActivityLog
   history: HistoryStore
   manuals: ManualStore
+  /** 它自己出设计用的：图纸草稿和主人传的图片。 */
+  design: DesignWorkspace
+  /** 意见簿：它自己记下的反馈。 */
+  feedback: FeedbackStore
+  /** 它看过的图（对话日志里显示），和画那张图用的盒子（三维预览用）。没提供时日志里就没有图。 */
+  pictures?: { get(id: string): Buffer | undefined; blocks(id: string): unknown }
+  /** 方块贴图的图集（本地资料里的 textures/）。没提供时三维预览按方块颜色画。 */
+  textures?: TextureAtlas
   bridge: BridgeApi
   bridgeStatus(): BridgeStatus
   agent: {
@@ -50,9 +65,13 @@ export interface PanelDeps {
     status(): AgentStatus
     /** 执行一个会取消任务的请求；期间和之后收到的对应“任务被取消”不叫醒模型。 */
     ownCancel<T extends { ids?: string[]; replaced?: string[] }>(fn: () => Promise<T>): Promise<T>
+    /** 停掉正在跑的例程；没有在跑的返回 false。 */
+    stopRoutine?(): boolean
   }
   reminders: { list(): Reminder[]; remove(id: string): boolean }
   testConnection(config: ProviderConfig): Promise<TestConnectionResult>
+  /** 问一家接口它有哪些模型（config.model 用不上）。 */
+  listModels(config: ProviderConfig): Promise<RemoteModelsResult>
   /** 静态文件目录，默认 panel/public。 */
   publicDir?: string
   now?(): number
@@ -65,6 +84,9 @@ export const BLUEPRINT_MAX_BYTES = 2 * 1024 * 1024
 const BLUEPRINT_BODY_MAX_BYTES = Math.ceil(BLUEPRINT_MAX_BYTES / 3) * 4 + 4096
 const BLUEPRINT_NAME_MAX_CHARS = 80
 const COMMAND_MAX_CHARS = 2000
+const MODELS_PER_PROVIDER_MAX = 40
+/** 意见簿的列表一次最多给这么多条（新的在前）；更早的在导出的文件里。 */
+const FEEDBACK_LIST_MAX = 300
 const PASSWORD_MIN_CHARS = 8
 
 const STATIC_TYPES: Record<string, string> = {
@@ -98,8 +120,8 @@ class HttpError extends Error {
 
 const SENSITIVE_HEADER_RE = /key|token|secret|auth|cookie|password/i
 
-/** 面板能看到的服务商配置：没有 apiKey，只有掩码和“已设置”标记；敏感的自定义请求头同样打码。 */
-export function maskProvider(p: ProviderConfig): Record<string, unknown> {
+/** 面板能看到的服务商配置：没有 apiKey，只有掩码和“已设置”标记；敏感的自定义请求头同样打码。它下面的模型原样给。 */
+export function maskProvider(p: StoredProvider): Record<string, unknown> {
   const { apiKey, extraHeaders, ...rest } = p
   const out: Record<string, unknown> = { ...rest, apiKeySet: apiKey.length > 0, apiKeyMasked: maskSecret(apiKey) }
   if (extraHeaders) {
@@ -119,14 +141,19 @@ function sameHost(a: string, b: string): boolean {
 }
 
 /**
- * 把面板提交的内容和已保存的配置合成一份完整配置。
+ * 把面板提交的内容和已保存的配置合成一份完整的服务商配置。
  * - apiKey 留空 = 不修改；
  * - 打过码的请求头原样交回来 = 不修改；
- * - 服务地址换了主机却没重填 key：拒绝。否则谁登上面板都能把地址指到自己的机器上把 key 套走。
+ * - 服务地址换了主机却没重填 key：拒绝。否则谁登上面板都能把地址指到自己的机器上把 key 套走；
+ * - 没带 models 的：已有的服务商，下面的模型原样留着（模型有自己的接口来增删改）；新建的可以用 model 顺手带上第一个模型。
  */
-export function mergeProvider(input: unknown, existing: ProviderConfig | undefined, id: string): ProviderConfig {
+export function mergeProvider(input: unknown, existing: StoredProvider | undefined, id: string): StoredProvider {
   if (!isRecord(input)) throw new HttpError(400, 'bad_request', '请求内容不对')
   const raw: Record<string, unknown> = { ...input, id }
+  if (existing && !Array.isArray(raw.models)) {
+    raw.models = existing.models
+    delete raw.model
+  }
   const newKey = typeof raw.apiKey === 'string' ? raw.apiKey.trim() : ''
   const keepsSecret = newKey.length === 0 && existing !== undefined && existing.apiKey.length > 0
   raw.apiKey = newKey.length > 0 ? newKey : (existing?.apiKey ?? '')
@@ -144,7 +171,7 @@ export function mergeProvider(input: unknown, existing: ProviderConfig | undefin
     raw.extraHeaders = headers
   }
 
-  let clean: ProviderConfig
+  let clean: StoredProvider
   try {
     clean = sanitizeProvider(raw)
   } catch (e) {
@@ -156,12 +183,18 @@ export function mergeProvider(input: unknown, existing: ProviderConfig | undefin
   return clean
 }
 
+/** 草稿的图画好了留着：同一张草稿换着角度看，不用每次重画。存着这么多张。 */
+const DRAFT_PICTURES_CACHED = 48
+
 export class PanelServer {
   private readonly deps: PanelDeps
   private readonly publicDir: string
   private readonly limiter = new LoginLimiter()
   private readonly server: http.Server
   private readonly streams = new Set<http.ServerResponse>()
+  /** 画好的草稿图：键是“草稿名、存盘时间、怎么看、多大”。 */
+  private readonly draftPictures = new Map<string, Buffer>()
+  private looks: { table: object; looks: BlockLooks } | undefined
   private unsubscribeLog: (() => void) | undefined
   private heartbeat: NodeJS.Timeout | undefined
   private overviewCache: { at: number; data: unknown } | undefined
@@ -308,6 +341,26 @@ export class PanelServer {
       this.openStream(req, res, url)
       return
     }
+    if (route === '/images/file' && method === 'GET') {
+      this.imageFile(res, url)
+      return
+    }
+    if (route === '/drafts/picture' && method === 'GET') {
+      this.draftPicture(res, url)
+      return
+    }
+    if (route === '/pictures/file' && method === 'GET') {
+      this.pictureFile(res, url)
+      return
+    }
+    if (route === '/textures/atlas.png' && method === 'GET') {
+      this.textureAtlas(res)
+      return
+    }
+    if (route === '/feedback/export' && method === 'GET') {
+      this.feedbackExport(res, url)
+      return
+    }
 
     // 到这里会话和 Origin 都已经验过了，才开始读请求体；上传图纸的请求体比别的接口大
     const uploadsBlueprint = route === '/blueprints' && method === 'POST'
@@ -392,6 +445,10 @@ export class PanelServer {
         return this.createProvider(body)
       case 'POST /providers/test':
         return this.testProvider(body)
+      case 'POST /providers/remote-models':
+        return this.remoteModels(body)
+      case 'POST /models/use':
+        return this.useModel(body)
       case 'GET /bot':
         return this.botInfo()
       case 'PUT /bot':
@@ -404,6 +461,13 @@ export class PanelServer {
         return this.configureBot(body)
       case 'POST /tasks/cancel':
         return this.cancelTask(body)
+      case 'POST /routine/stop': {
+        // 例程：它写的程序在后台一步步调工具。停掉以后它正在做的任务也取消，模型会被叫醒看结果
+        const stopped = this.deps.agent.stopRoutine?.() ?? false
+        if (stopped) this.deps.log.add({ kind: 'info', text: '在面板上停掉了正在跑的例程。' })
+        this.overviewCache = undefined
+        return { stopped }
+      }
       case 'GET /memory':
         return this.memoryList()
       case 'PUT /memory':
@@ -422,6 +486,30 @@ export class PanelServer {
         return this.uploadBlueprint(body)
       case 'DELETE /blueprints':
         return this.deleteBlueprint(body)
+      case 'GET /drafts':
+        return this.draftList()
+      case 'GET /drafts/model':
+        return this.draftModel(url.searchParams.get('name') ?? '')
+      case 'GET /pictures/model':
+        return this.pictureModel(url.searchParams.get('id') ?? '')
+      case 'GET /drafts/view':
+        return this.draftView(url.searchParams.get('name') ?? '')
+      case 'DELETE /drafts':
+        return this.draftDelete(body)
+      case 'POST /drafts/publish':
+        return this.draftPublish(body)
+      case 'GET /feedback':
+        return this.feedbackList(url)
+      case 'GET /feedback/view':
+        return this.feedbackGet(url.searchParams.get('id') ?? '')
+      case 'POST /feedback/status':
+        return this.feedbackStatus(body)
+      case 'GET /images':
+        return this.imageList()
+      case 'POST /images':
+        return this.imageUpload(body)
+      case 'DELETE /images':
+        return this.imageDelete(body)
       case 'POST /history/clear':
         this.deps.history.clear()
         this.deps.log.add({ kind: 'info', text: '对话历史已在面板上清空（记忆不受影响）。' })
@@ -440,6 +528,13 @@ export class PanelServer {
       if (m[2] && method === 'POST') return this.activateProvider(id)
       if (!m[2] && method === 'PUT') return this.updateProvider(id, body)
       if (!m[2] && method === 'DELETE') return this.deleteProvider(id)
+    }
+    const mm = /^\/providers\/([A-Za-z0-9_-]{1,40})\/models(?:\/([A-Za-z0-9_-]{1,40}))?$/.exec(route)
+    if (mm) {
+      const [, providerId, modelId] = mm
+      if (modelId === undefined && method === 'POST') return this.addModel(providerId!, body)
+      if (modelId !== undefined && method === 'PUT') return this.updateModel(providerId!, modelId, body)
+      if (modelId !== undefined && method === 'DELETE') return this.deleteModel(providerId!, modelId)
     }
     throw new HttpError(404, 'not_found', '没有这个接口')
   }
@@ -472,7 +567,7 @@ export class PanelServer {
       }
     }
 
-    const active = this.deps.config.activeProvider()
+    const active = this.deps.config.activeSelection()
     const h = this.deps.history.get()
     const data = {
       time: now,
@@ -481,8 +576,23 @@ export class PanelServer {
       tasks,
       server,
       agent: this.deps.agent.status(),
-      provider: active ? { id: active.id, label: active.label, kind: active.kind, model: active.model, baseUrl: active.baseUrl } : null,
+      // 现在用的是哪个服务商的哪个模型
+      provider: active
+        ? {
+            id: active.provider.id,
+            label: active.provider.label,
+            kind: active.provider.kind,
+            baseUrl: active.provider.baseUrl,
+            model: active.model.name,
+            modelId: active.model.id,
+            modelLabel: modelDisplayName(active.model),
+          }
+        : null,
+      // 能切过去的全部模型（页头那个切换用）
+      models: cfg.providers.flatMap((p) => p.models.map((m) => ({ providerId: p.id, providerLabel: p.label, modelId: m.id, label: modelDisplayName(m) }))),
       usage: { today: this.deps.usage.today(now), dailyTokenLimit: cfg.bot.limits.dailyTokenLimit },
+      // 意见簿里主人还没看过的条数：导航上的那个数字
+      feedback: { unread: this.deps.feedback.unread() },
       reminders: this.deps.reminders.list(),
       history: { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: historyTokens(h.summary, h.turns) },
     }
@@ -500,19 +610,26 @@ export class PanelServer {
     return { ok: true }
   }
 
-  // ── 模型 ──
+  // ── 模型：服务商（接口地址、类型、key）和它下面的模型分开管 ──
 
   private providers(): unknown {
     const cfg = this.deps.config.get()
-    return { providers: cfg.providers.map(maskProvider), activeProviderId: cfg.activeProviderId, adapters: listAdapters() }
+    return { providers: cfg.providers.map(maskProvider), activeProviderId: cfg.activeProviderId, activeModelId: cfg.activeModelId, adapters: listAdapters() }
   }
 
-  private findProvider(id: string): ProviderConfig {
+  private findProvider(id: string): StoredProvider {
     const p = this.deps.config.get().providers.find((x) => x.id === id)
     if (!p) throw new HttpError(404, 'not_found', '没有这个服务商')
     return p
   }
 
+  private findModel(provider: StoredProvider, modelId: string): ModelConfig {
+    const m = provider.models.find((x) => x.id === modelId)
+    if (!m) throw new HttpError(404, 'not_found', '这个服务商下面没有这个模型')
+    return m
+  }
+
+  /** 新建服务商。可以用 model（和输出上限这些）顺手带上它的第一个模型。 */
   private createProvider(body: Record<string, unknown>): unknown {
     const id = `p_${crypto.randomBytes(5).toString('hex')}`
     const provider = mergeProvider(body, undefined, id)
@@ -540,20 +657,94 @@ export class PanelServer {
     return this.providers()
   }
 
+  /** 改用这个服务商（用它下面的第一个模型）。要指定模型用 useModel。 */
   private activateProvider(id: string): unknown {
-    this.findProvider(id)
+    const provider = this.findProvider(id)
+    return this.switchTo(provider, provider.models[0])
+  }
+
+  /** 页头和“模型”页的切换：现在改用哪个服务商的哪个模型。下一轮决策起生效，不用重启。 */
+  private useModel(body: Record<string, unknown>): unknown {
+    if (typeof body.providerId !== 'string' || typeof body.modelId !== 'string') throw new HttpError(400, 'bad_request', '需要 providerId 和 modelId')
+    const provider = this.findProvider(body.providerId)
+    return this.switchTo(provider, this.findModel(provider, body.modelId))
+  }
+
+  private switchTo(provider: StoredProvider, model: ModelConfig | undefined): unknown {
+    const before = this.deps.config.get()
+    const changed = before.activeProviderId !== provider.id || before.activeModelId !== (model?.id ?? '')
     this.deps.config.update((c) => {
-      c.activeProviderId = id
+      c.activeProviderId = provider.id
+      c.activeModelId = model?.id ?? ''
     })
+    this.overviewCache = undefined
+    if (changed && model) this.deps.log.add({ kind: 'info', text: `在面板上把模型换成了 ${provider.label} / ${modelDisplayName(model)}，下一轮起生效。` })
     return this.providers()
   }
 
-  /** 测试连接：可以测还没保存的草稿；key 留空且带了 id 时用已保存的 key。 */
-  private async testProvider(body: Record<string, unknown>): Promise<unknown> {
+  /** 面板提交的模型设置 → 一个合法的模型配置。 */
+  private modelFrom(body: Record<string, unknown>, provider: StoredProvider, id: string): ModelConfig {
+    try {
+      // 模型名可以叫 name，也可以叫 model（和测试连接、旧接口的写法一致）
+      return sanitizeModel({ ...body, id, name: body.name ?? body.model }, provider.kind)
+    } catch (e) {
+      throw new HttpError(400, 'bad_request', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  private saveModels(provider: StoredProvider, models: ModelConfig[]): void {
+    this.deps.config.update((c) => {
+      c.providers = c.providers.map((p) => (p.id === provider.id ? { ...p, models } : p))
+    })
+    this.overviewCache = undefined
+  }
+
+  private addModel(providerId: string, body: Record<string, unknown>): unknown {
+    const provider = this.findProvider(providerId)
+    if (provider.models.length >= MODELS_PER_PROVIDER_MAX) throw new HttpError(400, 'bad_request', `一个服务商下面最多 ${MODELS_PER_PROVIDER_MAX} 个模型`)
+    const model = this.modelFrom(body, provider, `m_${crypto.randomBytes(4).toString('hex')}`)
+    this.saveModels(provider, [...provider.models, model])
+    return { model, ...(this.providers() as object) }
+  }
+
+  private updateModel(providerId: string, modelId: string, body: Record<string, unknown>): unknown {
+    const provider = this.findProvider(providerId)
+    this.findModel(provider, modelId)
+    const model = this.modelFrom(body, provider, modelId)
+    this.saveModels(provider, provider.models.map((m) => (m.id === modelId ? model : m)))
+    return { model, ...(this.providers() as object) }
+  }
+
+  /** 删掉正在用的那个模型时，改用这个服务商下面剩下的第一个；一个都不剩就是“没配模型”，不会自己跳到别的服务商去。 */
+  private deleteModel(providerId: string, modelId: string): unknown {
+    const provider = this.findProvider(providerId)
+    this.findModel(provider, modelId)
+    this.saveModels(provider, provider.models.filter((m) => m.id !== modelId))
+    return this.providers()
+  }
+
+  /**
+   * 测试连接、拉模型列表时用哪个服务商：带了 baseUrl 的是表单里正在填的草稿（key 留空且带了 id 时用已保存的 key）；
+   * 只带 id 的就是已经保存的那一个。
+   */
+  private providerFor(body: Record<string, unknown>): StoredProvider {
     const id = typeof body.id === 'string' ? body.id : ''
     const existing = id.length > 0 ? this.deps.config.get().providers.find((p) => p.id === id) : undefined
-    const provider = mergeProvider(body, existing, existing?.id ?? 'draft')
-    return this.deps.testConnection(provider)
+    if (existing && body.baseUrl === undefined) return existing
+    return mergeProvider({ ...body, models: [] }, existing, existing?.id ?? 'draft')
+  }
+
+  /** 测试连接：可以测还没保存的草稿。测哪个模型：modelId 指已保存的一个，否则就是请求里带的模型名和设置。 */
+  private async testProvider(body: Record<string, unknown>): Promise<unknown> {
+    const provider = this.providerFor(body)
+    const model = typeof body.modelId === 'string' ? this.findModel(provider, body.modelId) : this.modelFrom(body, provider, 'draft')
+    return this.deps.testConnection(resolveModel(provider, model))
+  }
+
+  /** 问接口它有哪些模型，给填模型名时挑。拉不到（接口没有这个功能、key 不对、网络不通）不是错误：结果里说明原因，照样可以手填。 */
+  private async remoteModels(body: Record<string, unknown>): Promise<unknown> {
+    const provider = this.providerFor(body)
+    return this.deps.listModels({ ...resolveModel(provider, { id: 'draft', name: '', label: '' }) })
   }
 
   // ── AI 玩家 ──
@@ -736,6 +927,264 @@ export class PanelServer {
     const removed = res.removed === true
     if (removed) this.deps.log.add({ kind: 'info', text: `在面板上删除了图纸 ${name}。` })
     return { removed, ...((await this.blueprints()) as object) }
+  }
+
+  // ── 草稿：它自己写程序设计出来的建筑，存在大脑这边，还没发到游戏里 ──
+
+  private draftList(): unknown {
+    return { drafts: this.deps.design.drafts.list(), max: DRAFTS_MAX }
+  }
+
+  /** 一张草稿的全部内容，给面板画预览：每种方块的颜色和数量，格子是“下标, 连续几格”的序列（顺序同 .schematic）。 */
+  private draftView(name: string): unknown {
+    const record = this.deps.design.drafts.get(name)
+    if (!record) throw new HttpError(404, 'not_found', '没有这张草稿')
+    const { draft } = record
+    const design = this.deps.design
+    const looks = this.blockLooks()
+    const counts = new Map(materialsOf(draft).map((m) => [kindKey(m), m.count]))
+    return {
+      name: draft.name,
+      size: draft.size,
+      savedAt: record.savedAt,
+      blocks: blockCount(draft),
+      kinds: draft.kinds.map((kind) => {
+        const key = kindKey(kind)
+        const look = looks.of(kind)
+        // 颜色和图上的一致。颜色表里没有的方块给的是由名字定的颜色：看得出是不同的方块，但不是它真实的颜色
+        return { key, name: design.nameOf(kind) ?? null, count: counts.get(key) ?? 0, color: look.top, colorKnown: look.source !== 'hash' }
+      }),
+      runs: storeDraft(draft).runs,
+      program: record.program ?? null,
+    }
+  }
+
+  /** 方块在简图上长什么样：和它（模型）看到的图用同一张表。颜色表换了（重新加载资料）就重建。 */
+  private blockLooks(): BlockLooks {
+    const table = this.deps.design.colors()
+    if (this.looks?.table !== table) this.looks = { table, looks: new BlockLooks(table) }
+    return this.looks.looks
+  }
+
+  /**
+   * 草稿的图（PNG）：和它用 view_draft 要到的是同一种图。
+   * view：iso（默认）/ top / side / layer；from：iso 是四个角之一，side 是四边之一；layer：第几层；
+   * size：最长边（64–1024）；plain=1 只要画面，不带说明和图例（列表里的小图）。
+   */
+  private draftPicture(res: http.ServerResponse, url: URL): void {
+    const q = url.searchParams
+    const record = this.deps.design.drafts.get(q.get('name') ?? '')
+    if (!record) throw new HttpError(404, 'not_found', '没有这张草稿')
+    const { draft } = record
+    const view = q.get('view') ?? 'iso'
+    const from = q.get('from')
+    let spec: ViewSpec
+    if (view === 'iso') {
+      if (from !== null && !(CORNERS as readonly string[]).includes(from)) throw new HttpError(400, 'bad_request', `立体图的 from 是四个角之一：${CORNERS.join('、')}`)
+      spec = { view, from: (from as Corner | null) ?? 'southeast' }
+    } else if (view === 'side') {
+      if (from !== null && !(SIDES as readonly string[]).includes(from)) throw new HttpError(400, 'bad_request', `立面图的 from 是四边之一：${SIDES.join('、')}`)
+      spec = { view, from: (from as Side | null) ?? 'south' }
+    } else if (view === 'layer') {
+      const layer = Number(q.get('layer') ?? '0')
+      if (!Number.isInteger(layer) || layer < 0 || layer >= draft.size.y) throw new HttpError(400, 'bad_request', `这张草稿的层是 0 到 ${draft.size.y - 1}`)
+      spec = { view, layer }
+    } else if (view === 'top') {
+      spec = { view }
+    } else {
+      throw new HttpError(400, 'bad_request', 'view 是 iso、top、side、layer 之一')
+    }
+    const wanted = Number(q.get('size') ?? PICTURE_MAX_SIZE)
+    const size = Number.isFinite(wanted) ? Math.max(64, Math.min(PICTURE_MAX_SIZE, Math.round(wanted))) : PICTURE_MAX_SIZE
+    const plain = q.get('plain') === '1'
+    const key = JSON.stringify([draft.name, record.savedAt, spec, size, plain])
+    let png = this.draftPictures.get(key)
+    if (!png) {
+      try {
+        png = renderView(gridFromDraft(draft), this.blockLooks(), spec, { maxSize: size, plain, title: /^[\x20-\x7e]+$/.test(draft.name) ? `Draft "${draft.name}"` : 'Draft' }).png
+      } catch (e) {
+        if (e instanceof GridError) throw new HttpError(400, 'bad_request', e.message)
+        throw e
+      }
+      this.draftPictures.set(key, png)
+      // 存满了丢最早放进去的
+      if (this.draftPictures.size > DRAFT_PICTURES_CACHED) this.draftPictures.delete(this.draftPictures.keys().next().value!)
+    }
+    // 草稿重新存过以后地址里的时间会变（面板带着 savedAt），所以同一个地址的图可以放心缓存一会儿
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'private, max-age=60' })
+    res.end(png)
+  }
+
+  /** 三维预览要的数据：盒子里每一格是什么，每种方块怎么画（贴图在图集第几格，或者什么颜色）。 */
+  private model(grid: VoxelGrid): Scene {
+    const textures = this.deps.textures
+    return sceneOf(grid, this.blockLooks(), {
+      nameOf: (kind) => this.deps.design.nameOf(kind),
+      ...(textures ? { textures, atlasUrl: `/api/textures/atlas.png?v=${encodeURIComponent(textures.version)}` } : {}),
+    })
+  }
+
+  private draftModel(name: string): unknown {
+    const record = this.deps.design.drafts.get(name)
+    if (!record) throw new HttpError(404, 'not_found', '没有这张草稿')
+    return { name: record.draft.name, ...this.model(gridFromDraft(record.draft)) }
+  }
+
+  /** 对话日志里一张简图的三维预览：画那张图时存下的盒子。主人传的图片这类没有盒子的是 404。 */
+  private pictureModel(id: string): unknown {
+    const blocks = this.deps.pictures?.blocks(id)
+    if (blocks === undefined) throw new HttpError(404, 'not_found', '这张图没有三维预览（可能已经清理掉了）')
+    try {
+      return this.model(gridFromBlocks(blocks, DRAFT_MAX_SIDE))
+    } catch (e) {
+      if (e instanceof GridError) throw new HttpError(404, 'not_found', '这张图存下的方块数据读不出来')
+      throw e
+    }
+  }
+
+  /** 贴图图集那张图，原样给。地址里带着版本，所以可以让浏览器一直留着。 */
+  private textureAtlas(res: http.ServerResponse): void {
+    const file = this.deps.textures?.file
+    let png: Buffer | undefined
+    try {
+      if (file !== undefined) png = fs.readFileSync(file)
+    } catch {
+      /* 文件没了：当没有 */
+    }
+    if (!png) throw new HttpError(404, 'not_found', '没有方块贴图')
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'private, max-age=604800, immutable' })
+    res.end(png)
+  }
+
+  /** 它看过的一张图（对话日志里的）。 */
+  private pictureFile(res: http.ServerResponse, url: URL): void {
+    const png = this.deps.pictures?.get(url.searchParams.get('id') ?? '')
+    if (!png) throw new HttpError(404, 'not_found', '这张图已经清理掉了')
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'private, max-age=3600' })
+    res.end(png)
+  }
+
+  private draftName(raw: unknown): string {
+    if (typeof raw !== 'string' || raw.length === 0) throw new HttpError(400, 'bad_request', '需要草稿的名字')
+    return raw
+  }
+
+  private draftDelete(body: Record<string, unknown>): unknown {
+    const name = this.draftName(body.name)
+    const removed = this.deps.design.drafts.remove(name)
+    if (removed) this.deps.log.add({ kind: 'info', text: `在面板上删除了草稿 ${name}。` })
+    return { removed, ...(this.draftList() as object) }
+  }
+
+  /** 主人看过觉得行，直接在面板上把草稿发成游戏里的图纸（和它自己用 publish_draft 是一回事）。 */
+  private async draftPublish(body: Record<string, unknown>): Promise<unknown> {
+    const name = this.draftName(body.name)
+    const record = this.deps.design.drafts.get(name)
+    if (!record) throw new HttpError(404, 'not_found', '没有这张草稿')
+    const file = toSchematic(record.draft)
+    if (file.length > SCHEMATIC_MAX_BYTES) throw new HttpError(413, 'too_large', `这张草稿转成图纸有 ${(file.length / 1024 / 1024).toFixed(1)} MiB，图纸最大 ${SCHEMATIC_MAX_BYTES / 1024 / 1024} MiB`)
+    let saved: Awaited<ReturnType<BridgeApi['blueprintPut']>>
+    try {
+      saved = await this.deps.bridge.blueprintPut(this.blueprintName(name), file.toString('base64'))
+    } catch (e) {
+      if (e instanceof BridgeError && e.code === 'bad_request') throw new HttpError(400, 'bad_blueprint', `游戏那边没收下这张图纸：${e.message}`)
+      throw e
+    }
+    this.deps.log.add({ kind: 'info', text: `在面板上把草稿 ${name} 发布成了图纸（${saved.blocks ?? '?'} 个方块）。` })
+    return { saved }
+  }
+
+  // ── 图片：主人传给它做像素画、当参考的。浏览器已经缩小并转成了 PNG ──
+
+  private imageList(): unknown {
+    return { images: this.deps.design.images.list(), max: IMAGES_MAX, maxSide: IMAGE_MAX_SIDE, maxBytes: IMAGE_MAX_BYTES }
+  }
+
+  private imageUpload(body: Record<string, unknown>): unknown {
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    const data = typeof body.data === 'string' ? body.data : ''
+    if (data.length === 0) throw new HttpError(400, 'bad_request', '没有收到图片内容')
+    if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new HttpError(400, 'bad_request', '图片内容必须是 base64')
+    try {
+      const saved = this.deps.design.images.save(name, Buffer.from(data, 'base64'))
+      this.deps.log.add({ kind: 'info', text: `在面板上传了图片 ${saved.name}（${saved.width}×${saved.height}）。` })
+      return { saved, ...(this.imageList() as object) }
+    } catch (e) {
+      if (e instanceof DesignStoreError) throw new HttpError(400, 'bad_image', e.message)
+      throw e
+    }
+  }
+
+  private imageDelete(body: Record<string, unknown>): unknown {
+    const name = typeof body.name === 'string' ? body.name : ''
+    const removed = this.deps.design.images.remove(name)
+    if (removed) this.deps.log.add({ kind: 'info', text: `在面板上删除了图片 ${name}。` })
+    return { removed, ...(this.imageList() as object) }
+  }
+
+  /** 图片本身（给页面上的 <img> 用）。名字由 ImageStore 校验，出不了图片目录。 */
+  private imageFile(res: http.ServerResponse, url: URL): void {
+    const png = this.deps.design.images.png(url.searchParams.get('name') ?? '')
+    if (!png) throw new HttpError(404, 'not_found', '没有这张图片')
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length })
+    res.end(png)
+  }
+
+  // ── 意见簿：它干活时自己记下的反馈 ──
+
+  /** 地址里的筛选条件：category 是五个类别之一，status 是 new / seen / handled，或者 open（还没处理的）。不认识的当没给。 */
+  private feedbackFilter(url: URL): { category?: FeedbackCategory; status?: FeedbackStatus | 'open' } {
+    const category = url.searchParams.get('category')
+    const status = url.searchParams.get('status')
+    const filter: { category?: FeedbackCategory; status?: FeedbackStatus | 'open' } = {}
+    if (category !== null && (FEEDBACK_CATEGORIES as readonly string[]).includes(category)) filter.category = category as FeedbackCategory
+    if (status === 'new' || status === 'seen' || status === 'handled' || status === 'open') filter.status = status
+    return filter
+  }
+
+  /** 列表：新的在前，只带标题这些；附带的现场在详情里。 */
+  private feedbackList(url: URL): unknown {
+    const all = this.deps.feedback.list(this.feedbackFilter(url))
+    const shown = all.slice(0, FEEDBACK_LIST_MAX)
+    return {
+      reports: shown.map((r) => ({ id: r.id, time: r.time, lastTime: r.lastTime, count: r.count, status: r.status, title: r.title, category: r.category })),
+      more: all.length - shown.length,
+      total: this.deps.feedback.list().length,
+      unread: this.deps.feedback.unread(),
+    }
+  }
+
+  private feedbackGet(id: string): FeedbackReport {
+    const report = this.deps.feedback.get(id)
+    if (!report) throw new HttpError(404, 'not_found', '意见簿里没有这一条')
+    return report
+  }
+
+  private feedbackStatus(body: Record<string, unknown>): unknown {
+    const status = body.status
+    if (typeof body.id !== 'string' || (status !== 'new' && status !== 'seen' && status !== 'handled')) {
+      throw new HttpError(400, 'bad_request', '需要 id 和 status（new、seen 或 handled）')
+    }
+    const report = this.deps.feedback.setStatus(body.id, status)
+    if (!report) throw new HttpError(404, 'not_found', '意见簿里没有这一条')
+    this.overviewCache = undefined
+    return { report, unread: this.deps.feedback.unread() }
+  }
+
+  /** 导出成一个 JSON 文件：筛出来的每一条，连同附带的现场。主人整包拿去给人看。 */
+  private feedbackExport(res: http.ServerResponse, url: URL): void {
+    const filter = this.feedbackFilter(url)
+    const reports = this.deps.feedback.list(filter)
+    const now = new Date(this.now())
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+    const text = `${JSON.stringify({ exportedAt: now.toISOString(), bot: this.deps.config.get().bot.name, filter, count: reports.length, reports }, null, 2)}\n`
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="aiplayer-feedback-${stamp}.json"`,
+      'Content-Length': Buffer.byteLength(text),
+    })
+    res.end(text)
   }
 
   // ── 设置：bridge 的端口和口令文件、面板口令 ──

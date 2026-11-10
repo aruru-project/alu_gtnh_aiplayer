@@ -10,17 +10,21 @@ import type {
   BotStatus,
   Center,
   ContainerInfo,
+  DrawersResult,
   EntityInfo,
   FindMatch,
   ItemFilter,
   ItemSearchHit,
   MachineInfo,
+  PlayerView,
   ProbeResult,
   QuestDetail,
   QuestHit,
   QuestLine,
+  QuestProgress,
   RecipeFindResult,
   ScanResult,
+  WorldBlocks,
   ServerInfo,
   StockQuery,
   StockResult,
@@ -57,10 +61,23 @@ export class BridgeApi {
   worldScan(p: Dim & { x1: number; z1: number; x2: number; z2: number }): Promise<ScanResult> {
     return this.call('world.scan', p)
   }
+  /** 一个盒子里的全部方块（两角任意顺序，每边最多 64 格）。 */
+  worldBlocks(p: Dim & { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }): Promise<WorldBlocks> {
+    return this.call('world.blocks', p)
+  }
   worldFind(center: Center, p: { blocks: string[]; radius?: number; limit?: number }): Promise<{ matches?: FindMatch[]; total?: number }> {
     return this.call('world.find', { ...center, ...p })
   }
-  worldContainers(center: Center, p: { radius?: number } = {}): Promise<{ containers?: ContainerInfo[]; total?: number }> {
+  /** 一个在线玩家站在哪、朝哪看、指着什么。 */
+  worldPlayer(name: string): Promise<PlayerView & { name?: string; isBot?: boolean }> {
+    return this.call('world.player', { name })
+  }
+  /** 一个抽屉管理器管着的全部抽屉，逐格列出（给的位置是普通抽屉时只有它自己）。below：只列有货而且少于这个数的格。 */
+  worldDrawers(p: Dim & BlockPos & { below?: number; offset?: number; limit?: number }): Promise<DrawersResult> {
+    return this.call('world.drawers', p)
+  }
+  /** 由近到远。total 是范围里的总数，containers 只是从 offset 起的一页。 */
+  worldContainers(center: Center, p: { radius?: number; offset?: number; limit?: number } = {}): Promise<{ containers?: ContainerInfo[]; total?: number; offset?: number }> {
     return this.call('world.containers', { ...center, ...p })
   }
   worldEntities(center: Center, p: { radius?: number } = {}): Promise<{ entities?: EntityInfo[]; total?: number }> {
@@ -85,7 +102,12 @@ export class BridgeApi {
     return this.call('world.stock', { ...center, ...p })
   }
 
-  // 任务书（只读）。player 给了才有进度；服务器没装任务书时这几个方法返回 not_found。
+  // 任务书（只读）。服务器没装任务书时这几个方法返回 not_found。
+  /** 一个玩家做完了哪些任务。任务的内容大脑自己有（本地资料），只有进度要问服务器。 */
+  questProgress(player: string): Promise<QuestProgress> {
+    return this.call('quest.progress', { player })
+  }
+  // 下面三个连内容一起问服务器（英文），本地没有任务书资料时才用。player 给了才有进度。
   questLines(player?: string): Promise<{ lines?: QuestLine[]; quests?: number }> {
     return this.call('quest.lines', player === undefined ? {} : { player })
   }

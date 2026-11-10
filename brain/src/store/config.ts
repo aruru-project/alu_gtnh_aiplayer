@@ -1,10 +1,11 @@
 // 配置（含密钥）。落在数据目录的 config.json，权限 600。
 
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
-import { isProviderKind } from '../llm/index.ts'
-import type { ProviderConfig } from '../llm/index.ts'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { ADAPTERS, isProviderKind } from '../llm/index.ts'
+import type { Adapter, ProviderConfig, ProviderKind } from '../llm/index.ts'
+import { FILE_MODE, isRecord, readJson, writeJsonAtomic } from './files.ts'
 
 export interface PanelConfig {
   host: string
@@ -58,15 +59,55 @@ export interface BotConfig {
   wantOnline: boolean
 }
 
+/** 一个服务商下面的一个模型，和跟着模型走的设置。 */
+export interface ModelConfig {
+  /** 这个服务商里唯一。 */
+  id: string
+  /** 发给接口的模型名。 */
+  name: string
+  /** 给人看的名字；空字符串就显示模型名。同一个模型可以存两份（比如开不开思考），靠它区分。 */
+  label: string
+  maxOutputTokens?: number
+  temperature?: number
+  timeoutMs?: number
+  /** 浅合并进请求体：思考相关的参数（reasoning_effort、thinking……）放这里。 */
+  extraBody?: Record<string, unknown>
+  /** 适配器里跟着模型走的开关（见各适配器文件）。 */
+  options?: Record<string, unknown>
+  /** 这个模型能看图：开着时，它要看的图（简图、主人传的图片）会真的发给它；关着（默认）时只给文字说明。 */
+  vision?: boolean
+}
+
+/** 一家模型服务：接口类型、地址、key，和它下面的模型。 */
+export interface StoredProvider {
+  id: string
+  label: string
+  kind: ProviderKind
+  baseUrl: string
+  apiKey: string
+  extraHeaders?: Record<string, string>
+  /** 适配器里跟着服务商走的开关（比如 key 放在哪个请求头）。 */
+  options?: Record<string, unknown>
+  models: ModelConfig[]
+}
+
 export interface BrainConfig {
-  version: 1
+  /** 2：一个服务商下面可以有多个模型。1 是一个服务商只有一个模型的旧格式，读到时自动转成 2。 */
+  version: 2
   panel: PanelConfig
   bridge: BridgeConfig
   bot: BotConfig
-  providers: ProviderConfig[]
+  providers: StoredProvider[]
   /** 当前使用的服务商 id；空字符串表示还没选。 */
   activeProviderId: string
+  /** 当前使用的是这个服务商下面的哪个模型；空字符串表示它下面还没有模型。 */
+  activeModelId: string
+  /** 本地资料（任务书、物品表）的目录；相对路径相对 brain/ 目录，空字符串表示用默认的 packdata。 */
+  packdataDir: string
 }
+
+/** 本地资料目录的默认位置（相对 brain/）。 */
+export const DEFAULT_PACKDATA_DIR = 'packdata'
 
 /** 默认按正式部署来：端口 25590，口令文件没有默认值（必须显式配置）。 */
 export const DEFAULT_BRIDGE_PORT = 25590
@@ -85,7 +126,7 @@ export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec
 
 export function defaultConfig(): BrainConfig {
   return {
-    version: 1,
+    version: 2,
     panel: { host: '127.0.0.1', port: 28765, password: '', sessionSecret: '' },
     bridge: { host: '127.0.0.1', port: DEFAULT_BRIDGE_PORT, token: '', tokenFile: '', requestTimeoutMs: 10_000 },
     bot: {
@@ -99,6 +140,8 @@ export function defaultConfig(): BrainConfig {
     },
     providers: [],
     activeProviderId: '',
+    activeModelId: '',
+    packdataDir: '',
   }
 }
 
@@ -140,34 +183,40 @@ export function isValidPlayerName(name: string): boolean {
   return /^[A-Za-z0-9_]{1,16}$/.test(name)
 }
 
-/**
- * 把一份来自文件或面板的服务商配置整理成合法形状。不合法时抛 Error（消息给人看）。
- * 这里不处理“空 key 表示不修改”，那是面板接口的语义。
- */
-export function sanitizeProvider(raw: unknown): ProviderConfig {
-  if (!isRecord(raw)) throw new Error('服务商配置必须是对象')
-  const id = str(raw.id, '').trim()
-  if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) throw new Error('服务商 id 不合法')
-  if (!isProviderKind(raw.kind)) throw new Error(`不支持的接口类型：${String(raw.kind)}`)
-  const baseUrl = str(raw.baseUrl, '').trim()
-  let url: URL
-  try {
-    url = new URL(baseUrl)
-  } catch {
-    throw new Error('服务地址不是合法的 URL')
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('服务地址必须以 http:// 或 https:// 开头')
-  const model = str(raw.model, '').trim()
-  if (model.length === 0) throw new Error('模型名不能为空')
+/** 适配器的开关里，哪些是跟着服务商走的（其余的跟着模型）。 */
+function providerOptionKeys(kind: ProviderKind): Set<string> {
+  const adapter: Adapter = ADAPTERS[kind]
+  return new Set(adapter.options.filter((o) => o.scope === 'provider').map((o) => o.key))
+}
 
-  const out: ProviderConfig = {
-    id,
-    label: str(raw.label, '').trim().slice(0, 60) || model,
-    kind: raw.kind,
-    baseUrl,
-    apiKey: str(raw.apiKey, '').trim(),
-    model,
-  }
+function pickOptions(raw: unknown, keep: (key: string) => boolean): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined
+  const out = Object.fromEntries(Object.entries(raw).filter(([key]) => keep(key)))
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+export function isValidModelId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,40}$/.test(id)
+}
+
+/** 给人看的模型名字。 */
+export function modelDisplayName(model: Pick<ModelConfig, 'name' | 'label'>): string {
+  return model.label.length > 0 ? model.label : model.name
+}
+
+/**
+ * 把一份来自文件或面板的模型配置整理成合法形状。不合法时抛 Error（消息给人看）。
+ * kind 是它所在服务商的接口类型：决定哪些开关算它的。
+ */
+export function sanitizeModel(raw: unknown, kind: ProviderKind): ModelConfig {
+  if (!isRecord(raw)) throw new Error('模型配置必须是对象')
+  const id = str(raw.id, '').trim()
+  if (!isValidModelId(id)) throw new Error('模型的 id 不合法')
+  const name = str(raw.name, '').trim()
+  if (name.length === 0) throw new Error('模型名不能为空')
+  if (name.length > 200) throw new Error('模型名太长')
+  const label = str(raw.label, '').trim().slice(0, 60)
+  const out: ModelConfig = { id, name, label: label === name ? '' : label }
   if (raw.maxOutputTokens !== undefined && raw.maxOutputTokens !== null && raw.maxOutputTokens !== '') {
     out.maxOutputTokens = int(raw.maxOutputTokens, 4096, 1, 1_000_000)
   }
@@ -177,10 +226,88 @@ export function sanitizeProvider(raw: unknown): ProviderConfig {
   if (raw.timeoutMs !== undefined && raw.timeoutMs !== null && raw.timeoutMs !== '') {
     out.timeoutMs = int(raw.timeoutMs, 120_000, 1000, 3_600_000)
   }
+  if (isRecord(raw.extraBody) && Object.keys(raw.extraBody).length > 0) out.extraBody = raw.extraBody
+  const providerKeys = providerOptionKeys(kind)
+  const options = pickOptions(raw.options, (key) => !providerKeys.has(key))
+  if (options) out.options = options
+  if (raw.vision === true) out.vision = true
+  return out
+}
+
+/**
+ * 把一份来自文件或面板的服务商配置整理成合法形状。不合法时抛 Error（消息给人看）。
+ * 这里不处理“空 key 表示不修改”，那是面板接口的语义。
+ *
+ * 认两种写法：
+ * - 现在的：models 是它下面的模型列表；
+ * - 旧的（一个服务商只有一个模型）：model 是模型名，输出上限、温度、超时、额外请求参数和开关都直接挂在服务商上。
+ *   这种会被转成“这个服务商下面的第一个模型”，跟着模型走的设置一起挪过去。
+ * lenient：某个模型不合法时跳过它而不是整条作废（读配置文件时用，免得一处手误把整家服务商连同 key 丢掉）。
+ */
+export function sanitizeProvider(raw: unknown, opts: { lenient?: boolean } = {}): StoredProvider {
+  if (!isRecord(raw)) throw new Error('服务商配置必须是对象')
+  const id = str(raw.id, '').trim()
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) throw new Error('服务商 id 不合法')
+  if (!isProviderKind(raw.kind)) throw new Error(`不支持的接口类型：${String(raw.kind)}`)
+  const kind = raw.kind
+  const baseUrl = str(raw.baseUrl, '').trim()
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    throw new Error('服务地址不是合法的 URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('服务地址必须以 http:// 或 https:// 开头')
+
+  const models: ModelConfig[] = []
+  const addModel = (rawModel: unknown): void => {
+    try {
+      const model = sanitizeModel(rawModel, kind)
+      if (models.some((m) => m.id === model.id)) throw new Error(`有两个模型的 id 都是 ${model.id}`)
+      models.push(model)
+    } catch (e) {
+      if (!opts.lenient) throw e
+      console.error(`[config] 忽略服务商 ${id} 下面一个不合法的模型：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  if (Array.isArray(raw.models)) {
+    for (const m of raw.models) addModel(m)
+  } else if (raw.model !== undefined) {
+    // 旧格式：整条就是一个模型
+    addModel({ id: 'm1', name: raw.model, maxOutputTokens: raw.maxOutputTokens, temperature: raw.temperature, timeoutMs: raw.timeoutMs, extraBody: raw.extraBody, options: raw.options })
+  }
+
+  const out: StoredProvider = {
+    id,
+    label: str(raw.label, '').trim().slice(0, 60) || models[0]?.name || url.host,
+    kind,
+    baseUrl,
+    apiKey: str(raw.apiKey, '').trim(),
+    models,
+  }
   const headers = stringMap(raw.extraHeaders)
   if (headers) out.extraHeaders = headers
-  if (isRecord(raw.extraBody) && Object.keys(raw.extraBody).length > 0) out.extraBody = raw.extraBody
-  if (isRecord(raw.options) && Object.keys(raw.options).length > 0) out.options = raw.options
+  const providerKeys = providerOptionKeys(kind)
+  const options = pickOptions(raw.options, (key) => providerKeys.has(key))
+  if (options) out.options = options
+  return out
+}
+
+/** 是不是旧格式的服务商配置（一个服务商只有一个模型）。 */
+function isLegacyProvider(raw: unknown): boolean {
+  return isRecord(raw) && !Array.isArray(raw.models) && raw.model !== undefined
+}
+
+/** 一个服务商加上它的一个模型 → 模型调用层要的那种“一家接口、一个模型”的配置。 */
+export function resolveModel(provider: StoredProvider, model: ModelConfig): ProviderConfig {
+  const out: ProviderConfig = { id: provider.id, label: provider.label, kind: provider.kind, baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: model.name }
+  if (model.maxOutputTokens !== undefined) out.maxOutputTokens = model.maxOutputTokens
+  if (model.temperature !== undefined) out.temperature = model.temperature
+  if (model.timeoutMs !== undefined) out.timeoutMs = model.timeoutMs
+  if (provider.extraHeaders) out.extraHeaders = provider.extraHeaders
+  if (model.extraBody) out.extraBody = model.extraBody
+  if (provider.options || model.options) out.options = { ...(provider.options ?? {}), ...(model.options ?? {}) }
+  if (model.vision) out.vision = true
   return out
 }
 
@@ -193,22 +320,24 @@ export function normalizeConfig(raw: unknown): BrainConfig {
   const wake = isRecord(bot.wake) ? bot.wake : {}
   const limits = isRecord(bot.limits) ? bot.limits : {}
 
-  const providers: ProviderConfig[] = []
+  const providers: StoredProvider[] = []
   if (Array.isArray(raw.providers)) {
     for (const p of raw.providers) {
       try {
-        const clean = sanitizeProvider(p)
+        const clean = sanitizeProvider(p, { lenient: true })
         if (!providers.some((x) => x.id === clean.id)) providers.push(clean)
       } catch (e) {
         console.error(`[config] 忽略一条不合法的服务商配置：${e instanceof Error ? e.message : String(e)}`)
       }
     }
   }
-  const active = str(raw.activeProviderId, '')
+  // 当前用的服务商不在了就用第一个；当前用的模型不在它下面了就用它的第一个模型（它下面没有模型就是空）。不会自己跳到别的服务商去。
+  const activeProvider = providers.find((p) => p.id === str(raw.activeProviderId, '')) ?? providers[0]
+  const activeModel = activeProvider?.models.find((m) => m.id === str(raw.activeModelId, '')) ?? activeProvider?.models[0]
   const name = str(bot.name, d.bot.name).trim()
 
   return {
-    version: 1,
+    version: 2,
     panel: {
       host: str(panel.host, d.panel.host).trim() || d.panel.host,
       port: int(panel.port, d.panel.port, 0, 65535),
@@ -241,7 +370,9 @@ export function normalizeConfig(raw: unknown): BrainConfig {
       wantOnline: bot.wantOnline === true,
     },
     providers,
-    activeProviderId: providers.some((p) => p.id === active) ? active : (providers[0]?.id ?? ''),
+    activeProviderId: activeProvider?.id ?? '',
+    activeModelId: activeModel?.id ?? '',
+    packdataDir: str(raw.packdataDir, '').trim().slice(0, 1000),
   }
 }
 
@@ -253,6 +384,7 @@ export interface ConfigOverrides {
   bridgePort?: number
   bridgeToken?: string
   bridgeTokenFile?: string
+  packdataDir?: string
 }
 
 export function overridesFromEnv(env: NodeJS.ProcessEnv): ConfigOverrides {
@@ -270,6 +402,7 @@ export function overridesFromEnv(env: NodeJS.ProcessEnv): ConfigOverrides {
   if (bridgePort !== undefined) out.bridgePort = bridgePort
   if (env.AIPLAYER_BRIDGE_TOKEN) out.bridgeToken = env.AIPLAYER_BRIDGE_TOKEN
   if (env.AIPLAYER_BRIDGE_TOKEN_FILE) out.bridgeTokenFile = env.AIPLAYER_BRIDGE_TOKEN_FILE
+  if (env.AIPLAYER_PACKDATA) out.packdataDir = env.AIPLAYER_PACKDATA
   return out
 }
 
@@ -287,6 +420,20 @@ export class ConfigStore {
     const raw = readJson(this.file)
     this.config = normalizeConfig(raw)
     let dirty = raw === undefined
+    // 旧格式（一个服务商只有一个模型）：转成新的写回去。原文件先留一份底，万一要退回旧版本的大脑还用得上。
+    if (isRecord(raw) && raw.version !== 2) {
+      dirty = true
+      if (Array.isArray(raw.providers) && raw.providers.some(isLegacyProvider)) {
+        const backup = `${this.file}.v1.bak`
+        try {
+          fs.copyFileSync(this.file, backup)
+          fs.chmodSync(backup, FILE_MODE)
+          console.log(`[config] 配置里的服务商是旧格式（一个服务商一个模型），已转成新格式；原文件留在 ${backup}`)
+        } catch (e) {
+          console.error(`[config] 没能给旧配置留底：${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
     this.passwordGenerated = this.config.panel.password.length === 0
     if (this.passwordGenerated) {
       this.config.panel.password = crypto.randomBytes(18).toString('base64url')
@@ -329,8 +476,17 @@ export class ConfigStore {
     return () => this.listeners.delete(fn)
   }
 
+  /** 现在用的是哪个服务商的哪个模型；还没配、或者当前服务商下面没有模型时是 undefined。 */
+  activeSelection(): { provider: StoredProvider; model: ModelConfig } | undefined {
+    const provider = this.config.providers.find((p) => p.id === this.config.activeProviderId)
+    const model = provider?.models.find((m) => m.id === this.config.activeModelId)
+    return provider && model ? { provider, model } : undefined
+  }
+
+  /** 现在用的那个模型的调用配置（服务商的地址、key 加上这个模型自己的设置）。 */
   activeProvider(): ProviderConfig | undefined {
-    return this.config.providers.find((p) => p.id === this.config.activeProviderId)
+    const active = this.activeSelection()
+    return active ? resolveModel(active.provider, active.model) : undefined
   }
 
   /** 面板实际监听的地址（环境变量优先）。 */
@@ -352,6 +508,11 @@ export class ConfigStore {
       bridgeToken: o.bridgeToken !== undefined,
       bridgeTokenFile: o.bridgeTokenFile !== undefined,
     }
+  }
+
+  /** 本地资料的目录（环境变量优先；都没配就是默认的）。相对路径由调用方按 brain/ 目录解析。 */
+  packdataDir(): string {
+    return this.overrides.packdataDir ?? (this.config.packdataDir || DEFAULT_PACKDATA_DIR)
   }
 
   /** bridge 实际使用的连接参数（环境变量优先）。 */

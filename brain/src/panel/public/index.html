@@ -29,6 +29,10 @@
         <span id="badge-bot" class="badge">玩家：…</span>
         <span id="badge-agent" class="badge">大脑：…</span>
       </div>
+      <label class="model-switch" title="现在用哪个模型思考。换了以后下一轮起生效，不用重启">
+        <span>模型</span>
+        <select id="model-switch" aria-label="现在用的模型" disabled><option>…</option></select>
+      </label>
       <button id="logout" type="button" class="quiet">退出</button>
     </header>
 
@@ -40,6 +44,7 @@
       <button type="button" role="tab" data-tab="memory" aria-selected="false">记忆</button>
       <button type="button" role="tab" data-tab="manuals" aria-selected="false">手册</button>
       <button type="button" role="tab" data-tab="blueprints" aria-selected="false">图纸</button>
+      <button type="button" role="tab" data-tab="feedback" aria-selected="false">意见簿<span id="feedback-count" class="count" title="还没看过的条数" hidden></span></button>
       <button type="button" role="tab" data-tab="settings" aria-selected="false">设置</button>
     </nav>
 
@@ -65,6 +70,7 @@
       <section id="tab-memory" role="tabpanel" hidden></section>
       <section id="tab-manuals" role="tabpanel" hidden></section>
       <section id="tab-blueprints" role="tabpanel" hidden></section>
+      <section id="tab-feedback" role="tabpanel" hidden></section>
       <section id="tab-settings" role="tabpanel" hidden></section>
     </main>
   </div>

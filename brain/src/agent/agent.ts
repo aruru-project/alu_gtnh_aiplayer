@@ -4,20 +4,25 @@
 import type { BridgeApi } from '../bridge/api.ts'
 import { BridgeError } from '../bridge/protocol.ts'
 import type { BridgeEvent } from '../bridge/protocol.ts'
-import { LlmError, textOf } from '../llm/index.ts'
-import type { GenerateRequest, GenerateResult, LlmClient, Message, UserPart } from '../llm/index.ts'
+import { LlmError, keepLatestImages, textOf } from '../llm/index.ts'
+import type { GenerateRequest, GenerateResult, LlmClient, Message, ToolResultPart, UserPart } from '../llm/index.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
+import type { FeedbackContext, FeedbackStore, FeedbackTask, FeedbackToolCall } from '../store/feedback.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { cleanChatText } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
-import { runTool, toToolSpecs } from '../tools/index.ts'
-import type { ManualAccess, MemoryAccess, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
+import type { DesignWorkspace } from '../design/index.ts'
+import type { PackData } from '../packdata/index.ts'
+import { QUERY_TOOLS, QuestProgressCache, SurroundingsCache, runTool, toToolSpecs } from '../tools/index.ts'
+import type { ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, historyMessages } from './compaction.ts'
 import { buildSnapshot, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
 import type { PendingReminder } from './context.ts'
-import { describeEvent, fromBridgeEvent, isHumanInput } from './events.ts'
+import { describeEvent, eventLine, fromBridgeEvent, isHumanInput } from './events.ts'
 import type { AgentEvent } from './events.ts'
 import { buildSystemPrompt } from './prompt.ts'
+import { RoutineRunner, describeRoutine } from './routine.ts'
+import type { RoutineLimits, RoutineView } from './routine.ts'
 import { DEFAULT_WAKE_TUNING, decideWake } from './wake.ts'
 import type { WakeDecision, WakePolicy } from './wake.ts'
 
@@ -73,11 +78,27 @@ export interface AgentDeps {
   settings(): AgentSettings
   /** 当前的模型客户端；没配置时返回 undefined。 */
   llm(): LlmClient | undefined
+  /** 当前用的是哪个服务商的哪个模型（给人看的，如“官方接口 / gpt-x”）。每一轮记进日志，事后好对比。 */
+  modelName?(): string | undefined
+  /** 当前用的模型能不能看图（模型上的开关）。没提供就是不能：带图的工具只给文字说明。 */
+  canSeeImages?(): boolean
+  /** 工具结果带的图存一份给面板的对话日志显示；没提供就不存。 */
+  pictures?: { save(png: Buffer, blocks?: unknown): string }
   bridge: BridgeApi
   tools: readonly Tool[]
   memory: MemoryAccess & { render(): string }
   /** 手册：提示词里列目录，模型用 read_manual 读。 */
   manuals: ManualAccess
+  /** 本地资料（任务书、物品表）。没有时相关工具改问服务器。 */
+  packdata?: PackData
+  /** 自己出设计用的：跑程序的沙箱、图纸草稿、主人传的图片。 */
+  design?: DesignWorkspace
+  /** 例程的各项上限；不给用默认的。 */
+  routineLimits?: Partial<RoutineLimits>
+  /** 意见簿：模型用 report_problem 记下的反馈存在这里。 */
+  feedback?: FeedbackStore
+  /** 大脑和身体（mod）的版本，附在意见簿的每一条上。 */
+  versions?(): { brain: string; mod?: string }
   reminders: ReminderAccess & { list(): PendingReminder[] }
   history: HistoryStore
   log: ActivityLog
@@ -108,9 +129,15 @@ export interface AgentStatus {
   lastCall?: LastCall
   /** 模型接口故障期间才有。 */
   outage?: { failures: number; since: number; nextRetryAt: number; lastError: string }
+  /** 正在跑的例程（没有就是上一个跑完的）。 */
+  routine?: RoutineView
 }
 
 const BACKGROUND_MAX = 60
+/** 一轮的现场里留最近几次工具调用，每次的参数和结果各留多长（意见簿存的时候还会再裁）。 */
+const TRACE_CALLS_KEPT = 8
+const TRACE_INPUT_CHARS = 400
+const TRACE_RESULT_CHARS = 1500
 const BOT_MESSAGES_KEPT = 50
 /** “最近发生的事”里最多留这么多条系统消息，免得被刷屏的消息挤满。 */
 const BACKGROUND_BOT_MESSAGES_MAX = 10
@@ -132,6 +159,11 @@ const NOT_WOKEN_NOTES: Partial<Record<WakeDecision['reason'], string>> = {
 
 const STEP_LIMIT_NOTE =
   '[系统] 这一轮已经到了步数上限，到此为止。没做完的事等下次被叫醒再继续；不要指望这一轮里还能再调用工具。'
+/**
+ * 一轮里同时附带的图最多这么多张：再要新的，最早的那张换成占位文字。
+ * 一轮结束后图一张都不留（见 HistoryStore.appendTurn），所以这只管一轮之内。
+ */
+export const LIVE_IMAGES_MAX = 4
 const BUDGET_NOTE = '[系统] 今天的模型用量到上限了，这一轮到此为止。'
 
 /**
@@ -177,6 +209,14 @@ export class Agent {
   private turnSpoke = false
   /** 最近收到的系统消息和到达时间，给“指令回显晚一步才到”的工具用。 */
   private botMessages: { at: number; text: string }[] = []
+  /** 任务书进度（谁做完了哪些）的短时缓存：一轮里连着查几次任务书，只问服务器一次。 */
+  private readonly questProgress: QuestProgressCache
+  /** 附近有哪些机器和工作台，记二十秒：连着查几样东西的做法时不用每次都问身体。 */
+  private readonly surroundings: SurroundingsCache
+  /** 后台例程（要有跑程序的沙箱才有）。 */
+  private readonly routine: RoutineRunner | undefined
+  /** 正在跑的这一轮的现场：它是被什么叫醒的、到现在调了哪些工具、牵涉哪些任务。模型往意见簿里记一条时附上。 */
+  private turnTrace: { turn: number; instruction: string; calls: FeedbackToolCall[]; tasks: Map<string, FeedbackTask> } | undefined
 
   private llmFailures = 0
   private outageSince = 0
@@ -190,6 +230,37 @@ export class Agent {
   constructor(deps: AgentDeps) {
     this.deps = deps
     this.timing = { ...DEFAULT_TIMING, ...(deps.timing ?? {}) }
+    this.questProgress = new QuestProgressCache(deps.bridge, () => this.now())
+    this.surroundings = new SurroundingsCache(() => this.now())
+    this.routine = deps.design
+      ? new RoutineRunner({
+          design: deps.design,
+          bridge: deps.bridge,
+          botName: () => this.deps.settings().botName,
+          tools: deps.tools,
+          context: (onTaskStarted) => {
+            // 和模型调工具用同一个上下文；开了任务时多告诉例程一声，它好等这个任务结束
+            const ctx = this.toolContext(this.deps.settings().botName)
+            const tell = ctx.hooks.taskStarted
+            ctx.hooks = {
+              ...ctx.hooks,
+              taskStarted: (task) => {
+                tell?.(task)
+                onTaskStarted(task)
+              },
+            }
+            return ctx
+          },
+          log: deps.log,
+          now: () => this.now(),
+          ended: (view) => this.routineEnded(view),
+          cancelTask: async (id) => {
+            await this.ownCancel(() => this.deps.bridge.taskCancel(this.deps.settings().botName, id))
+          },
+          ...(deps.routineLimits ? { limits: deps.routineLimits } : {}),
+          maxResultChars: this.deps.settings().toolResultMaxChars,
+        })
+      : undefined
     const saved = deps.persist?.load()
     if (saved) {
       this.tracked = new Set(saved.tracked)
@@ -221,6 +292,7 @@ export class Agent {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
+    this.routine?.stop('the brain is shutting down')
     this.abort?.abort()
     this.persist()
     if (this.running) await new Promise<void>((resolve) => this.idleWaiters.push(resolve))
@@ -235,6 +307,18 @@ export class Agent {
   /** 所有事件的入口：记日志 → 唤醒策略 → 排队或进背景。 */
   handleEvent(ev: AgentEvent): void {
     const now = this.now()
+    // 例程开的任务：开始、结束都交给例程，不叫醒模型（例程自己把每一步记进了日志，做完会一次叫醒）
+    if ((ev.type === 'task_ended' || ev.type === 'task_started') && this.routine?.owns(ev.task.id)) {
+      if (ev.type === 'task_ended') {
+        const key = taskEndKey(ev)
+        if (this.endedSeen.includes(key)) return
+        this.endedSeen.push(key)
+        this.tracked.delete(ev.task.id)
+        this.persist()
+        this.routine.taskEnded(ev.task)
+      }
+      return
+    }
     if (ev.type === 'task_ended') {
       const key = taskEndKey(ev)
       if (this.endedSeen.includes(key)) return // 续传或对账时重复收到
@@ -379,6 +463,35 @@ export class Agent {
     if (this.selfCanceled.length > SELF_CANCELED_KEPT) this.selfCanceled.splice(0, this.selfCanceled.length - SELF_CANCELED_KEPT)
   }
 
+  /** 面板上主人点了“停止例程”。没有在跑的返回 false。 */
+  stopRoutine(): boolean {
+    return this.routine?.stop('your owner stopped it on the control panel') ?? false
+  }
+
+  /** 例程结束了：记一笔，叫醒模型，把它的情况和日志给模型看。 */
+  private routineEnded(view: RoutineView): void {
+    const text = describeRoutine(view, this.now())
+    this.deps.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : '停了'}：${view.ending ?? ''}`, detail: text })
+    if (this.stopped) return
+    this.handleEvent({ type: 'notice', time: this.now(), wake: true, text: `你启动的例程有结果了，看完决定下一步（它做了的事不会撤销）：\n${text}` })
+  }
+
+  /** run_program 的程序里调一个工具：只许查询类的，走和模型调工具同一条路，记进日志。 */
+  private async queryFromProgram(name: string, input: unknown): Promise<ProgramToolResult> {
+    if (!QUERY_TOOLS.includes(name)) {
+      return { ok: false, text: `${name} cannot be called from run_program: a program there can only look things up (${QUERY_TOOLS.join(', ')}). To act, start the program with start_routine.` }
+    }
+    const args = compactJson(input, 160)
+    this.deps.log.add({ kind: 'tool_call', who: name, text: `[程序] ${args}` })
+    const res = await runTool(this.deps.tools, this.toolContext(this.deps.settings().botName), name, input, { maxResultChars: this.deps.settings().toolResultMaxChars })
+    const line = firstLine(res.content)
+    const entry: Parameters<ActivityLog['add']>[0] = { kind: 'tool_result', who: name, text: `[程序] ${line}` }
+    if (line !== res.content) entry.detail = res.content
+    if (res.isError) entry.isError = true
+    this.deps.log.add(entry)
+    return { ok: res.isError !== true, text: res.content, ...(res.data !== undefined ? { data: res.data } : {}) }
+  }
+
   /** 模型配置改了：接口故障的退避清零，马上再试。 */
   notifyConfigChanged(): void {
     if (this.llmFailures > 0) {
@@ -396,6 +509,8 @@ export class Agent {
       trackedTasks: [...this.tracked],
     }
     if (this.lastCall) s.lastCall = this.lastCall
+    const routine = this.routine?.view()
+    if (routine) s.routine = routine
     if (this.llmFailures > 0) {
       s.outage = {
         failures: this.llmFailures,
@@ -495,7 +610,10 @@ export class Agent {
       this.inFlight = []
     }
 
+    // 这一轮从头到尾用同一个模型：中途在面板上换了，下一轮才生效
     const llm = this.deps.llm()
+    const modelName = this.deps.modelName?.()
+    const canSee = this.deps.canSeeImages?.() === true
     if (!llm) {
       this.deps.log.add({ kind: 'error', text: '还没有可用的模型服务，这些事没法处理。请到面板的“模型”页添加并选中一个。' })
       if (humanTriggered) await this.announce('no_model', '我还没接上模型，现在没法思考，得有人去面板配一下。')
@@ -522,9 +640,11 @@ export class Agent {
     this.deps.log.add({
       kind: 'turn',
       turn: turnId,
-      text: `第 ${turnId} 轮开始：${triggers.map((e) => firstLine(describeEvent(e), 40)).join('；')}`,
+      text: `第 ${turnId} 轮开始${modelName ? `（${modelName}）` : ''}：${triggers.map((e) => firstLine(describeEvent(e), 40)).join('；')}`,
       detail: userText,
     })
+    this.turnTrace = { turn: turnId, instruction: triggers.map((e) => eventLine(e, startedAt)).join('\n'), calls: [], tasks: new Map() }
+    for (const ev of triggers) if (ev.type === 'task_ended' || ev.type === 'task_started') this.traceTask(ev.task)
 
     const system = buildSystemPrompt({
       persona: settings.persona,
@@ -535,7 +655,7 @@ export class Agent {
       manuals,
     })
     const toolSpecs = toToolSpecs(this.deps.tools)
-    const ctx = this.toolContext(settings.botName)
+    const ctx = this.toolContext(settings.botName, canSee)
     let prior = this.priorMessages()
     this.turnSpoke = false
     let finalText = ''
@@ -560,7 +680,7 @@ export class Agent {
 
       let result: GenerateResult
       try {
-        result = await this.callModel(llm, { system, messages: [...prior, ...turnMessages], tools: toolSpecs, signal })
+        result = await this.callModel(llm, { system, messages: [...prior, ...keepLatestImages(turnMessages, LIVE_IMAGES_MAX)], tools: toolSpecs, signal })
       } catch (e) {
         if (!(e instanceof LlmError)) throw e
         if (e.kind === 'aborted') {
@@ -629,15 +749,34 @@ export class Agent {
         } else {
           res = await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: settings.toolResultMaxChars })
         }
+        this.turnTrace.calls.push({
+          tool: call.name,
+          input: compactJson(call.invalid ? call.invalid.raw : call.input, TRACE_INPUT_CHARS),
+          result: res.content.slice(0, TRACE_RESULT_CHARS),
+          ...(res.isError ? { isError: true } : {}),
+        })
+        if (this.turnTrace.calls.length > TRACE_CALLS_KEPT) this.turnTrace.calls.shift()
         const entry: Parameters<ActivityLog['add']>[0] = { kind: 'tool_result', turn: turnId, who: call.name, text: firstLine(res.content) }
         if (entry.text !== res.content) entry.detail = res.content
         if (res.isError) entry.isError = true
+        const images = res.images ?? []
+        // 图存一份给面板看（模型看不了图时主人照样看得到）
+        if (images.length > 0 && this.deps.pictures) {
+          try {
+            entry.pictures = images.map((image) => this.deps.pictures!.save(image.data, image.blocks))
+            const scenes = entry.pictures.filter((_, n) => images[n]!.blocks !== undefined)
+            if (scenes.length > 0) entry.scenes = scenes
+          } catch (e) {
+            this.deps.log.add({ kind: 'error', turn: turnId, text: `工具结果带的图没存下来（面板上看不到这张图）：${e instanceof Error ? e.message : String(e)}` })
+          }
+        }
         this.deps.log.add(entry)
-        results.push(
-          res.isError
-            ? { type: 'tool_result', toolCallId: call.id, content: res.content, isError: true }
-            : { type: 'tool_result', toolCallId: call.id, content: res.content },
-        )
+        const part: ToolResultPart = res.isError
+          ? { type: 'tool_result', toolCallId: call.id, content: res.content, isError: true }
+          : { type: 'tool_result', toolCallId: call.id, content: res.content }
+        // 图只给能看图的模型；它只在这一轮里跟着，存进历史时换成一句占位文字
+        if (canSee && images.length > 0) part.images = images.map((image) => ({ label: image.label, mediaType: image.mediaType, data: image.data.toString('base64') }))
+        results.push(part)
       }
       turnMessages.push({ role: 'user', content: results })
 
@@ -675,7 +814,7 @@ export class Agent {
       }
     }
 
-    this.deps.log.add({ kind: 'turn', turn: turnId, text: `第 ${turnId} 轮结束（调了 ${steps} 次模型）` })
+    this.deps.log.add({ kind: 'turn', turn: turnId, text: `第 ${turnId} 轮结束（调了 ${steps} 次模型${modelName ? `，${modelName}` : ''}）` })
     await this.maybeCompact(llm, settings, signal)
   }
 
@@ -805,13 +944,77 @@ export class Agent {
     }
   }
 
-  private toolContext(botName: string): ToolContext {
+  /** 意见簿里“相关的任务”：这一轮里结束的、开始的、它自己启动的。 */
+  private traceTask(task: { id: string; type?: string; state?: string; error?: { code?: string } }): void {
+    const entry: FeedbackTask = { id: task.id }
+    if (task.type !== undefined) entry.type = task.type
+    if (task.state !== undefined) entry.state = task.state
+    if (task.error?.code !== undefined) entry.error = task.error.code
+    this.turnTrace?.tasks.set(task.id, entry)
+  }
+
+  /** 模型往意见簿里记一条时附上的现场。密钥之类不在这里面；存之前意见簿还会再抹一遍。 */
+  private feedbackContext(botName: string): FeedbackContext {
+    const versions = this.deps.versions?.() ?? { brain: 'unknown' }
+    const trace = this.turnTrace
+    const context: FeedbackContext = {
+      bot: botName,
+      brainVersion: versions.brain,
+      instruction: trace?.instruction ?? '',
+      recentTools: trace ? [...trace.calls] : [],
+      tasks: trace ? [...trace.tasks.values()] : [],
+    }
+    if (versions.mod !== undefined) context.modVersion = versions.mod
+    if (trace) context.turn = trace.turn
+    return context
+  }
+
+  /** 工具（start_routine 这几个）要的口子：文字都在这里拼好。 */
+  private routineAccess(): NonNullable<ToolContext['routines']> {
+    const routine = this.routine!
+    return {
+      start: (code, opts) => {
+        const res = routine.start(code, opts)
+        if ('error' in res) return res
+        return {
+          started: `Routine ${res.view.id} ("${res.view.name}") started in the background. End your turn now: you will be woken when it finishes, fails or is stopped, with its log. routine_status shows how far it is; stop_routine stops it.`,
+        }
+      },
+      status: () => {
+        const view = routine.view()
+        return view ? describeRoutine(view, this.now()) : undefined
+      },
+      stop: () => routine.stop('you stopped it with stop_routine'),
+    }
+  }
+
+  private toolContext(botName: string, canSee = false): ToolContext {
+    const feedback = this.deps.feedback
     return {
       botName,
+      canSeeImages: () => canSee,
       bridge: this.deps.bridge,
       memory: this.deps.memory,
       reminders: this.deps.reminders,
       manuals: this.deps.manuals,
+      ...(this.deps.packdata ? { packdata: this.deps.packdata } : {}),
+      ...(this.deps.design ? { design: this.deps.design } : {}),
+      ...(feedback
+        ? {
+            feedback: {
+              submit: (input) => {
+                const res = feedback.submit(input, this.feedbackContext(botName))
+                if ('full' in res) return res
+                // 新记的一条在对话日志里说一声；同一个问题又来一次的不刷屏
+                if (!res.merged) this.deps.log.add({ kind: 'info', text: `它在意见簿里记了一条（${res.report.id}）：${res.report.title}` })
+                return { id: res.report.id, merged: res.merged, count: res.report.count }
+              },
+            },
+          }
+        : {}),
+      questProgress: this.questProgress,
+      surroundings: this.surroundings,
+      ...(this.routine ? { routines: this.routineAccess(), queryFromProgram: (name: string, input: unknown) => this.queryFromProgram(name, input) } : {}),
       now: () => this.now(),
       // 查任务书进度默认看谁的：主人名单里的第一个；没有名单就是刚才跟它说话的人
       defaultPlayer: () => this.deps.settings().owners[0] ?? this.lastSpeaker,
@@ -829,6 +1032,7 @@ export class Agent {
           })
         },
         taskStarted: (task) => {
+          this.traceTask(task)
           if (task.state === 'running' || task.state === 'queued') {
             this.tracked.add(task.id)
             this.persist()

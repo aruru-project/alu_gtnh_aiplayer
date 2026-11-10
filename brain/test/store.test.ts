@@ -73,6 +73,91 @@ describe('数据目录', () => {
     assert.equal(c.activeProviderId, 'ok')
   })
 
+  it('旧配置（一个服务商只有一个模型）自动转成新格式：原来的模型成了这个服务商下面的第一个模型，调用时用的设置和以前一模一样；原文件留了底', (t) => {
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    const file = path.join(tmp.dir, 'config.json')
+    const old = JSON.stringify({
+      version: 1,
+      panel: { password: 'keep-me', sessionSecret: 'keep-this-too' },
+      providers: [
+        {
+          id: 'main',
+          label: '主力',
+          kind: 'openai-chat',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'sk-old-openai-key-123456',
+          model: 'gpt-old',
+          maxOutputTokens: 2000,
+          temperature: 0.3,
+          timeoutMs: 90_000,
+          extraHeaders: { 'x-team': 'gtnh' },
+          extraBody: { reasoning_effort: 'low' },
+          options: { maxTokensField: 'max_completion_tokens', systemRole: 'developer' },
+        },
+        { id: 'ant', label: '备用', kind: 'anthropic-messages', baseUrl: 'https://gateway.example', apiKey: 'sk-old-ant-key-654321', model: 'claude-old', options: { authStyle: 'bearer', promptCaching: false } },
+      ],
+      activeProviderId: 'ant',
+    })
+    fs.writeFileSync(file, old, { mode: 0o600 })
+
+    const store = new ConfigStore(tmp.dir)
+    const c = store.get()
+    assert.equal(c.version, 2)
+    // 服务商上留下的是一家只有一份的东西；跟着模型走的挪到了模型上
+    assert.deepEqual(c.providers[0], {
+      id: 'main',
+      label: '主力',
+      kind: 'openai-chat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-old-openai-key-123456',
+      extraHeaders: { 'x-team': 'gtnh' },
+      models: [
+        { id: 'm1', name: 'gpt-old', label: '', maxOutputTokens: 2000, temperature: 0.3, timeoutMs: 90_000, extraBody: { reasoning_effort: 'low' }, options: { maxTokensField: 'max_completion_tokens', systemRole: 'developer' } },
+      ],
+    })
+    // key 放在哪个请求头是这一家接口的事，留在服务商上；缓存开关跟着模型
+    assert.deepEqual([c.providers[1]!.options, c.providers[1]!.models], [{ authStyle: 'bearer' }, [{ id: 'm1', name: 'claude-old', label: '', options: { promptCaching: false } }]])
+    assert.deepEqual([c.activeProviderId, c.activeModelId], ['ant', 'm1'])
+    // 交给模型调用层的配置和迁移前的那一条一样
+    assert.deepEqual(store.activeProvider(), {
+      id: 'ant',
+      label: '备用',
+      kind: 'anthropic-messages',
+      baseUrl: 'https://gateway.example',
+      apiKey: 'sk-old-ant-key-654321',
+      model: 'claude-old',
+      options: { authStyle: 'bearer', promptCaching: false },
+    })
+
+    // 文件已经是新格式；原来的那份留了底，权限一样收着
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.deepEqual([saved.version, saved.providers[0].model, saved.providers[0].models[0].name, saved.panel.password], [2, undefined, 'gpt-old', 'keep-me'])
+    assert.equal(fs.readFileSync(`${file}.v1.bak`, 'utf8'), old)
+    assert.equal(fs.statSync(`${file}.v1.bak`).mode & 0o777, 0o600)
+    // 再启动一次：已经是新格式，不会再动那份底
+    fs.writeFileSync(`${file}.v1.bak`, 'untouched')
+    assert.deepEqual(new ConfigStore(tmp.dir).get(), c)
+    assert.equal(fs.readFileSync(`${file}.v1.bak`, 'utf8'), 'untouched')
+  })
+
+  it('当前用的模型不在了（手改配置改坏了）：改用这个服务商下面的第一个；一处写坏的模型不连累整个服务商和它的 key', (t) => {
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    fs.writeFileSync(
+      path.join(tmp.dir, 'config.json'),
+      JSON.stringify({
+        version: 2,
+        providers: [{ id: 'main', label: '主力', kind: 'openai-chat', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-key-123456', models: [{ id: 'a', name: 'gpt-a' }, { id: 'b', name: '' }, { id: 'c', name: 'gpt-c', label: '备选' }] }],
+        activeProviderId: 'main',
+        activeModelId: 'gone',
+      }),
+    )
+    const store = new ConfigStore(tmp.dir)
+    assert.deepEqual(store.get().providers[0]!.models.map((m) => [m.id, m.name, m.label]), [['a', 'gpt-a', ''], ['c', 'gpt-c', '备选']])
+    assert.deepEqual([store.get().activeModelId, store.activeProvider()?.model, store.activeProvider()?.apiKey], ['a', 'gpt-a', 'sk-key-123456'])
+  })
+
   it('对话窗口默认 5 分钟（说过话以后隔一两分钟再说，不用再叫名字）；配置文件里已经存着的值不动', (t) => {
     const fresh = tmpDir()
     const existing = tmpDir()

@@ -7,6 +7,7 @@ import { BridgeClient } from '../src/bridge/client.ts'
 import type { ReadyInfo, ResumeState } from '../src/bridge/client.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { readBridgeToken } from '../src/bridge/token.ts'
+import { gridFromBlocks } from '../src/render/index.ts'
 import type { BridgeEvent } from '../src/bridge/protocol.ts'
 import { sleep, tmpDir, waitFor } from './helpers.ts'
 import { MockBridge, NO_REPLY } from './mock-bridge.ts'
@@ -64,6 +65,27 @@ describe('bridge 客户端', () => {
     assert.deepEqual(status.block, { x: 10, y: 64, z: -4 })
     assert.equal(h.client.status().state, 'connected')
     assert.equal(h.client.status().hello?.modVersion, 'v0.1.0-mock')
+  })
+
+  it('world.blocks：一个盒子里的方块照协议的顺序回来（x 最快，其次 z，最后 y；0 号是空气；没加载的记成 "?"），大脑读得出每一格是什么', async () => {
+    const h = connect()
+    await connected(h)
+    // 假世界：y=64 是草地、往下是石头、往上是空气；(12,64,-4) 是箱子，(14,64,-4) 是抽屉；x 超过 1000 的区块没加载
+    const raw = await new BridgeApi(h.client).worldBlocks({ x2: 14, y2: 65, z2: -4, x1: 12, y1: 63, z1: -5, dim: 0 })
+    assert.deepEqual([raw.x, raw.y, raw.z, raw.sx, raw.sy, raw.sz, raw.unloaded], [12, 63, -5, 3, 3, 2, 0])
+    assert.deepEqual(raw.palette[0], { id: 'minecraft:air', meta: 0 })
+    assert.equal(raw.runs.filter((_, i) => i % 2 === 1).reduce((a, b) => a + b, 0), 3 * 3 * 2)
+    const area = gridFromBlocks(raw)
+    const at = (x: number, y: number, z: number): string => area.kinds[area.cells[((y - raw.y) * raw.sz + (z - raw.z)) * raw.sx + (x - raw.x)]!]!.id
+    assert.deepEqual(
+      [at(12, 64, -4), at(13, 64, -4), at(14, 64, -4), at(12, 64, -5), at(14, 63, -4), at(12, 65, -4)],
+      ['minecraft:chest', 'minecraft:grass', 'StorageDrawers:fullDrawers2', 'minecraft:grass', 'minecraft:stone', 'minecraft:air'],
+    )
+    // 一半在没加载的区块里
+    const edge = gridFromBlocks(await new BridgeApi(h.client).worldBlocks({ x1: 999, y1: 64, z1: 0, x2: 1002, y2: 64, z2: 0 }))
+    assert.deepEqual([edge.unloaded, edge.kinds.map((k) => k.id)], [2, ['minecraft:air', 'minecraft:grass', '?']])
+    // 每边最多 64 格
+    await assert.rejects(new BridgeApi(h.client).worldBlocks({ x1: 0, y1: 0, z1: 0, x2: 64, y2: 0, z2: 0 }), (e) => e instanceof BridgeError && e.code === 'too_large')
   })
 
   it('对方返回错误时，请求以带错误码的 BridgeError 失败', async () => {

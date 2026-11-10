@@ -1,7 +1,7 @@
 // 发请求前对消息列表做的、和具体接口无关的整理。
 // 两家接口都要求：角色交替、工具结果紧跟对应的工具调用、没有空内容。
 
-import type { AssistantPart, Message, OpaquePart, ToolResultPart, UserPart } from './types.ts'
+import type { AssistantPart, ImageAttachment, Message, OpaquePart, ToolResultPart, UserPart } from './types.ts'
 
 export interface NormalizeOptions {
   /** 决定某个 OpaquePart 是否保留（通常是“是不是我这种适配器产生的”）。 */
@@ -9,6 +9,57 @@ export interface NormalizeOptions {
 }
 
 export const MISSING_RESULT_TEXT = 'No result was recorded for this tool call.'
+
+/** 图不再附带以后留在原处的那句话。 */
+export function imagePlaceholder(image: ImageAttachment): string {
+  return `[picture seen earlier, no longer attached: ${image.label}. Ask for it again if you need to look at it once more.]`
+}
+
+/** 消息里一共带着几张图。 */
+export function countImages(messages: readonly Message[]): number {
+  let n = 0
+  for (const m of messages) {
+    if (m.role !== 'user') continue
+    for (const p of m.content) n += p.type === 'image' ? 1 : p.type === 'tool_result' ? (p.images?.length ?? 0) : 0
+  }
+  return n
+}
+
+/**
+ * 只留最后 keep 张图，更早的换成占位文字（放在那段内容的最前面，旧结果被截短时也留得住）。
+ * 图很贵，同一张图不该每次请求都重新算钱：存进历史之前用 keep = 0 全部换掉；一轮之内只留最近的几张。
+ * 不修改传入的数组和对象；没有要换的图时原样返回。
+ */
+export function keepLatestImages(messages: readonly Message[], keep: number): Message[] {
+  let drop = countImages(messages) - Math.max(0, keep)
+  if (drop <= 0) return messages as Message[]
+  return messages.map((m): Message => {
+    if (m.role !== 'user' || drop <= 0) return m
+    let changed = false
+    const content = m.content.map((p): UserPart => {
+      if (drop <= 0) return p
+      if (p.type === 'image') {
+        drop--
+        changed = true
+        return { type: 'text', text: imagePlaceholder(p.image) }
+      }
+      if (p.type !== 'tool_result' || !p.images || p.images.length === 0) return p
+      const gone = p.images.slice(0, drop)
+      const left = p.images.slice(gone.length)
+      drop -= gone.length
+      changed = true
+      const { images: _images, ...rest } = p
+      const text = [...gone.map(imagePlaceholder), p.content].filter((t) => t.length > 0).join('\n')
+      return left.length > 0 ? { ...rest, content: text, images: left } : { ...rest, content: text }
+    })
+    return changed ? { role: 'user', content } : m
+  })
+}
+
+/** 把所有的图都换成占位文字。 */
+export function withoutImages(messages: readonly Message[]): Message[] {
+  return keepLatestImages(messages, 0)
+}
 
 function hasText(text: string): boolean {
   return text.trim().length > 0
@@ -20,7 +71,7 @@ function hasText(text: string): boolean {
  * 2. 连续的同角色消息合并成一条；
  * 3. 每个工具调用在下一条 user 消息里都有结果（缺的补一个错误结果）；
  *    找不到对应调用的工具结果改成普通文本；
- * 4. user 消息里工具结果排在文本前面。
+ * 4. user 消息里工具结果排在文本和图片前面。
  * 不修改传入的数组和对象。
  */
 export function normalizeMessages(messages: readonly Message[], opts: NormalizeOptions): Message[] {
@@ -83,7 +134,9 @@ export function normalizeMessages(messages: readonly Message[], opts: NormalizeO
           seen.add(p.toolCallId)
           results.push(p)
         } else {
+          // 对不上调用的结果只能当普通文字给；它带的图跟着放在后面
           texts.push({ type: 'text', text: `[result of an earlier tool call ${p.toolCallId}]\n${p.content}` })
+          for (const image of p.images ?? []) texts.push({ type: 'image', image })
         }
       } else {
         texts.push(p)

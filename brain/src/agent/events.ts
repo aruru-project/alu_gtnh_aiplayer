@@ -1,11 +1,12 @@
 // agent 的输入事件：来自 bridge 的游戏事件，加上大脑自己产生的（面板指令、提醒、内部通知）。
 
-import type { BridgeEvent, TaskInfo } from '../bridge/protocol.ts'
-import { compactJson, taskLines, trimTaskResult } from '../tools/format.ts'
+import type { BridgeEvent, PlayerView, SeenBlock, TaskInfo } from '../bridge/protocol.ts'
+import { compactJson, nameOf, taskLines, trimTaskResult } from '../tools/format.ts'
 
 export type AgentEvent =
-  | { type: 'chat'; time: number; player: string; message: string; isBot: boolean }
-  | { type: 'whisper'; time: number; from: string; message: string }
+  /** speaker：他说这句话时站在哪、朝哪看、指着什么（身体给的；老的身体不给）。 */
+  | { type: 'chat'; time: number; player: string; message: string; isBot: boolean; speaker?: PlayerView }
+  | { type: 'whisper'; time: number; from: string; message: string; speaker?: PlayerView }
   | { type: 'bot_message'; time: number; text: string }
   | { type: 'task_started'; time: number; task: TaskInfo }
   | { type: 'task_ended'; time: number; task: TaskInfo }
@@ -33,6 +34,13 @@ function sameName(a: unknown, b: string): boolean {
   return typeof a === 'string' && a.toLowerCase() === b.toLowerCase()
 }
 
+/** 事件里的 speaker：是个对象、至少有位置才认。 */
+function speakerOf(v: unknown): PlayerView | undefined {
+  if (v === null || typeof v !== 'object') return undefined
+  const view = v as PlayerView
+  return view.block !== undefined || view.pos !== undefined ? view : undefined
+}
+
 function isTaskInfo(v: unknown): v is TaskInfo {
   if (v === null || typeof v !== 'object') return false
   const t = v as Record<string, unknown>
@@ -53,13 +61,15 @@ export function fromBridgeEvent(e: BridgeEvent, botName: string, now: number): A
       const message = s(d.message)
       if (player.length === 0 || message.length === 0) return undefined
       if (sameName(player, botName)) return undefined // 自己说的话已经在历史里了
-      return { type: 'chat', time, player, message, isBot: d.isBot === true }
+      const speaker = speakerOf(d.speaker)
+      return { type: 'chat', time, player, message, isBot: d.isBot === true, ...(speaker ? { speaker } : {}) }
     }
     case 'whisper': {
       const from = s(d.from)
       const message = s(d.message)
       if (!mine || from.length === 0 || message.length === 0) return undefined
-      return { type: 'whisper', time, from, message }
+      const speaker = speakerOf(d.speaker)
+      return { type: 'whisper', time, from, message, ...(speaker ? { speaker } : {}) }
     }
     case 'bot.message':
       return mine && s(d.text).length > 0 ? { type: 'bot_message', time, text: s(d.text) } : undefined
@@ -112,13 +122,39 @@ function describeTaskEnd(task: TaskInfo): string {
   return text
 }
 
+const FACING: Record<string, string> = { north: '北', south: '南', east: '东', west: '西', up: '上', down: '下' }
+const SEEN_KIND: Record<string, string> = { container: '容器', drawers: '抽屉', drawer_controller: '抽屉管理器', machine: '机器' }
+
+function seenText(b: SeenBlock): string {
+  const name = nameOf(b, { block: true }) ?? b.id ?? '一个方块'
+  const kind = b.kind ? SEEN_KIND[b.kind] : undefined
+  // 旁边接着漏斗、管道的：是自动化的一环，提一句
+  const auto = (b.attached ?? []).map((a) => nameOf(a, { block: true }) ?? a.kind ?? '管道')
+  return `${name} (${Math.floor(b.x)},${Math.floor(b.y)},${Math.floor(b.z)})${kind && !name.includes(kind) ? `［${kind}］` : ''}${auto.length > 0 ? `（接着${auto.join('、')}）` : ''}`
+}
+
+/**
+ * 说话的人当时站在哪、朝哪、准星指着什么、面前有哪些容器，整理成一行。
+ * 人说“这个”“我面前的”时，模型靠它知道指的是哪个，不用再问。
+ */
+export function speakerLine(name: string, view: PlayerView): string {
+  const at = view.block ?? view.pos
+  const where = at ? `站在 (${Math.floor(at.x)},${Math.floor(at.y)},${Math.floor(at.z)})` : ''
+  const facing = view.facing && FACING[view.facing] ? `面朝${FACING[view.facing]}` : ''
+  const looking = view.lookingAt
+  const pointed = looking ? `指着 ${seenText(looking)}` : '没有指着什么方块'
+  const ahead = (view.ahead ?? []).filter((b) => !(looking && b.x === looking.x && b.y === looking.y && b.z === looking.z))
+  const more = ahead.length > 0 ? `；面前${looking ? '还' : ''}有：${ahead.map(seenText).join('、')}` : ''
+  return `${name} ${[where, facing].filter(Boolean).join(' ')}，${pointed}${more}`
+}
+
 /** 一句话说明一个事件。给模型看，也用于面板日志。 */
 export function describeEvent(ev: AgentEvent): string {
   switch (ev.type) {
     case 'chat':
-      return `${ev.player}${ev.isBot ? '（另一个 bot）' : ''} 说：${ev.message}`
+      return `${ev.player}${ev.isBot ? '（另一个 bot）' : ''} 说：${ev.message}${ev.speaker ? `\n  （${speakerLine(ev.player, ev.speaker)}）` : ''}`
     case 'whisper':
-      return `${ev.from} 私聊你：${ev.message}`
+      return `${ev.from} 私聊你：${ev.message}${ev.speaker ? `\n  （${speakerLine(ev.from, ev.speaker)}）` : ''}`
     case 'bot_message':
       return `系统消息：${ev.text}`
     case 'task_started':

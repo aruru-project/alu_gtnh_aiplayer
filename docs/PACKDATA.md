@@ -23,6 +23,7 @@
 | `quests.jsonl` `questlines.json` | 任务书，见“任务书” | `make-packdata.py quests` |
 | `items.jsonl` | 物品表，见“物品” | `tools/export-packdata` |
 | `blocks.jsonl` | 方块颜色表，见“方块颜色” | `tools/export-packdata` |
+| `textures/atlas.png` `textures/atlas.json` | 方块贴图的图集，见“方块贴图” | `make-packdata.py textures` |
 | `recipes.jsonl` `handlers.json` | 配方册，见“配方” | `tools/export-packdata` |
 
 `meta.json` 是一个对象，键是子命令的名字。子命令重新生成时只替换自己那一节，别的键原样保留：
@@ -218,6 +219,51 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 | `light` | 发光强度（1–15），不发光时不写 |
 
 导出时只收“不透明的整块、不带机器或箱子那样的内部数据、物品 meta 和放下去的 meta 相同、游戏不给它另外上色”的方块；草、树叶这类贴图是灰的、靠游戏染色的不收。
+
+## 方块贴图
+
+面板的三维预览（草稿和 `view_area` 结果的那个可以拖着转的立体图）用游戏里真的贴图。贴图在 mod 的 jar 里，用下面的命令取出来、拼成一张图集：
+
+```sh
+tools/make-packdata.py textures \
+  --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip \
+  --jar client/libraries/com/mojang/minecraft/1.7.10/minecraft-1.7.10-client.jar \
+  --out brain/packdata
+```
+
+- `--client`：客户端包。里面所有的 `*.jar`（mod 的 jar 是套在 zip 里的）都会翻一遍，不解压到磁盘。
+- `--jar`：另外再翻的 jar，可以给多个。原版的方块贴图在原版客户端 jar 里，客户端包里没有它，所以要单独给。
+- `--blocks`：方块颜色表在哪，默认是 `--out` 目录下的 `blocks.jsonl`。所以要先有 `blocks.jsonl`（并且带 `tex` 字段）。
+- `--tile`：图集里一张贴图的边长，16（默认）或 32。
+
+取哪些贴图：`blocks.jsonl` 里 `tex` / `texTop` 点到的全部，加上原版的全部方块贴图（`assets/minecraft/textures/blocks/` 下面那一层；大脑给颜色表里没有的常见原版方块——草方块、水、树叶、玻璃——配贴图时要用）。
+贴图名 `chisel:marble/raw` 对应 jar 里的 `assets/chisel/textures/blocks/marble/raw.png`；没有冒号的（`stone`）在 `assets/minecraft/` 下。同一个文件好几个 jar 里都有时，客户端包里的 mod 先于 `--jar` 给的（mod 换掉原版贴图时用 mod 的，和游戏里一样），mod 之间按 jar 的文件名排。
+
+每张贴图变成图集里的一格：
+
+- 动画贴图（一长条，高是宽的好几倍）只取最上面那一帧。
+- 比一格大的（32×32、64×64……）缩小：边长是整数倍时取平均（按不透明度加权，透明的像素不把旁边的颜色带暗），不是整数倍时取最近的像素。
+- 透明度原样留着。PNG 的各种存法（调色板、灰度、16 位、隔行）都读。
+
+生成两个文件：
+
+- `textures/atlas.png`：8 位 RGBA。每行 64 格，第 n 格（从 0 数）在第 `n % 64` 列、第 `n / 64` 行。真实的整合包是 5487 格、1024×1376 像素、不到 2 MB，生成用 4 秒左右。
+- `textures/atlas.json`：
+
+```jsonc
+{
+  "format": 1,
+  "generatedAt": "2026-11-10T19:58:42Z",
+  "tile": 16, "columns": 64, "rows": 86,
+  "tiles": { "stone": 0, "dirt": 1, "chisel:marble/raw": 57 },   // 贴图名（和 blocks.jsonl 里写的一样）→ 第几格
+  "missing": ["nowhere:block"]                                     // blocks.jsonl 点到了、jar 里找不到或者读不了的
+}
+```
+
+`meta.json` 的 `textures` 一节：`{format, source, generatedAt, tile, tiles, missing}`，后两个是张数。
+
+大脑启动时只读 `atlas.json`（建“贴图名 → 第几格”的表），`atlas.png` 不解码，原样交给面板（`GET /api/textures/atlas.png`）。
+没有这两个文件、或者读不了时，三维预览按方块颜色画，别的不受影响。大脑自己画给模型看的简图现在只用颜色，不用贴图。
 
 ## 配方
 

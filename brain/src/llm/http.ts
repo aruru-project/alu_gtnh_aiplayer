@@ -50,7 +50,16 @@ function describeNetworkError(e: unknown): string {
   return String(e)
 }
 
-export async function postJson(opts: PostJsonOptions): Promise<PostJsonResult> {
+export function postJson(opts: PostJsonOptions): Promise<PostJsonResult> {
+  return sendJson('POST', opts)
+}
+
+/** GET 一个 JSON（拉模型列表用）。出错的归类和 postJson 一样。 */
+export function getJson(opts: Omit<PostJsonOptions, 'body'>): Promise<PostJsonResult> {
+  return sendJson('GET', { ...opts, body: undefined })
+}
+
+async function sendJson(method: 'GET' | 'POST', opts: PostJsonOptions): Promise<PostJsonResult> {
   const doFetch = opts.fetch ?? fetch
   const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_TIMEOUT_MS
 
@@ -60,11 +69,11 @@ export async function postJson(opts: PostJsonOptions): Promise<PostJsonResult> {
   // 和网络故障长得一样。提前构造一次，把它归成不可重试的 bad_request。
   let url: URL
   let headers: Headers
-  let payload: string
+  let payload: string | undefined
   try {
     url = new URL(opts.url)
     headers = new Headers(opts.headers)
-    payload = JSON.stringify(opts.body)
+    payload = method === 'POST' ? JSON.stringify(opts.body) : undefined
   } catch (e) {
     throw new LlmError('bad_request', `invalid request: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
   }
@@ -87,7 +96,7 @@ export async function postJson(opts: PostJsonOptions): Promise<PostJsonResult> {
     let res: Response
     let text: string
     try {
-      res = await doFetch(url, { method: 'POST', headers, body: payload, signal, redirect: 'manual' })
+      res = await doFetch(url, { method, headers, ...(payload !== undefined ? { body: payload } : {}), signal, redirect: 'manual' })
       text = await res.text()
     } catch (e) {
       throw failure(e)
@@ -103,7 +112,7 @@ export async function postJson(opts: PostJsonOptions): Promise<PostJsonResult> {
     }
 
     if (res.status >= 300 && res.status < 400) {
-      // 跟随重定向会把 POST 变成 GET 或丢掉鉴权头，不如直接告诉用户改地址。
+      // 跟随重定向会把 POST 变成 GET 或丢掉鉴权头，不如直接告诉用户改地址。（GET 也一样处理：鉴权头不该跟着跳到别的主机。）
       const location = res.headers.get('location') ?? '(unknown)'
       throw new LlmError('bad_request', `server redirected to ${location}; set baseUrl to the final address`, {
         status: res.status,

@@ -1,13 +1,40 @@
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
+import type { DesignWorkspace } from '../design/index.ts'
+import type { PackData } from '../packdata/index.ts'
+import type { FeedbackInput } from '../store/feedback.ts'
 import type { Manual } from '../store/manuals.ts'
+import type { QuestProgressCache } from './quest-progress.ts'
+import type { SurroundingsCache } from './recipe-book.ts'
 import type { ObjectSchema } from './schema.ts'
+
+/** 工具结果带的一张图。任何工具都可以带（简图、主人传的图片、以后的真实截图……），上层统一决定给不给模型看。 */
+export interface ToolImage {
+  /** 这是什么图（英文一句话）。图不再附带以后，历史里留下的占位文字用它。 */
+  label: string
+  mediaType: 'image/png' | 'image/jpeg'
+  data: Buffer
+  /**
+   * 这张图画的是哪些方块（render/scene.ts 的 StoredBlocks）。简图才有；有的话面板可以给主人做一个能拖着转的三维预览。
+   * 不给模型。
+   */
+  blocks?: unknown
+}
 
 export interface ToolResult {
   content: string
   isError?: boolean
   /** 这段内容要整段给模型，不按“单个工具结果上限”截断（手册：截掉一半的手册比没有还糟）。 */
   keepWhole?: boolean
+  /**
+   * 同一个结果的数据形式，给它写的程序用（程序里 tool() 返回的 data）；不给模型。要能写成 JSON。
+   */
+  data?: unknown
+  /**
+   * 给模型看的图。现在用的模型能看图（ctx.canSeeImages）时上层才会把它放进消息；
+   * 所以 content 里要有不看图也读得懂的文字（至少说清这是什么图）。
+   */
+  images?: ToolImage[]
 }
 
 /** 工具需要的手册接口（store/manuals.ts 的 ManualStore 满足）。 */
@@ -21,6 +48,33 @@ export interface MemoryAccess {
   set(key: string, text: string): void
   delete(key: string): boolean
   totalChars(): number
+}
+
+/** 工具需要的意见簿接口。提交时的现场（这一轮的指令、最近的工具调用……）由上层附上。 */
+export interface FeedbackAccess {
+  /** merged：和之前的一条是同一个问题，只加了次数。full：今天记得太多了，这条没记。 */
+  submit(input: FeedbackInput): { id: string; merged: boolean; count: number } | { full: true }
+}
+
+/**
+ * 例程：它写的程序在后台跑，程序里一个个调工具（agent/routine.ts）。这里是工具要的那几个口子，文字都是现成的英文。
+ */
+export interface RoutineAccess {
+  /** 启动。已经有一个在跑、或者启动不了时给 error。 */
+  start(code: string, opts: { name?: string; minutes?: number }): { started: string } | { error: string }
+  /** 正在跑的（没有就是上一个跑完的）现在什么情况；一个都没跑过时是 undefined。 */
+  status(): string | undefined
+  /** 停掉正在跑的；没有在跑的返回 false。 */
+  stop(): boolean
+}
+
+/** 程序里调一次工具的结果。 */
+export interface ProgramToolResult {
+  ok: boolean
+  /** 模型会看到的那段文字。 */
+  text: string
+  /** 同一个结果的数据形式（有些工具没有）。 */
+  data?: unknown
 }
 
 export interface ReminderAccess {
@@ -52,7 +106,25 @@ export interface ToolContext {
   memory: MemoryAccess
   reminders: ReminderAccess
   manuals: ManualAccess
+  /**
+   * 本地资料（任务书、物品表）。上层没提供、或者里面哪一项没加载到时，用它的工具退回去问服务器。
+   */
+  packdata?: PackData
+  /** 任务书进度的短时缓存。上层没提供时每次都问服务器。 */
+  questProgress?: QuestProgressCache
+  /** 附近有哪些机器和工作台的短时缓存（查做法时用）。上层没提供时每次都问身体。 */
+  surroundings?: SurroundingsCache
+  /** 自己出设计用的：跑程序的沙箱、图纸草稿、主人传的图片。上层没提供时这类工具用不了。 */
+  design?: DesignWorkspace
+  /** 意见簿。上层没提供时 report_problem 用不了。 */
+  feedback?: FeedbackAccess
+  /** 后台例程。上层没提供时 start_routine 这几个工具用不了。 */
+  routines?: RoutineAccess
+  /** run_program 的程序里调工具：只许查询类的（不开任务、不改东西）。上层没提供时程序调不了工具。 */
+  queryFromProgram?(name: string, input: unknown): Promise<ProgramToolResult>
   hooks: ToolHooks
+  /** 现在用的模型能不能看图。上层没提供时等于不能：带图的工具只给文字说明。 */
+  canSeeImages?(): boolean
   now(): number
   /**
    * 查任务书进度时，模型没说看谁的就看这个玩家的：主人名单里的第一个；没有名单时是刚才跟它说话的那个玩家；都没有就是 undefined。
