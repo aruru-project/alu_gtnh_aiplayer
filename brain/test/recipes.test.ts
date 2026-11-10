@@ -55,9 +55,9 @@ function setup(t: { after(fn: () => void): void }, opts: { inventory?: { id: str
 describe('配方册：读进来', () => {
   it('启动时读一遍建索引：只是示意的配方哪里都查不到，坏行跳过并说明，编号就是行号', (t) => {
     const s = setup(t)
-    assert.ok(s.lines.includes('物品表：45 种物品。'), s.lines.join('\n'))
+    assert.ok(s.lines.includes('物品表：49 种物品。'), s.lines.join('\n'))
     const loaded = s.lines.find((l) => l.startsWith('配方册：'))!
-    assert.match(loaded, /^配方册：26 条配方、10 个配方页，做得出 11 种物品（读了 \d+ 毫秒；另有 1 条只是示意的不列；1 行认不出来，跳过了）。$/)
+    assert.match(loaded, /^配方册：28 条配方、11 个配方页，做得出 12 种物品（读了 \d+ 毫秒；另有 1 条只是示意的不列；1 行认不出来，跳过了）。$/)
     const book = s.packdata.recipes!
     assert.equal(book.size, RECIPE_LINES.length)
     // 钢板：0–4 这五条做它；第 5 条是 fake 的，不在里面
@@ -140,6 +140,20 @@ describe('find_recipes：查做法', () => {
     assert.deepEqual(s.game.callsOf('world.find'), [{ bot: 'Alu', blocks: ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab'], radius: 48, limit: 4 }])
     // 板材切割机那条是 fake 的
     assert.ok(!res.content.includes('板材切割机') && !res.content.includes('#5'))
+  })
+
+  it('不用工具的手工配方和机器配方都做得了时：机器排在前面，两边每个成品耗多少都写着（手工搅粉出 2 个，搅拌机同样的料出 3 个）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['world.machines'] = () => ({
+      machines: [...MACHINES, { x: 20, y: 64, z: -4, name: 'Basic Mixer', id: 'gregtech:gt.blockmachines', meta: 581, recipes: 'Mixer', recipeKey: 'gt.recipe.mixer', tier: 'LV', inputSlots: 6, active: false, storedEU: 5000, inputVoltage: 32, dist: 9 }],
+      total: MACHINES.length + 1,
+    })
+    assert.deepEqual((await s.run('find_recipes', { id: 'gregtech:gt.metaitem.01', meta: 2364 })).content.split('\n').slice(1, 5), [
+      '1. 搅拌机 — 1 recipe(s); CAN RUN NOW on 基础搅拌机 at (20,64,-4) LV',
+      '   #29: 1× 磁钢粉 [gregtech:gt.metaitem.01/2365] + 1× 煤粉 [gregtech:gt.metaitem.01/2535] + 1× 黑曜石粉 [gregtech:gt.metaitem.01/2804]; needs programmed circuit 2 → 3× 玄钢粉 (per 玄钢粉: 0.33 磁钢粉 + 0.33 煤粉 + 0.33 黑曜石粉) — ULV (7 EU/t), 5 s',
+      '2. 无序合成 — 1 recipe(s); CAN CRAFT NOW in your own 2x2 grid (no table needed)',
+      '   #28: 1× 磁钢粉 [gregtech:gt.metaitem.01/2365] + 1× any dustCoal (e.g. 煤粉 [gregtech:gt.metaitem.01/2535]) + 1× any dustObsidian (e.g. 黑曜石粉 [gregtech:gt.metaitem.01/2804]) → 2× 玄钢粉 (per 玄钢粉: 0.5 磁钢粉 + 0.5 any dustCoal (e.g. 煤粉) + 0.5 any dustObsidian (e.g. 黑曜石粉)) — fits your 2x2 grid',
+    ])
   })
 
   it('机器的状况逐条比：电压不够、炉温不够、结构没搭好、被关了，都说出是哪台、差在哪', async (t) => {
@@ -292,10 +306,13 @@ describe('craft_item：照配方册里的配方手工合成', () => {
     assert.equal(s.game.callsOf('task.start').at(-1)!.mode, 'append')
   })
 
-  it('无序合成从头往后摆；一轮出 2 个时要 5 个就做 3 轮', async (t) => {
+  it('无序合成从头往后摆；一轮出 2 个时要 5 个就做 3 轮；三四样原料摆成 2×2（身体在随身的合成格里就能做，和查做法时说的一致）', async (t) => {
     const s = setup(t)
     await s.run('craft_item', { recipe: 10, count: 5 })
     assert.deepEqual(s.lastTask(), { type: 'craft', grid: [PLATE, { ore: 'stickWood' }, null, null, null, null, null, null, null], gives: { id: 'demo:plateOnAStick', meta: 0 }, rounds: 3 })
+    // 三样粉：占左上角的 2×2（第一行两格，第二行一格），不是横着一排三个
+    await s.run('craft_item', { recipe: 28 })
+    assert.deepEqual(s.lastTask().grid, [{ id: 'gregtech:gt.metaitem.01', meta: 2365 }, { ore: 'dustCoal' }, null, { ore: 'dustObsidian' }, null, null, null, null, null])
   })
 
   it('不是手工配方、编号不对、一次要得太多：不开任务，说清原因', async (t) => {
@@ -316,7 +333,9 @@ describe('craft_item：照配方册里的配方手工合成', () => {
 describe('process_items：照配方册里的配方用机器加工', () => {
   it('给机器和配方编号：原料乘上轮数，编程电路从配方里取出来单独设（不当物品放），预期的产物一并告诉身体', async (t) => {
     const s = setup(t)
-    await s.run('process_items', { machine: { x: -5, y: 64, z: 9 }, recipe: 6, rounds: 3, wait: 600 })
+    const furnace = await s.run('process_items', { machine: { x: -5, y: 64, z: 9 }, recipe: 6, rounds: 3, wait: 600 })
+    // 配方要的流体不替它准备：没带单元时提醒要多少、得已经在机器里
+    assert.match(furnace.content, /^Task t1 \(process\) started\..* This recipe also needs 3000 mB 氧气 in all: it has to be in the machine already \(piped in, or in its input hatch\); if it is not, the machine will not start\.$/)
     assert.deepEqual(s.lastTask(), {
       type: 'process',
       machine: { x: -5, y: 64, z: 9 },
@@ -326,7 +345,7 @@ describe('process_items：照配方册里的配方用机器加工', () => {
       wait: 600,
     })
     // 模具这类不消耗的只放 1 个，不乘轮数
-    await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 4, rounds: 5 })
+    assert.doesNotMatch((await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 4, rounds: 5 })).content, /also needs/)
     assert.deepEqual(s.lastTask().inputs, [
       { id: 'gregtech:gt.metaitem.01', meta: 11305, count: 10 },
       { id: 'gregtech:gt.metaitem.01', meta: 32301, count: 1 },

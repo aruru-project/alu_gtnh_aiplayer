@@ -60,6 +60,8 @@ export interface TaskInfo {
    * - craft：crafted（多出来的个数）、item（{id,meta,name}）、freeSlots
    * - process：put（放进机器的个数）、outputs（[{id,meta,name,count}]，取回来的东西，含没被消耗的电路、模具和没用完的原料）、
    *   timedOut（等到 wait 还没做完）、freeSlots
+   * - use：used（拿在手里用的那件东西的名字）、gained / lost（[{id,meta,name,count}]，背包里多了、少了什么）、
+   *   openedScreen（右键打开了界面，已经关掉）、health、food、freeSlots
    * - blueprint：区域任务的那几项，加上 needsClimbingBlocks；任务结束时（成功或失败）另有 now
    *   （{cells,done,toPlace,byHand,blocked,extra,unloaded?}，世界和图纸的对比）和各最多 8 项的
    *   materials（还缺的）、byHandBlocks、blockedBy、extraBlocks，形状同 BlueprintCheck 里的同名字段

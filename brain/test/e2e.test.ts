@@ -520,14 +520,15 @@ it('端到端：大脑带着本地配方册启动，主人指着箱子说“做�
   const W = { ore: 'screwSteel' }
   assert.deepEqual(craft, { type: 'craft', grid: [S, W, S, W, null, W, S, { ore: 'craftingToolScrewdriver' }, S], gives: { id: 'adventurebackpack:backpackComponent', meta: 6 }, rounds: 1 })
 
-  // 2. 两个任务做完：它被叫醒，结果里的东西叫的是中文名
+  // 2. 取料一做完就轮到合成（模拟的身体里取料是立刻做完的）；取料结束把它叫醒了一次，它什么都不用做
+  assert.equal(bridge.requestsOf('task.start').length, 2)
+  await waitFor('woken by the withdraw', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(4), /任务 t1（withdraw）完成了。 结果：\{"moved":8\}/)
+  assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft', `the craft task is running after the withdraw${diag()}`)
+
+  // 3. 合成做完：它被叫醒，结果里的东西叫的是中文名
   llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '直升机桨叶做好了。' } }] }, { text: '' })
-  const tasks = bridge.requestsOf('task.start').length
-  assert.equal(tasks, 2)
-  bridge.finishTask('Alu')
-  await waitFor('withdraw ended', () => bridge.bots.get('Alu')!.task?.type === 'craft' || bridge.bots.get('Alu')!.task === null, 5000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('woken for the withdraw', () => llm.requests.length >= 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  bridge.finishTask('Alu')
+  bridge.completeTask('Alu')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('直升机桨叶做好了')), 10_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
   const ended = llm.requests.map((_, n) => seen(n)).find((text) => /（craft）完成了/.test(text))!
   assert.match(ended, /crafted 1× adventurebackpack:backpackComponent\/6 "直升机桨叶"/)
@@ -1124,6 +1125,285 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   // 原料拿回来了：两根钢杆还在身上，钢锭用掉了
   const carried = (meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === GT && i.meta === meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual([carried(23305), carried(1305), carried(11305)], [2, 4, 0])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里” → 它看清哪个箱子没接管道、列出不到 128 的格子、写一个例程一样样搬 → 例程在后台跑完才把它叫醒 → 东西真的搬过去了', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  // 一个抽屉管理器管着两组抽屉（四格里两格不到 128 个）；两个压缩箱子，远的那个接着管道
+  const CHEST = { x: 12, y: 64, z: -4 }
+  const CONTROLLER = { x: 14, y: 66, z: -6 }
+  bridge.containers = [
+    { ...CHEST, id: 'IronChest:BlockIronChest', name: 'Compressed Chest', slots: 243, items: [] },
+    { x: 6, y: 66, z: -6, id: 'IronChest:BlockIronChest', name: 'Compressed Chest', slots: 243, items: [], attached: [{ x: 6, y: 66, z: -7, name: 'Brass Item Pipe', kind: 'item pipe' }] },
+    { ...CONTROLLER, id: 'StorageDrawers:controller', name: 'Drawer Controller', slots: 0, kind: 'drawer_controller', items: [] },
+    {
+      x: 15, y: 64, z: -6, id: 'StorageDrawers:fullDrawers2', name: 'Oak Drawers 1x2', slots: 2, kind: 'drawers',
+      items: [{ id: 'minecraft:coal', meta: 0, count: 40, name: 'Coal' }, { id: 'minecraft:cobblestone', meta: 0, count: 12800, name: 'Cobblestone' }],
+    },
+    {
+      x: 16, y: 64, z: -6, id: 'StorageDrawers:fullDrawers2', name: 'Oak Drawers 1x2', slots: 2, kind: 'drawers',
+      items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 7, name: 'Steel Ingot' }, { id: 'minecraft:redstone', meta: 0, count: 128, name: 'Redstone' }],
+    },
+  ]
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+
+  // 例程的程序就是 routines 手册里的那个例子，只把两个坐标换成这里的
+  const manual = fs.readFileSync(path.join(BRAIN_ROOT, 'manuals', 'routines.md'), 'utf8')
+  const example = /# 例子：把抽屉里不到 128 个的东西都搬到一个箱子里\n```js\n([\s\S]*?)```/.exec(manual)?.[1]
+  assert.ok(example, 'the routines manual has the example')
+  const code = example.replace(/const controller = \{[^}]*\}/, `const controller = ${JSON.stringify(CONTROLLER)}`).replace(/const chest = \{[^}]*\}/, `const chest = ${JSON.stringify(CHEST)}`)
+  assert.notEqual(code, example)
+
+  // 1. 一轮里：看附近的容器 → 看抽屉管理器管着的、不到 128 的格子 → 启动例程 → 结束这一轮
+  llm.enqueue(
+    { toolCalls: [{ name: 'list_containers', input: {} }] },
+    { toolCalls: [{ name: 'list_drawers', input: { ...CONTROLLER, below: 128 } }] },
+    { toolCalls: [{ name: 'start_routine', input: { code, name: '整理抽屉' } }] },
+    { text: '' },
+  )
+  // 2. 例程跑完把它叫醒：告诉主人
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '搬完了，两样。' } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('搬完了，两样。')), 20_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
+
+  // 主人指着的是近处那个没接管道的箱子；另一个接着管道，消息里写明了
+  assert.match(seen(0), /Steve 站在 \(12,64,3\) 面朝北，指着 Compressed Chest \(12,64,-4\)［容器］；面前还有：/)
+  assert.match(seen(0), /Compressed Chest \(6,66,-6\)［容器］（接着Brass Item Pipe）/)
+  assert.match(seen(1), /\n- \(6,66,-6\) Compressed Chest \[IronChest:BlockIronChest\] 0\/243 slots used \(AUTOMATED: Brass Item Pipe at \(6,66,-7\) feeds or drains it\): empty/)
+  assert.match(seen(1), /\n- \(14,66,-6\) Drawer Controller \[StorageDrawers:controller\] \[drawer controller\] 4\/4 drawer slots used \(manages 2 drawer block\(s\); see what they hold with list_drawers at this position\)/)
+  assert.deepEqual(seen(2).split('\n'), [
+    'The drawer controller at (14,66,-6) manages 2 drawer block(s): 4 of 4 slots hold something. 2 slots holding fewer than 128:',
+    '- (15,64,-6) slot 0: 40× Coal [minecraft:coal], room for 2008 more',
+    '- (16,64,-6) slot 0: 7× Steel Ingot [gregtech:gt.metaitem.01/11305], room for 2041 more',
+  ])
+  assert.match(seen(3), /^Routine r1 \("整理抽屉"\) started in the background\. End your turn now/)
+
+  // 例程自己一步步做：取一样放一样。四个任务一个都没有单独把模型叫醒，模型一共只被叫了两轮
+  assert.deepEqual(
+    bridge.requestsOf('task.start').map((p) => p.task),
+    [
+      { type: 'withdraw', container: { x: 15, y: 64, z: -6 }, items: [{ id: 'minecraft:coal', meta: 0, count: 40 }] },
+      { type: 'deposit', container: CHEST, items: [{ id: 'minecraft:coal', meta: 0 }] },
+      { type: 'withdraw', container: { x: 16, y: 64, z: -6 }, items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 7 }] },
+      { type: 'deposit', container: CHEST, items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305 }] },
+    ],
+  )
+  await waitFor('second turn finished', () => llm.requests.length === 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const woken = seen(4)
+  assert.match(woken, /你启动的例程有结果了/)
+  assert.match(woken, /Routine r1 \("整理抽屉"\) finished: the program finished\. 5 tool call\(s\), 4 task\(s\), \d+ s in all\.\nIt returned: 搬完 2 格\n/)
+  assert.match(woken, /Its log \(last 1 line\(s\)\):\n {2}要搬 2 格/)
+  assert.equal(llm.requests.some((_, n) => /任务 t\d+（(withdraw|deposit)）/.test(seen(n))), false, 'no task of the routine woke the model by itself')
+
+  // 游戏里：不到 128 的两样进了主人指的箱子，够数的两样还在抽屉里，身上没留下
+  const chest = bridge.containers[0]!
+  assert.deepEqual(chest.items.map((i) => [i.id, i.meta, i.count]), [['minecraft:coal', 0, 40], ['gregtech:gt.metaitem.01', 11305, 7]])
+  assert.deepEqual(bridge.containers.filter((c) => c.kind === 'drawers').map((c) => c.items.map((i) => [i.id, i.count])), [[['minecraft:cobblestone', 12800]], [['minecraft:redstone', 128]]])
+  assert.equal(bridge.bots.get('Alu')!.inventory.some((i) => i.id === 'minecraft:coal' || i.meta === 11305), false)
+  assert.deepEqual(bridge.containers[1]!.items, [], 'the chest with a pipe attached was left alone')
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人说“做一个小背包，做好后把圆石放进去” → 它照本地配方册手工合成 → 右键试了一下新做的包 → 把圆石放进身上的包里（不用走到哪个箱子）→ 告诉主人', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  const RING = { id: 'gregtech:gt.metaitem.01', meta: 28305 }
+  // 仓库里有做小背包的料；服务器上这条配方是：5 鞣制皮革 + 3 织棉 + 1 钢环
+  bridge.containers[0]!.items.push(
+    { id: 'Backpack:tannedLeather', meta: 0, count: 8, name: 'Tanned Leather' },
+    { id: 'harvestcraft:wovencottonItem', meta: 0, count: 5, name: 'Woven Cotton' },
+    { ...RING, count: 2, name: 'Steel Ring' },
+  )
+  bridge.recipeBook.push({
+    id: 'Backpack:backpack',
+    meta: 0,
+    name: 'Backpack',
+    crafting: [{ gives: 1, grid: '3x3', ingredients: [{ count: 5, id: 'Backpack:tannedLeather', meta: 0 }, { count: 3, id: 'harvestcraft:wovencottonItem', meta: 0 }, { count: 1, ...RING }] }],
+  })
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  // 本地的小配方册：只有这一条
+  const packdata = path.join(tmp.dir, 'packdata')
+  fs.mkdirSync(packdata)
+  fs.writeFileSync(
+    path.join(packdata, 'items.jsonl'),
+    [
+      { id: 'Backpack:backpack', meta: 0, name: '小背包', en: 'Backpack' },
+      { id: 'Backpack:tannedLeather', meta: 0, name: '鞣制皮革', en: 'Tanned Leather' },
+      { id: 'harvestcraft:wovencottonItem', meta: 0, name: '织棉', en: 'Woven Cotton' },
+      { ...RING, name: '钢环', en: 'Steel Ring', ores: ['ringSteel'] },
+      { id: 'minecraft:cobblestone', meta: 0, name: '圆石', en: 'Cobblestone' },
+    ]
+      .map((i) => JSON.stringify(i))
+      .join('\n'),
+  )
+  fs.writeFileSync(path.join(packdata, 'handlers.json'), JSON.stringify([{ key: 'codechicken.nei.recipe.ShapedRecipeHandler', name: '有序合成', grid: true, machines: [], recipes: 1, read: 'all' }]))
+  const leather = (g: number) => ({ id: 'Backpack:tannedLeather', meta: 0, n: 1, g })
+  const cotton = (g: number) => ({ id: 'harvestcraft:wovencottonItem', meta: 0, n: 1, g })
+  fs.writeFileSync(
+    path.join(packdata, 'recipes.jsonl'),
+    `${JSON.stringify({ h: 'codechicken.nei.recipe.ShapedRecipeHandler', in: [leather(0), cotton(1), leather(2), leather(3), { ...RING, n: 1, g: 4 }, leather(5), leather(6), cotton(7), cotton(8)], out: [{ id: 'Backpack:backpack', meta: 0, n: 1 }] })}\n`,
+  )
+  const brain = startBrain(tmp.dir, bridge, { packdata })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+  const all = () => llm.requests.map((_, n) => seen(n)).join('\n---\n')
+  const chest = bridge.containers[0]!
+  const at = { x: chest.x, y: chest.y, z: chest.z }
+  const BAG = { id: 'Backpack:backpack' }
+
+  // 1. 查做法、取料、合成（后一步排队）
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_recipes', input: { id: 'Backpack:backpack' } }] },
+    {
+      toolCalls: [
+        { name: 'withdraw_items', input: { container: at, items: [{ id: 'Backpack:tannedLeather', count: 5 }, { id: 'harvestcraft:wovencottonItem', count: 3 }, { ...RING, count: 1 }] } },
+        { name: 'craft_item', input: { recipe: 0, queue: true } },
+      ],
+    },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '做一个小背包，做好后把圆石放进去')
+  await waitFor('woken by the withdraw', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(1), /\n {3}#0: 5× 鞣制皮革 \[Backpack:tannedLeather\] \+ 3× 织棉 \[harvestcraft:wovencottonItem\] \+ 1× 钢环 \[gregtech:gt\.metaitem\.01\/28305\] → 1× 小背包 — needs a crafting table \(3x3\)/)
+  assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft', `the craft task is running${diag()}`)
+
+  // 2. 合成做完 → 右键用一下这个包（看它是什么）→ 知道它能打开 → 把圆石放进包里 → 告诉主人
+  llm.enqueue(
+    { toolCalls: [{ name: 'use_item', input: BAG }] },
+    { text: '' },
+    { toolCalls: [{ name: 'deposit_items', input: { bag: BAG, items: [{ id: 'minecraft:cobblestone', count: 64 }] } }] },
+    { text: '' },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '小背包做好了，圆石放进去了。' } }] },
+    { text: '' },
+  )
+  bridge.completeTask('Alu')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('小背包做好了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))
+  assert.match(all(), /任务 t2（craft）完成了。 结果：crafted 1× Backpack:backpack "小背包", freeSlots \d+/)
+  // 右键用了以后看得见的变化：没多没少，打开过一个界面
+  assert.match(all(), /任务 t3（use）完成了。 结果：used "小背包"; gained: nothing; lost: nothing; it opened a screen, which was closed again: to put things in or take them out, use deposit_items \/ withdraw_items with "bag"; health 20; food 20; freeSlots \d+/)
+  assert.match(all(), /任务 t4（deposit）完成了。 结果：\{"moved":64,"freeSlots":\d+\}/)
+  // 交给身体的任务：包是“我身上这件东西右键打开的界面”，不是一个位置
+  assert.deepEqual(
+    bridge.requestsOf('task.start').slice(2).map((p) => p.task),
+    [
+      { type: 'use', item: BAG },
+      { type: 'deposit', container: { item: BAG }, items: [{ id: 'minecraft:cobblestone', count: 64 }] },
+    ],
+  )
+  // 游戏里：包在身上，64 个圆石在包里，身上没有圆石了
+  const inventory = bridge.bots.get('Alu')!.inventory
+  assert.equal(inventory.filter((i) => i.id === 'Backpack:backpack').reduce((n, i) => n + i.count, 0), 1)
+  assert.equal(inventory.some((i) => i.id === 'minecraft:cobblestone'), false)
+  assert.deepEqual(bridge.bags.get('Backpack:backpack'), [{ id: 'minecraft:cobblestone', meta: 0, name: 'Cobblestone', count: 64 }])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：例程在后台跑的时候，主人在面板概览页看得到它做到哪一步，点“停止例程” → 例程停下、它正在做的任务被取消、它被叫醒时知道是主人停的', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({ panel: { password: 'preset-password-for-e2e' }, providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+
+  // 1. 它启动一个例程：走一段路（模拟的身体里，走路的任务要等人喊完成才结束，所以例程会一直等在这一步）
+  llm.enqueue({ toolCalls: [{ name: 'start_routine', input: { code: `log('出发'); await tool('go_to', { x: 40, z: 40 }); return '到了'`, name: '走一趟' } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '去那边转一圈')
+  await waitFor('the routine started walking', () => bridge.bots.get('Alu')?.task?.type === 'goto', 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 2. 面板概览页：例程在跑，正等着哪一步、是哪个任务，程序的日志
+  let shown: any
+  // 概览有短暂的缓存，例程记下任务编号也要一拍：等到面板上看得到它正等着的那个任务
+  for (let n = 0; n < 50 && shown?.current?.taskId !== 't1'; n++) {
+    if (n > 0) await new Promise((r) => setTimeout(r, 100))
+    shown = (await call('GET', '/overview')).json.agent.routine
+  }
+  assert.ok(shown?.current, `the panel shows the routine and the step it waits for: ${JSON.stringify(shown)}${diag()}`)
+  assert.deepEqual(
+    { id: shown.id, name: shown.name, status: shown.status, calls: shown.calls, actions: shown.actions, tool: shown.current.tool, task: shown.current.taskId, logs: shown.logs },
+    { id: 'r1', name: '走一趟', status: 'running', calls: 1, actions: 1, tool: 'go_to', task: 't1', logs: ['出发'] },
+  )
+
+  // 3. 主人点“停止例程”：例程停下，它正在做的任务被取消；它被叫醒，知道是主人停的
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '好，不走了。' } }] }, { text: '' })
+  assert.deepEqual((await call('POST', '/routine/stop', {})).json, { stopped: true })
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('好，不走了。')), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.deepEqual(bridge.requestsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
+  assert.equal(bridge.bots.get('Alu')?.task, null)
+  await waitFor('wake turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(2), /你启动的例程有结果了/)
+  assert.match(seen(2), /Routine r1 \("走一趟"\) was STOPPED: your owner stopped it on the control panel\. 1 tool call\(s\), 1 task\(s\)/)
+  // 被取消的那个任务只是背景，没有另外再把它叫醒一轮（上面等到的就是一共四次模型调用）
+  assert.match(seen(2), /\[最近发生的事（只是背景，不需要回应）\]\n\[[\d:]+\] 任务 t1（goto）被取消了。/)
+  const after = (await call('GET', '/overview')).json.agent.routine
+  assert.deepEqual([after.status, after.ending], ['stopped', 'your owner stopped it on the control panel'])
+  // 没有在跑的了
+  assert.deepEqual((await call('POST', '/routine/stop', {})).json, { stopped: false })
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

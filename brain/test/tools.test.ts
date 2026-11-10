@@ -66,7 +66,7 @@ describe('工具清单', () => {
       'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
       'list_blueprints', 'check_blueprint', 'build_blueprint',
       'run_program', 'start_routine', 'routine_status', 'stop_routine', 'list_images', 'view_image', 'list_drafts', 'view_draft', 'publish_draft', 'delete_draft',
-      'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items',
+      'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item',
       'find_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
       'list_quest_lines', 'find_quests', 'get_quest',
       'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
@@ -85,7 +85,7 @@ describe('工具清单', () => {
   it('所有启动任务的工具都带 queue 参数', () => {
     const taskTools = [
       'go_to', 'go_to_player', 'follow_player', 'go_home', 'flatten_area', 'clear_area', 'fill_area', 'dig_blocks',
-      'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'craft_item', 'process_items',
+      'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'craft_item', 'process_items',
     ]
     for (const name of taskTools) {
       const tool = ALL_TOOLS.find((x) => x.name === name)!
@@ -478,6 +478,47 @@ describe('任务类工具', () => {
       { type: 'haul', from: { x: 1, y: 64, z: 1 }, to: { x: 9, y: 64, z: 9 }, items: [{ id: 'minecraft:iron_ingot', count: 64 }] },
       { type: 'follow', player: 'Steve', distance: 4 },
       { type: 'home', name: 'base' },
+    ])
+  })
+
+  it('随身的包当容器：deposit_items / withdraw_items 给 bag 时，交给身体的容器是“这件物品打开的界面”；往包里放没列东西、位置和包都给或都没给，不开任务', async (t) => {
+    const s = setup(t)
+    await s.run('deposit_items', { bag: { id: 'Backpack:backpack' }, items: [{ id: 'minecraft:coal', count: 16 }] })
+    await s.run('withdraw_items', { bag: { id: 'Backpack:backpack', meta: 3 }, items: [{ id: 'minecraft:coal', count: 4 }], queue: true })
+    assert.deepEqual(s.game.callsOf('task.start'), [
+      { bot: 'Alu', task: { type: 'deposit', container: { item: { id: 'Backpack:backpack' } }, items: [{ id: 'minecraft:coal', count: 16 }] }, mode: 'replace' },
+      { bot: 'Alu', task: { type: 'withdraw', container: { item: { id: 'Backpack:backpack', meta: 3 } }, items: [{ id: 'minecraft:coal', count: 4 }] }, mode: 'append' },
+    ])
+    const everything = await s.run('deposit_items', { bag: { id: 'Backpack:backpack' } })
+    assert.deepEqual([everything.isError, everything.content], [true, 'Putting things into a bag needs "items": list what goes in.'])
+    const both = await s.run('withdraw_items', { container: { x: 1, y: 64, z: 1 }, bag: { id: 'Backpack:backpack' }, items: [{ id: 'minecraft:coal' }] })
+    const neither = await s.run('deposit_items', { items: [{ id: 'minecraft:coal' }] })
+    for (const res of [both, neither]) assert.deepEqual([res.isError, res.content], [true, 'give exactly one of "container" (a position) or "bag" (a bag you carry)'])
+    assert.equal(s.game.callsOf('task.start').length, 2)
+  })
+
+  it('use_item 把身上的一件东西拿到手里右键用：对空中、对某个方块、蹲着用；做完以后模型看到的是背包里多了少了什么、血量和饱食度、是否打开了界面', async (t) => {
+    const s = setup(t)
+    await s.run('use_item', { id: 'minecraft:bread' })
+    await s.run('use_item', { id: 'minecraft:flint_and_steel', meta: 0, on: { x: 3, y: 64, z: 5 }, sneak: true, queue: true })
+    assert.deepEqual(s.game.callsOf('task.start'), [
+      { bot: 'Alu', task: { type: 'use', item: { id: 'minecraft:bread' } }, mode: 'replace' },
+      { bot: 'Alu', task: { type: 'use', item: { id: 'minecraft:flint_and_steel', meta: 0 }, on: { x: 3, y: 64, z: 5 }, sneak: true }, mode: 'append' },
+    ])
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        { id: 't3', type: 'use', state: 'done', finishedAt: 300, params: { type: 'use', item: { id: 'Backpack:backpack' } }, result: { used: 'Backpack', gained: [], lost: [], openedScreen: true, health: 20, food: 20, freeSlots: 30 } },
+        { id: 't2', type: 'use', state: 'done', finishedAt: 200, params: { type: 'use', item: { id: 'minecraft:stick' } }, result: { used: 'Stick', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 } },
+        { id: 't1', type: 'use', state: 'done', finishedAt: 100, params: { type: 'use', item: { id: 'minecraft:mushroom_stew' } }, result: { used: 'Mushroom Stew', gained: [{ id: 'minecraft:bowl', meta: 0, name: 'Bowl', count: 1 }], lost: [{ id: 'minecraft:mushroom_stew', meta: 0, name: 'Mushroom Stew', count: 1 }], health: 18.5, food: 16, freeSlots: 30 } },
+      ],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    assert.deepEqual(lines.slice(-3), [
+      '- t3 use [done]; result: used "Backpack"; gained: nothing; lost: nothing; it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"; health 20; food 20; freeSlots 30',
+      '- t2 use [done]; result: used "Stick"; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30',
+      '- t1 use [done]; result: used "Mushroom Stew"; gained: 1× minecraft:bowl "Bowl"; lost: 1× minecraft:mushroom_stew "Mushroom Stew"; health 18.5; food 16; freeSlots 30',
     ])
   })
 

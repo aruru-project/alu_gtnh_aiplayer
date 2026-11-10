@@ -1,6 +1,7 @@
 // 一本自造的小配方册（格式同 docs/PACKDATA.md）：够得着真实数据里那些要紧的情形——
 // 同一个物品好几种做法耗料不同、手工工具配方、编程电路和模具、一模一样的重复、只是示意的 fake、
-// 高炉的炉温、同一种东西两个 id（玄钢锭）、每种材质一条的工具配方、摆得进 2×2 的无序合成。
+// 高炉的炉温、同一种东西两个 id（玄钢锭）、每种材质一条的工具配方、摆得进 2×2 的无序合成、
+// 不用工具的手工配方和机器配方并存（手工搅粉 2 个、搅拌机 3 个）。
 // 配方的编号就是它在 RECIPE_LINES 里的下标。
 
 import fs from 'node:fs'
@@ -40,6 +41,10 @@ export const ITEMS = [
   { id: 'gregtech:gt.blockmachines', meta: 611, name: '基础锻造锤', en: 'Basic Forge Hammer' },
   { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
   { id: 'IronChest:BlockIronChest', meta: 3, name: '压缩箱子', en: 'Compressed Chest' },
+  { id: 'gregtech:gt.metaitem.01', meta: 2365, name: '磁钢粉', en: 'Magnetic Steel Dust', ores: ['dustSteelMagnetic'] },
+  { id: 'gregtech:gt.metaitem.01', meta: 2535, name: '煤粉', en: 'Coal Dust', ores: ['dustCoal'] },
+  { id: 'gregtech:gt.metaitem.01', meta: 2804, name: '黑曜石粉', en: 'Obsidian Dust', ores: ['dustObsidian'] },
+  { id: 'gregtech:gt.blockmachines', meta: 581, name: '基础搅拌机', en: 'Basic Mixer' },
   // 每种材质一把锤子用的锭
   ...Array.from({ length: 12 }, (_, n) => ({ id: 'demo:ingot', meta: n, name: `${['铜', '锡', '青铜', '钢质', '金', '银', '铅', '镍', '锌', '钴', '钛', '钨钢'][n]}锭`, en: `Ingot ${n}` })),
 ]
@@ -55,6 +60,7 @@ export const HANDLERS = [
   { key: 'codechicken.nei.recipe.ShapedRecipeHandler', name: '有序合成', mod: 'Minecraft', grid: true, machines: [{ id: 'minecraft:crafting_table', meta: 0 }], recipes: 15, read: 'all' },
   { key: 'codechicken.nei.recipe.ShapelessRecipeHandler', name: '无序合成', mod: 'Minecraft', grid: true, machines: [], recipes: 1, read: 'all' },
   { key: 'codechicken.nei.recipe.FurnaceRecipeHandler', name: '烧制', mod: 'Minecraft', machines: [{ id: 'minecraft:furnace', meta: 0 }], recipes: 1, read: 'all' },
+  { key: 'gt.recipe.mixer', name: '搅拌机', mod: 'GregTech', machines: [{ id: 'gregtech:gt.blockmachines', meta: 581 }], recipes: 1, read: 'gregtech' },
 ]
 
 const gt = (meta: number, n: number) => ({ id: 'gregtech:gt.metaitem.01', meta, n })
@@ -118,6 +124,13 @@ export const RECIPE_LINES: (Record<string, unknown> | string)[] = [
   '{not json',
   // 27：研磨机，副产物有概率
   { h: 'gt.recipe.macerator', in: [gt(17305, 1)], out: [gt(2305, 1), { id: 'gregtech:gt.metaitem.01', meta: 1305, n: 1, chance: 0.1 }], eut: 2, ticks: 100 },
+  // 28、29：玄钢粉。手工把三种粉搅在一起出 2 个（不要工具，摆得进 2×2）；搅拌机同样的料出 3 个
+  {
+    h: 'codechicken.nei.recipe.ShapelessRecipeHandler',
+    in: [gt(2365, 1), { ore: 'dustCoal', n: 1, any: [['gregtech:gt.metaitem.01', 2535]], more: 0 }, { ore: 'dustObsidian', n: 1, any: [['gregtech:gt.metaitem.01', 2804]], more: 0 }],
+    out: [gt(2364, 2)],
+  },
+  { h: 'gt.recipe.mixer', in: [gt(2365, 1), gt(2535, 1), gt(2804, 1), circuit(2)], out: [gt(2364, 3)], eut: 7, ticks: 100 },
 ]
 
 /** 把这本小配方册写进 dir（items.jsonl、handlers.json、recipes.jsonl）。 */

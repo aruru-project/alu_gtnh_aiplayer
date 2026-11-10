@@ -1102,7 +1102,7 @@ function renderBot(data) {
     h('h2', { text: `游戏里的 ${bot.name}` }),
     h('p', { class: connected ? '' : 'error', text: !connected ? '没连上游戏，下面的按钮暂时用不了。' : st?.online ? `在线，位置 ${pos(st.block ?? st.pos)}（${dimName(st.dim)}）` : '不在线' }),
     h('div', { class: 'row' }, spawnBtn, despawnBtn, toggle('invulnerable', '无敌'), toggle('hunger', '会饿')),
-    h('p', { class: 'error', text: '“会饿”打开后要小心：它现在不会吃东西，饱食度掉光以后会饿死。没有特别的理由就关着。' }),
+    h('p', { class: 'error', text: '“会饿”打开后要小心：它能吃身上的食物了，但只在被叫醒、看到饱食度低的时候才会去吃；没人叫它、身上又没有食物时，饱食度掉光还是会饿死。没有特别的理由就关着。' }),
     h('p', { class: 'hint', text: '上线、下线会被记住：大脑重连游戏时，会按最后一次的选择把它叫出来或不叫。它被踢下线也算“下线”，要回来得在这里点“上线”。' }),
   )
 

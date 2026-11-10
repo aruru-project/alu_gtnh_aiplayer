@@ -107,7 +107,7 @@ export function displayName(name: string | undefined): string | undefined {
 
 /** 物品表里查名字用的接口（packdata 的 ItemTable 满足）。 */
 export interface LocalNames {
-  get(id: string, meta?: number): { name: string } | undefined
+  get(id: string, meta?: number): { name: string; en?: string; variants?: number } | undefined
   byEnglishName(id: string, english: string): { name: string } | undefined
 }
 
@@ -124,7 +124,9 @@ export function useLocalNames(names: LocalNames | undefined): void {
 /**
  * 一样东西给模型看的名字：有本地物品表就用中文名，否则是服务器给的英文名。
  * - 先拿服务器给的英文名在同一个 id 下对（世界里的方块、带附加数据的物品只有这个办法对得准）；
- * - 再按 id + meta 查（block 为 true 时不查：方块的 meta 是朝向之类，不是物品的 meta）；
+ * - 再按 id + meta 查（block 为 true 时不查：方块的 meta 是朝向之类，不是物品的 meta）。
+ *   同一个 id + meta 下有好几种只靠附加数据区分的变体（匠魂工具每种材质一个）时，表里的名字只是其中一种的：
+ *   服务器给了名字又和表里的对不上，说明手里这件是另一种变体，用服务器给的（英文但是准的）；
  * - 都没有就是服务器给的名字（没翻译的语言键不算名字）。
  */
 export function nameOf(x: { id?: unknown; meta?: unknown; name?: unknown }, opts: { block?: boolean } = {}): string | undefined {
@@ -134,7 +136,7 @@ export function nameOf(x: { id?: unknown; meta?: unknown; name?: unknown }, opts
     if (byName) return byName.name
     if (!opts.block) {
       const exact = localNames.get(x.id, typeof x.meta === 'number' ? x.meta : undefined)
-      if (exact) return exact.name
+      if (exact && !(exact.variants && server !== undefined)) return exact.name
     }
   }
   return server
@@ -214,6 +216,8 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     // 机器没收原料、没开工时，detail 是那台机器的状态
     if (detail && (typeof detail.storedEU === 'number' || typeof detail.recipes === 'string')) out.error = processErrorLines(detail)
     if (result && Array.isArray(result.outputs)) out.result = processResultLines(result)
+  } else if (task.type === 'use') {
+    if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   }
   return out
 }
@@ -324,7 +328,7 @@ export function formatEntities(entities: readonly EntityInfo[]): string {
       continue
     }
     const label =
-      e.type === 'item' ? `dropped item ${e.item ? itemKey(e.item) : (e.name ?? '?')}` : `${e.type} ${e.name ?? '?'}`
+      e.type === 'item' ? `dropped item ${e.item ? `${itemKey(e.item)}${quoted(e.item)}` : (e.name ?? '?')}` : `${e.type} ${e.name ?? '?'}`
     const amount = e.type === 'item' && e.item && typeof e.item.count === 'number' ? e.item.count : 1
     const g = groups.get(label) ?? { count: 0, nearest: Number.POSITIVE_INFINITY }
     g.count += amount
@@ -902,7 +906,8 @@ export function formatStock(res: StockResult, radius: number): string {
     `Looked into ${looked} container(s) within ${radius} blocks of you. Take things out with withdraw_items (container = the position, items = the exact id/meta).`,
   ]
   for (const it of items) {
-    const what = typeof it.ore === 'string' ? `any ${it.ore} (ore name)` : idText(it)
+    // 点名了 meta 的带上名字（不限 meta 的不带：那会是 meta 0 的名字，具体是哪几种下面每一处都写着）
+    const what = typeof it.ore === 'string' ? `any ${it.ore} (ore name)` : `${idText(it)}${typeof it.meta === 'number' ? quoted(it) : ''}`
     if (count(it.total) === 0) {
       lines.push(`- ${what}: none in storage here`)
       continue
@@ -935,6 +940,28 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
   if (typeof freeSlots === 'number') line += `, freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `, other: ${compactJson(rest, 200)}`
   return [line]
+}
+
+/**
+ * use 任务的结果：右键用了一件东西以后看得见的变化（背包里多了少了什么、是否打开了界面、血量和饱食度）。
+ * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
+ */
+export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
+  const { used, gained, lost, openedScreen, health, food, freeSlots, ...rest } = result
+  const item = isObject(params?.item) ? params.item : undefined
+  // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
+  const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
+  const got = kindList(gained)
+  const gone = kindList(lost)
+  const list = (items: Record<string, unknown>[]): string => (items.length > 0 ? items.map((x) => kindText(x.count, x)).join(', ') : 'nothing')
+  const parts = [`used "${what}"`, `gained: ${list(got)}`, `lost: ${list(gone)}`]
+  if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
+  else if (got.length === 0 && gone.length === 0) parts.push('nothing visible changed in your inventory')
+  if (typeof health === 'number') parts.push(`health ${health}`)
+  if (typeof food === 'number') parts.push(`food ${food}`)
+  if (typeof freeSlots === 'number') parts.push(`freeSlots ${freeSlots}`)
+  if (Object.keys(rest).length > 0) parts.push(`other: ${compactJson(rest, 200)}`)
+  return [parts.join('; ')]
 }
 
 // ── 任务书 ──

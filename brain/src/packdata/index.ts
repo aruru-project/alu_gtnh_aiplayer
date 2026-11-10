@@ -1,6 +1,6 @@
-// 本地资料：从客户端整合包导出的、不随游戏进行变化的内容（任务书的名称、描述、前置、要求、奖励；物品的中文名）。
-// 静态的在这里查，实时的（谁完成了哪些任务、箱子里有什么）才问服务器。
-// 文件由 tools/make-packdata.py 生成，放在 brain/packdata/（不进 git），格式见 docs/PACKDATA.md。
+// 本地资料：从客户端整合包导出的、不随游戏进行变化的内容（任务书的名称、描述、前置、要求、奖励；物品的中英文名和矿辞名；
+// 配方册；方块颜色和贴图）。静态的在这里查，实时的（谁完成了哪些任务、箱子里有什么、附近有哪些机器）才问服务器。
+// 文件由 tools/make-packdata.py 和 tools/export-packdata 生成，放在 brain/packdata/（不进 git），格式见 docs/PACKDATA.md。
 //
 // 这一层只读文件、建索引、回答查询，不碰 bridge。启动时读一次；目录或某个文件不在、读不了时，对应的那一项是 undefined，
 // 用它的工具自己退回去问服务器。
@@ -40,7 +40,6 @@ export interface PackData {
   textures?: TextureAtlas
   /** 配方册（handlers.json、recipes.jsonl）。没有时查做法、合成退回去问服务器。 */
   recipes?: RecipeBook
-  // 下一批：配方册（recipes.jsonl）放在这里。
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -123,19 +122,19 @@ function loadItems(dir: string, log: (message: string) => void): ItemTable | und
   try {
     const content = readText(path.join(dir, 'items.jsonl'))
     if (content === undefined) {
-      log('没有物品表（items.jsonl），任务书里的物品只显示 id 和 meta。')
+      log('没有物品表（items.jsonl）：找物品改问服务器（只认英文名），物品的名字都是服务器给的英文名。')
       return undefined
     }
     const { rows, bad } = parseJsonLines<PackItemInfo>(content, parseItem)
     if (rows.length === 0) {
-      log('物品表（items.jsonl）是空的，任务书里的物品只显示 id 和 meta。')
+      log('物品表（items.jsonl）是空的：找物品改问服务器（只认英文名），物品的名字都是服务器给的英文名。')
       return undefined
     }
     const table = new ItemTable(rows)
     log(`物品表：${table.size} 种物品${bad > 0 ? `；items.jsonl 里有 ${bad} 行认不出来，跳过了` : ''}。`)
     return table
   } catch (e) {
-    log(`物品表读不了（${reason(e)}），任务书里的物品只显示 id 和 meta。`)
+    log(`物品表读不了（${reason(e)}）：找物品改问服务器（只认英文名），物品的名字都是服务器给的英文名。`)
     return undefined
   }
 }

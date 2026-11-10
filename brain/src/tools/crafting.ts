@@ -238,6 +238,7 @@ export const processItems: Tool = {
     let inputs = i.inputs
     let circuit = i.circuit
     let expect = i.expect
+    let fluidNote = ''
     if (i.recipe !== undefined) {
       const book = ctx.packdata?.recipes
       if (!book) return fail('There is no recipe book on this brain: give "inputs" (and "circuit") yourself.')
@@ -251,9 +252,14 @@ export const processItems: Tool = {
       circuit ??= plan.circuit
       expect ??= plan.expect.length > 0 ? plan.expect : undefined
       if (inputs.length === 0 && plan.fluids.length === 0) return fail(`Recipe #${i.recipe} lists nothing to put in.`)
+      // 配方要的流体不替它准备：没给装满的单元时提醒一句，免得机器不开工时它不知道差在哪
+      if (plan.fluids.length > 0 && i.fluids === undefined) {
+        fluidNote = ` This recipe also needs ${plan.fluids.map((f) => `${quantity(f.mb)} mB ${f.name}`).join(' and ')} in all: it has to be in the machine already (piped in, or in its input hatch); if it is not, the machine will not start.`
+      }
     }
     if (inputs === undefined) return fail('Give "recipe" (the # number from find_recipes) or "inputs".')
     if (inputs.length > PROCESS_MAX_INPUTS) return fail(`That is ${inputs.length} different inputs; a machine takes at most ${PROCESS_MAX_INPUTS}.`)
-    return startTask(ctx, { type: 'process', machine: i.machine, inputs, circuit, fluids: i.fluids, expect, bus: i.bus, wait: i.wait }, i.queue)
+    const started = await startTask(ctx, { type: 'process', machine: i.machine, inputs, circuit, fluids: i.fluids, expect, bus: i.bus, wait: i.wait }, i.queue)
+    return typeof started === 'string' ? `${started}${fluidNote}` : started
   },
 }

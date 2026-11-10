@@ -257,6 +257,7 @@ export class Agent {
           cancelTask: async (id) => {
             await this.ownCancel(() => this.deps.bridge.taskCancel(this.deps.settings().botName, id))
           },
+          redeliver: (ev) => this.handleEvent(ev),
           ...(deps.routineLimits ? { limits: deps.routineLimits } : {}),
           maxResultChars: this.deps.settings().toolResultMaxChars,
         })
@@ -292,8 +293,13 @@ export class Agent {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
-    this.routine?.stop('the brain is shutting down')
     this.abort?.abort()
+    // 正在跑的例程停下：它正等着的任务取消掉（等这次取消发出去，最多两秒），“它停在哪”排进下次启动要处理的事里
+    if (this.routine?.stop('the brain was shut down or restarted')) {
+      let giveUp: NodeJS.Timeout | undefined
+      await Promise.race([this.routine.whenCanceled(), new Promise<void>((resolve) => (giveUp = setTimeout(resolve, 2000)))])
+      clearTimeout(giveUp)
+    }
     this.persist()
     if (this.running) await new Promise<void>((resolve) => this.idleWaiters.push(resolve))
   }
@@ -313,12 +319,16 @@ export class Agent {
         const key = taskEndKey(ev)
         if (this.endedSeen.includes(key)) return
         this.endedSeen.push(key)
+        if (this.endedSeen.length > ENDED_SEEN_MAX) this.endedSeen.splice(0, this.endedSeen.length - ENDED_SEEN_MAX)
         this.tracked.delete(ev.task.id)
         this.persist()
         this.routine.taskEnded(ev.task)
       }
       return
     }
+    // 例程正调着工具时来的、谁也不认识的任务：多半是这次调用开的，只是“开了”的回话还没处理到。先交给例程扣着，
+    // 它的调用回来以后，是它的归它，不是的再送回这里照常处理
+    if ((ev.type === 'task_ended' || ev.type === 'task_started') && !this.tracked.has(ev.task.id) && !this.endedSeen.includes(ev.task.id) && this.routine?.hold(ev)) return
     if (ev.type === 'task_ended') {
       const key = taskEndKey(ev)
       if (this.endedSeen.includes(key)) return // 续传或对账时重复收到
@@ -472,7 +482,12 @@ export class Agent {
   private routineEnded(view: RoutineView): void {
     const text = describeRoutine(view, this.now())
     this.deps.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : '停了'}：${view.ending ?? ''}`, detail: text })
-    if (this.stopped) return
+    if (this.stopped) {
+      // 大脑在退出：这件事连同排着的事一起落盘，下次启动再告诉模型
+      this.pending.push({ type: 'notice', time: this.now(), wake: true, text: `大脑重启的时候你的例程还没跑完，已经停下（它做了的事不会撤销，正在做的那个任务取消了）。看完日志和现场，再决定要不要重新开一个：\n${text}` })
+      this.persist()
+      return
+    }
     this.handleEvent({ type: 'notice', time: this.now(), wake: true, text: `你启动的例程有结果了，看完决定下一步（它做了的事不会撤销）：\n${text}` })
   }
 
@@ -1033,7 +1048,8 @@ export class Agent {
         },
         taskStarted: (task) => {
           this.traceTask(task)
-          if (task.state === 'running' || task.state === 'queued') {
+          // 任务一开就结束时，结束的事件可能抢在这里之前已经处理过了：那就不用再盯着它
+          if ((task.state === 'running' || task.state === 'queued') && !this.endedSeen.includes(task.id)) {
             this.tracked.add(task.id)
             this.persist()
           }

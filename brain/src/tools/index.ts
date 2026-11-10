@@ -42,6 +42,7 @@ import {
   placeBlocks,
   setHome,
   taskStatus,
+  useItem,
   withdrawItems,
 } from './tasks.ts'
 import { ToolFailure } from './types.ts'
@@ -95,6 +96,7 @@ export const ALL_TOOLS: readonly Tool[] = [
   haulItems,
   collectItems,
   giveItems,
+  useItem,
   findItem,
   findRecipes,
   findUses,

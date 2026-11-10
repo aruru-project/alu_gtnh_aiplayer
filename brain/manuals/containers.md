@@ -4,6 +4,7 @@
 - 两类：有界面的储物方块（箱子、铁箱子、各种 mod 的箱子），和抽屉（Storage Drawers）。多方块机器的总线和仓也可以当容器存取。
 - 抽屉你是像玩家那样用的：身体会走到抽屉正面，左键取、右键存，数量精确。这些动作由任务替你做，你只要把抽屉的坐标当成容器坐标交给工具。
 - deposit_items（存）、withdraw_items（取）、haul_items（在两个容器之间来回搬）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
+- 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。
 
 # 看仓库
 - 只想知道某几样东西放在哪：find_in_storage，可以按 id 或矿辞名一次查好几样。

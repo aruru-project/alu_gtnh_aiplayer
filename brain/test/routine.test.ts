@@ -191,6 +191,49 @@ describe('例程', () => {
     assert.equal(h.game.callsOf('task.start').length, 3)
   })
 
+  it('任务一开就做完、“做完了”比“已开始”的回话先到：例程照样马上往下走，模型不会为例程的任务被叫醒', async (t) => {
+    const h = setup(t)
+    // 身体回“任务已开始”的同时任务就结束了：结束的事件在工具拿到回话之前就被处理
+    const start = h.game.handlers['task.start']!
+    h.game.handlers['task.start'] = (p) => {
+      const res = start(p) as { task: { id: string; type: string } }
+      h.agent.handleEvent(taskEnded(res.task.id, 'done', { type: res.task.type, result: { moved: 5 } }))
+      return res
+    }
+    await modelCalls(h, 'start_routine', { code: TIDY, name: '整理抽屉' })
+    const turns = h.llm.requests.length
+    h.llm.enqueue(reply('', [{ name: 'say', input: { message: '搬完了。' } }]), reply(''))
+    // 不靠“隔几秒自己去问一次”的兜底：三个任务应当很快就走完
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 2500)
+    const view = h.agent.status().routine!
+    assert.deepEqual([view.value, view.calls, view.actions], ['10', 4, 3])
+    await waitFor('the model was told once', () => h.game.said.includes('搬完了。'))
+    await h.agent.whenIdle()
+    const seen = h.llm.requests.slice(turns).map((_, n) => h.llm.lastUserText(turns + n)).join('\n')
+    assert.match(seen, /你启动的例程有结果了/)
+    assert.doesNotMatch(seen, /任务 t\d+（(withdraw|deposit)）完成了/)
+    // 这些任务已经结束，不再被当成“还没看到结束的任务”盯着
+    assert.deepEqual(h.agent.status().trackedTasks, [])
+  })
+
+  it('大脑重启时例程还在跑：它停下、正等着的任务被取消；重启后模型被告知它停在哪一步，带着日志', async (t) => {
+    const h = setup(t)
+    await modelCalls(h, 'start_routine', { code: `log('going'); await tool('go_to', { x: 50, z: 50 }); return 'there'`, name: '走过去' })
+    await taskStarted(h, 1)
+    await h.agent.whenIdle()
+    await h.agent.stop()
+    assert.deepEqual(h.game.callsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
+
+    const turns = h.llm.requests.length
+    const again = h.restart()
+    t.after(() => again.agent.stop())
+    await waitFor('the model was woken after the restart', () => h.llm.requests.length > turns)
+    const woken = h.llm.lastUserText(turns)
+    assert.match(woken, /大脑重启的时候你的例程还没跑完，已经停下/)
+    assert.match(woken, /Routine r1 \("走过去"\) was STOPPED: the brain was shut down or restarted\. 1 tool call\(s\), 1 task\(s\)/)
+    assert.match(woken, /Its log \(last 1 line\(s\)\):\n {2}going/)
+  })
+
   it('run_program 的程序也能调工具，但只许查询的：结果当场回来；想开任务会被拒绝并指到 start_routine', async (t) => {
     const h = setup(t)
     const result = await modelCalls(h, 'run_program', {

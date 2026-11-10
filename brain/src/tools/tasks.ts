@@ -27,6 +27,19 @@ const itemFilter = obj(
   ['id'],
 )
 
+/** 随身的包当容器（协议里 deposit / withdraw 的 container 写成 {item:{id,meta?}}）：身上这件东西右键打开的那个界面。 */
+const bag = obj(
+  { id: str('Item id of the bag.'), meta: int('Its meta. Omit to match any.', { min: 0 }) },
+  ['id'],
+  'Instead of "container": a bag you carry (a backpack and the like). It is opened in your hand, without walking.',
+)
+
+/** container 和 bag 只能给一个；返回任务参数里的 container，或者给模型的一句错误。 */
+function containerOrBag(i: { container?: unknown; bag?: { id: string; meta?: number } }): { container: unknown } | { error: string } {
+  if ((i.container === undefined) === (i.bag === undefined)) return { error: 'give exactly one of "container" (a position) or "bag" (a bag you carry)' }
+  return { container: i.bag ? { item: i.bag.meta === undefined ? { id: i.bag.id } : { id: i.bag.id, meta: i.bag.meta } } : i.container }
+}
+
 /** supply / dropoff：容器坐标的列表。箱子这类有界面的储物方块和抽屉（Storage Drawers）都行。 */
 export const containerList = (description: string): Schema =>
   arr(description, pos('A chest or drawers.'), { min: 1, max: 8 })
@@ -316,30 +329,33 @@ export const placeBlocks: Tool = {
 export const depositItems: Tool = {
   name: 'deposit_items',
   description:
-    'Walk to a container (a chest or similar, or Storage Drawers) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit.',
-  inputSchema: obj(
-    {
-      container: pos('Position of the chest or drawers.'),
-      items: arr('What to deposit. Omit for everything except tools and food.', itemFilter, { min: 1, max: 36 }),
-      keep: arr('Item ids to keep in your inventory.', str('item id'), { min: 1, max: 36 }),
-      queue,
-    },
-    ['container'],
-  ),
-  run: (ctx, i: { container: unknown; items?: unknown[]; keep?: string[]; queue?: boolean }) =>
-    startTask(ctx, { type: 'deposit', container: i.container, items: i.items, keep: i.keep }, i.queue),
+    'Walk to a container (a chest or similar, or Storage Drawers) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit. With "bag" instead of "container" the items go into a bag you carry.',
+  inputSchema: obj({
+    container: pos('Position of the chest or drawers.'),
+    bag,
+    items: arr('What to deposit. Omit for everything except tools and food (a bag needs the list).', itemFilter, { min: 1, max: 36 }),
+    keep: arr('Item ids to keep in your inventory.', str('item id'), { min: 1, max: 36 }),
+    queue,
+  }),
+  async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items?: unknown[]; keep?: string[]; queue?: boolean }) {
+    const where = containerOrBag(i)
+    if ('error' in where) return fail(where.error)
+    // 身体的规矩：往包里放必须说清放什么（不然“除工具和食物以外的全部”会把整个背包倒进去）
+    if (i.bag && i.items === undefined) return fail('Putting things into a bag needs "items": list what goes in.')
+    return startTask(ctx, { type: 'deposit', container: where.container, items: i.items, keep: i.keep }, i.queue)
+  },
 }
 
 export const withdrawItems: Tool = {
   name: 'withdraw_items',
   description:
-    'Walk to a container (a chest or similar, or Storage Drawers) and take items out (task); counts are exact. It ends as done even when there was not enough: check "missing" in the result.',
-  inputSchema: obj(
-    { container: pos('Position of the chest or drawers.'), items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue },
-    ['container', 'items'],
-  ),
-  run: (ctx, i: { container: unknown; items: unknown[]; queue?: boolean }) =>
-    startTask(ctx, { type: 'withdraw', container: i.container, items: i.items }, i.queue),
+    'Walk to a container (a chest or similar, or Storage Drawers) and take items out (task); counts are exact. It ends as done even when there was not enough: check "missing" in the result. With "bag" instead of "container" they come out of a bag you carry.',
+  inputSchema: obj({ container: pos('Position of the chest or drawers.'), bag, items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue }, ['items']),
+  async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items: unknown[]; queue?: boolean }) {
+    const where = containerOrBag(i)
+    if ('error' in where) return fail(where.error)
+    return startTask(ctx, { type: 'withdraw', container: where.container, items: i.items }, i.queue)
+  },
 }
 
 export const haulItems: Tool = {
@@ -399,6 +415,24 @@ export const giveItems: Tool = {
     if (!PLAYER_NAME_RE.test(i.player)) return fail(`"${i.player}" is not a valid player name`)
     return startTask(ctx, { type: 'give', player: i.player, items: i.items }, i.queue)
   },
+}
+
+export const useItem: Tool = {
+  name: 'use_item',
+  description:
+    'Hold an item you carry and right-click with it (task): in the air (eat, drink, wear it, open it), or on a block with "on". For what no other tool does. The result tells what changed: items gained and lost, health, food. See the inventory manual.',
+  inputSchema: obj(
+    {
+      id: str('Item id.'),
+      meta: int('Item meta. Omit to match any.', { min: 0 }),
+      on: pos('Block to right-click with it (you walk there first). Omit to use it in the air.'),
+      sneak: bool('true: sneak while using it; some items then do something else.'),
+      queue,
+    },
+    ['id'],
+  ),
+  run: (ctx, i: { id: string; meta?: number; on?: unknown; sneak?: boolean; queue?: boolean }) =>
+    startTask(ctx, { type: 'use', item: i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }, on: i.on, sneak: i.sneak }, i.queue),
 }
 
 // ── 任务管理 ──

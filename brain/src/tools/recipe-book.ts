@@ -553,7 +553,11 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   // 汇总：每种方式几条、每个成品耗多少、附近做不做得了
   const around = await lookAround(ctx)
   const machineWayExists = ways.some((w) => wayKind(w.handler) === 'machine')
-  const judged = ways.map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around, machineWayExists) })).sort((a, b) => a.avail.rank - b.avail.rank || a.order - b.order)
+  // 同样是“现在做得了”：机器排在手工前面（手工搅粉、手工切板这类不要工具的配方也往往比机器费料）
+  const machineFirst = (h: RecipeHandler): number => (wayKind(h) === 'machine' ? 0 : 1)
+  const judged = ways
+    .map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around, machineWayExists) }))
+    .sort((a, b) => a.avail.rank - b.avail.rank || machineFirst(a.handler) - machineFirst(b.handler) || a.order - b.order)
   const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}.${twinNote} Ways you can use now come first:`]
   if (around.error) lines.push(`(Which machines and crafting tables are around you could not be checked: ${around.error}.)`)
   else if (around.machinesTotal > around.machines.length) lines.push(`(Only the nearest ${around.machines.length} of ${around.machinesTotal} machines within ${MACHINES_RADIUS} blocks were checked.)`)
@@ -668,20 +672,21 @@ function cellOf(slot: RecipeSlot, have: Carried | undefined): GridCell {
   return pick[1] === ANY_META ? { id: pick[0] } : { id: pick[0], meta: pick[1] }
 }
 
+/** 没有指定位置的原料按这个顺序占格子（NEI 画无序合成也是这个顺序）：前四样正好摆成 2×2，随身的合成格就做得了。 */
+const FREE_CELLS = [0, 1, 3, 4, 6, 7, 2, 5, 8]
+
 /**
- * 合成任务的摆法：3×3 的 9 格，一行一行数。有序合成每格放在它自己的位置（配方册里的 g）；无序合成从头往后摆。
+ * 合成任务的摆法：3×3 的 9 格，一行一行数。配方册里带位置（g）的每格放在它自己的位置；不带位置的（无序合成）依次占空着的格子。
  */
 export function craftGrid(recipe: Recipe, have?: Carried): GridCell[] {
   const grid: GridCell[] = Array.from({ length: 9 }, () => null)
+  for (const slot of recipe.in) if (slot.g !== undefined && slot.g < 9) grid[slot.g] = cellOf(slot, have)
   let next = 0
   for (const slot of recipe.in) {
-    if (slot.g !== undefined) {
-      grid[slot.g] = cellOf(slot, have)
-      continue
-    }
+    if (slot.g !== undefined) continue
     for (let n = 0; n < Math.max(1, slot.n); n++) {
-      while (next < 9 && grid[next] !== null) next++
-      if (next < 9) grid[next] = cellOf(slot, have)
+      while (next < 9 && grid[FREE_CELLS[next]!] !== null) next++
+      if (next < 9) grid[FREE_CELLS[next]!] = cellOf(slot, have)
     }
   }
   return grid

@@ -192,9 +192,13 @@ describe('中文名：服务器回来的东西按本地物品表叫名字', () =
         // 服务器端没翻译的名字
         { slot: 1, id: 'gregtech:gt.metaitem.01', meta: 17305, count: 3, name: 'gt.metaitem.01.17305.name' },
         { slot: 2, id: 'somemod:unknown', meta: 0, count: 1, name: 'Mystery Thing' },
+        // 同一个 id/meta 下每种材质一个变体的工具：物品表里只有其中一种的名字（“锤”，英文 Hammer）
+        { slot: 3, id: 'gregtech:gt.metatool.01', meta: 12, count: 1, name: 'Steel Hammer', durability: 0.5 },
       ],
     })
     const mine = (await s.run('get_status')).content
+    // 手里这件是另一种变体：用服务器给的名字，不拿表里那一种的名字顶替（否则钢镐会被叫成别的材质的镐）
+    assert.match(mine, /Tools: 1× gregtech:gt\.metatool\.01\/12 "Steel Hammer" \(50% durability\)/)
     assert.match(mine, /9× gregtech:gt\.metaitem\.01\/11305 "钢锭"/)
     assert.match(mine, /3× gregtech:gt\.metaitem\.01\/17305 "钢板"/)
     assert.match(mine, /1× somemod:unknown "Mystery Thing"/)

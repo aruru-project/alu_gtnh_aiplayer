@@ -48,20 +48,32 @@ npm run dev:testserver
 | `AIPLAYER_BRIDGE_HOST` / `AIPLAYER_BRIDGE_PORT` | 身体的 bridge 地址 | `127.0.0.1` / `25590` |
 | `AIPLAYER_BRIDGE_TOKEN_FILE` | bridge 口令文件（相对路径相对 `brain/`） | 无，不配就不连 |
 | `AIPLAYER_BRIDGE_TOKEN` | 直接给 bridge 口令（优先于文件） | – |
-| `AIPLAYER_PACKDATA` | 本地资料（任务书等）的目录（相对路径相对 `brain/`） | `brain/packdata/` |
+| `AIPLAYER_PACKDATA` | 本地资料（任务书、物品表、配方册等）的目录（相对路径相对 `brain/`） | `brain/packdata/` |
 
 环境变量优先于 `config.json`，而且不会写回文件；被环境变量盖住的项，面板“设置”页会标出来。面板自己的监听地址和 bridge 的主机只能在 `config.json`（`panel`、`bridge` 两节）或环境变量里改，改完要重启大脑。
 
-### 本地资料（任务书）
+### 本地资料（任务书、物品表、配方册）
 
-任务书的内容（章节、任务的名称和描述、前置、要求、奖励）大脑读本地的一份中文资料，只有“谁做完了哪些”问服务器。资料从客户端整合包生成，不进 git：
+不随游戏进行变化的内容，大脑读本地的一份中文资料（`brain/packdata/`，不进 git），不问服务器：
+
+| 资料 | 文件 | 谁用 | 没有时 |
+|---|---|---|---|
+| 任务书 | `quests.jsonl` `questlines.json` | `list_quest_lines` / `find_quests` / `get_quest`；只有“谁做完了哪些”问服务器 | 这三个工具改问服务器（英文） |
+| 物品表（中英文名、矿辞名） | `items.jsonl` | `find_item`；服务器回来的东西（背包、箱子、机器、任务结果、主人指着的方块）凡是带 id 的，给模型看时都换成中文名 | `find_item` 改问服务器（只认英文名），名字都是英文 |
+| 配方册（NEI 里的全部配方） | `recipes.jsonl` `handlers.json` | `find_recipes`（NEI 的 R）、`find_uses`（NEI 的 U）、`craft_item` / `process_items` 按配方编号干活 | `find_recipes` 改问服务器（英文、每种机器只给前几条），`find_uses` 用不了，合成用服务器自己知道的配方 |
+| 方块颜色表、贴图 | `blocks.jsonl` `textures/` | 像素画配色、简图上色、面板的三维预览 | 内置的 16 色羊毛和 16 色染色粘土；三维预览按颜色画 |
 
 ```sh
-tools/make-packdata.py quests --client <客户端包.zip> --out brain/packdata    # 在仓库根目录执行，不到一秒
+tools/make-packdata.py quests --client <客户端包.zip> --out brain/packdata    # 任务书。在仓库根目录执行，不到一秒
+tools/export-packdata                                                        # 物品表、配方册、方块颜色表：从一个真的客户端里导出，十来分钟，见 docs/PACKDATA.md
 ```
 
-大脑启动时读一次（日志里 `[packdata]` 开头的几行说读到了什么），所以重新生成后要重启大脑。目录不在、文件不全时照常启动，任务书工具退回去问服务器，那边的文字是英文的。
-目录里有 `items.jsonl`（物品表）时，任务要的和奖励的物品会带上中文名；有 `blocks.jsonl`（方块颜色表）时，它做像素画就用这张表配色、简图按它上色，没有就用内置的 16 色羊毛和 16 色染色粘土。文件格式见 `docs/PACKDATA.md`。
+大脑启动时读一次（日志里 `[packdata]` 开头的几行说读到了什么），所以重新生成后要重启大脑。目录不在、文件不全时照常启动，缺哪样哪样就按上表的最后一列办。文件格式见 `docs/PACKDATA.md`。
+
+配方册有三十万条、一百来兆：启动时从头读一遍，只在内存里留索引（每条配方在文件里的位置、哪些配方产出某物、哪些配方用到某物），配方本身用到时才从文件里读那一行。
+这个整合包实测：建索引 0.9 秒，整个大脑从启动到面板可用 1.2 秒（没有本地资料时 0.2 秒）；进程常驻内存 360 MB 左右（没有本地资料时 100 MB），其中留在 JS 堆里的是一百兆上下（配方索引约 30 MB，任务书、物品表和方块表约 40 MB，第一次找物品时建的搜索表约 20 MB），其余是读文件时冲高、V8 没还给系统的部分。
+一条配方的编号（`find_recipes` 里的 `#数字`）是它在 `recipes.jsonl` 里的行号：重新导出以后会变，所以编号只在当次运行里用，不要记进记忆。
+
 有了 `blocks.jsonl` 以后可以再生成方块贴图（面板的三维预览用，没有就按颜色画）：
 
 ```sh
@@ -112,12 +124,12 @@ AIPLAYER_DATA_DIR=/tmp/aiplayer-demo AIPLAYER_BRIDGE_PORT=25600 AIPLAYER_BRIDGE_
 
 默认 `http://127.0.0.1:28765/`，只监听本机；把 `AIPLAYER_PANEL_HOST` 设成 `0.0.0.0`（`npm run dev:testserver` 和 systemd 模板已经这样设）后，局域网里用 `http://这台机器的地址:28765/` 打开。九个页面：
 
-- **概览**：bridge 连接状态、bot 的位置/血量/背包、当前任务和队列（可取消）、当前模型和最近一次调用结果、今日用量、提醒、清空对话历史。
+- **概览**：bridge 连接状态、bot 的位置/血量/背包、当前任务和队列（可取消）、正在跑的例程（做到第几步、最近几次工具调用和它的日志，可以点“停止例程”）、当前模型和最近一次调用结果、今日用量、提醒、清空对话历史。
 - **对话**：实时日志（聊天、它说的话、模型的文本、工具调用和结果、错误）；下面的输入框以主人身份直接给它下指令（只有它看得到，不进游戏聊天）。工具结果带图的（它看了世界的一块地方、一张草稿、一张你传的图片），图直接显示在那一条下面，点开是原图：你看到的就是它看到的那张（它的模型看不了图时图也照样有）。世界和草稿的简图下面还有一个“三维预览”按钮，点开是同一块地方可以拖着转的立体图。
 - **模型**：服务商（接口类型、地址、API key）和它下面的模型分开管。一个服务商可以有好几个模型，各有各的名字和设置（输出上限、温度、超时、思考相关的额外请求参数、按模型走的开关）；同一个模型可以存两份不同的设置来对比（“复制”）。模型名可以从接口拉列表来挑，拉不到就手填。每个模型都能单独测试连接。
   现在用哪个，在这里点“用这个”，或者在**页面顶上的下拉框**里直接换：不用重启，下一轮决策起生效。对话日志里每一轮开头写着用的是哪个服务商的哪个模型。
   每个模型有一个“能看图”开关，默认关。开着，它要看的图会真的发给它；关着，同样的工具只给文字说明。开着时“测试连接”会带一张小图去试，模型其实不收图的话当场就报出来。
-- **AI 玩家**：名字、别名、主人名单、什么时候回应聊天、各项上限、人设提示词（也就是核心提示词，可恢复默认）；上线/下线；无敌和饥饿开关（“会饿”打开后它会饿死，因为它不会吃东西）。上线、下线的选择会被记住；它被踢下线也算“下线”，要回来得有人在这里点“上线”。
+- **AI 玩家**：名字、别名、主人名单、什么时候回应聊天、各项上限、人设提示词（也就是核心提示词，可恢复默认）；上线/下线；无敌和饥饿开关（“会饿”打开后要小心：它能吃身上的食物，但只在被叫醒、看到饱食度低时才会去吃，没人叫它时照样会饿死）。上线、下线的选择会被记住；它被踢下线也算“下线”，要回来得有人在这里点“上线”。
 - **记忆**：查看、编辑、删除它的笔记。
 - **手册**：看每本手册的名字、“什么时候看”那一句和正文；改默认手册（存下来的是你的一份，随时可以“恢复默认”）；新写、改名、删除自己的手册（比如“基地布局”“材料仓库在哪”）。改完立刻生效：它下次要用时读到的就是新的。
 - **图纸**：三块，各管各的。
@@ -142,9 +154,9 @@ AIPLAYER_DATA_DIR=/tmp/aiplayer-demo AIPLAYER_BRIDGE_PORT=25600 AIPLAYER_BRIDGE_
 src/
   main.ts          组装并启动
   llm/             模型调用层：统一的“消息 + 工具”请求 ↔ 各家接口。不知道 Minecraft，也不知道 agent
-  agent/           agent 循环：收事件、决定要不要叫醒模型、跑一轮决策、压缩历史。不发 HTTP，不碰 socket
+  agent/           agent 循环：收事件、决定要不要叫醒模型、跑一轮决策、压缩历史；例程（routine.ts：它写的程序在后台一步步调工具）。不发 HTTP，不碰 socket
   tools/           模型能用的工具：名字、参数 schema、执行函数。只调 bridge 和本地资料，不含策略
-  packdata/        本地资料：读 brain/packdata/ 里的文件（任务书、物品表、方块颜色表、方块贴图的目录），建索引，回答查询。不碰 bridge
+  packdata/        本地资料：读 brain/packdata/ 里的文件（任务书、物品表、配方册、方块颜色表、方块贴图的目录），建索引，回答查询。不碰 bridge
   script/          跑模型写的程序的沙箱：起受限的子进程（sandbox.ts）、子进程入口（runner.mjs）、程序能用的 API（prelude.js）
   design/          它自己出设计的家当：图纸草稿的检查和存取、文字预览、转成 .schematic、PNG 解码、主人传的图片
   render/          简图：把草稿或世界里的一块地方按方块颜色画成 PNG（等轴测、俯视、立面、分层），带说明和图例。纯软件画，不依赖任何图形库
@@ -163,8 +175,8 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 每次调模型的系统提示词 = **核心提示词** + 程序生成的几节（手册目录、名字、主人、记忆）。
 
-- 核心提示词（`agent/prompt.ts` 的 `DEFAULT_PERSONA`，一千五百字左右）只放任何时候都用得上的：它是谁、怎么说话和汇报、任务怎么运作、底线、什么时候往意见簿里记一条。面板“AI 玩家”页的“人设提示词”改的就是它；自定义过的照旧整段替换默认的，后面那几节照样附上。
-- 各类活具体怎么做写在**手册**里：`brain/manuals/*.md` 是默认的（`blueprint` 照图纸盖、`crafting` 办目标、`containers` 箱子和抽屉、`terrain` 地形活、`travel` 走路和传送、`quests` 任务书、`design` 自己写程序出设计、`pictures` 看图、`failures` 失败和重启），数据目录的 `manuals/` 是主人写的，同名时主人的盖住默认的。文件第一行是一句“什么时候看这本”，其余是正文。
+- 核心提示词（`agent/prompt.ts` 的 `DEFAULT_PERSONA`，一千八百字左右）只放任何时候都用得上的：它是谁、怎么说话和汇报、任务怎么运作、底线、什么时候往意见簿里记一条。面板“AI 玩家”页的“人设提示词”改的就是它；自定义过的照旧整段替换默认的，后面那几节照样附上。
+- 各类活具体怎么做写在**手册**里：`brain/manuals/*.md` 是默认的（`blueprint` 照图纸盖、`crafting` 查配方挑做法办目标、`containers` 看仓库和存取、`inventory` 用身上的东西和随身的包、`routines` 写程序调工具、`terrain` 地形活、`travel` 走路和传送、`quests` 任务书、`design` 自己写程序出设计、`pictures` 看图、`failures` 失败和重启），数据目录的 `manuals/` 是主人写的，同名时主人的盖住默认的。文件第一行是一句“什么时候看这本”，其余是正文。
 - 提示词里只列每本手册的名字和那一句；模型要干那类事时用 `read_manual` 读整本（`list_manuals` 列目录）。手册整本给模型，不受“单个工具结果上限”截断，所以正文有自己的上限（8000 字符）。
 - 每一轮的“当前状态”里有一行写明哪几本手册的原文现在还在对话历史里。这是程序从历史里数出来的：历史压缩把较早的手册原文换成了一句“要用时重新读”的、主人后来改过内容的，都不算，模型要用时会重新读。
 - 加一类新的活：在 `brain/manuals/` 里放一个 `名字.md`，第一行写什么时候看。不用改代码。
@@ -187,6 +199,35 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 - 断线期间补发的、超过 10 分钟的旧聊天只当背景。
 - bot 不在线时聊天不叫醒它（它说不了话）；面板指令照常。
 - 受伤只在血量 ≤ 6 时叫醒，一分钟最多一次。
+
+### 工具一览
+
+现在一共 62 个工具。每个工具开头那段说明合计一万三千六百字符左右，连参数 schema 一起发给模型的是五万六千字符左右。细节不写在工具说明里：说明只讲这个工具给什么、要什么，怎么用好写在手册里。
+
+| 一类 | 工具 |
+|---|---|
+| 说话 | `say` `whisper` |
+| 看 | `get_status` `look_around` `scan_area` `view_area` `inspect_block` `probe_block` `find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器） |
+| 仓库 | `list_containers`（一页页列，标出接着管道的）`list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页）`find_in_storage`（某几样东西在哪） |
+| 走动 | `go_to` `go_to_player` `follow_player` `go_home` `set_home` `list_homes` `join_team` |
+| 地形 | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` |
+| 图纸 | `list_blueprints` `check_blueprint` `build_blueprint` |
+| 写程序 | `run_program`（当场跑完，只能调查询类的工具）`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`list_images` `view_image` `list_drafts` `view_draft` `publish_draft` `delete_draft` |
+| 物品 | `deposit_items` `withdraw_items`（位置，或者身上的一个包）`haul_items` `collect_items` `give_items` `use_item`（拿在手里右键） |
+| 制作 | `find_item` `find_recipes` `find_uses` `find_machines` `craft_item` `process_items` |
+| 任务书 | `list_quest_lines` `find_quests` `get_quest` |
+| 任务、记忆、手册、意见簿 | `task_status` `cancel_task` `remember` `forget` `set_reminder` `list_manuals` `read_manual` `report_problem` |
+
+### 例程：它写的程序调工具
+
+重复几十遍的活（“把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里”）不靠模型一步步调工具，而是让它写一段程序：
+
+- `run_program`：程序在模型的这一轮里跑完，里面可以 `await tool(名字, 参数)` 调**查询类**的工具（`tools/index.ts` 的 `QUERY_TOOLS`），适合一次查很多再汇总。
+- `start_routine`：程序在后台跑（“例程”），几乎所有工具都能调；会开任务的工具等任务结束才返回。模型启动它以后这一轮就结束，例程做完、出错、被停掉或者碰到上限时再把模型叫醒，带上每一步和程序的日志。
+- 例程里调的每个工具和模型自己调走同一条路（`runTool`）：同样的参数校验，同样记进对话日志，面板概览页看得到进度，主人可以点“停止例程”；它正在做的任务被人取消也算叫它停下。
+- 上限（`agent/routine.ts` 的 `DEFAULT_ROUTINE_LIMITS`）：总时长 30 分钟（启动时可以给到 180），最多调 400 次工具、开 150 个任务，连着 3 次工具失败就停；程序自己的计算时间 20 秒，等工具结果的时间不算在内。同一时间只跑一个。
+- 例程不落盘：大脑重启时它会停下、正在做的任务被取消，重启后模型被告知它停在哪一步。
+- 程序本身照旧跑在沙箱里，碰不到文件和网络，只多了“调工具”这一个口子。边界见 `docs/SCRIPTS.md`。
 
 ### 看图：简图怎么画、怎么给模型
 
@@ -283,20 +324,23 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 ## 测试
 
 ```sh
-npm test            # node:test，约 10 秒
+npm test            # node:test，约半分钟
 npm run typecheck   # tsc --noEmit
 ```
 
 - `test/mock-bridge.ts`：按协议实现的服务端，代替游戏里的 mod。测试里可以推事件、让任务按设定结束、断开连接、模拟服务器重启、让 bot 死亡或被踢。它的行为（响应里有哪些字段、事件和响应谁先谁后、指令的回显、任务结果的形状）是对着测试服上的真实 mod 校对过的；世界本身是假的。
   图纸那部分（`blueprint.list/check/put/remove` 和 `blueprint` 任务）是照协议和 mod 的源码写的，还没有对着测试服校对过：它读得了真的 `.schematic` 文件，拿假地形逐格对比，任务“做完”时按背包和 `supply` 里的材料算结果（不够就是 `no_material`）；够不着、没工具、背包满这些情况不模拟。
-  物品、配方、库存那部分（`item.search`、`recipe.find`、`world.stock` 和 `craft` 任务）同样是照协议和 mod 的源码写的、没对着测试服校对过：一本十来种物品的假配方书（`defaultRecipeBook()`，够走一遍“做一个 Copter Blades”），`withdraw` 和 `craft` 会真的增减箱子和背包里的东西；`recipesReady = false` 时前两个方法返回 `busy`。`world.machines` 和 `process` 任务也在这部分：机器有电、空闲、等级够、给的原料凑得出它的一条配方（不带流体）才开工，否则像真实 mod 那样以 `invalid` 失败并带上机器状态。
+  物品、配方、库存那部分（`item.search`、`recipe.find`、`world.stock` 和 `craft` 任务）同样是照协议和 mod 的源码写的、没对着测试服校对过：一本十来种物品的假配方书（`defaultRecipeBook()`，够走一遍“做一个 Copter Blades”），`withdraw`、`deposit` 和 `craft` 会真的增减箱子、抽屉和背包里的东西（`craft` 的两种写法都认：按服务器的配方，和调用方给摆法的 `grid`）；
+  `world.containers` 的翻页和 `attached`、`world.drawers`、`world.player` 和聊天事件里的 `speaker`、`use` 任务、随身的包当容器（`container: {item}`）也都是照协议写的，没对着测试服校对过；`recipesReady = false` 时前两个方法返回 `busy`。`world.machines` 和 `process` 任务也在这部分：机器有电、空闲、等级够、给的原料凑得出它的一条配方（不带流体）才开工，否则像真实 mod 那样以 `invalid` 失败并带上机器状态。
   任务书（`quest.lines/search/get`）也是照协议和 mod 的源码写的：两章六个任务，自带 Steve 的进度；`questBook = undefined` 就是服务器没装任务书。
   `quest.progress`（谁做完了哪些）是照约定写的，真实 mod 实现之后还没对过。
 - `test/fixture-pack.ts`：一个只有任务书的小“客户端整合包”，文件形状照真实的 GTNH 客户端包抄的。`packdata.test.ts` 和一场端到端测试拿它跑 `tools/make-packdata.py`，再让大脑读生成出来的资料；这些测试要 `python3`，没有时会跳过并写明。
 - `test/mock-llm.ts`：一个 HTTP 服务，同时会说 OpenAI chat completions 和 Anthropic messages 两种线格式，按脚本回应。它像真实接口那样拒绝格式不对的请求（工具调用没有紧跟结果、角色不交替等，回 400），所以适配器漏了整理、历史压缩把配对拆散时，测试会失败。
 - `test/design.test.ts`：模型写的程序 → 沙箱 → 草稿 → 预览 → 发布。沙箱那几条是真的起子进程去试：死循环、吃内存、读配置文件、写文件、起进程、联网，都要被拦住而大脑没事。`.schematic` 由模拟 bridge 里那个照 mod 写的读取器读回来，另外和 `tools/make-test-schematic.py` 做的参考文件对了一遍（这一条要 `python3`）。
 - `test/feedback.test.ts`：意见簿——模型在一轮里记一条时附带的现场、同一个问题合并计数、太长的裁短、密钥被抹掉、重启后还在。
-- `test/e2e.test.ts`：模拟 bridge + 模拟模型 + 真实启动 `src/main.ts` 子进程，像主人那样登录面板、配模型、让 bot 上线，然后从一条聊天走到任务启动、任务结束再唤醒、`say` 回话。
+- `test/fixture-recipes.ts`：一本自造的小配方册（三十来条），照着真实数据里要紧的情形造的：同一个东西几种做法耗料不同、手工工具配方、编程电路和模具、重复的和只是示意的配方、高炉炉温、同一种东西两个 id、每种材质一条的工具配方。`recipes.test.ts`（找物品、查做法、查用途、合成和加工交给身体的参数）和 `storage.test.ts`（看仓库、中文名、主人指着说）用它；测试不读 `brain/packdata/` 里真实的那份。
+- `test/routine.test.ts`：例程——程序一步步调工具、等任务、各项上限、三种停法、大脑重启。沙箱是真的子进程。
+- `test/e2e.test.ts`：模拟 bridge + 模拟模型 + 真实启动 `src/main.ts` 子进程，像主人那样登录面板、配模型、让 bot 上线，然后从一条聊天走到任务启动、任务结束再唤醒、`say` 回话。其中三场对着主人的验收用例：指着箱子说“做一个直升机桨叶”（本地配方册）、“把抽屉里不到 128 个的都搬到这个箱子”（例程，程序就是 routines 手册里的那个例子）、“做一个小背包再把东西放进去”（随身的包当容器）。
 
 `npm test` 不碰真实的模型接口，也不连这台机器上的游戏服务器。
 
@@ -354,8 +398,11 @@ journalctl --user -u aiplayer-brain -f      # 首次启动的面板口令在这�
 - 一个大脑进程只管一个 bot。
 - 面板自己的监听地址、bridge 的主机不能在面板上改（改 `config.json` 或用环境变量）。
 - 协议里的 `bot.look`、`bot.drop`、`bot.remove` 和任务 `wait` 有封装（`bridge/api.ts`）但没有做成给模型用的工具；没有删除 home 的工具。
+- 随身的包（`deposit_items` / `withdraw_items` 的 `bag`）只能往里放、往外取，看不了包里现在有什么：协议里没有这个查询。
+- 配方册照的是 NEI 的画面：GregTech 的页数量是准的；别的 mod 的页（“它操作不了的方式”）只供参考。配方的编号重新导出后会变。“基地里现在做得了”只看机器和工作台（附近 64 格内最近的 60 台），不看原料够不够。
+- 例程不落盘，大脑重启就停；例程在跑时模型另开任务会把它顶停。启动例程不需要主人批准（规矩写在 routines 手册里：动别人的东西、数量大的、接着管道的容器先问）。
 - 任务书只能查（`list_quest_lines` / `find_quests` / `get_quest`）：它替不了谁提交任务或领奖励。读本地资料时，进度只到“这个任务做完没有、奖励领了没有”：看不到一个任务里哪几个子任务已经完成。
 - 本地资料只在启动时读一次；重新生成后要重启大脑。
 - 它自己出设计（`run_program` 等几个工具）：程序只做计算，动不了世界；沙箱不是对付恶意代码的硬隔离，网络没有在进程一层堵住（`docs/SCRIPTS.md` 写了真实的边界）。
 - 简图和三维预览都是示意：颜色表里没有的方块（机器、别的模组的非整块方块）颜色是配的，图例里带 `?`；半砖一律画在下半格，楼梯画成整块，门、活板门不分开合，方块的朝向（原木横放、机器的正面）不分；实体和掉落物不画。给模型看的简图只用颜色，不用贴图。模型的“能看图”要主人自己在面板上开，大脑不会去探测模型到底能不能看。
-- 机器只会用 GregTech 的单方块加工机器（`find_machines` / `process_items`）：多方块机器、蒸汽机器、别的 mod 的机器和原版熔炉用不了；配方要流体的，得机器已经接好流体。
+- 机器只会用 GregTech 的加工机器（`find_machines` / `process_items`）：单方块的，和用普通总线、仓的多方块（原料进输入总线、产物从输出总线或它推往的箱子取，流体靠带着装满的单元倒进输入仓，或者已经接好管道）。蒸汽机器、别的 mod 的机器和原版熔炉用不了；单方块机器的流体得已经接好；流体产物取不了。

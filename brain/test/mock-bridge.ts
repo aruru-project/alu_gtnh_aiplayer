@@ -172,7 +172,7 @@ class RpcError extends Error {
   }
 }
 
-const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'blueprint', 'craft', 'process', 'wait'])
+const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'blueprint', 'craft', 'process', 'use', 'wait'])
 
 /** 真实 mod 默认的 allowedCommands。一项可以是几个词：team join 只放行 team join …。 */
 const ALLOWED_COMMANDS = ['home', 'sethome', 'delhome', 'homes', 'spawn', 'back', 'tell', 'msg', 'w', 'tpa', 'tpaccept', 'team join']
@@ -264,6 +264,15 @@ export class MockBridge {
     { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 1, storedEU: 51200, inputVoltage: 128 },
     { x: 18, y: 64, z: -4, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, storedEU: 0, inputVoltage: 0 },
   ]
+  /**
+   * 随身的包：右键会打开一个界面的物品，物品 id → 包里的东西。deposit / withdraw 的 container 写成 {item:{id}} 时存取的就是它。
+   */
+  readonly bags = new Map<string, { id: string; meta: number; count: number; name: string }[]>([['Backpack:backpack', []]])
+  /** use 任务：这件东西右键用了会怎样。food：吃掉一个，饱食度加这么多；wear：穿到身上（从背包里消失）。包是打开界面；别的东西用了没有看得见的变化。 */
+  readonly usable = new Map<string, { food?: number; wear?: boolean }>([
+    ['minecraft:bread', { food: 5 }],
+    ['minecraft:iron_helmet', { wear: true }],
+  ])
   /** 工作台（3x3 的配方要走到一个旁边才能做）。 */
   craftingTables: { x: number; y: number; z: number }[] = [{ x: 8, y: 64, z: -4 }]
   /** 配方书：item.search / recipe.find / craft 任务都查它。 */
@@ -1288,6 +1297,16 @@ export class MockBridge {
       if (inputs.length === 0 || inputs.length > 9) throw new RpcError('bad_request', 'inputs must list 1 to 9 items')
       if (inputs.some((i) => typeof i.count !== 'number' || i.count <= 0)) throw new RpcError('bad_request', 'each input needs a count')
     }
+    if (type === 'use') {
+      const item = spec.item as Json | undefined
+      if (item === null || typeof item !== 'object' || typeof item.id !== 'string') throw new RpcError('bad_request', 'item must be {id, meta?}')
+    }
+    if ((type === 'deposit' || type === 'withdraw') && (spec.container as Json | undefined)?.item !== undefined) {
+      // 随身的包当容器：{item:{id, meta?}}；往里放必须列出放什么
+      const item = (spec.container as Json).item as Json | null
+      if (item === null || typeof item !== 'object' || typeof item.id !== 'string') throw new RpcError('bad_request', 'container.item must be {id, meta?}')
+      if (type === 'deposit' && !(Array.isArray(spec.items) && spec.items.length > 0)) throw new RpcError('bad_request', 'items must list what goes into the bag')
+    }
     if (type === 'craft' && spec.grid !== undefined) {
       // 调用方把摆法说出来的写法：3×3 一行一行数的 9 格
       if (!Array.isArray(spec.grid) || spec.grid.length !== 9) throw new RpcError('bad_request', 'grid must list the 9 cells of a 3x3 grid, row by row')
@@ -1373,9 +1392,56 @@ export class MockBridge {
     }
     if (task.type === 'withdraw' || task.type === 'deposit') {
       const at = (p.container ?? {}) as Json
-      const box = this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z)
+      // 容器是一个位置，或者“身上这件东西右键打开的界面”（随身的包）
+      const opener = at.item as { id: string; meta?: number } | undefined
+      let box: { items: { id: string; meta: number; count: number; name: string }[]; kind?: string; slots?: number } | undefined
+      if (opener) {
+        if (!bot.inventory.some((i) => i.id === opener.id && (typeof opener.meta !== 'number' || i.meta === opener.meta))) {
+          this.endTask(bot, task, 'failed', { error: { code: 'no_material', message: 'the bot carries no such item to open' } })
+          return
+        }
+        const inside = this.bags.get(opener.id)
+        if (!inside) {
+          this.endTask(bot, task, 'failed', { error: { code: 'invalid', message: 'using that item opened no screen; it may be something to place or to wear instead' } })
+          return
+        }
+        box = { items: inside }
+      } else {
+        box = this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z)
+      }
       if (!box) {
         this.endTask(bot, task, 'failed', { error: { code: 'invalid', message: 'there is no container at that position' } })
+        return
+      }
+      if (task.type === 'deposit') {
+        // 东西真的从背包挪进容器。不给 items：除工具（带耐久的）、食物和 keep 以外的全部；包本身不会被放进它自己里面
+        const keep = new Set((Array.isArray(p.keep) ? p.keep : []) as string[])
+        const isBag = (i: MockItem): boolean => opener !== undefined && i.id === opener.id
+        const wanted: Json[] = Array.isArray(p.items)
+          ? (p.items as Json[])
+          : bot.inventory.filter((i) => i.durability === undefined && this.usable.get(i.id)?.food === undefined && !keep.has(i.id)).map((i) => ({ id: i.id, meta: i.meta }))
+        let moved = 0
+        let full = false
+        for (const want of wanted) {
+          const fits = (i: MockItem): boolean => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta) && !isBag(i)
+          const have = bot.inventory.filter(fits).reduce((n, i) => n + i.count, 0)
+          for (const got of takeItems(bot.inventory, fits, typeof want.count === 'number' ? want.count : have)) {
+            const stack = box.items.find((i) => i.id === got.id && i.meta === got.meta)
+            // 抽屉：只收已经装着的那几种，或者放进还没指定物品的空格
+            if (!stack && box.kind === 'drawers' && box.items.length >= (box.slots ?? 0)) {
+              putInInventory(bot, got, got.count)
+              full = true
+              continue
+            }
+            if (stack) stack.count += got.count
+            else box.items.push(got)
+            moved += got.count
+          }
+        }
+        bot.inventory = bot.inventory.filter((i) => i.count > 0)
+        const result = { moved, freeSlots: 36 - bot.inventory.length }
+        if (full && moved === 0) this.endTask(bot, task, 'failed', { error: { code: 'container_full', message: 'the container has no room for these items' }, result })
+        else this.endTask(bot, task, 'done', { result })
         return
       }
       if (task.type === 'withdraw') {
@@ -1392,16 +1458,38 @@ export class MockBridge {
           }
           if (have < count) missing.push({ id: want.id, ...(typeof want.meta === 'number' ? { meta: want.meta } : {}), count: count - have })
         }
-        box.items = box.items.filter((i) => i.count > 0)
+        // 原地清掉拿空了的（包里的东西和 bags 里记的是同一个数组）
+        for (let n = box.items.length - 1; n >= 0; n--) if (box.items[n]!.count <= 0) box.items.splice(n, 1)
         this.endTask(bot, task, 'done', { result: missing.length > 0 ? { moved, missing } : { moved } })
         return
       }
     }
+    if (task.type === 'use') {
+      // 把身上的一件东西拿到手里右键用一下：结果只报看得见的变化
+      const want = p.item as { id: string; meta?: number }
+      const held = bot.inventory.find((i) => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta))
+      if (!held) {
+        this.endTask(bot, task, 'failed', { error: { code: 'no_material', message: 'the bot carries no such item' } })
+        return
+      }
+      const effect = this.usable.get(held.id) ?? {}
+      const lost: Json[] = []
+      if (effect.food !== undefined || effect.wear === true) {
+        held.count -= 1
+        lost.push({ id: held.id, meta: held.meta, name: held.name, count: 1 })
+        if (effect.food !== undefined) bot.food = Math.min(20, bot.food + effect.food)
+        bot.inventory = bot.inventory.filter((i) => i.count > 0)
+      }
+      this.endTask(bot, task, 'done', {
+        result: { used: held.name, gained: [], lost, ...(this.bags.has(held.id) ? { openedScreen: true } : {}), health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length },
+      })
+      return
+    }
     if (task.type === 'craft') {
-      // 配方读不了、材料不够、要工作台而附近没有：真实 mod 在第一刻就失败
-      const plan = this.craftPlan(bot, task)
-      if ('error' in plan) {
-        this.endTask(bot, task, 'failed', plan)
+      // 配方读不了、材料不够、要工作台而附近没有：真实 mod 在第一刻就失败。grid 写法（调用方给摆法）走它自己的那套检查
+      const plan = Array.isArray(p.grid) ? this.craftGrid(bot, task, false) : this.craftPlan(bot, task)
+      if ('error' in plan && plan.error) {
+        this.endTask(bot, task, 'failed', { error: plan.error, result: plan.result })
         return
       }
     }
@@ -1603,8 +1691,9 @@ export class MockBridge {
   /**
    * craft 任务的 grid 写法：调用方说每一格放什么（{id, meta?}、{ore} 或 null），做 rounds 轮。
    * 摆好以后出什么由“游戏”说了算：这里是看这些原料凑不凑得出 gives 那个物品的某条合成配方；凑不出就失败，材料不动。
+   * apply 为 false 时只检查（任务第一刻做的事），不动背包。
    */
-  private craftGrid(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+  private craftGrid(bot: MockBot, task: MockTask, apply = true): { result: Json; error?: NonNullable<MockTask['error']> } {
     const p = task.params
     const cells = (p.grid as (Json | null)[]).map((cell, g) => ({ cell, g })).filter((c): c is { cell: Json; g: number } => c.cell !== null)
     const rounds = Math.max(1, Math.min(64, typeof p.rounds === 'number' ? p.rounds : 1))
@@ -1643,6 +1732,7 @@ export class MockBridge {
       (r) => !r.unreadable && r.ingredients.length === groups.size && r.ingredients.every((ing) => [...groups.values()].some((group) => (ing.tool ? 1 : ing.count) === (isTool(group.cell) ? 1 : group.cells) && (ing.ore !== undefined ? group.cell.ore === ing.ore : group.cell.id === ing.id && (ing.meta === undefined || group.cell.meta === ing.meta)))),
     )
     if (!entry || !recipe) return { error: { code: 'invalid', message: `laid out like this the crafting grid gives ${gives ? 'something else than' : 'nothing; expected'} ${gives ? `${String(gives.id)}/${String(gives.meta ?? 0)}` : 'a product'}` }, result: { crafted: 0, freeSlots } }
+    if (!apply) return { result: { crafted: 0, item: { id: entry.id, meta: entry.meta, name: entry.name }, freeSlots } }
     for (const { cell, cells: n } of groups.values()) if (!isTool(cell)) takeItems(bot.inventory, (i) => fits(i, cell), n * rounds)
     bot.inventory = bot.inventory.filter((i) => i.count > 0)
     const crafted = recipe.gives * rounds

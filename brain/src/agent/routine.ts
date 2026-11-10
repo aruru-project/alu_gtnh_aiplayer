@@ -13,7 +13,7 @@ import type { ProgramCall, ProgramCallResult } from '../script/sandbox.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
 import { clip, compactJson, formatTask } from '../tools/format.ts'
 import { runTool } from '../tools/index.ts'
-import type { Tool, ToolContext } from '../tools/index.ts'
+import type { Tool, ToolContext, ToolResult } from '../tools/index.ts'
 
 export interface RoutineLimits {
   /** 从开始到结束最多多久（等任务的时间算在内）。 */
@@ -50,6 +50,13 @@ export interface RoutineCall {
   result: string
   ms: number
   taskId?: string
+}
+
+/** 一个任务开始或结束了（agent 的事件里的那两种）。 */
+export interface RoutineTaskEvent {
+  type: 'task_started' | 'task_ended'
+  time: number
+  task: TaskInfo
 }
 
 /** 例程现在（或者结束时）的样子：给 routine_status、面板和叫醒模型的那条消息用。 */
@@ -89,6 +96,8 @@ export interface RoutineDeps {
   ended(view: RoutineView): void
   /** 停例程时取消它正在做的任务（经 agent，这样这次取消不会再把模型叫醒一遍）。 */
   cancelTask(id: string): Promise<void>
+  /** 扣下的任务事件送回 agent 的事件入口（这时谁开的任务已经清楚了）。 */
+  redeliver(ev: RoutineTaskEvent): void
   limits?: Partial<RoutineLimits>
   /** 一个工具结果最多给程序多少字符的文字（data 不受这个限制）。 */
   maxResultChars?: number
@@ -105,6 +114,10 @@ interface Running {
   owned: Set<string>
   /** 先于“开始等”就到了的任务结束。 */
   finished: Map<string, TaskInfo>
+  /** 正在执行的工具调用有几个（还没回来）。 */
+  calling: number
+  /** 工具调用还没回来时到的、还不知道是谁开的任务的事件，见 hold。 */
+  held: RoutineTaskEvent[]
   ended: boolean
 }
 
@@ -113,6 +126,8 @@ export class RoutineRunner {
   private running: Running | undefined
   private last: RoutineView | undefined
   private seq = 1
+  /** 停下时发出去的那次“取消任务”（成没成都算完）。 */
+  private canceling: Promise<void> = Promise.resolve()
 
   constructor(deps: RoutineDeps) {
     this.deps = deps
@@ -131,6 +146,24 @@ export class RoutineRunner {
   /** 这个任务是不是正在跑的例程开的（是的话，它结束时不用叫醒模型）。 */
   owns(taskId: string): boolean {
     return this.running?.owned.has(taskId) === true
+  }
+
+  /**
+   * 例程正调着一个工具的那一小会儿，来了一个谁也不认识的任务的事件：多半就是这次调用开的任务，
+   * 只是“开了”的回话还没处理到（任务一开就结束、或者这边忙了一下，回话和事件会一起到）。
+   * 这里先扣下并返回 true；等调用回来（这时已经知道哪个任务是它开的）再原样送回 agent（deps.redeliver）：
+   * 是例程开的，agent 会转给 taskEnded；不是的照平常的办法处理。
+   */
+  hold(ev: RoutineTaskEvent): boolean {
+    const run = this.running
+    if (!run || run.calling === 0) return false
+    run.held.push(ev)
+    return true
+  }
+
+  /** 把扣下的事件送回 agent。 */
+  private release(run: Running): void {
+    for (const ev of run.held.splice(0)) this.deps.redeliver(ev)
   }
 
   /** agent 转过来的：例程开的一个任务结束了。 */
@@ -160,6 +193,8 @@ export class RoutineRunner {
       waiters: new Map(),
       owned: new Set(),
       finished: new Map(),
+      calling: 0,
+      held: [],
       ended: false,
     }
     this.running = run
@@ -182,6 +217,11 @@ export class RoutineRunner {
         (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${e instanceof Error ? e.message : String(e)}`),
       )
     return { view: this.view()! }
+  }
+
+  /** 例程停下时要取消的那个任务已经取消完了（或者没取消成）。大脑退出前等它一下，免得请求还没发出去连接就断了。 */
+  whenCanceled(): Promise<void> {
+    return this.canceling
   }
 
   /** 停掉正在跑的例程（模型或主人要求的）。没有在跑的返回 false。 */
@@ -213,9 +253,17 @@ export class RoutineRunner {
       run.owned.add(task.id)
     })
     // 例程里不能再跑程序、再开例程；别的工具和模型自己调走同一条路
-    const res = ROUTINE_BLOCKED_TOOLS.includes(call.name)
-      ? { content: `${call.name} cannot be called from inside a routine`, isError: true as const }
-      : await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: this.deps.maxResultChars ?? 6000 })
+    let res: ToolResult
+    run.calling++
+    try {
+      res = ROUTINE_BLOCKED_TOOLS.includes(call.name)
+        ? { content: `${call.name} cannot be called from inside a routine`, isError: true }
+        : await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: this.deps.maxResultChars ?? 6000 })
+    } finally {
+      run.calling--
+    }
+    // 调用期间扣下的任务事件：这时已经知道哪个任务是它开的了
+    if (run.calling === 0) this.release(run)
     let result: ProgramCallResult = { ok: res.isError !== true, text: res.content, ...('data' in res && res.data !== undefined ? { data: res.data } : {}) }
     let taskId: string | undefined
     const task = started as TaskInfo | undefined
@@ -311,9 +359,10 @@ export class RoutineRunner {
     run.abort.abort()
     if (this.running === run) this.running = undefined
     this.last = view
+    this.release(run)
     // 停下来时它开的任务还在游戏里跑：取消掉（程序自己跑完的不会走到这里还带着任务）
     if (task !== undefined && status !== 'done') {
-      this.deps.cancelTask(task).catch((e: unknown) => {
+      this.canceling = this.deps.cancelTask(task).catch((e: unknown) => {
         if (!(e instanceof BridgeError)) this.deps.log.add({ kind: 'error', text: `例程 ${view.id} 停下时没能取消它的任务 ${task}：${e instanceof Error ? e.message : String(e)}` })
       })
     }
