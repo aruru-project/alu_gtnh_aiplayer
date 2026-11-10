@@ -1,10 +1,19 @@
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
+import type { Manual } from '../store/manuals.ts'
 import type { ObjectSchema } from './schema.ts'
 
 export interface ToolResult {
   content: string
   isError?: boolean
+  /** 这段内容要整段给模型，不按“单个工具结果上限”截断（手册：截掉一半的手册比没有还糟）。 */
+  keepWhole?: boolean
+}
+
+/** 工具需要的手册接口（store/manuals.ts 的 ManualStore 满足）。 */
+export interface ManualAccess {
+  list(): Manual[]
+  get(name: string): Manual | undefined
 }
 
 /** 工具需要的记忆接口（store/memory.ts 的 MemoryStore 满足）。 */
@@ -42,8 +51,14 @@ export interface ToolContext {
   bridge: BridgeApi
   memory: MemoryAccess
   reminders: ReminderAccess
+  manuals: ManualAccess
   hooks: ToolHooks
   now(): number
+  /**
+   * 查任务书进度时，模型没说看谁的就看这个玩家的：主人名单里的第一个；没有名单时是刚才跟它说话的那个玩家；都没有就是 undefined。
+   * 上层没提供时等于 undefined。
+   */
+  defaultPlayer?(): string | undefined
   /**
    * bot.command 的 output 只有指令执行当下服务器回的消息；晚一步才到的走 bot.message 事件。
    * 这个函数等 waitMs，然后返回 since 之后收到的那些系统消息。上层没提供时工具就只用 output。

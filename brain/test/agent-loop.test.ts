@@ -327,6 +327,152 @@ describe('agent 的一轮决策', () => {
     assert.match(text, /"freeSlots":9,"level":64,"skippedExamplesNotShown":35/)
   })
 
+  it('照图纸建的任务结束时，模型看到的是整理过的结果：现在和图纸差多少、还要放什么、哪些得人放、什么还挡着', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    // 真实 mod 的结果：区域任务的几项，加 now 和各最多 8 项的四张表。原样的 JSON 有两千多字
+    const kinds = (n: number, extra: (i: number) => Record<string, unknown>) =>
+      Array.from({ length: n }, (_, i) => ({ id: 'chisel:cobblestone', meta: i + 1, name: `Cobblestone Variant ${i + 1}`, ...extra(i) }))
+    h.agent.handleEvent(
+      taskEnded('t9', 'done', {
+        type: 'blueprint',
+        result: {
+          removed: 4019,
+          placed: 3823,
+          skipped: { unreachable: 12 },
+          skippedExamples: [{ x: -580, y: 88, z: 90, reason: 'unreachable' }],
+          freeSlots: 12,
+          needsClimbingBlocks: true,
+          now: { cells: 5294, done: 3833, toPlace: 12, byHand: 2, blocked: 265, extra: 14 },
+          materials: kinds(8, (i) => ({ need: 8 - i, have: 0 })),
+          byHandBlocks: [{ id: 'minecraft:chest', meta: 3, name: 'Chest', count: 2, why: 'it holds contents or settings' }],
+          blockedBy: [{ id: 'minecraft:stone', name: 'Stone', count: 265, removable: 0 }],
+          extraBlocks: [{ id: 'gregtech:gt.blockmachines', name: 'gt.blockmachines.name', count: 14, removable: 0, holdsData: 14 }],
+        },
+      }),
+    )
+    await h.agent.whenIdle()
+    const text = h.llm.lastUserText(0)
+    assert.match(text, /任务 t9（blueprint）完成了/)
+    assert.match(text, /removed 4019, placed 3823, freeSlots 12/)
+    assert.match(text, /skipped \{"unreachable":12\}, e\.g\. \(-580,88,90\) unreachable/)
+    assert.match(text, /needsClimbingBlocks: true/)
+    assert.match(text, /now \(the world compared with the blueprint\): cells 5294, done 3833, toPlace 12, byHand 2, blocked 265, extra 14/)
+    // 第一种和最后一种材料都在：没有被中途截断
+    assert.match(text, /materials still to place: 8× chisel:cobblestone\/1 "Cobblestone Variant 1" \(you carry 0\),.* 1× chisel:cobblestone\/8 "Cobblestone Variant 8" \(you carry 0\)/)
+    assert.match(text, /byHandBlocks \(a player has to place them\): 2× minecraft:chest\/3 "Chest" \(it holds contents or settings\)/)
+    assert.match(text, /blockedBy \(still in the way\): 265× minecraft:stone "Stone"/)
+    assert.match(text, /extraBlocks \(still where the blueprint is empty\): 14× gregtech:gt\.blockmachines \(.*14 of them hold data/)
+    assert.equal(text.includes('"materials"'), false)
+    assert.equal(text.includes('…'), false, 'nothing was cut off')
+  })
+
+  it('照图纸建的任务因为缺材料失败时，模型看到每种材料缺多少', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.agent.handleEvent(
+      taskEnded('t10', 'failed', {
+        type: 'blueprint',
+        error: {
+          code: 'no_material',
+          message: '1890 blocks were left unplaced for want of material',
+          detail: {
+            missing: [
+              { id: 'chisel:nucrete', meta: 7, name: 'Structural Concrete', count: 1874 },
+              { id: 'minecraft:carpet', meta: 4, name: 'Yellow Carpet', count: 16 },
+            ],
+            supplyProblem: 'unreachable: no path to the container at -600,64,70',
+          },
+        },
+        result: { removed: 0, placed: 1949, freeSlots: 30, now: { cells: 5294, done: 3404, toPlace: 1890, byHand: 0, blocked: 0, extra: 0 } },
+      }),
+    )
+    await h.agent.whenIdle()
+    const text = h.llm.lastUserText(0)
+    assert.match(text, /任务 t10（blueprint）失败了：no_material — 1890 blocks were left unplaced for want of material/)
+    assert.match(text, /missing \(left unplaced for want of material\): 1874× chisel:nucrete\/7 "Structural Concrete", 16× minecraft:carpet\/4 "Yellow Carpet"/)
+    assert.match(text, /supplyProblem: unreachable: no path to the container at -600,64,70/)
+    assert.match(text, /now \(the world compared with the blueprint\): cells 5294, done 3404, toPlace 1890/)
+  })
+
+  it('合成任务缺材料失败时，模型看到每样原料还差几个、是确定的物品还是“任何 xxx”、是不是工具；做成时看到做出了几个什么', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const item = { id: 'adventurebackpack:backpackComponent', meta: 6, name: 'Copter Blades' }
+    h.agent.handleEvent(
+      taskEnded('t11', 'failed', {
+        type: 'craft',
+        error: {
+          code: 'no_material',
+          message: 'the inventory lacks ingredients for 1 round(s) of this recipe',
+          // 真实 mod 的 missing：格式同 recipe.find 的 ingredients，四样原料的 JSON 有五百多字
+          detail: {
+            missing: [
+              { count: 4, name: 'Shaft (Refined Iron)', id: 'IC2:itemRecipePart', meta: 12 },
+              { count: 1, name: 'Steel Screw (any screwSteel)', ore: 'screwSteel', example: { id: 'gregtech:gt.metaitem.01', meta: 27305 } },
+              { count: 2, name: 'Wool (any variant)', id: 'minecraft:wool' },
+              { count: 1, name: 'Single Use Screwdriver (any craftingToolScrewdriver)', ore: 'craftingToolScrewdriver', example: { id: 'gregtech:gt.metatool.01', meta: 22 }, alternatives: 6, tool: true },
+            ],
+          },
+        },
+        result: { crafted: 0, item, freeSlots: 20 },
+      }),
+    )
+    await h.agent.whenIdle()
+    const failed = h.llm.lastUserText(0)
+    assert.match(failed, /任务 t11（craft）失败了：no_material — the inventory lacks ingredients for 1 round\(s\) of this recipe/)
+    assert.match(failed, /missing \(not in your inventory, per ingredient\): 4× IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)"; 1× any screwSteel \(ore name; e\.g\. gregtech:gt\.metaitem\.01\/27305 "Steel Screw"\); 2× minecraft:wool \(any meta\) "Wool \(any variant\)"; 1× any craftingToolScrewdriver \(ore name, 6 kinds fit; e\.g\. gregtech:gt\.metatool\.01\/22 "Single Use Screwdriver"\) \[tool: /)
+    assert.match(failed, /已完成的部分：crafted 0× adventurebackpack:backpackComponent\/6 "Copter Blades", freeSlots 20/)
+
+    h.agent.handleEvent(taskEnded('t12', 'done', { type: 'craft', result: { crafted: 1, item, freeSlots: 19 } }))
+    await h.agent.whenIdle()
+    assert.match(h.llm.lastUserText(1), /任务 t12（craft）完成了。 结果：crafted 1× adventurebackpack:backpackComponent\/6 "Copter Blades", freeSlots 19/)
+  })
+
+  it('机器加工的任务：做成时模型看到放进去多少、取回了什么；机器没开工时看到机器的状态和最可能的原因', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const GT = 'gregtech:gt.metaitem.01'
+    // 真实基地里验证过的那一趟：2 个钢锭进 MV 车床，出 2 根钢杆和 4 小堆钢粉
+    h.agent.handleEvent(
+      taskEnded('t13', 'done', {
+        type: 'process',
+        result: {
+          put: 2,
+          outputs: [{ id: GT, meta: 23305, name: 'Steel Rod', count: 2 }, { id: GT, meta: 1305, name: 'Small Pile of Steel Dust', count: 4 }],
+          freeSlots: 20,
+        },
+      }),
+    )
+    await h.agent.whenIdle()
+    assert.match(
+      h.llm.lastUserText(0),
+      /任务 t13（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 "Steel Rod", 4× gregtech:gt\.metaitem\.01\/1305 "Small Pile of Steel Dust"; freeSlots 20/,
+    )
+
+    // 没开工：真实 mod 的原话，detail 是那台机器的状态
+    const didNotStart = 'the machine did not start: it may lack power, a programmed circuit or a fluid, or these inputs are not a recipe it runs. The inputs are back in the inventory.'
+    const assembler = { x: -38, y: 99, z: -80, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, active: false, storedEU: 0, inputVoltage: 0 }
+    h.agent.handleEvent(taskEnded('t14', 'failed', { type: 'process', error: { code: 'invalid', message: didNotStart, detail: assembler }, result: { put: 7, outputs: [], freeSlots: 20 } }))
+    await h.agent.whenIdle()
+    const unpowered = h.llm.lastUserText(1)
+    assert.match(unpowered, /任务 t14（process）失败了：invalid — the machine did not start/)
+    assert.match(unpowered, /machine "Basic Assembling Machine" at \(-38,99,-80\): runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle\. It has no power, so it cannot run anything: tell the owner/)
+    assert.match(unpowered, /已完成的部分：put 7 item\(s\) into the machine; took out: nothing; freeSlots 20/)
+
+    // 有电又空闲却没开工：问题出在配方上（缺电路、缺流体、不是这台机器的配方……）
+    h.agent.handleEvent(
+      taskEnded('t15', 'failed', { type: 'process', error: { code: 'invalid', message: didNotStart, detail: { ...assembler, storedEU: 6400, inputVoltage: 32 } }, result: { put: 6, outputs: [], freeSlots: 20 } }),
+    )
+    await h.agent.whenIdle()
+    assert.match(h.llm.lastUserText(2), /has power \(6400 EU stored\), idle\. It has power and is idle, so the cause is the recipe: a missing programmed circuit or mold, a missing fluid/)
+
+    // 等到头还没做完：做好的取回来了，剩下的还在机器里
+    h.agent.handleEvent(taskEnded('t16', 'done', { type: 'process', result: { put: 64, outputs: [{ id: GT, meta: 23305, name: 'Steel Rod', count: 20 }], timedOut: true, freeSlots: 19 } }))
+    await h.agent.whenIdle()
+    assert.match(h.llm.lastUserText(3), /took out: 20× gregtech:gt\.metaitem\.01\/23305 "Steel Rod"; timedOut: the wait ran out before it finished, the machine is still working on the rest; freeSlots 19/)
+  })
+
   it('自己取消任务后收到的“任务被取消”不会再叫醒它；别人取消的照常叫醒', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)

@@ -21,6 +21,7 @@ import type { BrainConfig } from './store/config.ts'
 import { ensureDir, isRecord } from './store/files.ts'
 import { HistoryStore } from './store/history.ts'
 import { JsonFile } from './store/json-file.ts'
+import { ManualStore } from './store/manuals.ts'
 import { MemoryStore } from './store/memory.ts'
 import { ReminderStore } from './store/reminders.ts'
 import { UsageStore } from './store/usage.ts'
@@ -73,6 +74,8 @@ async function main(): Promise<void> {
   const config = new ConfigStore(dataDir, overridesFromEnv(process.env))
   const log = new ActivityLog(dataDir)
   const memory = new MemoryStore(dataDir, () => config.get().bot.limits.memoryMaxChars)
+  // 手册：默认的随代码发布（brain/manuals），主人写的和改过的在数据目录里；同名时主人的盖住默认的
+  const manuals = new ManualStore(path.join(BRAIN_ROOT, 'manuals'), path.join(dataDir, 'manuals'))
   const history = new HistoryStore(dataDir)
   const usage = new UsageStore(dataDir)
   const reminderStore = new ReminderStore(dataDir)
@@ -128,6 +131,7 @@ async function main(): Promise<void> {
     bridge,
     tools: ALL_TOOLS,
     memory,
+    manuals,
     reminders,
     history,
     log,
@@ -206,6 +210,7 @@ async function main(): Promise<void> {
     usage,
     log,
     history,
+    manuals,
     bridge,
     bridgeStatus: () => bridgeClient.status(),
     agent,

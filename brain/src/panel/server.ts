@@ -20,6 +20,8 @@ import { isValidPlayerName, maskSecret, sanitizeProvider } from '../store/config
 import type { ConfigStore } from '../store/config.ts'
 import { isRecord } from '../store/files.ts'
 import type { HistoryStore } from '../store/history.ts'
+import { MANUAL_BODY_MAX_CHARS, MANUAL_NAME_MAX_CHARS, MANUAL_SUMMARY_MAX_CHARS, ManualError, USER_MANUALS_MAX } from '../store/manuals.ts'
+import type { ManualStore } from '../store/manuals.ts'
 import type { MemoryStore } from '../store/memory.ts'
 import type { Reminder } from '../store/reminders.ts'
 import type { UsageStore } from '../store/usage.ts'
@@ -40,6 +42,7 @@ export interface PanelDeps {
   usage: UsageStore
   log: ActivityLog
   history: HistoryStore
+  manuals: ManualStore
   bridge: BridgeApi
   bridgeStatus(): BridgeStatus
   agent: {
@@ -56,6 +59,11 @@ export interface PanelDeps {
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
+/** 图纸文件的上限，协议定的（blueprint.put 最大 2 MiB）。 */
+export const BLUEPRINT_MAX_BYTES = 2 * 1024 * 1024
+/** 上传图纸的请求体：文件的 base64（长 4/3）加上名字和 JSON 的壳。只有这一个接口放宽到这么大。 */
+const BLUEPRINT_BODY_MAX_BYTES = Math.ceil(BLUEPRINT_MAX_BYTES / 3) * 4 + 4096
+const BLUEPRINT_NAME_MAX_CHARS = 80
 const COMMAND_MAX_CHARS = 2000
 const PASSWORD_MIN_CHARS = 8
 
@@ -250,14 +258,14 @@ export class PanelServer {
     return verifySessionValue(parseCookies(req.headers.cookie)[SESSION_COOKIE], panel.sessionSecret, panel.password, this.now())
   }
 
-  private async readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  private async readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES, tooLarge = '提交的内容太大'): Promise<Record<string, unknown>> {
     const type = String(req.headers['content-type'] ?? '')
     const chunks: Buffer[] = []
     let size = 0
     for await (const chunk of req) {
       const buf = chunk as Buffer
       size += buf.length
-      if (size > MAX_BODY_BYTES) throw new HttpError(413, 'too_large', '提交的内容太大')
+      if (size > maxBytes) throw new HttpError(413, 'too_large', tooLarge)
       chunks.push(buf)
     }
     if (size === 0) return {}
@@ -301,7 +309,13 @@ export class PanelServer {
       return
     }
 
-    const body = isWrite ? await this.readBody(req) : {}
+    // 到这里会话和 Origin 都已经验过了，才开始读请求体；上传图纸的请求体比别的接口大
+    const uploadsBlueprint = route === '/blueprints' && method === 'POST'
+    const body = !isWrite
+      ? {}
+      : uploadsBlueprint
+        ? await this.readBody(req, BLUEPRINT_BODY_MAX_BYTES, `文件太大，图纸最大 ${BLUEPRINT_MAX_BYTES / 1024 / 1024} MiB`)
+        : await this.readBody(req)
     if (route === '/settings/password' && method === 'PUT') {
       this.changePassword(req, res, body)
       return
@@ -396,6 +410,18 @@ export class PanelServer {
         return this.memorySet(body)
       case 'DELETE /memory':
         return this.memoryDelete(body)
+      case 'GET /manuals':
+        return this.manualList()
+      case 'PUT /manuals':
+        return this.manualSave(body)
+      case 'DELETE /manuals':
+        return this.manualDelete(body)
+      case 'GET /blueprints':
+        return this.blueprints()
+      case 'POST /blueprints':
+        return this.uploadBlueprint(body)
+      case 'DELETE /blueprints':
+        return this.deleteBlueprint(body)
       case 'POST /history/clear':
         this.deps.history.clear()
         this.deps.log.add({ kind: 'info', text: '对话历史已在面板上清空（记忆不受影响）。' })
@@ -611,6 +637,105 @@ export class PanelServer {
     this.overviewCache = undefined
     this.deps.log.add({ kind: 'info', text: id ? `在面板上取消了任务 ${id}。` : '在面板上取消了当前任务和队列。' })
     return { canceled: res.canceled ?? 0 }
+  }
+
+  // ── 手册：默认的随代码发布，主人写的（和改过的）在数据目录里 ──
+
+  private manualList(): unknown {
+    const defaults = new Map(this.deps.manuals.defaults().map((m) => [m.name, m]))
+    return {
+      manuals: this.deps.manuals.list().map((m) => {
+        // 主人改过的默认手册：把默认的原文也带上，面板上可以对照、可以恢复
+        const original = m.overridesDefault ? defaults.get(m.name) : undefined
+        return original ? { ...m, default: { summary: original.summary, body: original.body } } : m
+      }),
+      limits: { nameMaxChars: MANUAL_NAME_MAX_CHARS, summaryMaxChars: MANUAL_SUMMARY_MAX_CHARS, bodyMaxChars: MANUAL_BODY_MAX_CHARS, maxUserManuals: USER_MANUALS_MAX },
+    }
+  }
+
+  /** 新建或改写一本主人的手册。名字和默认手册一样就是盖住那本默认的。名字的校验在 ManualStore 里（出不了手册目录）。 */
+  private manualSave(body: Record<string, unknown>): unknown {
+    if (typeof body.name !== 'string' || typeof body.summary !== 'string' || typeof body.body !== 'string') {
+      throw new HttpError(400, 'bad_request', '需要 name、summary 和 body')
+    }
+    const previous = typeof body.previousName === 'string' ? body.previousName.trim() : ''
+    try {
+      const saved = this.deps.manuals.save({ name: body.name, summary: body.summary, body: body.body })
+      // 改名：新名字存好后删掉旧的那本（旧的是默认手册的话删不到，默认的还在）
+      if (previous.length > 0 && previous !== saved.name) this.deps.manuals.remove(previous)
+      this.deps.log.add({
+        kind: 'info',
+        text: saved.overridesDefault ? `在面板上改了手册 ${saved.name}（现在用的是改过的这份，不是默认的）。` : `在面板上保存了手册 ${saved.name}。`,
+      })
+      return { saved, ...(this.manualList() as object) }
+    } catch (e) {
+      if (e instanceof ManualError) throw new HttpError(400, 'bad_request', e.message)
+      throw e
+    }
+  }
+
+  /** 删掉主人的那本。它盖着一本默认手册时，这就是“恢复默认”。默认手册本身删不掉。 */
+  private manualDelete(body: Record<string, unknown>): unknown {
+    if (typeof body.name !== 'string') throw new HttpError(400, 'bad_request', '需要 name')
+    const name = body.name.trim()
+    let removed: boolean
+    try {
+      removed = this.deps.manuals.remove(name)
+    } catch (e) {
+      if (e instanceof ManualError) throw new HttpError(400, 'bad_request', e.message)
+      throw e
+    }
+    const restoredDefault = removed && this.deps.manuals.defaults().some((m) => m.name === name)
+    if (removed) this.deps.log.add({ kind: 'info', text: restoredDefault ? `在面板上把手册 ${name} 恢复成了默认的。` : `在面板上删除了手册 ${name}。` })
+    return { removed, restoredDefault, ...(this.manualList() as object) }
+  }
+
+  // ── 图纸：身体上的 .schematic 文件，这里只是转手 ──
+
+  private async blueprints(): Promise<unknown> {
+    const res = await this.deps.bridge.blueprintList()
+    return { blueprints: res.blueprints ?? [], folder: res.folder ?? '', maxBytes: BLUEPRINT_MAX_BYTES }
+  }
+
+  /** 图纸名就是身体那边的文件名（不带后缀）。身体自己也会查；这里先把带路径的挡掉，不让它出这个进程。 */
+  private blueprintName(raw: unknown): string {
+    const name = typeof raw === 'string' ? raw.trim().replace(/\.schematic$/i, '') : ''
+    if (name.length === 0) throw new HttpError(400, 'bad_request', '需要图纸的名字')
+    if (name.length > BLUEPRINT_NAME_MAX_CHARS || name.startsWith('.') || name.includes('..') || /[/\\:*?"<>|\u0000-\u001f]/.test(name)) {
+      throw new HttpError(400, 'bad_request', `图纸名字不能带路径或 / \\ : * ? " < > | 这些字符，不能以 . 开头，最长 ${BLUEPRINT_NAME_MAX_CHARS} 个字符`)
+    }
+    return name
+  }
+
+  /** 浏览器把文件读成 base64 交上来，原样转给身体的 blueprint.put（同名覆盖）。文件是不是能用的图纸由身体判断。 */
+  private async uploadBlueprint(body: Record<string, unknown>): Promise<unknown> {
+    const name = this.blueprintName(body.name)
+    const data = typeof body.data === 'string' ? body.data : ''
+    if (data.length === 0) throw new HttpError(400, 'bad_request', '没有收到文件内容')
+    if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new HttpError(400, 'bad_request', '文件内容必须是 base64')
+    const bytes = (data.length / 4) * 3 - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0)
+    if (bytes > BLUEPRINT_MAX_BYTES) {
+      throw new HttpError(413, 'too_large', `这个文件有 ${(bytes / 1024 / 1024).toFixed(1)} MiB，图纸最大 ${BLUEPRINT_MAX_BYTES / 1024 / 1024} MiB`)
+    }
+    let saved: Awaited<ReturnType<BridgeApi['blueprintPut']>>
+    try {
+      saved = await this.deps.bridge.blueprintPut(name, data)
+    } catch (e) {
+      // 不是能用的图纸：身体会说明原因，原话给人看
+      if (e instanceof BridgeError && e.code === 'bad_request') throw new HttpError(400, 'bad_blueprint', `游戏那边没收下这张图纸：${e.message}`)
+      throw e
+    }
+    const size = saved.size ? `${saved.size.x}×${saved.size.y}×${saved.size.z}，` : ''
+    this.deps.log.add({ kind: 'info', text: `在面板上传了图纸 ${saved.name ?? name}（${size}${saved.blocks ?? '?'} 个方块）。` })
+    return { saved, ...((await this.blueprints()) as object) }
+  }
+
+  private async deleteBlueprint(body: Record<string, unknown>): Promise<unknown> {
+    const name = this.blueprintName(body.name)
+    const res = await this.deps.bridge.blueprintRemove(name)
+    const removed = res.removed === true
+    if (removed) this.deps.log.add({ kind: 'info', text: `在面板上删除了图纸 ${name}。` })
+    return { removed, ...((await this.blueprints()) as object) }
   }
 
   // ── 设置：bridge 的端口和口令文件、面板口令 ──

@@ -48,5 +48,8 @@ export const SAY_MAX_CHARS = 300
 /** home 名字只允许这些字符，免得拼进指令后变成别的意思。 */
 export const HOME_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
 
-/** Minecraft 玩家名。 */
-export const PLAYER_NAME_RE = /^[A-Za-z0-9_]{1,16}$/
+/**
+ * 玩家名。不开正版验证的服务器上名字可以是中文等任何文字，所以只挡会让拼出来的指令变成别的意思的字符：
+ * 空白、斜杠、反斜杠和颜色符号。和身体对 bot 名字的要求一致。
+ */
+export const PLAYER_NAME_RE = /^[^\s/\\§]{1,16}$/u

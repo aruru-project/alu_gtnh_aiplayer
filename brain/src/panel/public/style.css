@@ -227,6 +227,20 @@ ul.plain li .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .test-result.ok { background: var(--ok-bg); color: var(--ok); }
 .test-result.bad { background: var(--bad-bg); color: var(--bad); }
 
+/* ── 手册 ── */
+.row > .fill { flex: 1; min-width: 240px; }
+.manual-text {
+  margin: 6px 0;
+  padding: 10px;
+  background: var(--code-bg);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 420px;
+  overflow: auto;
+}
+.card details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+
 /* ── 提示条 ── */
 .toast {
   position: fixed;

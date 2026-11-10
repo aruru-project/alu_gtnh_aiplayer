@@ -5,14 +5,16 @@ import { describe, it } from 'node:test'
 import type { AgentEvent } from '../src/agent/events.ts'
 import { DEFAULT_PERSONA } from '../src/agent/prompt.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
+import { BridgeError } from '../src/bridge/protocol.ts'
 import type { ProviderConfig, TestConnectionResult } from '../src/llm/index.ts'
 import { PanelServer } from '../src/panel/server.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
 import { ConfigStore, overridesFromEnv } from '../src/store/config.ts'
 import { HistoryStore } from '../src/store/history.ts'
+import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { UsageStore } from '../src/store/usage.ts'
-import { FakeGame } from './agent-harness.ts'
+import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
 const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
@@ -23,6 +25,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
   const game = new FakeGame()
   const log = new ActivityLog()
   const memory = new MemoryStore(tmp.dir, () => config.get().bot.limits.memoryMaxChars)
+  const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const events: AgentEvent[] = []
   const tested: ProviderConfig[] = []
   let expectedCancels = 0
@@ -32,6 +35,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     usage: new UsageStore(tmp.dir),
     log,
     history: new HistoryStore(tmp.dir),
+    manuals,
     bridge: new BridgeApi(game),
     bridgeStatus: () => ({ state: 'connected', address: '127.0.0.1:1' }),
     agent: {
@@ -82,7 +86,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     cookie = res.headers.getSetCookie()[0]!.split(';')[0]!
     return res
   }
-  return { tmp, config, game, log, memory, events, tested, call, login, origin, port, cancels: () => expectedCancels, setCookie: (c: string) => (cookie = c) }
+  return { tmp, config, game, log, memory, manuals, events, tested, call, login, origin, port, cancels: () => expectedCancels, setCookie: (c: string) => (cookie = c) }
 }
 
 const PROVIDER = {
@@ -100,12 +104,18 @@ describe('面板：鉴权', () => {
     assert.equal(page.status, 200)
     assert.match(page.text, /<title>AI 玩家/)
     assert.equal((await s.call('GET', '/app.js')).status, 200)
-    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/events', '/api/log']) {
+    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/events', '/api/log']) {
       assert.equal((await s.call('GET', route)).status, 401, route)
     }
     assert.equal((await s.call('POST', '/api/command', { text: '回家' })).status, 401)
+    assert.equal((await s.call('POST', '/api/blueprints', { name: 'hut', data: 'AAAA' })).status, 401)
+    assert.equal((await s.call('DELETE', '/api/blueprints', { name: 'hut' })).status, 401)
+    assert.equal((await s.call('PUT', '/api/manuals', { name: 'base', summary: 's', body: 'b' })).status, 401)
+    assert.equal((await s.call('DELETE', '/api/manuals', { name: 'base' })).status, 401)
+    assert.equal(s.manuals.list().some((m) => m.source === 'user'), false)
     assert.deepEqual((await s.call('GET', '/api/session')).json, { authenticated: false })
     assert.equal(s.events.length, 0)
+    assert.equal(s.game.calls.length, 0)
   })
 
   it('口令不对登不上；口令对了拿到 HttpOnly、SameSite=Strict 的会话 cookie，之后能访问', async (t) => {
@@ -412,6 +422,161 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.equal(afterDelete.json.notes.length, 1)
     const tooLong = await s.call('PUT', '/api/memory', { key: 'x', text: 'y'.repeat(1001) })
     assert.equal(tooLong.status, 400)
+  })
+
+  it('手册页：能看默认手册的内容；可以新写、改名、删除自己的手册', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    const listed = await s.call('GET', '/api/manuals')
+    assert.equal(listed.status, 200)
+    const blueprint = listed.json.manuals.find((m: { name: string }) => m.name === 'blueprint')
+    assert.equal(blueprint.source, 'default')
+    assert.match(blueprint.summary, /图纸/)
+    assert.match(blueprint.body, /check_blueprint/)
+    assert.deepEqual(listed.json.limits, { nameMaxChars: 40, summaryMaxChars: 150, bodyMaxChars: 8000, maxUserManuals: 50 })
+
+    const created = await s.call('PUT', '/api/manuals', { name: '基地布局', summary: '要在基地里找仓库、机器时看。', body: '仓库在 (100,64,200) 一带。' })
+    assert.equal(created.status, 200)
+    assert.deepEqual(created.json.saved, { name: '基地布局', summary: '要在基地里找仓库、机器时看。', body: '仓库在 (100,64,200) 一带。', source: 'user', overridesDefault: false })
+    // 它下次要用时读到的就是这一本
+    assert.equal(s.manuals.get('基地布局')?.body, '仓库在 (100,64,200) 一带。')
+    assert.equal(created.json.manuals.at(-1).name, '基地布局')
+
+    // 改名并改内容：旧名字的那本没了
+    const renamed = await s.call('PUT', '/api/manuals', { name: '基地', summary: '找仓库时看。', body: '仓库搬到 (300,64,200) 了。', previousName: '基地布局' })
+    assert.equal(renamed.status, 200)
+    assert.deepEqual(s.manuals.list().filter((m) => m.source === 'user').map((m) => [m.name, m.body]), [['基地', '仓库搬到 (300,64,200) 了。']])
+
+    const removed = await s.call('DELETE', '/api/manuals', { name: '基地' })
+    assert.deepEqual([removed.json.removed, removed.json.restoredDefault], [true, false])
+    assert.equal(s.manuals.get('基地'), undefined)
+    assert.ok(s.log.recent(0, 50).some((e) => e.kind === 'info' && /删除了手册 基地/.test(e.text)))
+  })
+
+  it('手册页：改默认手册等于写一本同名的盖住它（默认的原文还看得到）；“恢复默认”把自己那份删掉', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    const original = s.manuals.get('blueprint')!
+    const edited = await s.call('PUT', '/api/manuals', { name: 'blueprint', summary: '盖房子之前看（我们服的规矩）。', body: '一律先问我，不许自己清场。' })
+    assert.equal(edited.status, 200)
+    assert.equal(edited.json.saved.overridesDefault, true)
+    const shown = edited.json.manuals.find((m: { name: string }) => m.name === 'blueprint')
+    assert.deepEqual([shown.source, shown.overridesDefault, shown.body], ['user', true, '一律先问我，不许自己清场。'])
+    // 默认的原文一起给面板，好对照
+    assert.deepEqual(shown.default, { summary: original.summary, body: original.body })
+    assert.equal(s.manuals.get('blueprint')?.body, '一律先问我，不许自己清场。')
+
+    const restored = await s.call('DELETE', '/api/manuals', { name: 'blueprint' })
+    assert.deepEqual([restored.json.removed, restored.json.restoredDefault], [true, true])
+    assert.deepEqual(s.manuals.get('blueprint'), original)
+    // 默认手册本身删不掉：再删一次什么都不会发生
+    const again = await s.call('DELETE', '/api/manuals', { name: 'blueprint' })
+    assert.deepEqual([again.json.removed, again.json.restoredDefault], [false, false])
+    assert.deepEqual(s.manuals.get('blueprint'), original)
+  })
+
+  it('手册页：名字带路径的、内容不合规的、不是从面板页面发来的，都存不进去', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    // 数据目录里别的文件（比如带着 API key 的 config.json）不能被当成手册改掉或删掉
+    const config = fs.readFileSync(path.join(s.tmp.dir, 'config.json'), 'utf8')
+    for (const name of ['../config', '../config.json', 'a/b', '..', '.hidden', 'x.md', 'has space', '']) {
+      assert.equal((await s.call('PUT', '/api/manuals', { name, summary: '什么时候看', body: '正文' })).status, 400, `save "${name}"`)
+      assert.equal((await s.call('DELETE', '/api/manuals', { name })).status, 400, `delete "${name}"`)
+    }
+    assert.equal(fs.readFileSync(path.join(s.tmp.dir, 'config.json'), 'utf8'), config)
+    const tooLong = await s.call('PUT', '/api/manuals', { name: 'base', summary: '找仓库时看', body: '长'.repeat(8001) })
+    assert.equal(tooLong.status, 400)
+    assert.match(tooLong.json.error.message, /最长 8000/)
+    assert.equal((await s.call('PUT', '/api/manuals', { name: 'base', summary: '', body: '正文' })).status, 400)
+    assert.equal((await s.call('PUT', '/api/manuals', { name: 'base', summary: '找仓库时看', body: '正文' }, { origin: 'https://evil.example' })).status, 403)
+    assert.equal((await s.call('DELETE', '/api/manuals', { name: 'blueprint' }, { origin: 'https://evil.example' })).status, 403)
+    assert.equal(s.manuals.list().some((m) => m.source === 'user'), false)
+    assert.equal(fs.existsSync(path.join(s.tmp.dir, 'manuals')) ? fs.readdirSync(path.join(s.tmp.dir, 'manuals')).length : 0, 0)
+  })
+
+  it('图纸页：列出游戏服务器上的图纸（读不了的带原因）；上传把文件内容转给游戏；可以删除', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    const stored: Record<string, unknown>[] = [
+      { name: '02_Workshop_v3', size: { x: 32, y: 27, z: 32 }, blocks: 5294 },
+      { name: 'broken', error: 'not a .schematic file (it is not gzip-compressed NBT)' },
+    ]
+    s.game.handlers['blueprint.list'] = () => ({ blueprints: stored, folder: 'config/aiplayer/schematics' })
+    s.game.handlers['blueprint.put'] = (p) => {
+      const saved = { name: p.name, size: { x: 5, y: 4, z: 5 }, blocks: 81 }
+      stored.push(saved)
+      return saved
+    }
+    s.game.handlers['blueprint.remove'] = (p) => {
+      const at = stored.findIndex((b) => b.name === p.name)
+      if (at !== -1) stored.splice(at, 1)
+      return { removed: at !== -1 }
+    }
+
+    const listed = await s.call('GET', '/api/blueprints')
+    assert.equal(listed.status, 200)
+    assert.deepEqual(listed.json.blueprints, [
+      { name: '02_Workshop_v3', size: { x: 32, y: 27, z: 32 }, blocks: 5294 },
+      { name: 'broken', error: 'not a .schematic file (it is not gzip-compressed NBT)' },
+    ])
+    // 上传大小的上限按协议：2 MiB
+    assert.equal(listed.json.maxBytes, 2 * 1024 * 1024)
+
+    // 浏览器把文件读成 base64 交上来；文件名带着后缀也行
+    const data = Buffer.from('pretend this is a gzip-compressed schematic').toString('base64')
+    const uploaded = await s.call('POST', '/api/blueprints', { name: 'hut.schematic', data })
+    assert.equal(uploaded.status, 200)
+    assert.deepEqual(s.game.callsOf('blueprint.put'), [{ name: 'hut', data }])
+    assert.deepEqual(uploaded.json.saved, { name: 'hut', size: { x: 5, y: 4, z: 5 }, blocks: 81 })
+    assert.deepEqual(uploaded.json.blueprints.map((b: { name: string }) => b.name), ['02_Workshop_v3', 'broken', 'hut'])
+    assert.ok(s.log.recent(0, 50).some((e) => e.kind === 'info' && /上传了图纸 hut（5×4×5，81 个方块）/.test(e.text)))
+
+    const removed = await s.call('DELETE', '/api/blueprints', { name: 'broken' })
+    assert.equal(removed.status, 200)
+    assert.equal(removed.json.removed, true)
+    assert.deepEqual(s.game.callsOf('blueprint.remove'), [{ name: 'broken' }])
+    assert.deepEqual(removed.json.blueprints.map((b: { name: string }) => b.name), ['02_Workshop_v3', 'hut'])
+  })
+
+  it('图纸页：刚好 2 MiB 的文件传得上去；超过的、名字带路径的、不是从面板页面发来的，游戏那边什么都收不到', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.handlers['blueprint.list'] = () => ({ blueprints: [], folder: 'config/aiplayer/schematics' })
+    s.game.handlers['blueprint.put'] = (p) => ({ name: p.name, size: { x: 1, y: 1, z: 1 }, blocks: 1 })
+    const MiB = 1024 * 1024
+
+    const largest = Buffer.alloc(2 * MiB, 7).toString('base64')
+    const ok = await s.call('POST', '/api/blueprints', { name: 'big', data: largest })
+    assert.equal(ok.status, 200, ok.text)
+    assert.equal(Buffer.from(String(s.game.callsOf('blueprint.put')[0]!.data), 'base64').length, 2 * MiB)
+
+    const tooBig = await s.call('POST', '/api/blueprints', { name: 'bigger', data: Buffer.alloc(2 * MiB + 1, 7).toString('base64') })
+    assert.equal(tooBig.status, 413)
+    assert.match(tooBig.json.error.message, /最大 2 MiB/)
+    for (const name of ['../outside', 'folder/plan', '.hidden', 'a\\b', '']) {
+      assert.equal((await s.call('POST', '/api/blueprints', { name, data: 'AAAA' })).status, 400, name)
+      assert.equal((await s.call('DELETE', '/api/blueprints', { name })).status, 400, name)
+    }
+    assert.equal((await s.call('POST', '/api/blueprints', { name: 'x', data: 'not base64!' })).status, 400)
+    assert.equal((await s.call('POST', '/api/blueprints', { name: 'x', data: 'AAAA' }, { origin: 'https://evil.example' })).status, 403)
+    assert.equal((await s.call('DELETE', '/api/blueprints', { name: 'big' }, { origin: 'https://evil.example' })).status, 403)
+    assert.equal(s.game.callsOf('blueprint.put').length, 1)
+    assert.equal(s.game.callsOf('blueprint.remove').length, 0)
+  })
+
+  it('图纸页：游戏说这个文件不是能用的图纸时，把它给的原因原样显示出来', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.handlers['blueprint.put'] = () => {
+      throw new BridgeError('bad_request', 'the file does not say which blocks its numbers stand for; save it with Schematica')
+    }
+    const res = await s.call('POST', '/api/blueprints', { name: 'worldedit-export', data: 'AAAA' })
+    assert.equal(res.status, 400)
+    assert.match(res.json.error.message, /the file does not say which blocks its numbers stand for; save it with Schematica/)
+    // 没连上游戏时和别的操作一样，给出看得懂的错误
+    s.game.connected = false
+    assert.equal((await s.call('GET', '/api/blueprints')).status, 503)
   })
 
   it('设置页：改 bridge 端口和口令文件路径后存进配置；不合法的端口被拒绝', async (t) => {

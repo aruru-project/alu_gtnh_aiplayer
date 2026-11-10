@@ -72,19 +72,21 @@ export interface BrainConfig {
 export const DEFAULT_BRIDGE_PORT = 25590
 
 export const DEFAULT_LIMITS: LimitsConfig = {
-  maxSteps: 16,
+  // “给一个目标它自己去办”这类活要查物品、查配方、找库存、取料、合成，一轮里十几二十步是常事
+  maxSteps: 30,
   dailyTokenLimit: 0,
   historyTokenThreshold: 24_000,
   memoryMaxChars: 4000,
   toolResultMaxChars: 6000,
 }
 
-export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec: 60 }
+/** 对话窗口默认 5 分钟：实测 60 秒太短，隔一分钟多、话里没带名字的句子它就不理了。 */
+export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec: 300 }
 
 export function defaultConfig(): BrainConfig {
   return {
     version: 1,
-    panel: { host: '127.0.0.1', port: 8765, password: '', sessionSecret: '' },
+    panel: { host: '127.0.0.1', port: 28765, password: '', sessionSecret: '' },
     bridge: { host: '127.0.0.1', port: DEFAULT_BRIDGE_PORT, token: '', tokenFile: '', requestTimeoutMs: 10_000 },
     bot: {
       name: 'Alu',

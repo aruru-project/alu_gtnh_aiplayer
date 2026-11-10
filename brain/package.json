@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/main.ts",
-    "dev:testserver": "AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts",
+    "dev:testserver": "AIPLAYER_PANEL_HOST=0.0.0.0 AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
     "mock-bridge": "node test/mock-bridge.ts",

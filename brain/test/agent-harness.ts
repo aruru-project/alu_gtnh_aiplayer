@@ -1,6 +1,7 @@
 // agent 测试用的装配：假的 bridge（内存里按方法名应答）、按脚本回应的假模型、真的 store 和工具。
 // 这里只隔开两个外部边界：游戏（Requester）和模型（LlmClient）。
 
+import path from 'node:path'
 import { Agent } from '../src/agent/agent.ts'
 import type { AgentSettings, AgentTiming, PersistedAgentState } from '../src/agent/agent.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
@@ -10,11 +11,15 @@ import { LlmError } from '../src/llm/index.ts'
 import type { AssistantPart, GenerateRequest, GenerateResult, LlmClient, Message } from '../src/llm/index.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
 import { HistoryStore } from '../src/store/history.ts'
+import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { ALL_TOOLS } from '../src/tools/index.ts'
 import { tmpDir } from './helpers.ts'
 
 type Json = Record<string, unknown>
+
+/** 随代码发布的默认手册（brain/manuals）。 */
+export const DEFAULT_MANUALS_DIR = path.resolve(import.meta.dirname, '../manuals')
 
 /** 假的游戏侧：记录收到的请求，按方法名返回写死的应答。 */
 export class FakeGame implements Requester {
@@ -147,6 +152,8 @@ export interface AgentHarness {
   llm: ScriptedLlm
   history: HistoryStore
   memory: MemoryStore
+  /** 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里。 */
+  manuals: ManualStore
   log: ActivityLog
   settings: AgentSettings
   reminders: { dueAt: number; note: string }[]
@@ -174,6 +181,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const llm = opts.llm ?? new ScriptedLlm()
   const history = new HistoryStore(tmp.dir)
   const memory = new MemoryStore(tmp.dir, () => 4000)
+  const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const log = new ActivityLog()
   const reminders: { dueAt: number; note: string }[] = []
   const persisted = opts.persisted ?? { state: undefined }
@@ -193,6 +201,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     bridge: new BridgeApi(game),
     tools: ALL_TOOLS,
     memory,
+    manuals,
     reminders: {
       add: (dueAt, note) => {
         reminders.push({ dueAt, note })
@@ -213,6 +222,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     llm,
     history,
     memory,
+    manuals,
     log,
     settings,
     reminders,

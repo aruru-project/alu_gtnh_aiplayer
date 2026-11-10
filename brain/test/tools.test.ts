@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { BridgeApi } from '../src/bridge/api.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
+import path from 'node:path'
+import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
-import { FakeGame } from './agent-harness.ts'
+import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
 import { tmpDir } from './helpers.ts'
 
 const NOW = 1_800_000_000_000
@@ -15,6 +17,10 @@ function setup(t: { after(fn: () => void): void }) {
   t.after(tmp.cleanup)
   const game = new FakeGame()
   const memory = new MemoryStore(tmp.dir, () => 300)
+  // 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里
+  const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
+  /** 查任务书进度默认看谁的（主人名单里的第一个，或者刚才跟它说话的人）。 */
+  const who: { defaultPlayer: string | undefined } = { defaultPlayer: undefined }
   const reminders: { dueAt: number; note: string }[] = []
   const spoke: { kind: string; to?: string; text: string }[] = []
   const started: string[] = []
@@ -26,6 +32,8 @@ function setup(t: { after(fn: () => void): void }) {
     botName: 'Alu',
     bridge: new BridgeApi(game),
     memory,
+    manuals,
+    defaultPlayer: () => who.defaultPlayer,
     reminders: {
       add: (dueAt, note) => {
         reminders.push({ dueAt, note })
@@ -47,7 +55,7 @@ function setup(t: { after(fn: () => void): void }) {
   }
   const run = (name: string, input: unknown = {}, max?: number): Promise<ToolResult> =>
     runTool(ALL_TOOLS, ctx, name, input, max === undefined ? {} : { maxResultChars: max })
-  return { game, memory, reminders, spoke, started, cancels, open: () => ({ cancels: cancelsOpen, commands: commandsOpen }), run }
+  return { game, memory, manuals, who, reminders, spoke, started, cancels, open: () => ({ cancels: cancelsOpen, commands: commandsOpen }), run }
 }
 
 describe('工具清单', () => {
@@ -56,8 +64,12 @@ describe('工具清单', () => {
       'say', 'whisper', 'get_status', 'look_around', 'scan_area', 'inspect_block', 'probe_block', 'find_blocks', 'list_containers',
       'get_player_position', 'go_to', 'go_to_player', 'follow_player', 'go_home', 'set_home', 'list_homes', 'join_team',
       'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
+      'list_blueprints', 'check_blueprint', 'build_blueprint',
       'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items',
+      'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
+      'list_quest_lines', 'find_quests', 'get_quest',
       'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
+      'list_manuals', 'read_manual',
     ]
     const names = ALL_TOOLS.map((x) => x.name)
     assert.deepEqual([...names].sort(), [...expected].sort())
@@ -71,7 +83,7 @@ describe('工具清单', () => {
   it('所有启动任务的工具都带 queue 参数', () => {
     const taskTools = [
       'go_to', 'go_to_player', 'follow_player', 'go_home', 'flatten_area', 'clear_area', 'fill_area', 'dig_blocks',
-      'place_blocks', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items',
+      'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'craft_item', 'process_items',
     ]
     for (const name of taskTools) {
       const tool = ALL_TOOLS.find((x) => x.name === name)!
@@ -100,6 +112,21 @@ describe('说话', () => {
     assert.equal(bad.isError, true)
     assert.equal(s.game.callsOf('bot.command').length, 1)
     assert.deepEqual(s.open(), { cancels: 0, commands: 0 })
+  })
+
+  it('不开正版验证的服务器上玩家可以叫中文名：私聊、走过去、跟随、递东西都认', async (t) => {
+    const s = setup(t)
+    s.game.handlers['bot.command'] = () => ({ output: ['You whisper to 阿露: 在'] })
+    assert.deepEqual(await s.run('whisper', { player: '阿露', message: '在' }), { content: 'Whisper sent.' })
+    assert.deepEqual(s.game.callsOf('bot.command'), [{ bot: 'Alu', command: 'tell 阿露 在' }])
+    for (const tool of ['go_to_player', 'follow_player']) {
+      const res = await s.run(tool, { player: '阿露' })
+      assert.equal(res.isError, undefined, `${tool}: ${res.content}`)
+    }
+    const give = await s.run('give_items', { player: '阿露', items: [{ id: 'minecraft:dirt', count: 1 }] })
+    assert.equal(give.isError, undefined, give.content)
+    // 名字里夹着空格的仍然不行：拼进指令后，后半截会变成指令的别的参数。
+    assert.equal((await s.run('whisper', { player: '阿露 op', message: 'x' })).isError, true)
   })
 
   it('长的私聊拆成几条 tell，每条指令都不超过身体允许的 99 个字符', async (t) => {
@@ -296,6 +323,37 @@ describe('观察', () => {
     assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16 })
     // 一次 bot.status 都没多查
     assert.equal(s.game.callsOf('bot.status').length, 0)
+  })
+
+  it('抽屉在 list_containers 和 look_around 里标成 [drawers]，数量是抽屉里的真实库存；箱子照旧', async (t) => {
+    const s = setup(t)
+    s.game.handlers['world.containers'] = () => ({
+      containers: [
+        { x: -47, y: 99, z: -83, id: 'minecraft:chest', name: 'Chest', slots: 27, usedSlots: 1, items: [{ id: 'minecraft:dirt', meta: 0, count: 27, name: 'Dirt' }] },
+        // 一组两格的抽屉：一格装着一万多圆石，另一格空着
+        { x: -45, y: 99, z: -83, id: 'StorageDrawers:fullDrawers2', name: 'Oak Drawers 1x2', slots: 2, usedSlots: 1, kind: 'drawers', items: [{ id: 'minecraft:cobblestone', meta: 0, count: 12800, name: 'Cobblestone' }] },
+      ],
+      total: 2,
+    })
+    const listed = (await s.run('list_containers')).content.split('\n')
+    assert.equal(listed[1], '- (-47,99,-83) Chest [minecraft:chest] 1/27 slots used: 27× minecraft:dirt "Dirt"')
+    assert.equal(listed[2], '- (-45,99,-83) Oak Drawers 1x2 [StorageDrawers:fullDrawers2] [drawers] 1/2 drawer slots used: 12800× minecraft:cobblestone "Cobblestone"')
+    const around = await s.run('look_around')
+    assert.match(around.content, /^- \(-45,99,-83\) Oak Drawers 1x2 \[StorageDrawers:fullDrawers2\] \[drawers\] .*12800× minecraft:cobblestone/m)
+  })
+
+  it('模型看到的工具说明里写明：存取、搬运、补给和卸货的位置都可以是抽屉', () => {
+    // 用户实测时模型说“抽屉不一定能识别成容器”，根本没去试；它只能从这些说明里知道行不行
+    const tool = (name: string) => ALL_TOOLS.find((x) => x.name === name)!
+    for (const name of ['deposit_items', 'withdraw_items', 'haul_items', 'list_containers', 'look_around']) {
+      assert.match(tool(name).description, /drawers/i, name)
+    }
+    for (const name of ['flatten_area', 'clear_area', 'fill_area', 'place_blocks', 'build_blueprint']) {
+      const props = tool(name).inputSchema.properties
+      for (const key of ['supply', 'dropoff']) {
+        if (props[key]) assert.match(JSON.stringify(props[key]), /drawers/i, `${name}.${key}`)
+      }
+    }
   })
 
   it('inspect_block：区块没加载时说清楚看不到，而不是报一个空方块', async (t) => {
@@ -524,6 +582,678 @@ describe('任务类工具', () => {
   })
 })
 
+/** docs/PROTOCOL.md 里 blueprint.check 的那个例子：一座 32×27×32 的车间，地基埋在土里，旁边有几台机器。 */
+const WORKSHOP_CHECK = {
+  name: '02_Workshop_v3',
+  origin: { x: -592, y: 63, z: 80 },
+  box: { x1: -592, y1: 63, z1: 80, x2: -561, y2: 89, z2: 111 },
+  cells: 5294,
+  done: 10,
+  toPlace: 3823,
+  byHand: 2,
+  blocked: 1461,
+  extra: 2581,
+  willRemove: 4019,
+  materials: [
+    { id: 'chisel:nucrete', meta: 7, name: 'Structural Concrete', need: 1874, have: 0 },
+    { id: 'minecraft:stonebrick', meta: 0, name: 'Stone Bricks', need: 640, have: 128 },
+    { id: 'TConstruct:GlassBlock', meta: 0, name: 'Clear Glass', need: 96, have: 96 },
+  ],
+  byHandBlocks: [{ id: 'minecraft:chest', meta: 3, name: 'Chest', count: 2, why: 'it holds contents or settings' }],
+  blockedBy: [
+    { id: 'minecraft:dirt', name: 'Dirt', count: 1196, removable: 1196, natural: true },
+    { id: 'minecraft:stone', name: 'Stone', count: 265, removable: 0 },
+  ],
+  extraBlocks: [
+    { id: 'minecraft:grass', name: 'Grass Block', count: 2567, removable: 2567, natural: true },
+    // GregTech 的机器在服务器端没有翻译好的名字
+    { id: 'gregtech:gt.blockmachines', name: 'gt.blockmachines.name', count: 14, removable: 0, holdsData: 14 },
+  ],
+  // 每层 [y, 图纸方块数, done, toPlace, blocked, extra]
+  layers: [
+    [63, 1024, 0, 0, 1024, 0],
+    [64, 124, 0, 0, 124, 2581],
+    [65, 124, 0, 124, 0, 0],
+    [66, 124, 0, 124, 0, 0],
+    [67, 124, 0, 124, 0, 0],
+    [68, 10, 10, 0, 0, 0],
+    [69, 1024, 0, 1024, 0, 0],
+  ],
+}
+
+describe('图纸', () => {
+  it('list_blueprints 列出每张图纸的名字、尺寸和方块数；读不了的写明原因', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.list'] = () => ({
+      blueprints: [
+        { name: '02_Workshop_v3', size: { x: 32, y: 27, z: 32 }, blocks: 5294 },
+        { name: 'broken', error: 'not a .schematic file (it is not gzip-compressed NBT)' },
+      ],
+      folder: 'config/aiplayer/schematics',
+    })
+    const res = await s.run('list_blueprints')
+    assert.equal(res.isError, undefined)
+    assert.match(res.content, /^- 02_Workshop_v3: 32×27×32, 5294 blocks$/m)
+    assert.match(res.content, /^- broken: cannot be used \(not a \.schematic file \(it is not gzip-compressed NBT\)\)$/m)
+
+    s.game.handlers['blueprint.list'] = () => ({ blueprints: [], folder: 'config/aiplayer/schematics' })
+    assert.match((await s.run('list_blueprints')).content, /no blueprints on the server yet.*upload/)
+  })
+
+  it('check_blueprint 带着 bot 去对比，把结果排成短文本：计数、材料（要多少、身上有多少）、得由人放的、挡路的', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.check'] = () => WORKSHOP_CHECK
+    const res = await s.run('check_blueprint', { name: '02_Workshop_v3', x: -592, y: 63, z: 80, clear: ['natural'] })
+    assert.equal(res.isError, undefined)
+    // 带上 bot，身体才会在 materials 里给出它身上有多少
+    assert.deepEqual(s.game.callsOf('blueprint.check'), [{ name: '02_Workshop_v3', x: -592, y: 63, z: 80, clear: ['natural'], bot: 'Alu' }])
+
+    const text = res.content
+    assert.match(text, /Blueprint "02_Workshop_v3" with its lowest corner at \(-592,63,80\)\. Compared x -592\.\.-561, y 63\.\.89, z 80\.\.111 \(32×27×32/)
+    for (const line of ['cells): 5294', '- done: 10 ', '- toPlace: 3823 ', '- byHand: 2 ', '- blocked: 1461 ', '- extra: 2581 ']) {
+      assert.ok(text.includes(line), `counts include "${line}"`)
+    }
+    assert.match(text, /With this clear list 4019 of those 4042 blocked\/extra blocks would be dug out/)
+    // 材料：id、meta、名字、要多少、身上有多少；合计还差多少
+    assert.match(text, /^- 1874× chisel:nucrete\/7 "Structural Concrete" \(you carry 0\)$/m)
+    assert.match(text, /^- 640× minecraft:stonebrick "Stone Bricks" \(you carry 128\)$/m)
+    assert.match(text, /^- 96× TConstruct:GlassBlock "Clear Glass" \(you carry 96\)$/m)
+    assert.match(text, /You are 2386 blocks short in total/)
+    // 得由人放的，带原因
+    assert.match(text, /A player has to place these.*\n- 2× minecraft:chest\/3 "Chest" \(it holds contents or settings\)$/m)
+    // 挡路的和多出来的：每种多少个、clear 会挖掉多少、多少个带数据谁也不动、是不是天然方块
+    assert.match(text, /^- 1196× minecraft:dirt "Dirt" \(natural terrain, clear digs 1196\)$/m)
+    assert.match(text, /^- 265× minecraft:stone "Stone" \(not natural terrain, clear digs 0\)$/m)
+    assert.match(text, /^- 2567× minecraft:grass "Grass Block" \(natural terrain, clear digs 2567\)$/m)
+    assert.match(text, /^- 14× gregtech:gt\.blockmachines \(not natural terrain, clear digs 0, 14 of them hold data and are never dug\)$/m)
+    // 层：只列还有活要干的，相邻又一样的合成一行；已经对上的 y=68 不列
+    assert.match(text, /^- y 63: done 0\/1024, toPlace 0, blocked 1024, extra 0$/m)
+    assert.match(text, /^- y 65\.\.67 \(each layer\): done 0\/124, toPlace 124, blocked 0, extra 0$/m)
+    assert.equal(/^- y 68/m.test(text), false)
+    // 不是把原始 JSON 倒给模型
+    assert.equal(/"need"|"removable"|\[63,1024/.test(text), false)
+    assert.equal(text.includes('INCOMPLETE'), false)
+  })
+
+  it('check_blueprint：有格子所在的区块没加载时，提醒结果不完整、要走近再查', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.check'] = () => ({ ...WORKSHOP_CHECK, unloaded: 1820 })
+    const res = await s.run('check_blueprint', { name: '02_Workshop_v3', x: -592, y: 63, z: 80 })
+    assert.match(res.content, /INCOMPLETE: 1820 cells are in chunks that are not loaded.*Go closer/)
+  })
+
+  it('check_blueprint：没给 clear 时说明一块都不会挖；clear 会挖到不是天然地形的方块时单独点出来', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.check'] = () => ({ ...WORKSHOP_CHECK, willRemove: 0 })
+    const none = await s.run('check_blueprint', { name: '02_Workshop_v3', x: -592, y: 63, z: 80 })
+    assert.match(none.content, /No clear list was given, so nothing would be dug out/)
+    assert.equal(/Someone may have built them/.test(none.content), false)
+
+    s.game.handlers['blueprint.check'] = () => ({
+      ...WORKSHOP_CHECK,
+      blockedBy: [{ id: 'minecraft:dirt', name: 'Dirt', count: 1196, removable: 1196, natural: true }, { id: 'minecraft:planks', name: 'Oak Wood Planks', count: 35, removable: 35 }],
+    })
+    const planks = await s.run('check_blueprint', { name: '02_Workshop_v3', x: -592, y: 63, z: 80, clear: ['natural', 'minecraft:planks'] })
+    assert.match(planks.content, /this clear list would dig out blocks that are not natural terrain \(35× minecraft:planks "Oak Wood Planks"\)\. Someone may have built them\./)
+  })
+
+  it('build_blueprint 启动 blueprint 任务：位置、分块范围、方块选项、补给和卸货的容器原样带过去；queue 时排到队尾', async (t) => {
+    const s = setup(t)
+    const res = await s.run('build_blueprint', {
+      name: '02_Workshop_v3', x: -592, y: 63, z: 80,
+      x1: -592, x2: -561, z1: 80, z2: 111, y1: 63, y2: 68,
+      skip: ['minecraft:carpet'], clear: ['natural', 'plants'],
+      supply: [{ x: -600, y: 64, z: 70 }, { x: -598, y: 64, z: 70 }], dropoff: [{ x: -600, y: 64, z: 72 }], overflow: 'leave',
+      queue: true,
+    })
+    assert.match(res.content, /Task t1 \(blueprint\) added to the end of your queue/)
+    assert.deepEqual(s.game.callsOf('task.start'), [
+      {
+        bot: 'Alu',
+        task: {
+          type: 'blueprint', name: '02_Workshop_v3', x: -592, y: 63, z: 80,
+          x1: -592, x2: -561, z1: 80, z2: 111, y1: 63, y2: 68,
+          skip: ['minecraft:carpet'], clear: ['natural', 'plants'],
+          supply: [{ x: -600, y: 64, z: 70 }, { x: -598, y: 64, z: 70 }], dropoff: [{ x: -600, y: 64, z: 72 }], overflow: 'leave',
+        },
+        mode: 'append',
+      },
+    ])
+    // 不给 clear 就不带 clear：身体那边不给就一块都不挖
+    await s.run('build_blueprint', { name: 'hut', x: 20, y: 65, z: 20 })
+    assert.deepEqual(s.game.callsOf('task.start')[1], { bot: 'Alu', task: { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20 }, mode: 'replace' })
+    assert.deepEqual(s.started, ['t1', 't2'])
+  })
+
+  it('模型把“不限制”写成空列表时当作没给（身体那边 only: [] 的意思是哪种方块都不管）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.check'] = () => WORKSHOP_CHECK
+    const check = await s.run('check_blueprint', { name: 'hut', x: 20, y: 65, z: 20, only: [], skip: [], clear: [] })
+    assert.deepEqual(s.game.callsOf('blueprint.check'), [{ name: 'hut', x: 20, y: 65, z: 20, bot: 'Alu' }])
+    assert.match(check.content, /No clear list was given/)
+    await s.run('build_blueprint', { name: 'hut', x: 20, y: 65, z: 20, only: [], skip: [], clear: [] })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20 })
+  })
+
+  it('图纸超过 64×64 列、没有这张图纸时，身体的原话转给模型', async (t) => {
+    const s = setup(t)
+    // 真实 mod 的原话
+    const tooWide = 'one task works on at most 64x64 columns and this covers 160x160; give x1, x2, z1, z2 to take it a part at a time'
+    const unknown = 'there is no blueprint named "castle"; blueprint.list shows the ones there are'
+    s.game.handlers['task.start'] = () => {
+      throw new BridgeError('bad_request', tooWide)
+    }
+    s.game.handlers['blueprint.check'] = () => {
+      throw new BridgeError('bad_request', unknown)
+    }
+    const build = await s.run('build_blueprint', { name: '99_Campus_Reference_v2', x: 0, y: 64, z: 0 })
+    assert.equal(build.isError, true)
+    assert.ok(build.content.includes(tooWide), build.content)
+    assert.deepEqual(s.started, [])
+    const check = await s.run('check_blueprint', { name: 'castle', x: 0, y: 64, z: 0 })
+    assert.equal(check.isError, true)
+    assert.ok(check.content.includes(unknown), check.content)
+  })
+
+  it('task_status 里照图纸建的任务：缺的材料和现在的对比是整理过的文字，不是截掉半截的 JSON', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't7', type: 'blueprint', state: 'failed', finishedAt: 100,
+          error: {
+            code: 'no_material',
+            message: '1874 blocks were left unplaced for want of material; no supply container was given',
+            detail: { missing: [{ id: 'chisel:nucrete', meta: 7, name: 'Structural Concrete', count: 1874 }] },
+          },
+          result: {
+            removed: 4019, placed: 1949, freeSlots: 3,
+            now: { cells: 5294, done: 1959, toPlace: 1874, byHand: 2, blocked: 265, extra: 14 },
+            materials: [{ id: 'chisel:nucrete', meta: 7, name: 'Structural Concrete', need: 1874, have: 0 }],
+            byHandBlocks: [{ id: 'minecraft:chest', meta: 3, name: 'Chest', count: 2, why: 'it holds contents or settings' }],
+            blockedBy: [{ id: 'minecraft:stone', name: 'Stone', count: 265, removable: 0 }],
+            extraBlocks: [{ id: 'gregtech:gt.blockmachines', name: 'gt.blockmachines.name', count: 14, removable: 0, holdsData: 14 }],
+          },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.match(text, /- t7 blueprint \[failed\] error=no_material: 1874 blocks were left unplaced for want of material; no supply container was given; missing \(left unplaced for want of material\): 1874× chisel:nucrete\/7 "Structural Concrete"/)
+    assert.match(text, /partial result: removed 4019, placed 1949, freeSlots 3; now \(the world compared with the blueprint\): cells 5294, done 1959, toPlace 1874, byHand 2, blocked 265, extra 14/)
+    // 排在最后的那张表也完整地在
+    assert.match(text, /extraBlocks \(still where the blueprint is empty\): 14× gregtech:gt\.blockmachines \(not natural terrain, clear digs 0, 14 of them hold data and are never dug\)$/m)
+  })
+})
+
+const GT = 'gregtech:gt.metaitem.01'
+
+/** recipe.find 的结果，形状照 docs/PROTOCOL.md：Copter Blades 只有合成台配方，其中一条读不出原料。 */
+const BLADES_RECIPES = {
+  item: { id: 'adventurebackpack:backpackComponent', meta: 6, name: 'Copter Blades' },
+  crafting: [
+    {
+      index: 0,
+      gives: 1,
+      grid: '3x3',
+      ingredients: [
+        { count: 4, name: 'Shaft (Refined Iron)', id: 'IC2:itemRecipePart', meta: 12, have: 0 },
+        { count: 3, name: 'Steel Screw (any screwSteel)', ore: 'screwSteel', example: { id: GT, meta: 27305 }, have: 2 },
+        { count: 1, name: 'Single Use Screwdriver (any craftingToolScrewdriver)', ore: 'craftingToolScrewdriver', example: { id: 'gregtech:gt.metatool.01', meta: 22 }, alternatives: 6, tool: true, have: 0 },
+        // 没有 meta：任何颜色的羊毛都行
+        { count: 2, name: 'Wool (any variant)', id: 'minecraft:wool', have: 5 },
+      ],
+    },
+    { index: 1, gives: 2, unreadable: true },
+  ],
+  machines: [],
+  total: { crafting: 2, machines: 0, smelting: 0 },
+}
+
+/** Steel Screw 只有机器配方：车床一条，流体固化机三条（默认每种机器最多列两条）。 */
+const SCREW_RECIPES = {
+  item: { id: GT, meta: 27305, name: 'Steel Screw' },
+  crafting: [],
+  machines: [
+    { machine: 'Lathe', tier: 'LV', eut: 16, seconds: 2.5, inputs: [{ id: GT, meta: 26305, name: 'Steel Bolt', count: 1 }], outputs: [{ id: GT, meta: 27305, name: 'Steel Screw', count: 1 }] },
+    {
+      machine: 'Fluid Solidifier',
+      tier: 'ULV',
+      eut: 8,
+      seconds: 1.6,
+      inputs: [{ id: GT, meta: 32307, name: 'Mold (Screw)', count: 0, notConsumed: true }],
+      fluidInputs: [{ name: 'Molten Steel', mb: 18 }],
+      outputs: [{ id: GT, meta: 27305, name: 'Steel Screw', count: 1 }],
+    },
+    {
+      machine: 'Fluid Solidifier',
+      tier: 'LV',
+      eut: 24,
+      seconds: 0.8,
+      inputs: [{ id: GT, meta: 32307, name: 'Mold (Screw)', count: 0, notConsumed: true }],
+      fluidInputs: [{ name: 'Molten Steel', mb: 18 }],
+      outputs: [{ id: GT, meta: 27305, name: 'Steel Screw', count: 1 }],
+      fluidOutputs: [{ name: 'Steam', mb: 40 }],
+    },
+  ],
+  machineRecipeCounts: { Lathe: 1, 'Fluid Solidifier': 3 },
+  smeltedFrom: [{ id: GT, meta: 2305, name: 'Steel Dust', count: 1 }],
+  total: { crafting: 0, machines: 4, smelting: 1 },
+}
+
+describe('物品、配方、库存、合成', () => {
+  it('find_item 按名字找物品：给出 id/meta、名字、各类配方有几条、矿辞名；中文名搜不到时提醒用英文名', async (t) => {
+    const s = setup(t)
+    s.game.handlers['item.search'] = (p) =>
+      p.query === 'copter'
+        ? {
+            items: [
+              { id: 'adventurebackpack:copterPack', meta: 0, name: 'Copter Pack', recipes: { crafting: 1, machine: 0, smelting: 0 } },
+              { id: 'adventurebackpack:backpackComponent', meta: 6, name: 'Copter Blades', recipes: { crafting: 1, machine: 0, smelting: 0 } },
+              { id: GT, meta: 27305, name: 'Steel Screw', recipes: { crafting: 0, machine: 4, smelting: 1 }, ores: ['screwSteel'] },
+              { id: 'IC2:itemRecipePart', meta: 12, name: 'Shaft (Refined Iron)', recipes: { crafting: 0, machine: 0, smelting: 0 } },
+            ],
+          }
+        : { items: [] }
+    const found = await s.run('find_item', { query: ' copter ', limit: 20 })
+    assert.equal(found.isError, undefined)
+    assert.deepEqual(s.game.callsOf('item.search'), [{ query: 'copter', limit: 20 }])
+    assert.match(found.content, /^- adventurebackpack:copterPack "Copter Pack": recipes: 1 crafting$/m)
+    assert.match(found.content, /^- adventurebackpack:backpackComponent\/6 "Copter Blades": recipes: 1 crafting$/m)
+    assert.match(found.content, /^- gregtech:gt\.metaitem\.01\/27305 "Steel Screw": recipes: 4 machine, 1 smelting; ore names: screwSteel$/m)
+    assert.match(found.content, /^- IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)": no known recipe$/m)
+
+    const none = await s.run('find_item', { query: '直升机背包' })
+    assert.match(none.content, /No item has all the words of "直升机背包"/)
+    assert.match(none.content, /names on this server are in English: translate the name/)
+    assert.equal(/in English/.test((await s.run('find_item', { query: 'helicopter' })).content), false)
+  })
+
+  it('find_recipes：合成配方里每样原料写清要几个、是确定的物品还是“任何 xxx”、是不是只磨损的工具、身上已有几个', async (t) => {
+    const s = setup(t)
+    s.game.handlers['recipe.find'] = () => BLADES_RECIPES
+    const res = await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })
+    assert.equal(res.isError, undefined)
+    // 带上 bot，身体才会给出它身上现有的数量
+    assert.deepEqual(s.game.callsOf('recipe.find'), [{ id: 'adventurebackpack:backpackComponent', meta: 6, bot: 'Alu' }])
+    const text = res.content
+    assert.match(text, /^Recipes for adventurebackpack:backpackComponent\/6 "Copter Blades": 2 crafting, 0 machine, 0 smelting\.$/m)
+    assert.match(text, /^- recipe 0: gives 1, 3x3 grid \(needs a crafting table or crafting station\)\. Ingredients for one round:$/m)
+    assert.match(text, /^  - 4× IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)", you carry 0$/m)
+    assert.match(text, /^  - 3× any screwSteel \(ore name; e\.g\. gregtech:gt\.metaitem\.01\/27305 "Steel Screw"\), you carry 2$/m)
+    assert.match(
+      text,
+      /^  - 1× any craftingToolScrewdriver \(ore name, 6 kinds fit; e\.g\. gregtech:gt\.metatool\.01\/22 "Single Use Screwdriver"\) \[tool: must be in your inventory, wears but is not used up\], you carry 0$/m,
+    )
+    assert.match(text, /^  - 2× minecraft:wool \(any meta\) "Wool \(any variant\)", you carry 5$/m)
+    // 读不出原料的配方如实说明 craft_item 做不了
+    assert.match(text, /^- recipe 1: its ingredients cannot be read .* craft_item cannot make it$/m)
+    assert.equal(/"ingredients"|"example"|\{"count"/.test(text), false)
+  })
+
+  it('find_recipes：机器配方写清机器、等级、电压、耗时、原料（标出不消耗的）、流体、产物；每种机器有几条压成一行', async (t) => {
+    const s = setup(t)
+    s.game.handlers['recipe.find'] = () => SCREW_RECIPES
+    const text = (await s.run('find_recipes', { id: GT, meta: 27305 })).content
+    assert.match(text, /^Crafting by hand: no recipe\. craft_item cannot make it\.$/m)
+    // 机器配方现在能自己做：说明用哪个工具、挑什么样的机器
+    assert.match(text, /^Machine recipes \(run one with process_items on a single-block machine that find_machines lists with this recipe type and at least this tier/m)
+    assert.match(text, /^- Lathe, LV \(16 EU\/t\), 2\.5 s: 1× gregtech:gt\.metaitem\.01\/26305 "Steel Bolt" -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw"$/m)
+    assert.match(
+      text,
+      /^- Fluid Solidifier, ULV \(8 EU\/t\), 1\.6 s: gregtech:gt\.metaitem\.01\/32307 "Mold \(Screw\)" \(stays in the machine, not used up\) \+ 18 mB Molten Steel -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw"$/m,
+    )
+    assert.match(text, /^- Fluid Solidifier, LV \(24 EU\/t\), 0\.8 s: .* -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw" \+ 40 mB Steam$/m)
+    assert.match(text, /^Machine recipes per machine: Lathe 1, Fluid Solidifier 3\. 3 of 4 shown; give "machine" to see the recipes of one machine\.$/m)
+    assert.match(text, /^Furnace: smelted from 1× gregtech:gt\.metaitem\.01\/2305 "Steel Dust"\.$/m)
+
+    // 只看某一种机器的
+    await s.run('find_recipes', { id: GT, meta: 27305, machine: 'Fluid Solidifier' })
+    assert.deepEqual(s.game.callsOf('recipe.find')[1], { id: GT, meta: 27305, machine: 'Fluid Solidifier', bot: 'Alu' })
+  })
+
+  it('find_recipes：没有任何做法的物品、服务器不认识的 id，都说清楚下一步', async (t) => {
+    const s = setup(t)
+    s.game.handlers['recipe.find'] = () => ({ item: { id: 'IC2:itemRecipePart', meta: 12, name: 'Shaft (Refined Iron)' }, crafting: [], machines: [], total: { crafting: 0, machines: 0, smelting: 0 } })
+    const raw = await s.run('find_recipes', { id: 'IC2:itemRecipePart', meta: 12 })
+    assert.match(raw.content, /^No recipe is known for IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)".*Look for it in storage or ask the owner\.$/)
+    // 真实 mod 的原话里说的是协议方法名 item.search；模型只认得工具名
+    s.game.handlers['recipe.find'] = () => {
+      throw new BridgeError('not_found', 'no such item is known: gregtech:gt.metaitem.01/0; item.search finds ids')
+    }
+    const unknown = await s.run('find_recipes', { id: GT })
+    assert.equal(unknown.isError, true)
+    assert.match(unknown.content, /No item gregtech:gt\.metaitem\.01 is known on this server\. Use find_item to get the exact id and meta/)
+  })
+
+  it('find_in_storage：每样东西一共多少、在哪几处（坐标、容器、是不是抽屉、数量、具体是哪种物品）；没有的也说明', async (t) => {
+    const s = setup(t)
+    s.game.handlers['world.stock'] = () => ({
+      items: [
+        { id: 'IC2:itemRecipePart', meta: 12, total: 9, places: [{ x: -51, y: 99, z: -87, container: 'Chest', count: 8 }, { x: -47, y: 99, z: -83, container: 'Iron Chest', count: 1 }], morePlaces: 2 },
+        {
+          ore: 'screwSteel',
+          total: 12804,
+          places: [
+            { x: -45, y: 99, z: -83, container: 'Oak Drawers 1x2', kind: 'drawers', count: 12800, items: [{ id: GT, meta: 27305, count: 12800, name: 'Steel Screw' }] },
+            { x: -51, y: 99, z: -87, container: 'Chest', count: 4, items: [{ id: GT, meta: 27305, count: 3, name: 'Steel Screw' }, { id: 'TConstruct:toughRod', meta: 16, count: 1, name: 'Steel Tough Tool Rod' }] },
+          ],
+        },
+        { id: 'minecraft:wool', total: 0, places: [] },
+      ],
+      containersLookedInto: 37,
+    })
+    const res = await s.run('find_in_storage', { items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }] })
+    assert.equal(res.isError, undefined)
+    // 以 bot 为中心查；不带 meta 的就不带 meta（任何变体都算）
+    assert.deepEqual(s.game.callsOf('world.stock'), [
+      { bot: 'Alu', items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }], radius: 32 },
+    ])
+    const lines = res.content.split('\n')
+    assert.match(lines[0]!, /^Looked into 37 container\(s\) within 32 blocks of you\./)
+    assert.deepEqual(lines.slice(1), [
+      '- IC2:itemRecipePart/12: 9 in total',
+      '  - (-51,99,-87) Chest: 8',
+      '  - (-47,99,-83) Iron Chest: 1',
+      '  - … and 2 more place(s) holding less',
+      '- any screwSteel (ore name): 12804 in total',
+      '  - (-45,99,-83) Oak Drawers 1x2 [drawers]: 12800 (12800× gregtech:gt.metaitem.01/27305 "Steel Screw")',
+      '  - (-51,99,-87) Chest: 4 (3× gregtech:gt.metaitem.01/27305 "Steel Screw", 1× TConstruct:toughRod/16 "Steel Tough Tool Rod")',
+      '- minecraft:wool (any meta): none in storage here',
+    ])
+  })
+
+  it('find_in_storage：附近一个容器都没有时提醒先去仓库；每一项只能是物品 id 或矿辞名之一', async (t) => {
+    const s = setup(t)
+    s.game.handlers['world.stock'] = () => ({ items: [{ ore: 'screwSteel', total: 0, places: [] }], containersLookedInto: 0 })
+    const nothing = await s.run('find_in_storage', { items: [{ ore: 'screwSteel' }], radius: 48 })
+    assert.match(nothing.content, /no container within 48 blocks of you.*Go to where the storage is/)
+    for (const bad of [{}, { id: 'minecraft:wool', ore: 'blockWool' }, { meta: 3 }]) {
+      const res = await s.run('find_in_storage', { items: [{ ore: 'screwSteel' }, bad] })
+      assert.equal(res.isError, true)
+      assert.match(res.content, /items\[1\] needs exactly one of "id" .* or "ore"/)
+    }
+    assert.equal(s.game.callsOf('world.stock').length, 1)
+  })
+
+  it('craft_item 启动 craft 任务：要几个、用第几条配方、用哪个工作台都带过去；只给 id 时其余用身体的默认值', async (t) => {
+    const s = setup(t)
+    const queued = await s.run('craft_item', { id: 'adventurebackpack:backpackComponent', meta: 6, count: 2, recipe: 1, table: { x: -49, y: 99, z: -85 }, queue: true })
+    assert.match(queued.content, /Task t1 \(craft\) added to the end of your queue/)
+    await s.run('craft_item', { id: 'minecraft:stick' })
+    assert.deepEqual(s.game.callsOf('task.start'), [
+      { bot: 'Alu', task: { type: 'craft', id: 'adventurebackpack:backpackComponent', meta: 6, count: 2, recipe: 1, table: { x: -49, y: 99, z: -85 } }, mode: 'append' },
+      { bot: 'Alu', task: { type: 'craft', id: 'minecraft:stick' }, mode: 'replace' },
+    ])
+    assert.deepEqual(s.started, ['t1', 't2'])
+  })
+
+  it('服务器刚启动、配方索引还没建好（busy）时，模型得知没出错、过几秒再试', async (t) => {
+    const s = setup(t)
+    // 真实 mod 的原话
+    const busy = () => {
+      throw new BridgeError('busy', 'the recipe index is still being built; try again in a few seconds')
+    }
+    s.game.handlers['item.search'] = busy
+    s.game.handlers['recipe.find'] = busy
+    for (const res of [await s.run('find_item', { query: 'copter' }), await s.run('find_recipes', { id: GT, meta: 27305 })]) {
+      assert.equal(res.isError, true)
+      assert.match(res.content, /^busy: the recipe index is still being built; try again in a few seconds \(Nothing is wrong: .*again in a few seconds\.\)$/)
+    }
+  })
+
+  it('find_machines：每台机器的坐标、名字、跑哪种配方、等级、有没有电、是不是正在忙或被关了；可以按名字筛', async (t) => {
+    const s = setup(t)
+    // world.machines 的结果，形状照 docs/PROTOCOL.md
+    s.game.handlers['world.machines'] = (p) =>
+      p.name === 'Centrifuge'
+        ? { machines: [], total: 0 }
+        : {
+            machines: [
+              { x: -40, y: 99, z: -80, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 1, active: false, storedEU: 51200, inputVoltage: 128, dist: 5.4 },
+              { x: -38, y: 99, z: -80, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, active: false, storedEU: 0, inputVoltage: 0, dist: 7 },
+              { x: -36, y: 99, z: -80, name: 'Basic Macerator', recipes: 'Macerator', tier: 'LV', inputSlots: 1, active: true, progress: 74, maxProgress: 200, storedEU: 900, inputVoltage: 32, dist: 9.2 },
+              { x: -34, y: 99, z: -80, name: 'Basic Wiremill', recipes: 'Wiremill', tier: 'LV', inputSlots: 1, active: false, storedEU: 300, inputVoltage: 32, switchedOff: true, dist: 11 },
+            ],
+            total: 9,
+          }
+    const res = await s.run('find_machines')
+    assert.equal(res.isError, undefined)
+    // 以 bot 为中心
+    assert.deepEqual(s.game.callsOf('world.machines'), [{ bot: 'Alu', radius: 32 }])
+    const lines = res.content.split('\n')
+    assert.match(lines[0]!, /^4 single-block machine\(s\) within 32 blocks of you \(9 in range, the nearest 4 shown\), nearest first\./)
+    assert.deepEqual(lines.slice(1), [
+      '- (-40,99,-80) "Advanced Lathe": runs Lathe recipes, tier MV, has power (51200 EU stored), idle, 5 blocks away',
+      '- (-38,99,-80) "Basic Assembling Machine": runs Assembler recipes, tier LV, NO POWER (0 EU stored), idle, 7 blocks away',
+      '- (-36,99,-80) "Basic Macerator": runs Macerator recipes, tier LV, has power (900 EU stored), BUSY (37% of the current item done), 9 blocks away',
+      '- (-34,99,-80) "Basic Wiremill": runs Wiremill recipes, tier LV, has power (300 EU stored), SWITCHED OFF, idle, 11 blocks away',
+    ])
+
+    const none = await s.run('find_machines', { name: ' Centrifuge ', radius: 48, limit: 5 })
+    assert.deepEqual(s.game.callsOf('world.machines')[1], { bot: 'Alu', radius: 48, name: 'Centrifuge', limit: 5 })
+    assert.match(none.content, /^No GregTech single-block machine whose name or recipe type contains "Centrifuge" within 48 blocks of you/)
+    assert.match(none.content, /Multiblock machines, steam machines and machines of other mods are never listed and cannot be used\./)
+  })
+
+  it('process_items 启动 process 任务：哪台机器、放进去什么（含不消耗的编程电路）、最多等多久；原料没写数量的不发出去', async (t) => {
+    const s = setup(t)
+    const machine = { x: -38, y: 99, z: -80 }
+    const inputs = [
+      { id: GT, meta: 32600, count: 2 },
+      { id: GT, meta: 17305, count: 4 },
+      // 编程电路：meta 就是它的编号；不消耗，数量 1
+      { id: 'gregtech:gt.integrated_circuit', meta: 2, count: 1 },
+    ]
+    const res = await s.run('process_items', { machine, inputs, wait: 600, queue: true })
+    assert.match(res.content, /Task t1 \(process\) added to the end of your queue/)
+    await s.run('process_items', { machine, inputs: [{ id: GT, meta: 11305, count: 2 }] })
+    assert.deepEqual(s.game.callsOf('task.start'), [
+      { bot: 'Alu', task: { type: 'process', machine, inputs, wait: 600 }, mode: 'append' },
+      { bot: 'Alu', task: { type: 'process', machine, inputs: [{ id: GT, meta: 11305, count: 2 }] }, mode: 'replace' },
+    ])
+    const noCount = await s.run('process_items', { machine, inputs: [{ id: GT, meta: 11305 }] })
+    assert.equal(noCount.isError, true)
+    assert.match(noCount.content, /inputs\[0\]\.count is required/)
+    assert.equal(s.game.callsOf('task.start').length, 2)
+  })
+
+  it('task_status 里合成失败的任务：还缺的原料是整理过的文字（要几个、是什么、是不是工具）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't5', type: 'craft', state: 'failed', finishedAt: 100,
+          error: {
+            code: 'no_material',
+            message: 'the inventory lacks ingredients for 2 round(s) of this recipe',
+            detail: {
+              missing: [
+                { count: 8, name: 'Shaft (Refined Iron)', id: 'IC2:itemRecipePart', meta: 12 },
+                { count: 1, name: 'Single Use Screwdriver (any craftingToolScrewdriver)', ore: 'craftingToolScrewdriver', example: { id: 'gregtech:gt.metatool.01', meta: 22 }, alternatives: 6, tool: true },
+              ],
+            },
+          },
+          result: { crafted: 0, item: { id: 'adventurebackpack:backpackComponent', meta: 6, name: 'Copter Blades' }, freeSlots: 20 },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.match(
+      text,
+      /- t5 craft \[failed\] error=no_material: the inventory lacks ingredients for 2 round\(s\) of this recipe; missing \(not in your inventory, per ingredient\): 8× IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)"; 1× any craftingToolScrewdriver \(ore name, 6 kinds fit; e\.g\. gregtech:gt\.metatool\.01\/22 "Single Use Screwdriver"\) \[tool: [^\]]*\]; partial result: crafted 0× adventurebackpack:backpackComponent\/6 "Copter Blades", freeSlots 20$/m,
+    )
+  })
+})
+
+describe('手册', () => {
+  it('list_manuals 列出每本手册的名字和“什么时候看”；主人写的标出来', async (t) => {
+    const s = setup(t)
+    s.manuals.save({ name: '基地布局', summary: '要在基地里找仓库、机器、工作台时看。', body: '仓库在 (100,64,200) 一带，工作台在仓库门口。' })
+    const res = await s.run('list_manuals')
+    assert.equal(res.isError, undefined)
+    const lines = res.content.split('\n')
+    // 随代码发布的那几本，各带一句什么时候看
+    for (const name of ['blueprint', 'crafting', 'containers', 'terrain', 'travel', 'quests']) {
+      assert.ok(lines.some((l) => new RegExp(`^- ${name}: .{8,}`).test(l)), `lists ${name} with its one-line summary`)
+    }
+    assert.equal(lines.at(-1), '- 基地布局 (written by your owner): 要在基地里找仓库、机器、工作台时看。')
+  })
+
+  it('read_manual 给出整本手册，比“单个工具结果上限”长也不截断；主人改过的默认手册读到的是主人的那份', async (t) => {
+    const s = setup(t)
+    const whole = await s.run('read_manual', { name: 'blueprint' }, 300)
+    assert.equal(whole.isError, undefined)
+    assert.match(whole.content, /^Manual "blueprint": /)
+    assert.match(whole.content, /check_blueprint/)
+    assert.ok(whole.content.length > 1000, 'the whole manual, not the first 300 characters')
+    assert.equal(whole.content.includes('[truncated'), false)
+    assert.match(whole.content, /\[end of manual "blueprint", version [0-9a-f]{8}\]$/)
+
+    s.manuals.save({ name: 'blueprint', summary: '盖房子之前看（我们服的规矩）。', body: '一律先问我，不许自己清场。' })
+    const mine = await s.run('read_manual', { name: 'blueprint' })
+    assert.match(mine.content, /^Manual "blueprint" \(written by your owner\): 盖房子之前看（我们服的规矩）。\n\n一律先问我，不许自己清场。\n\n\[end of manual/)
+  })
+
+  it('read_manual：没有这本手册时列出有哪些', async (t) => {
+    const s = setup(t)
+    const res = await s.run('read_manual', { name: 'cooking' })
+    assert.equal(res.isError, true)
+    assert.match(res.content, /There is no manual named "cooking"\. The manuals are: .*blueprint.*quests/)
+  })
+})
+
+describe('任务书', () => {
+  it('list_quest_lines：每章的总数、主人已完成的和现在能做的', async (t) => {
+    const s = setup(t)
+    s.who.defaultPlayer = 'Steve'
+    s.game.handlers['quest.lines'] = () => ({
+      lines: [
+        { name: 'Tier 0 - Stone Age', quests: 52, complete: 45, available: 3 },
+        { name: 'Tier 0.5 - Steam', quests: 80, complete: 12, available: 8 },
+      ],
+      quests: 3814,
+    })
+    const res = await s.run('list_quest_lines')
+    assert.equal(res.isError, undefined)
+    // 模型没说看谁的：看主人的
+    assert.deepEqual(s.game.callsOf('quest.lines'), [{ player: 'Steve' }])
+    assert.match(res.content, /The quest book has 3814 quests in 2 chapters.*Progress of Steve per chapter: done \/ can be done now \/ total\./)
+    assert.match(res.content, /^- Tier 0 - Stone Age: 45 \/ 3 \/ 52$/m)
+    assert.match(res.content, /^- Tier 0\.5 - Steam: 12 \/ 8 \/ 80$/m)
+  })
+
+  it('find_quests：可以只按状态列（主人现在能做的），也可以按章节和词筛；结果是 id、标题、章节、状态', async (t) => {
+    const s = setup(t)
+    s.who.defaultPlayer = 'Steve'
+    s.game.handlers['quest.search'] = () => ({
+      quests: [
+        { id: '43', name: 'Wired, Weird?!', line: 'Tier 0.5 - Steam', state: 'available' },
+        { id: 'a81f1f2c-3d7e-4a4c-9a55-1f2e3d4c5b6a', name: 'Night Watch', line: 'Tier 0 - Stone Age', state: 'available' },
+      ],
+      total: 57,
+    })
+    const available = await s.run('find_quests', { state: 'available' })
+    assert.deepEqual(s.game.callsOf('quest.search')[0], { state: 'available', player: 'Steve' })
+    assert.match(available.content, /^57 quests match \(state available\) for Steve; the first 2 are shown\./)
+    assert.match(available.content, /^- 43 "Wired, Weird\?!" \[Tier 0\.5 - Steam\]: available$/m)
+    assert.match(available.content, /^- a81f1f2c-3d7e-4a4c-9a55-1f2e3d4c5b6a "Night Watch" \[Tier 0 - Stone Age\]: available$/m)
+
+    await s.run('find_quests', { query: ' electric motor ', line: 'Steam', state: 'complete', player: 'Alex', limit: 40 })
+    assert.deepEqual(s.game.callsOf('quest.search')[1], { query: 'electric motor', line: 'Steam', state: 'complete', player: 'Alex', limit: 40 })
+
+    // 搜不到，而且用的是中文词：任务书是英文的
+    s.game.handlers['quest.search'] = () => ({ quests: [], total: 0 })
+    const none = await s.run('find_quests', { query: '电动马达' })
+    assert.match(none.content, /No quest matches \(words "电动马达"\) for Steve\. The quest book is in English/)
+  })
+
+  it('get_quest：说明、前置任务完成没、每个子任务要什么（类型、物品、是否收走、完成没）、奖励', async (t) => {
+    const s = setup(t)
+    s.who.defaultPlayer = 'Steve'
+    // docs/PROTOCOL.md 里的例子，补全了省略的部分
+    s.game.handlers['quest.get'] = () => ({
+      id: '47',
+      name: 'Basic Crafting: Motors',
+      line: 'Tier 0.5 - Steam',
+      description: 'Motors are little devices that turn electricity\ninto motion.',
+      state: 'complete, reward unclaimed',
+      requires: [{ id: '43', name: 'Wired, Weird?!', complete: true }, { id: '44', name: 'Magnets', complete: false }],
+      tasks: [
+        { type: 'crafting', complete: true, items: [{ id: 'gregtech:gt.metaitem.01', meta: 32600, count: 2, name: 'Electric Motor (LV)' }] },
+        { type: 'optional_retrieval', complete: false, consumed: false, items: [{ id: 'minecraft:log', count: 4, name: 'Oak Wood', ore: 'logWood' }] },
+        { type: 'retrieval', complete: false, consumed: true, items: [{ id: 'minecraft:iron_ingot', meta: 0, count: 8, name: 'Iron Ingot' }] },
+        { type: 'hunt', complete: false, target: 'Zombie', count: 10 },
+        { type: 'location', complete: false, location: { x: 120, y: 70, z: -340, dim: 0 } },
+        { type: 'fluid', complete: false, fluids: [{ fluid: 'water', mb: 1000 }] },
+      ],
+      rewards: [{ type: 'item', items: [{ id: 'gregtech:gt.metaitem.01', meta: 32000, count: 15, name: 'Copper Coin' }] }],
+    })
+    const res = await s.run('get_quest', { id: ' 47 ' })
+    assert.deepEqual(s.game.callsOf('quest.get'), [{ id: '47', player: 'Steve' }])
+    const lines = res.content.split('\n')
+    assert.deepEqual(lines, [
+      'Quest 47 "Basic Crafting: Motors", chapter "Tier 0.5 - Steam". State for Steve: complete, reward unclaimed (done; the reward has not been collected).',
+      'Description: Motors are little devices that turn electricity into motion.',
+      'Requires these quests to be complete first:',
+      '- 43 "Wired, Weird?!": done',
+      '- 44 "Magnets": NOT done',
+      'Tasks (what the quest asks for):',
+      '- crafting, done: 2× gregtech:gt.metaitem.01/32600 "Electric Motor (LV)"',
+      '- optional_retrieval, not done, the items are kept: 4× minecraft:log (any meta) "Oak Wood" (or any logWood)',
+      '- retrieval, not done, the items are taken when handed in: 8× minecraft:iron_ingot "Iron Ingot"',
+      '- hunt, not done: kill 10× Zombie',
+      '- location, not done: be at (120,70,-340) in overworld (dim 0)',
+      '- fluid, not done: 1000 mB water',
+      'Rewards:',
+      '- item: 15× gregtech:gt.metaitem.01/32000 "Copper Coin"',
+    ])
+  })
+
+  it('看谁的进度：没有默认的人就不带 player；按状态筛却不知道看谁的，说明要给 player', async (t) => {
+    const s = setup(t)
+    s.game.handlers['quest.lines'] = () => ({ lines: [{ name: 'Tier 0 - Stone Age', quests: 52 }], quests: 3814 })
+    s.game.handlers['quest.search'] = () => ({ quests: [], total: 0 })
+    const lines = await s.run('list_quest_lines')
+    assert.deepEqual(s.game.callsOf('quest.lines'), [{}])
+    assert.match(lines.content, /no player given, so no progress/)
+    assert.match(lines.content, /^- Tier 0 - Stone Age: 52$/m)
+    const byState = await s.run('find_quests', { state: 'available' })
+    assert.equal(byState.isError, true)
+    assert.match(byState.content, /needs a player whose progress to look at: give "player"/)
+    assert.equal(s.game.callsOf('quest.search').length, 0)
+  })
+
+  it('默认要看的那个玩家任务书不认识（从没进过服务器）时，照样给出不带进度的结果并说明；服务器没装任务书时说清楚', async (t) => {
+    const s = setup(t)
+    s.who.defaultPlayer = 'Ghost'
+    // 真实 mod 的原话
+    s.game.handlers['quest.lines'] = (p) => {
+      if (p.player !== undefined) throw new BridgeError('not_found', 'the quest book knows no player named Ghost')
+      return { lines: [{ name: 'Tier 0 - Stone Age', quests: 52 }], quests: 3814 }
+    }
+    const res = await s.run('list_quest_lines')
+    assert.equal(res.isError, undefined)
+    assert.deepEqual(s.game.callsOf('quest.lines'), [{ player: 'Ghost' }, {}])
+    assert.match(res.content, /^- Tier 0 - Stone Age: 52$/m)
+    assert.match(res.content, /the quest book does not know a player named Ghost, so no progress is shown/)
+    // 模型自己点名要看的人不认识：原样报错，不悄悄换成别的
+    const named = await s.run('list_quest_lines', { player: 'Ghost' })
+    assert.equal(named.isError, true)
+    assert.match(named.content, /knows no player named Ghost/)
+
+    s.game.handlers['quest.get'] = () => {
+      throw new BridgeError('not_found', 'this server has no quest book (BetterQuesting)')
+    }
+    const noBook = await s.run('get_quest', { id: '47' })
+    assert.equal(noBook.isError, true)
+    assert.match(noBook.content, /This server has no quest book/)
+  })
+})
+
 describe('home、记忆、提醒', () => {
   it('set_home 执行 sethome 指令，并把地点和用途记进记忆', async (t) => {
     const s = setup(t)
@@ -544,6 +1274,7 @@ describe('home、记忆、提醒', () => {
       botName: 'Alu',
       bridge: new BridgeApi(game),
       memory: new MemoryStore(tmp.dir, () => 300),
+      manuals: new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals')),
       reminders: { add: (dueAt) => ({ id: 'r1', dueAt }) },
       hooks: {},
       now: () => NOW,

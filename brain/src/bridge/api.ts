@@ -3,6 +3,9 @@
 import type {
   BlockInfo,
   BlockPos,
+  BlueprintCheck,
+  BlueprintEntry,
+  BlueprintPlacement,
   BotListEntry,
   BotStatus,
   Center,
@@ -10,9 +13,17 @@ import type {
   EntityInfo,
   FindMatch,
   ItemFilter,
+  ItemSearchHit,
+  MachineInfo,
   ProbeResult,
+  QuestDetail,
+  QuestHit,
+  QuestLine,
+  RecipeFindResult,
   ScanResult,
   ServerInfo,
+  StockQuery,
+  StockResult,
   TaskInfo,
   TaskList,
   TaskSpec,
@@ -54,6 +65,52 @@ export class BridgeApi {
   }
   worldEntities(center: Center, p: { radius?: number } = {}): Promise<{ entities?: EntityInfo[]; total?: number }> {
     return this.call('world.entities', { ...center, ...p })
+  }
+
+  // 物品、配方、库存（只读）。服务器刚启动、配方索引还没建好时这几个方法返回 busy。
+  /** 按英文显示名或 id 找物品，最像的排前面。 */
+  itemSearch(query: string, limit?: number): Promise<{ items?: ItemSearchHit[] }> {
+    return this.call('item.search', limit === undefined ? { query } : { query, limit })
+  }
+  /** 某个物品怎么做。带 bot 时原料里有它身上现有的数量（have）。machine 给了就只列名字里含它的机器的配方。 */
+  recipeFind(p: { id: string; meta?: number; bot?: string; crafting?: number; machines?: number; machine?: string }): Promise<RecipeFindResult> {
+    return this.call('recipe.find', p)
+  }
+  /** 附近的 GregTech 单方块加工机器，由近到远。name 给了就只列名字或配方种类里含它的。 */
+  worldMachines(center: Center, p: { radius?: number; name?: string; limit?: number } = {}): Promise<{ machines?: MachineInfo[]; total?: number }> {
+    return this.call('world.machines', { ...center, ...p })
+  }
+  /** 这些东西存在附近哪些箱子、抽屉里，各多少。 */
+  worldStock(center: Center, p: { items: StockQuery[]; radius?: number }): Promise<StockResult> {
+    return this.call('world.stock', { ...center, ...p })
+  }
+
+  // 任务书（只读）。player 给了才有进度；服务器没装任务书时这几个方法返回 not_found。
+  questLines(player?: string): Promise<{ lines?: QuestLine[]; quests?: number }> {
+    return this.call('quest.lines', player === undefined ? {} : { player })
+  }
+  /** query 的每个词都要出现在标题或说明里；line 是章节名的一部分；state 需要 player。 */
+  questSearch(p: { query?: string; line?: string; state?: string; player?: string; limit?: number }): Promise<{ quests?: QuestHit[]; total?: number }> {
+    return this.call('quest.search', p)
+  }
+  questGet(id: string, player?: string): Promise<QuestDetail> {
+    return this.call('quest.get', player === undefined ? { id } : { id, player })
+  }
+
+  // 图纸
+  blueprintList(): Promise<{ blueprints?: BlueprintEntry[]; folder?: string }> {
+    return this.call('blueprint.list')
+  }
+  /** 把世界和图纸逐格对比，只读。带 bot 时用它所在的维度，materials 里有它身上的数量（have）。 */
+  blueprintCheck(p: BlueprintPlacement & { bot?: string; dim?: number; layers?: boolean }): Promise<BlueprintCheck> {
+    return this.call('blueprint.check', p)
+  }
+  /** data 是 .schematic 文件内容的 base64（文件最大 2 MiB）。同名覆盖。 */
+  blueprintPut(name: string, data: string): Promise<BlueprintEntry> {
+    return this.call('blueprint.put', { name, data })
+  }
+  blueprintRemove(name: string): Promise<{ removed?: boolean }> {
+    return this.call('blueprint.remove', { name })
   }
 
   // bot 生命周期

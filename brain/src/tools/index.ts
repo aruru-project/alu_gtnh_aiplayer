@@ -2,8 +2,11 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
+import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
+import { craftItem, findInStorage, findItem, findMachines, findRecipes, processItems } from './crafting.ts'
 import { clip } from './format.ts'
+import { listManuals, readManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
 import {
   findBlocks,
@@ -15,6 +18,7 @@ import {
   probeBlock,
   scanArea,
 } from './observe.ts'
+import { findQuests, getQuest, listQuestLines } from './quests.ts'
 import { validate } from './schema.ts'
 import {
   cancelTask,
@@ -40,7 +44,7 @@ import {
 import { ToolFailure } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
-export type { MemoryAccess, ReminderAccess, Tool, ToolContext, ToolHooks, ToolResult } from './types.ts'
+export type { ManualAccess, MemoryAccess, ReminderAccess, Tool, ToolContext, ToolHooks, ToolResult } from './types.ts'
 
 export const ALL_TOOLS: readonly Tool[] = [
   say,
@@ -65,16 +69,30 @@ export const ALL_TOOLS: readonly Tool[] = [
   fillArea,
   digBlocks,
   placeBlocks,
+  listBlueprints,
+  checkBlueprint,
+  buildBlueprint,
   depositItems,
   withdrawItems,
   haulItems,
   collectItems,
   giveItems,
+  findItem,
+  findRecipes,
+  findInStorage,
+  findMachines,
+  craftItem,
+  processItems,
+  listQuestLines,
+  findQuests,
+  getQuest,
   taskStatus,
   cancelTask,
   remember,
   forget,
   setReminder,
+  listManuals,
+  readManual,
 ]
 
 export function toToolSpecs(tools: readonly Tool[]): ToolSpec[] {
@@ -90,6 +108,7 @@ const BRIDGE_HINTS: Record<string, string> = {
   not_found: 'Check the name or id.',
   bad_request: 'The arguments were rejected; fix them before trying again.',
   too_large: 'The request is too big; split it into smaller pieces.',
+  busy: 'Nothing is wrong: the game server has just started and is still building its recipe index, which takes about 20 seconds. Make the same call again in a few seconds.',
 }
 
 /**
@@ -132,7 +151,8 @@ export async function runTool(
   try {
     const raw = await tool.run(ctx, checked.value)
     const result: ToolResult = typeof raw === 'string' ? { content: raw } : raw
-    return result.isError ? { content: clip(result.content, max), isError: true } : { content: clip(result.content, max) }
+    const content = result.keepWhole ? result.content : clip(result.content, max)
+    return result.isError ? { content, isError: true } : { content }
   } catch (e) {
     if (e instanceof ToolFailure) return { content: e.message, isError: true }
     if (e instanceof BridgeError) {

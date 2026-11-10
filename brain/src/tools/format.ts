@@ -1,13 +1,28 @@
 // 把协议数据排成给模型看的紧凑文本。agent 的状态快照和工具结果共用。
 
 import type {
+  BlueprintByHand,
+  BlueprintCheck,
+  BlueprintEntry,
+  BlueprintMaterial,
+  BlueprintObstacle,
   BotStatus,
   ContainerInfo,
   EntityInfo,
   InventoryItem,
   Item,
+  ItemSearchHit,
+  MachineInfo,
+  MachineRecipe,
+  QuestDetail,
+  QuestHit,
+  QuestItem,
+  QuestLine,
+  RecipeFindResult,
+  RecipeIngredient,
   ScanResult,
   ServerInfo,
+  StockResult,
   TaskInfo,
 } from '../bridge/protocol.ts'
 
@@ -127,16 +142,42 @@ export function formatTask(task: TaskInfo, opts: { params?: boolean } = {}): str
     if (p.note) s += ` (${p.note})`
   }
   if (opts.params && task.params) s += ` params=${compactJson(task.params, 300)}`
+  const lines = taskLines(task)
   if (task.state === 'failed' || task.error) {
     const e = task.error
     s += ` error=${e?.code ?? 'unknown'}`
     if (e?.message) s += `: ${e.message}`
-    if (e?.detail && Object.keys(e.detail).length > 0) s += ` detail=${compactJson(e.detail, 300)}`
+    if (e?.detail && Object.keys(e.detail).length > 0) {
+      s += lines.error ? lines.error.map((l) => `; ${l}`).join('') : ` detail=${compactJson(e.detail, 300)}`
+    }
   }
   if (task.result && Object.keys(task.result).length > 0) {
-    s += ` ${task.state === 'done' ? 'result' : 'partial result'}=${compactJson(trimTaskResult(task.result), 600)}`
+    const label = task.state === 'done' ? 'result' : 'partial result'
+    s += lines.result ? `; ${label}: ${lines.result.join('; ')}` : ` ${label}=${compactJson(trimTaskResult(task.result), 600)}`
   }
   return s
+}
+
+/**
+ * 有些任务的错误详情和结果是几张表（照图纸建的结果、合成时缺的原料）：原样的 JSON 很长，截断了模型就看不到后半截。
+ * 这类任务在这里排成几行短文本（字段名照协议）。返回里没有的那一项，调用方照旧给紧凑 JSON。
+ */
+export function taskLines(task: TaskInfo): { error?: string[]; result?: string[] } {
+  const out: { error?: string[]; result?: string[] } = {}
+  const detail = task.error?.detail
+  const result = task.result
+  if (task.type === 'blueprint') {
+    if (detail && Object.keys(detail).length > 0) out.error = blueprintErrorLines(detail)
+    if (result && Object.keys(result).length > 0) out.result = blueprintResultLines(result)
+  } else if (task.type === 'craft') {
+    if (detail && Array.isArray(detail.missing)) out.error = craftErrorLines(detail)
+    if (result && isObject(result.item)) out.result = craftResultLines(result)
+  } else if (task.type === 'process') {
+    // 机器没收原料、没开工时，detail 是那台机器的状态
+    if (detail && (typeof detail.storedEU === 'number' || typeof detail.recipes === 'string')) out.error = processErrorLines(detail)
+    if (result && Array.isArray(result.outputs)) out.result = processResultLines(result)
+  }
+  return out
 }
 
 /** Minecraft 的 dayTime（0–23999，0 是早上 6 点）换成钟点。 */
@@ -201,8 +242,11 @@ export function formatServerInfo(info: ServerInfo, botName: string, botDim: numb
 }
 
 export function formatContainer(c: ContainerInfo, itemLimit: number): string {
-  const slots = c.slots !== undefined ? ` ${c.usedSlots ?? '?'}/${c.slots} slots used` : ''
-  return `${formatPos(c)} ${displayName(c.name) ?? c.id} [${c.id}]${slots}: ${formatItems(c.items ?? [], itemLimit)}`
+  // 抽屉（Storage Drawers）标出来：它的“格”是抽屉格，数量是真实库存，一格可以上万
+  const drawers = c.kind === 'drawers'
+  const kind = drawers ? ' [drawers]' : c.kind ? ` [${c.kind}]` : ''
+  const slots = c.slots !== undefined ? ` ${c.usedSlots ?? '?'}/${c.slots} ${drawers ? 'drawer slots' : 'slots'} used` : ''
+  return `${formatPos(c)} ${displayName(c.name) ?? c.id} [${c.id}]${kind}${slots}: ${formatItems(c.items ?? [], itemLimit)}`
 }
 
 export function formatEntities(entities: readonly EntityInfo[]): string {
@@ -403,4 +447,585 @@ export function formatTerrainSummary(scan: ScanResult): string {
   const tiles = scan.tileEntities?.length ?? 0
   if (tiles > 0) parts.push(`${tiles} blocks with data near the surface (chests/machines)`)
   return parts.join('; ')
+}
+
+// ── 图纸 ──
+
+/** blueprint.check 的结果里每张表最多给模型看这么多种（身体最多给 30 种）。 */
+export const BLUEPRINT_MATERIALS_SHOWN = 30
+export const BLUEPRINT_KINDS_SHOWN = 15
+/** 层的概况最多列这么多行（相邻且数字相同的层合成一行）。 */
+export const BLUEPRINT_LAYER_ROWS_SHOWN = 24
+/** 任务失败时的缺料清单身体不设上限，这里最多列这么多种。 */
+export const BLUEPRINT_MISSING_SHOWN = 12
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** 任务结果、错误详情里的一张表：只留带 id 的对象。 */
+function kindList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => isObject(x) && typeof x.id === 'string') : []
+}
+
+function count(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+/** 一种方块：数量× id 或 id/meta，带显示名。 */
+function kindText(n: unknown, b: { id?: unknown; meta?: unknown; name?: unknown }): string {
+  const m: MergedItem = { id: String(b.id), meta: count(b.meta), count: count(n) }
+  if (typeof b.name === 'string') m.name = b.name
+  return formatItem(m)
+}
+
+/** 一张表最多列 limit 项，多出来的说明还有几种、共多少个。 */
+function capKinds<T>(items: readonly T[], limit: number, line: (item: T) => string, amount: (item: T) => number): string[] {
+  const out = items.slice(0, limit).map(line)
+  if (items.length > limit) {
+    const rest = items.slice(limit)
+    out.push(`… and ${rest.length} more kinds (${rest.reduce((n, x) => n + amount(x), 0)} blocks)`)
+  }
+  return out
+}
+
+function materialText(m: BlueprintMaterial | Record<string, unknown>): string {
+  return `${kindText(m.need, m)}${typeof m.have === 'number' ? ` (you carry ${m.have})` : ''}`
+}
+
+function byHandText(b: BlueprintByHand | Record<string, unknown>): string {
+  return `${kindText(b.count, b)}${typeof b.why === 'string' && b.why.length > 0 ? ` (${b.why})` : ''}`
+}
+
+/** 挡路或多出来的一种方块：是不是天然地形、按现在的 clear 会挖掉多少、多少个带数据谁也不动。 */
+function obstacleText(o: BlueprintObstacle | Record<string, unknown>): string {
+  const notes: string[] = [o.natural === true ? 'natural terrain' : 'not natural terrain']
+  if (typeof o.removable === 'number') notes.push(`clear digs ${o.removable}`)
+  if (count(o.holdsData) > 0) notes.push(`${count(o.holdsData)} of them hold data and are never dug`)
+  return `${kindText(o.count, o)} (${notes.join(', ')})`
+}
+
+export function formatBlueprintList(list: readonly BlueprintEntry[], folder: string | undefined): string {
+  if (list.length === 0) {
+    return (
+      'There are no blueprints on the server yet. The owner can upload .schematic files on the blueprints page of the control panel' +
+      `${folder ? `, or put them into ${folder} on the game server` : ''}.`
+    )
+  }
+  const lines = list.slice(0, 60).map((b) => {
+    if (b.error !== undefined || !b.size) return `- ${b.name}: cannot be used (${b.error ?? 'the server gave no size'})`
+    return `- ${b.name}: ${b.size.x}×${b.size.y}×${b.size.z}, ${b.blocks ?? '?'} blocks`
+  })
+  if (list.length > 60) lines.push(`- … ${list.length - 60} more`)
+  return `${list.length} blueprint(s) on the server. Sizes are x × y (height) × z, counted from the lowest corner:\n${lines.join('\n')}`
+}
+
+/** 层的概况：只列还有活要干的层，相邻且数字相同的合成一行。 */
+function layerLines(layers: readonly number[][]): string[] {
+  const rows = layers.filter((r) => Array.isArray(r) && r.length >= 6)
+  const open = rows.filter((r) => r[1]! - r[2]! > 0 || r[5]! > 0)
+  if (rows.length === 0) return []
+  if (open.length === 0) return [`All ${rows.length} layers already match the blueprint.`]
+  const runs: { from: number; to: number; row: number[] }[] = []
+  for (const row of open) {
+    const last = runs[runs.length - 1]
+    if (last && row[0] === last.to + 1 && row.slice(1, 6).join() === last.row.slice(1, 6).join()) last.to = row[0]!
+    else runs.push({ from: row[0]!, to: row[0]!, row })
+  }
+  const out = ["Layers with work left (done is out of that layer's blueprint blocks; layers not listed already match):"]
+  for (const run of runs.slice(0, BLUEPRINT_LAYER_ROWS_SHOWN)) {
+    const [, cells, done, toPlace, blocked, extra] = run.row
+    const y = run.to === run.from ? `y ${run.from}` : `y ${run.from}..${run.to} (each layer)`
+    out.push(`- ${y}: done ${done}/${cells}, toPlace ${toPlace}, blocked ${blocked}, extra ${extra}`)
+  }
+  if (runs.length > BLUEPRINT_LAYER_ROWS_SHOWN) out.push(`- … ${runs.length - BLUEPRINT_LAYER_ROWS_SHOWN} more rows`)
+  return out
+}
+
+/**
+ * blueprint.check 的结果排成短文本：各项计数、要放的材料、得由人放的、挡路的和多出来的、还有活要干的层。
+ * clearGiven：这次检查有没有给 clear（不给就一块都不挖，要说清楚）。
+ */
+export function formatBlueprintCheck(c: BlueprintCheck, opts: { clearGiven: boolean }): string {
+  const lines: string[] = []
+  const box = c.box
+  let head = `Blueprint "${c.name ?? '?'}" with its lowest corner at ${formatPos(c.origin)}.`
+  if (box) {
+    head +=
+      ` Compared x ${box.x1}..${box.x2}, y ${box.y1}..${box.y2}, z ${box.z1}..${box.z2}` +
+      ` (${box.x2 - box.x1 + 1}×${box.y2 - box.y1 + 1}×${box.z2 - box.z1 + 1}, x × y × z). Nothing was changed.`
+  }
+  lines.push(head)
+  if (count(c.unloaded) > 0) {
+    lines.push(
+      `INCOMPLETE: ${c.unloaded} cells are in chunks that are not loaded and could not be compared. Go closer to the site and check again before relying on these numbers.`,
+    )
+  }
+
+  const blocked = count(c.blocked)
+  const extra = count(c.extra)
+  lines.push(`Blueprint blocks in this range (cells): ${count(c.cells)}`)
+  lines.push(`- done: ${count(c.done)} already in place`)
+  lines.push(`- toPlace: ${count(c.toPlace)} empty spots you can fill`)
+  lines.push(`- byHand: ${count(c.byHand)} empty spots a player has to fill`)
+  lines.push(`- blocked: ${blocked} spots taken by some other block`)
+  lines.push(`- extra: ${extra} blocks standing where the blueprint is empty`)
+  if (blocked + extra > 0) {
+    lines.push(
+      opts.clearGiven
+        ? `With this clear list ${count(c.willRemove)} of those ${blocked + extra} blocked/extra blocks would be dug out; the rest stay where they are.`
+        : `No clear list was given, so nothing would be dug out: blocked spots are skipped and extra blocks stay.`,
+    )
+  }
+
+  const materials = c.materials ?? []
+  if (materials.length > 0) {
+    lines.push('Materials to place (taken from your inventory, then from the supply containers):')
+    for (const l of capKinds(materials, BLUEPRINT_MATERIALS_SHOWN, materialText, (m) => count(m.need))) lines.push(`- ${l}`)
+    if (materials.every((m) => typeof m.have === 'number')) {
+      const short = materials.reduce((n, m) => n + Math.max(0, count(m.need) - count(m.have)), 0)
+      lines.push(
+        short > 0
+          ? `You are ${short} blocks short in total; they have to come from supply containers or the owner.`
+          : 'You carry enough of all of them.',
+      )
+    }
+  } else {
+    lines.push('Materials to place: none.')
+  }
+
+  const byHand = c.byHandBlocks ?? []
+  if (byHand.length > 0) {
+    lines.push('A player has to place these (you cannot place them):')
+    for (const l of capKinds(byHand, BLUEPRINT_KINDS_SHOWN, byHandText, (b) => count(b.count))) lines.push(`- ${l}`)
+  }
+
+  const blockedBy = c.blockedBy ?? []
+  if (blockedBy.length > 0) {
+    lines.push('In the way of blueprint blocks (blockedBy):')
+    for (const l of capKinds(blockedBy, BLUEPRINT_KINDS_SHOWN, obstacleText, (o) => count(o.count))) lines.push(`- ${l}`)
+  }
+  const extraBlocks = c.extraBlocks ?? []
+  if (extraBlocks.length > 0) {
+    lines.push('Standing where the blueprint is empty (extraBlocks):')
+    for (const l of capKinds(extraBlocks, BLUEPRINT_KINDS_SHOWN, obstacleText, (o) => count(o.count))) lines.push(`- ${l}`)
+  }
+  // 会被挖掉、又不是天然地形的：可能是别人盖的东西，单独点出来
+  const built = [...blockedBy, ...extraBlocks].filter((o) => o.natural !== true && count(o.removable) > 0)
+  if (built.length > 0) {
+    lines.push(
+      `Note: this clear list would dig out blocks that are not natural terrain (${built
+        .slice(0, 8)
+        .map((o) => kindText(o.removable, o))
+        .join(', ')}${built.length > 8 ? ', …' : ''}). Someone may have built them.`,
+    )
+  }
+
+  lines.push(...layerLines(c.layers ?? []))
+  return lines.join('\n')
+}
+
+const BLUEPRINT_NOW_KEYS = ['cells', 'done', 'toPlace', 'byHand', 'blocked', 'extra', 'unloaded'] as const
+const BLUEPRINT_RESULT_KEYS = new Set([
+  'removed',
+  'placed',
+  'freeSlots',
+  'skipped',
+  'skippedExamples',
+  'needsClimbingBlocks',
+  'climbingBlocksLeftStanding',
+  'now',
+  'materials',
+  'byHandBlocks',
+  'blockedBy',
+  'extraBlocks',
+])
+
+/**
+ * blueprint 任务的结果排成几行短文本（字段名照协议）：挖了放了多少、跳过了什么、
+ * now（此刻世界和图纸的对比）、还缺的材料、得由人放的、还挡着的。
+ */
+export function blueprintResultLines(result: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  const head: string[] = []
+  for (const key of ['removed', 'placed', 'freeSlots'] as const) {
+    if (typeof result[key] === 'number') head.push(`${key} ${result[key]}`)
+  }
+  if (head.length > 0) lines.push(head.join(', '))
+  if (isObject(result.skipped) && Object.keys(result.skipped).length > 0) {
+    let s = `skipped ${compactJson(result.skipped, 300)}`
+    const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isObject) : []
+    if (examples.length > 0) {
+      s += `, e.g. ${examples
+        .slice(0, SKIPPED_EXAMPLES_SHOWN)
+        .map((e) => `(${String(e.x)},${String(e.y)},${String(e.z)}) ${String(e.reason ?? '')}`.trim())
+        .join('; ')}`
+      if (examples.length > SKIPPED_EXAMPLES_SHOWN) s += `; ${examples.length - SKIPPED_EXAMPLES_SHOWN} more examples not shown`
+    }
+    lines.push(s)
+  }
+  if (result.needsClimbingBlocks === true) {
+    lines.push('needsClimbingBlocks: true (some spots were too high to reach and you carry no dirt or cobblestone to climb on)')
+  }
+  if (count(result.climbingBlocksLeftStanding) > 0) lines.push(`climbingBlocksLeftStanding ${count(result.climbingBlocksLeftStanding)}`)
+  if (isObject(result.now)) {
+    const now = result.now
+    const parts = BLUEPRINT_NOW_KEYS.filter((k) => typeof now[k] === 'number').map((k) => `${k} ${String(now[k])}`)
+    lines.push(`now (the world compared with the blueprint): ${parts.join(', ')}`)
+  }
+  const materials = kindList(result.materials)
+  if (materials.length > 0) lines.push(`materials still to place: ${materials.map(materialText).join(', ')}`)
+  const byHand = kindList(result.byHandBlocks)
+  if (byHand.length > 0) lines.push(`byHandBlocks (a player has to place them): ${byHand.map(byHandText).join(', ')}`)
+  const blockedBy = kindList(result.blockedBy)
+  if (blockedBy.length > 0) lines.push(`blockedBy (still in the way): ${blockedBy.map(obstacleText).join(', ')}`)
+  const extraBlocks = kindList(result.extraBlocks)
+  if (extraBlocks.length > 0) lines.push(`extraBlocks (still where the blueprint is empty): ${extraBlocks.map(obstacleText).join(', ')}`)
+  // 协议以后加的字段不能悄悄丢掉
+  const rest = Object.fromEntries(Object.entries(result).filter(([k]) => !BLUEPRINT_RESULT_KEYS.has(k)))
+  if (Object.keys(rest).length > 0) lines.push(`other: ${compactJson(rest, 300)}`)
+  return lines
+}
+
+/** blueprint 任务失败时的 detail：missing 是每种材料缺多少。 */
+export function blueprintErrorLines(detail: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  const { missing, supplyProblem, ...rest } = detail
+  const kinds = kindList(missing)
+  if (kinds.length > 0) {
+    lines.push(
+      `missing (left unplaced for want of material): ${capKinds(kinds, BLUEPRINT_MISSING_SHOWN, (m) => kindText(m.count, m), (m) => count(m.count)).join(', ')}`,
+    )
+  } else if (missing !== undefined) {
+    rest.missing = missing
+  }
+  if (typeof supplyProblem === 'string') lines.push(`supplyProblem: ${supplyProblem}`)
+  else if (supplyProblem !== undefined) rest.supplyProblem = supplyProblem
+  if (Object.keys(rest).length > 0) lines.push(`detail: ${compactJson(rest, 300)}`)
+  return lines
+}
+
+// ── 物品、配方、库存 ──
+
+/** id/meta 的写法；meta 缺省（任何变体都行）时写明 any meta，免得和 meta 0 混在一起。 */
+function idText(x: { id?: unknown; meta?: unknown }): string {
+  return typeof x.meta === 'number' ? itemKey({ id: String(x.id), meta: x.meta }) : `${String(x.id)} (any meta)`
+}
+
+function quoted(name: unknown): string {
+  const shown = typeof name === 'string' ? displayName(name) : undefined
+  return shown ? ` "${shown}"` : ''
+}
+
+export function formatItemSearch(query: string, hits: readonly ItemSearchHit[]): string {
+  if (hits.length === 0) {
+    // 服务器上的显示名是英文的：中文名搜不到，要模型自己译成英文
+    const english = /^[\x20-\x7e]*$/.test(query) ? '' : ' Item names on this server are in English: translate the name and search for that.'
+    return `No item has all the words of "${query}" in its name or id.${english} Try fewer or other words (one distinctive word often works).`
+  }
+  const lines = hits.map((h) => {
+    const r = h.recipes ?? {}
+    const made: string[] = []
+    if (count(r.crafting) > 0) made.push(`${r.crafting} crafting`)
+    if (count(r.machine) > 0) made.push(`${r.machine} machine`)
+    if (count(r.smelting) > 0) made.push(`${r.smelting} smelting`)
+    const ores = (h.ores ?? []).length > 0 ? `; ore names: ${h.ores!.slice(0, 6).join(', ')}${h.ores!.length > 6 ? ', …' : ''}` : ''
+    return `- ${itemKey({ id: h.id, meta: count(h.meta) })}${quoted(h.name)}: ${made.length > 0 ? `recipes: ${made.join(', ')}` : 'no known recipe'}${ores}`
+  })
+  return `${hits.length} item(s) match "${query}", best match first (written as id or id/meta):\n${lines.join('\n')}`
+}
+
+/** 配方里的一样原料：要几个、是确定的物品还是“任何 xxx”（矿辞名）、是不是只磨损不消耗的工具、身上已有几个。 */
+export function ingredientText(ing: RecipeIngredient | Record<string, unknown>): string {
+  const n = count(ing.count)
+  let s: string
+  if (typeof ing.id === 'string') {
+    s = `${n}× ${idText(ing)}${quoted(ing.name)}`
+  } else {
+    // 矿辞（或一组可以互相替换的物品）：name 是 “Steel Screw (any screwSteel)” 这样的，去掉后缀就是 example 的名字
+    const example = isObject(ing.example) ? ing.example : undefined
+    const exampleName = typeof ing.name === 'string' ? ing.name.replace(/ \((any [^()]*)\)$| or similar$/, '') : undefined
+    const eg = example ? `${idText(example)}${quoted(exampleName)}` : quoted(exampleName).trim()
+    const kinds = count(ing.alternatives) > 1 ? `${count(ing.alternatives)} kinds fit` : ''
+    if (typeof ing.ore === 'string') {
+      s = `${n}× any ${ing.ore} (ore name${kinds ? `, ${kinds}` : ''}${eg ? `; e.g. ${eg}` : ''})`
+    } else {
+      s = `${n}× ${eg || 'an item'} or a similar item${kinds ? ` (${kinds})` : ''}`
+    }
+  }
+  if (ing.tool === true) s += ' [tool: must be in your inventory, wears but is not used up]'
+  if (typeof ing.have === 'number') s += `, you carry ${ing.have}`
+  return s
+}
+
+function machineRecipeText(r: MachineRecipe): string {
+  const power = r.tier && typeof r.eut === 'number' ? `${r.tier} (${r.eut} EU/t)` : (r.tier ?? (typeof r.eut === 'number' ? `${r.eut} EU/t` : ''))
+  const head = [r.machine, power, typeof r.seconds === 'number' ? `${r.seconds} s` : ''].filter((x) => x.length > 0).join(', ')
+  const fluid = (f: { name: string; mb: number }) => `${f.mb} mB ${f.name}`
+  const inputs = [
+    ...(r.inputs ?? []).map((i) => (i.notConsumed === true ? `${itemKey(i)}${quoted(i.name)} (stays in the machine, not used up)` : kindText(i.count, i))),
+    ...(r.fluidInputs ?? []).map(fluid),
+  ]
+  const outputs = [...(r.outputs ?? []).map((o) => kindText(o.count, o)), ...(r.fluidOutputs ?? []).map(fluid)]
+  return `${head}: ${inputs.join(' + ') || 'nothing'} -> ${outputs.join(' + ') || 'nothing'}`
+}
+
+/**
+ * recipe.find 的结果排成短文本：合成台配方（每样原料一行）、机器配方（一条一行）、每种机器有几条（一行）、熔炉。
+ * machineFilter：这次查询有没有指定只看某种机器。
+ */
+export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: string } = {}): string {
+  const item = r.item ?? { id: '?' }
+  const total = r.total ?? {}
+  const crafting = r.crafting ?? []
+  const machines = r.machines ?? []
+  const smelted = r.smeltedFrom ?? []
+  const what = `${itemKey({ id: item.id, meta: count(item.meta) })}${quoted(item.name)}`
+  const totalCrafting = Math.max(count(total.crafting), crafting.length)
+  const totalMachines = Math.max(count(total.machines), machines.length)
+  const totalSmelting = Math.max(count(total.smelting), smelted.length)
+  if (totalCrafting + totalMachines + totalSmelting === 0) {
+    return `No recipe is known for ${what}: it is not crafted, made in a machine or smelted (it may be mined, dropped or traded). Look for it in storage or ask the owner.`
+  }
+  const lines: string[] = [`Recipes for ${what}: ${totalCrafting} crafting, ${totalMachines} machine, ${totalSmelting} smelting.`]
+
+  if (crafting.length > 0) {
+    lines.push('Crafting by hand (craft_item; "recipe" is the number to pass):')
+    for (const c of crafting) {
+      if (c.unreadable === true) {
+        lines.push(`- recipe ${c.index}: its ingredients cannot be read (a mod's own kind of recipe), so craft_item cannot make it`)
+        continue
+      }
+      const grid = c.grid === '2x2' ? '2x2 grid (no crafting table needed)' : `${c.grid ?? '3x3'} grid (needs a crafting table or crafting station)`
+      lines.push(`- recipe ${c.index}: gives ${c.gives ?? 1}, ${grid}. Ingredients for one round:`)
+      for (const ing of c.ingredients ?? []) lines.push(`  - ${ingredientText(ing)}`)
+    }
+    if (totalCrafting > crafting.length) lines.push(`(${crafting.length} of ${totalCrafting} crafting recipes shown)`)
+  } else if (totalCrafting === 0) {
+    lines.push('Crafting by hand: no recipe. craft_item cannot make it.')
+  }
+
+  if (machines.length > 0) {
+    lines.push(
+      'Machine recipes (run one with process_items on a single-block machine that find_machines lists with this recipe type and at least this tier; you cannot supply fluids):',
+    )
+    for (const m of machines) lines.push(`- ${machineRecipeText(m)}`)
+  }
+  const perMachine = Object.entries(r.machineRecipeCounts ?? {})
+  if (perMachine.length > 0) {
+    let line = `Machine recipes per machine: ${perMachine.map(([name, n]) => `${name} ${n}`).join(', ')}.`
+    if (totalMachines > machines.length) {
+      line += opts.machineFilter
+        ? ` ${machines.length} shown for "${opts.machineFilter}".`
+        : ` ${machines.length} of ${totalMachines} shown; give "machine" to see the recipes of one machine.`
+    }
+    lines.push(line)
+  }
+
+  if (smelted.length > 0) lines.push(`Furnace: smelted from ${smelted.map((x) => kindText(x.count, x)).join(' or ')}.`)
+  return lines.join('\n')
+}
+
+/** world.stock 的结果：每样东西一共多少、在哪几处（坐标、容器名、是不是抽屉、数量、具体是哪种物品）。 */
+export function formatStock(res: StockResult, radius: number): string {
+  const looked = count(res.containersLookedInto)
+  const items = res.items ?? []
+  if (looked === 0) {
+    return `There is no container within ${radius} blocks of you (only loaded chunks are searched). Go to where the storage is and look again.`
+  }
+  const lines: string[] = [
+    `Looked into ${looked} container(s) within ${radius} blocks of you. Take things out with withdraw_items (container = the position, items = the exact id/meta).`,
+  ]
+  for (const it of items) {
+    const what = typeof it.ore === 'string' ? `any ${it.ore} (ore name)` : idText(it)
+    if (count(it.total) === 0) {
+      lines.push(`- ${what}: none in storage here`)
+      continue
+    }
+    lines.push(`- ${what}: ${it.total} in total`)
+    for (const p of it.places ?? []) {
+      const exact = (p.items ?? []).map((x) => kindText(x.count, x)).join(', ')
+      lines.push(`  - ${formatPos(p)} ${p.container ?? 'container'}${p.kind ? ` [${p.kind}]` : ''}: ${p.count}${exact ? ` (${exact})` : ''}`)
+    }
+    if (count(it.morePlaces) > 0) lines.push(`  - … and ${it.morePlaces} more place(s) holding less`)
+  }
+  return lines.join('\n')
+}
+
+/** craft 任务以 no_material 失败时的 detail：missing 是每样原料还差多少（格式同配方里的原料）。 */
+export function craftErrorLines(detail: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  const { missing, ...rest } = detail
+  const list = Array.isArray(missing) ? missing.filter(isObject) : []
+  if (list.length > 0) lines.push(`missing (not in your inventory, per ingredient): ${list.map(ingredientText).join('; ')}`)
+  else if (missing !== undefined) rest.missing = missing
+  if (Object.keys(rest).length > 0) lines.push(`detail: ${compactJson(rest, 300)}`)
+  return lines
+}
+
+/** craft 任务的结果：多出来几个什么、背包还剩几格。 */
+export function craftResultLines(result: Record<string, unknown>): string[] {
+  const { crafted, item, freeSlots, ...rest } = result
+  let line = `crafted ${isObject(item) ? kindText(crafted, item) : String(crafted)}`
+  if (typeof freeSlots === 'number') line += `, freeSlots ${freeSlots}`
+  if (Object.keys(rest).length > 0) line += `, other: ${compactJson(rest, 200)}`
+  return [line]
+}
+
+// ── 任务书 ──
+
+export const QUEST_LINES_SHOWN = 120
+
+/** 任务要的或奖励的一样物品。任务书里存的不一定齐全：id、meta、名字都可能缺。 */
+function questItemText(i: QuestItem): string {
+  const n = count(i.count) || 1
+  const what = typeof i.id === 'string' ? `${idText(i)}${quoted(i.name)}` : quoted(i.name).trim() || 'an unknown item'
+  return `${n}× ${what}${typeof i.ore === 'string' && i.ore.length > 0 ? ` (or any ${i.ore})` : ''}`
+}
+
+/** 章节列表：每章总数；给了玩家时还有已完成的和现在能做的。 */
+export function formatQuestLines(res: { lines?: QuestLine[]; quests?: number }, player: string | undefined): string {
+  const lines = res.lines ?? []
+  if (lines.length === 0) return 'The quest book has no chapters.'
+  const withProgress = lines.some((l) => typeof l.complete === 'number')
+  const head =
+    `The quest book has ${res.quests ?? '?'} quests in ${lines.length} chapters, in the book's order. ` +
+    (withProgress ? `Progress of ${player ?? 'the player'} per chapter: done / can be done now / total.` : 'Quests per chapter (no player given, so no progress):')
+  const rows = lines.slice(0, QUEST_LINES_SHOWN).map((l) =>
+    withProgress ? `- ${l.name}: ${l.complete ?? 0} / ${l.available ?? 0} / ${l.quests}` : `- ${l.name}: ${l.quests}`,
+  )
+  if (lines.length > QUEST_LINES_SHOWN) rows.push(`- … ${lines.length - QUEST_LINES_SHOWN} more chapters`)
+  return `${head}\n${rows.join('\n')}`
+}
+
+/** 搜索结果：id、标题、章节、状态。 */
+export function formatQuestSearch(
+  res: { quests?: QuestHit[]; total?: number },
+  asked: { query?: string; line?: string; state?: string; player?: string },
+): string {
+  const quests = res.quests ?? []
+  const filters: string[] = []
+  if (asked.state) filters.push(`state ${asked.state}`)
+  if (asked.line) filters.push(`chapter contains "${asked.line}"`)
+  if (asked.query) filters.push(`words "${asked.query}"`)
+  const what = `${filters.length > 0 ? ` (${filters.join('; ')})` : ''}${asked.player ? ` for ${asked.player}` : ''}`
+  if (quests.length === 0) {
+    const english = /^[\x20-\x7e]*$/.test(`${asked.query ?? ''}${asked.line ?? ''}`) ? '' : ' The quest book is in English: search with English words.'
+    return `No quest matches${what}.${english}`
+  }
+  const total = Math.max(count(res.total), quests.length)
+  const head =
+    total > quests.length
+      ? `${total} quests match${what}; the first ${quests.length} are shown. Narrow it down with query or line, or raise limit.`
+      : `${total} quest(s) match${what}:`
+  const rows = quests.map((q) => `- ${q.id} "${q.name}"${q.line ? ` [${q.line}]` : ''}${q.state ? `: ${q.state}` : ''}`)
+  return `${head} (id "title" [chapter]: state)\n${rows.join('\n')}`
+}
+
+/** 一个任务的详情：说明、前置（完成没）、每个子任务要什么（完成没、物品是否被收走）、奖励。 */
+export function formatQuest(q: QuestDetail, player: string | undefined): string {
+  const lines: string[] = []
+  let head = `Quest ${q.id} "${q.name}"${q.line ? `, chapter "${q.line}"` : ''}.`
+  if (q.state) {
+    head += ` State${player ? ` for ${player}` : ''}: ${q.state}`
+    if (q.state === 'locked') head += ' (a required quest is not complete yet)'
+    else if (q.state === 'available') head += ' (unlocked, not complete yet)'
+    else if (/unclaimed/.test(q.state)) head += ' (done; the reward has not been collected)'
+    head += '.'
+  }
+  lines.push(head)
+  const description = (q.description ?? '').replace(/\s+/g, ' ').trim()
+  if (description.length > 0) lines.push(`Description: ${description}`)
+
+  const requires = q.requires ?? []
+  if (requires.length > 0) {
+    lines.push('Requires these quests to be complete first:')
+    for (const r of requires) lines.push(`- ${r.id} "${r.name}"${r.complete === undefined ? '' : r.complete ? ': done' : ': NOT done'}`)
+  }
+
+  const tasks = q.tasks ?? []
+  lines.push(tasks.length > 0 ? 'Tasks (what the quest asks for):' : 'Tasks: none listed.')
+  for (const t of tasks) {
+    const notes: string[] = []
+    if (t.complete !== undefined) notes.push(t.complete ? 'done' : 'not done')
+    if (t.consumed !== undefined) notes.push(t.consumed ? 'the items are taken when handed in' : 'the items are kept')
+    const wants: string[] = [
+      ...(t.items ?? []).map(questItemText),
+      ...(t.fluids ?? []).map((f) => `${f.mb} mB ${f.fluid}`),
+    ]
+    if (typeof t.target === 'string') wants.push(`kill ${t.count ?? 1}× ${t.target}`)
+    if (t.location) wants.push(`be at ${formatPos(t.location)}${t.location.dim !== undefined ? ` in ${dimName(t.location.dim)}` : ''}`)
+    lines.push(`- ${[t.type, ...notes].join(', ')}: ${wants.join(', ') || '(nothing more is recorded about it)'}`)
+  }
+
+  const rewards = q.rewards ?? []
+  if (rewards.length > 0) {
+    lines.push('Rewards:')
+    for (const r of rewards) lines.push(`- ${r.type}${(r.items ?? []).length > 0 ? `: ${r.items!.map(questItemText).join(', ')}` : ''}`)
+  }
+  return lines.join('\n')
+}
+
+// ── 机器 ──
+
+/** 一台机器现在的状态：等级、有没有电、是不是正在忙、是不是被关掉了。 */
+function machineStateText(m: MachineInfo | Record<string, unknown>): string {
+  if (m.unreadable === true) return 'its state cannot be read'
+  const parts: string[] = []
+  if (typeof m.recipes === 'string') parts.push(`runs ${m.recipes} recipes`)
+  if (typeof m.tier === 'string') parts.push(`tier ${m.tier}`)
+  if (typeof m.storedEU === 'number') parts.push(m.storedEU > 0 ? `has power (${m.storedEU} EU stored)` : 'NO POWER (0 EU stored)')
+  if (m.switchedOff === true) parts.push('SWITCHED OFF')
+  if (m.active === true) {
+    const done = count(m.maxProgress) > 0 ? ` (${Math.round((count(m.progress) * 100) / count(m.maxProgress))}% of the current item done)` : ''
+    parts.push(`BUSY${done}`)
+  } else if (m.active === false) {
+    parts.push('idle')
+  }
+  return parts.join(', ')
+}
+
+/** world.machines 的结果：每台机器的坐标、名字、跑哪种配方、等级、有没有电、是不是正在忙。 */
+export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string }): string {
+  const machines = res.machines ?? []
+  const filter = asked.name ? ` whose name or recipe type contains "${asked.name}"` : ''
+  if (machines.length === 0) {
+    return (
+      `No GregTech single-block machine${filter} within ${asked.radius} blocks of you (only loaded chunks are searched). ` +
+      (asked.name ? 'Look again without "name" to see every machine here. ' : '') +
+      'Multiblock machines, steam machines and machines of other mods are never listed and cannot be used.'
+    )
+  }
+  const total = Math.max(count(res.total), machines.length)
+  const lines = machines.map((m) => {
+    const far = typeof m.dist === 'number' ? `, ${Math.round(m.dist)} blocks away` : ''
+    return `- ${formatPos(m)}${quoted(m.name) || ' machine'}: ${machineStateText(m)}${far}`
+  })
+  const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown)` : ''
+  return (
+    `${machines.length} single-block machine(s)${filter} within ${asked.radius} blocks of you${more}, nearest first. ` +
+    `A machine can run a recipe when its recipe type is the recipe's machine, its tier is at least the recipe's tier, it has power and is idle:\n${lines.join('\n')}`
+  )
+}
+
+/** process 任务失败时的 detail：那台机器的状态，加上据此最可能的原因。 */
+export function processErrorLines(detail: Record<string, unknown>): string[] {
+  const where = typeof detail.x === 'number' ? ` at ${formatPos(detail as { x: number; y: number; z: number })}` : ''
+  let line = `machine${quoted(detail.name)}${where}: ${machineStateText(detail)}`
+  if (detail.storedEU === 0) line += '. It has no power, so it cannot run anything: tell the owner'
+  else if (detail.switchedOff === true) line += '. Someone switched it off: tell the owner'
+  else if (detail.active === true) line += '. It is busy with something else: wait, or use another machine'
+  else line += '. It has power and is idle, so the cause is the recipe: a missing programmed circuit or mold, a missing fluid, inputs that are not a recipe of this machine or need a higher tier, or full output slots'
+  return [line]
+}
+
+/** process 任务的结果：放进去多少、取回了什么（产物，以及没被消耗的电路、模具和没用完的原料）。 */
+export function processResultLines(result: Record<string, unknown>): string[] {
+  const { put, outputs, timedOut, freeSlots, ...rest } = result
+  const got = kindList(outputs)
+  let line = `put ${count(put)} item(s) into the machine; took out: ${got.length > 0 ? got.map((o) => kindText(o.count, o)).join(', ') : 'nothing'}`
+  if (timedOut === true) line += '; timedOut: the wait ran out before it finished, the machine is still working on the rest'
+  if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
+  if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
+  return [line]
 }

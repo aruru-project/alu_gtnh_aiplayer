@@ -41,7 +41,7 @@ import alu.aiplayer.world.WorldQueries;
  */
 public final class CraftTask extends Task {
 
-    private static final int TABLE_SEARCH = 24;
+    private static final int TABLE_SEARCH = 64;
 
     private final String itemId;
     private final int meta;

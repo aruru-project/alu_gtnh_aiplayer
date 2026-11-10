@@ -801,7 +801,7 @@ function renderBot(data) {
     h(
       'div',
       { class: 'fields' },
-      field('每轮最多调几次模型', maxSteps),
+      field('每轮最多调几次模型', maxSteps, '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要 20 次以上。默认 30。'),
       field('每日 token 上限', daily, '输入加输出。0 表示不限。'),
       field('历史超过多少 token 就压缩', historyMax),
       field('记忆总长度上限（字符）', memoryMax),
@@ -810,7 +810,7 @@ function renderBot(data) {
     h('h2', { text: '人设提示词' }),
     h('div', { class: 'row' }, personaState, h('span', { class: 'spacer' }), resetBtn),
     persona,
-    h('p', { class: 'hint', text: '提示词里的 {{name}} 会换成它的名字。名字、别名、主人名单和记忆由程序自动附在后面，不用写在这里。' }),
+    h('p', { class: 'hint', text: '这里只写任何时候都用得上的东西：它是谁、怎么说话、底线。各类活具体怎么做写在“手册”页，它要干那类事时才去翻。提示词里的 {{name}} 会换成它的名字；手册目录、名字、别名、主人名单和记忆由程序自动附在后面，不用写在这里。' }),
     h('div', { class: 'row' }, saveBtn),
   )
 
@@ -890,6 +890,250 @@ function renderMemory(data) {
       data.notes.map(row),
     ),
   )
+}
+
+// ── 手册 ──
+
+let manualState = null
+let editingManual = null // 正在编辑的手册名；'' 表示新写一本；null 表示没在编辑
+
+async function enterManuals() {
+  if (editingManual !== null) return // 正在写，别把内容冲掉
+  const data = await act(null, () => api('GET', '/manuals'))
+  if (data) {
+    manualState = data
+    renderManuals()
+  }
+}
+
+function manualBadge(m) {
+  if (m.source === 'default') return h('span', { class: 'badge', text: '默认' })
+  return m.overridesDefault ? h('span', { class: 'badge warn', text: '你改过的' }) : h('span', { class: 'badge ok', text: '你写的' })
+}
+
+/** 编辑一本手册。manual 为 null 是新写一本；是默认手册时，保存出来的是你的一份，默认的那份还在。 */
+function manualForm(manual) {
+  const limits = manualState.limits
+  const isNew = manual === null
+  const fixedName = !isNew && (manual.source === 'default' || manual.overridesDefault) // 默认手册的名字不能改，改了就不是盖住它了
+  const name = h('input', { id: 'mf-name', type: 'text', value: manual?.name ?? '', maxLength: limits.nameMaxChars, required: true, disabled: fixedName, placeholder: '例如：基地布局', spellcheck: false })
+  const summary = h('input', { id: 'mf-summary', type: 'text', value: manual?.summary ?? '', maxLength: limits.summaryMaxChars, required: true, placeholder: '例如：要在基地里找仓库、机器、工作台的位置时看。' })
+  const body = h('textarea', { id: 'mf-body', class: 'tall', value: manual?.body ?? '', required: true, placeholder: '正文，写给它看。可以用 Markdown。' })
+  const counter = h('span', { class: 'muted' })
+  const count = () => {
+    counter.textContent = `${num(body.value.trim().length)} / ${num(limits.bodyMaxChars)} 字符`
+    counter.className = body.value.trim().length > limits.bodyMaxChars ? 'error' : 'muted'
+  }
+  body.addEventListener('input', count)
+  count()
+  const saveBtn = h('button', { type: 'submit', class: 'primary', text: '保存' })
+  const cancelBtn = h('button', { type: 'button', text: '取消' })
+  cancelBtn.addEventListener('click', () => {
+    editingManual = null
+    renderManuals()
+  })
+  const form = h('form', { class: 'stack' })
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const payload = { name: name.value.trim(), summary: summary.value, body: body.value }
+    // 给一本你写的手册改名：新名字存好后删掉旧的
+    if (!isNew && !fixedName && manual.name !== payload.name) payload.previousName = manual.name
+    const next = await act(saveBtn, () => api('PUT', '/manuals', payload), '已保存，它下次要用时读到的就是新的')
+    if (next) {
+      manualState = next
+      editingManual = null
+      renderManuals()
+    }
+  })
+  const field = (text, input, hint) => h('div', null, h('label', { for: input.id, text }), input, hint ? h('p', { class: 'hint', text: hint }) : null)
+  // append 会把 null 写成字：用不上的部分先滤掉
+  const parts = [
+    h(
+      'div',
+      { class: 'fields' },
+      field('名字', name, fixedName ? '默认手册的名字不能改。' : '它用这个名字来读这本手册。字母、数字、汉字、下划线和连字符，不能有空格。'),
+      h('div', { class: 'field-wide' }, h('label', { for: 'mf-summary', text: '什么时候看这本（一句话）' }), summary, h('p', { class: 'hint', text: '这一句每次都会出现在给它的手册目录里，它靠这句话决定要不要翻这本。' })),
+    ),
+    h('div', null, h('label', { for: 'mf-body', text: '正文' }), body, h('div', { class: 'row' }, counter)),
+    !isNew && manual.source === 'default' ? h('p', { class: 'hint', text: '这是随程序发布的默认手册。保存后它用的是你改的这一份；想换回来，点这本手册上的“恢复默认”。' }) : null,
+    !isNew && manual.default
+      ? h('details', null, h('summary', { text: '看默认的内容' }), h('p', { class: 'muted', text: manual.default.summary }), h('pre', { class: 'manual-text', text: manual.default.body }))
+      : null,
+    h('div', { class: 'row' }, saveBtn, cancelBtn),
+  ]
+  form.append(...parts.filter((part) => part !== null))
+  return form
+}
+
+function renderManuals() {
+  const root = $('#tab-manuals')
+  const list = manualState.manuals ?? []
+  const addBtn = h('button', { type: 'button', class: 'primary', text: '新写一本', disabled: editingManual !== null })
+  addBtn.addEventListener('click', () => {
+    editingManual = ''
+    renderManuals()
+  })
+  const cards = list.map((m) => {
+    if (editingManual === m.name) return h('div', { class: 'card' }, h('h2', { text: `手册：${m.name}` }), manualForm(m))
+    const editBtn = h('button', { type: 'button', class: 'small', text: m.source === 'default' ? '查看 / 修改' : '编辑', disabled: editingManual !== null })
+    editBtn.addEventListener('click', () => {
+      editingManual = m.name
+      renderManuals()
+    })
+    // 你改过的默认手册：删掉你的那份就是恢复默认；你自己写的：删除
+    const removeBtn =
+      m.source === 'user' ? h('button', { type: 'button', class: 'small danger', text: m.overridesDefault ? '恢复默认' : '删除', disabled: editingManual !== null }) : null
+    removeBtn?.addEventListener('click', async () => {
+      const question = m.overridesDefault ? `把手册“${m.name}”恢复成默认的？你改的内容会丢掉。` : `删除手册“${m.name}”？`
+      if (!confirm(question)) return
+      const next = await act(removeBtn, () => api('DELETE', '/manuals', { name: m.name }), m.overridesDefault ? '已恢复默认' : '已删除')
+      if (next) {
+        manualState = next
+        renderManuals()
+      }
+    })
+    return h(
+      'div',
+      { class: 'card' },
+      h('div', { class: 'provider-head' }, h('span', { class: 'name mono', text: m.name }), manualBadge(m), h('span', { class: 'spacer' }), editBtn, removeBtn),
+      h('p', { text: m.summary }),
+      h('details', null, h('summary', { text: `看正文（${num(m.body.length)} 字符）` }), h('pre', { class: 'manual-text', text: m.body })),
+    )
+  })
+  root.replaceChildren(
+    h(
+      'div',
+      { class: 'stack' },
+      h(
+        'div',
+        { class: 'row' },
+        h('p', { class: 'muted fill', text: '手册是它要干某一类活时才去翻的说明，不是每次都塞给模型的；提示词里只列每本的名字和“什么时候看”那一句。默认手册随程序发布，你可以改（改完用你的，随时能恢复默认），也可以自己新写，比如“基地布局”“材料仓库在哪”。' }),
+        addBtn,
+      ),
+      editingManual === '' ? h('div', { class: 'card' }, h('h2', { text: '新写一本手册' }), manualForm(null)) : null,
+      cards,
+    ),
+  )
+}
+
+// ── 图纸 ──
+
+/** 把选中的文件读成 base64（不带 data: 前缀）。 */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const url = String(reader.result)
+      resolve(url.slice(url.indexOf(',') + 1))
+    }
+    reader.onerror = () => reject(new Error('读不了这个文件'))
+    reader.readAsDataURL(file)
+  })
+}
+
+const fileSize = (bytes) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KiB` : `${Number((bytes / 1024 / 1024).toFixed(1))} MiB`)
+const blueprintSize = (b) => (b.size ? `${b.size.x}×${b.size.y}×${b.size.z}` : '')
+
+async function enterBlueprints() {
+  const root = $('#tab-blueprints')
+  try {
+    renderBlueprints(await api('GET', '/blueprints'))
+  } catch (e) {
+    // 图纸存在游戏服务器上，没连上游戏就看不到：把原因留在页面上，而不是一闪而过
+    if (e.status === 401) return
+    const retry = h('button', { type: 'button', text: '重试' })
+    retry.addEventListener('click', enterBlueprints)
+    root.replaceChildren(
+      h('div', { class: 'card' }, h('h2', { text: '图纸' }), h('p', { class: 'error', text: `拿不到图纸列表：${e.message}` }), h('p', { class: 'hint', text: '图纸存在游戏服务器上，要先连上游戏才能看和上传。' }), h('div', { class: 'row' }, retry)),
+    )
+  }
+}
+
+function renderBlueprints(data) {
+  const root = $('#tab-blueprints')
+  const list = data.blueprints ?? []
+  const maxBytes = data.maxBytes ?? 2 * 1024 * 1024
+
+  // 上传
+  const file = h('input', { id: 'bp-file', type: 'file', accept: '.schematic' })
+  const name = h('input', { id: 'bp-name', type: 'text', maxLength: 80, placeholder: '选好文件后自动填上，可以改', spellcheck: false })
+  const note = h('p', { class: 'hint', text: '还没选文件。' })
+  const uploadBtn = h('button', { type: 'submit', class: 'primary', text: '上传', disabled: true })
+  file.addEventListener('change', () => {
+    const chosen = file.files?.[0]
+    if (!chosen) {
+      note.className = 'hint'
+      note.textContent = '还没选文件。'
+      uploadBtn.disabled = true
+      return
+    }
+    name.value = chosen.name.replace(/\.schematic$/i, '')
+    const problem = chosen.size === 0 ? '这个文件是空的。' : chosen.size > maxBytes ? `这个文件有 ${fileSize(chosen.size)}，图纸最大 ${fileSize(maxBytes)}。` : ''
+    note.className = problem ? 'error' : 'hint'
+    note.textContent = problem || `${chosen.name}，${fileSize(chosen.size)}。`
+    uploadBtn.disabled = problem !== ''
+  })
+  const form = h('form', { class: 'card' })
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const chosen = file.files?.[0]
+    const wanted = name.value.trim()
+    if (!chosen || !wanted) {
+      toast('先选一个 .schematic 文件，并给它一个名字', true)
+      return
+    }
+    if (list.some((b) => b.name === wanted) && !confirm(`服务器上已经有一张叫“${wanted}”的图纸，用这个文件覆盖它？`)) return
+    uploadBtn.disabled = true
+    try {
+      const next = await api('POST', '/blueprints', { name: wanted, data: await fileToBase64(chosen) })
+      const saved = next.saved ?? {}
+      toast(`已上传 ${saved.name ?? wanted}${saved.size ? `（${blueprintSize(saved)}，${num(saved.blocks)} 个方块）` : ''}`)
+      renderBlueprints(next)
+    } catch (e) {
+      // 文件不是能用的图纸时，原因留在表单上，而不是一闪而过的提示
+      note.className = 'error'
+      note.textContent = `没传上去：${e.message}`
+      uploadBtn.disabled = false
+    }
+  })
+  form.append(
+    h('h2', { text: '上传图纸' }),
+    h('p', { class: 'muted', text: `Schematica 导出的 .schematic 文件，最大 ${fileSize(maxBytes)}。传上去以后它就能照着盖；和已有的图纸同名会覆盖。` }),
+    h(
+      'div',
+      { class: 'fields' },
+      h('div', null, h('label', { for: 'bp-file', text: '文件' }), file, note),
+      h('div', null, h('label', { for: 'bp-name', text: '图纸名字' }), name, h('p', { class: 'hint', text: '它和你都用这个名字指这张图纸。' })),
+    ),
+    h('div', { class: 'row' }, uploadBtn),
+  )
+
+  // 已有的
+  const row = (b) => {
+    const delBtn = h('button', { type: 'button', class: 'small danger', text: '删除' })
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`从游戏服务器上删除图纸“${b.name}”？`)) return
+      const next = await act(delBtn, () => api('DELETE', '/blueprints', { name: b.name }), `已删除 ${b.name}`)
+      if (next) renderBlueprints(next)
+    })
+    const usable = b.error === undefined && b.size
+    return h(
+      'li',
+      null,
+      h('div', { class: 'grow' }, h('span', { class: 'mono', text: b.name }), usable ? null : h('div', { class: 'error', text: `读不了：${b.error ?? '游戏那边没给出尺寸'}` })),
+      usable ? h('span', { class: 'muted', title: '东西向（x）× 高（y）× 南北向（z）', text: `${blueprintSize(b)}，${num(b.blocks)} 个方块` }) : h('span', { class: 'badge bad', text: '读不了' }),
+      delBtn,
+    )
+  }
+  const listCard = h(
+    'div',
+    { class: 'card' },
+    h('h2', { text: `服务器上的图纸（${list.length}）` }),
+    list.length === 0 ? h('p', { class: 'muted', text: '还没有图纸。' }) : h('ul', { class: 'plain' }, list.map(row)),
+    h('p', { class: 'hint', text: `尺寸是 东西向（x）× 高（y）× 南北向（z）。${data.folder ? `文件在游戏服务器的 ${data.folder} 里，直接放进去也行，不用重启。` : ''}盖的时候不旋转、不镜像。` }),
+  )
+
+  root.replaceChildren(h('div', { class: 'stack' }, form, listCard))
 }
 
 // ── 设置 ──
@@ -1004,6 +1248,8 @@ const TABS = {
   models: { enter: enterModels },
   bot: { enter: enterBot },
   memory: { enter: enterMemory },
+  manuals: { enter: enterManuals },
+  blueprints: { enter: enterBlueprints },
   settings: { enter: enterSettings },
 }
 

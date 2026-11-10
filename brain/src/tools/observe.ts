@@ -63,7 +63,7 @@ export const getStatus: Tool = {
 export const lookAround: Tool = {
   name: 'look_around',
   description:
-    'Summary of what is near you: players, mobs and dropped items, containers (chests etc.) with their main contents, and the lay of the land. Use scan_area for exact terrain heights and list_containers for full contents.',
+    'Summary of what is near you: players, mobs and dropped items, containers (chests, Storage Drawers and the like; drawers are marked [drawers]) with their main contents, and the lay of the land. Use scan_area for exact terrain heights and list_containers for full contents.',
   inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: ENTITIES_MAX_RADIUS }) }),
   async run(ctx, input: { radius?: number }) {
     const radius = input.radius ?? 16
@@ -208,7 +208,7 @@ export const findBlocks: Tool = {
 
 export const listContainers: Tool = {
   name: 'list_containers',
-  description: `Containers (chests, barrels, machines with an inventory) around you with their full contents, merged per item (radius at most ${CONTAINERS_MAX_RADIUS}).`,
+  description: `Containers around you with their position and full contents, merged per item (radius at most ${CONTAINERS_MAX_RADIUS}): chests, barrels, Storage Drawers, machines with an inventory. Drawers are marked [drawers] and their counts are what is really stored (one slot can hold thousands). Chests and drawers listed here can be given to deposit_items, withdraw_items and haul_items, and as supply or dropoff. Use this whenever you are unsure whether something is a container or what it holds.`,
   inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }) }),
   async run(ctx, input: { radius?: number }) {
     const radius = input.radius ?? 16

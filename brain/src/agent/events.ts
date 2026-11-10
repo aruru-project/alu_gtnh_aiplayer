@@ -1,7 +1,7 @@
 // agent 的输入事件：来自 bridge 的游戏事件，加上大脑自己产生的（面板指令、提醒、内部通知）。
 
 import type { BridgeEvent, TaskInfo } from '../bridge/protocol.ts'
-import { compactJson, trimTaskResult } from '../tools/format.ts'
+import { compactJson, taskLines, trimTaskResult } from '../tools/format.ts'
 
 export type AgentEvent =
   | { type: 'chat'; time: number; player: string; message: string; isBot: boolean }
@@ -89,16 +89,26 @@ export function fromBridgeEvent(e: BridgeEvent, botName: string, now: number): A
   }
 }
 
+/**
+ * 任务结束时给模型看的一段话。结果和错误详情一般是紧凑 JSON；
+ * 照图纸建、合成这类任务的结果或缺料清单是几张表，由 taskLines 排成几行短文本（字段名照协议），不然截断了模型看不到后半截。
+ */
 function describeTaskEnd(task: TaskInfo): string {
   const head = `任务 ${task.id}（${task.type}）`
-  const result = task.result && Object.keys(task.result).length > 0 ? compactJson(trimTaskResult(task.result), 700) : ''
+  const lines = taskLines(task)
+  // 整理过的文字：只有一行就接在后面，多行则每行缩进另起
+  const block = (ls: string[]) => (ls.length === 1 ? ls[0]! : ls.map((l) => `\n  ${l}`).join(''))
+  const hasResult = task.result !== undefined && Object.keys(task.result).length > 0
+  const result = !hasResult ? '' : lines.result ? block(lines.result) : compactJson(trimTaskResult(task.result!), 700)
   if (task.state === 'done') return `${head}完成了。${result ? ` 结果：${result}` : ''}`
   if (task.state === 'canceled') return `${head}被取消了。${result ? ` 已完成的部分：${result}` : ''}`
   const e = task.error
   let text = `${head}失败了：${e?.code ?? 'unknown'}`
   if (e?.message) text += ` — ${e.message}`
-  if (e?.detail && Object.keys(e.detail).length > 0) text += ` detail=${compactJson(e.detail, 500)}`
-  if (result) text += ` 已完成的部分：${result}`
+  if (e?.detail && Object.keys(e.detail).length > 0) {
+    text += lines.error ? lines.error.map((l) => `\n  ${l}`).join('') : ` detail=${compactJson(e.detail, 500)}`
+  }
+  if (result) text += `${lines.error || (lines.result?.length ?? 0) > 1 ? '\n  ' : ' '}已完成的部分：${result}`
   return text
 }
 

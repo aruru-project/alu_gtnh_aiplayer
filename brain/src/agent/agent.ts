@@ -11,9 +11,9 @@ import type { HistoryStore } from '../store/history.ts'
 import { cleanChatText } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import { runTool, toToolSpecs } from '../tools/index.ts'
-import type { MemoryAccess, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
+import type { ManualAccess, MemoryAccess, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, historyMessages } from './compaction.ts'
-import { buildSnapshot, composeTurnMessage } from './context.ts'
+import { buildSnapshot, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, fromBridgeEvent, isHumanInput } from './events.ts'
 import type { AgentEvent } from './events.ts'
@@ -76,6 +76,8 @@ export interface AgentDeps {
   bridge: BridgeApi
   tools: readonly Tool[]
   memory: MemoryAccess & { render(): string }
+  /** 手册：提示词里列目录，模型用 read_manual 读。 */
+  manuals: ManualAccess
   reminders: ReminderAccess & { list(): PendingReminder[] }
   history: HistoryStore
   log: ActivityLog
@@ -159,6 +161,8 @@ export class Agent {
   private idleWaiters: (() => void)[] = []
 
   private lastExchange = new Map<string, number>()
+  /** 最近一个跟它说话（并把它叫醒）的玩家。没有主人名单时，查任务书进度默认看他的。 */
+  private lastSpeaker: string | undefined
   private lastHurtWake = 0
   /** 自己发出的、会取消任务的请求还有几个没回来。 */
   private cancelsInFlight = 0
@@ -277,8 +281,13 @@ export class Agent {
 
     if (isHumanInput(ev)) {
       this.failureStreak = 0
-      if (ev.type === 'chat') this.lastExchange.set(ev.player.toLowerCase(), now)
-      else if (ev.type === 'whisper') this.lastExchange.set(ev.from.toLowerCase(), now)
+      if (ev.type === 'chat') {
+        this.lastExchange.set(ev.player.toLowerCase(), now)
+        this.lastSpeaker = ev.player
+      } else if (ev.type === 'whisper') {
+        this.lastExchange.set(ev.from.toLowerCase(), now)
+        this.lastSpeaker = ev.from
+      }
       // 接口故障期间有人说话：不用等完整的退避时间，但也别比上次失败后 humanRetryGapMs 更早
       if (this.llmFailures > 0) {
         const earliest = this.lastFailureAt + this.timing.humanRetryGapMs
@@ -505,7 +514,10 @@ export class Agent {
     const turnId = this.deps.history.newTurnId()
     const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, this.deps.reminders.list(), startedAt)
     if (snapshot.online !== undefined) this.botOnline = snapshot.online
-    const userText = composeTurnMessage(triggers, background, snapshot.text, startedAt)
+    // 哪几本手册的原文现在还在历史里：压缩截掉了的、主人改过了的都不算，模型要用时会重新读
+    const manuals = this.deps.manuals.list()
+    const manualLine = manualStatusLine(manuals, manualsInContext(this.priorMessages(), manuals))
+    const userText = composeTurnMessage(triggers, background, manualLine ? `${snapshot.text}\n${manualLine}` : snapshot.text, startedAt)
     const turnMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: userText }] }]
     this.deps.log.add({
       kind: 'turn',
@@ -520,6 +532,7 @@ export class Agent {
       aliases: settings.aliases,
       owners: settings.owners,
       memory: this.deps.memory.render(),
+      manuals,
     })
     const toolSpecs = toToolSpecs(this.deps.tools)
     const ctx = this.toolContext(settings.botName)
@@ -798,7 +811,10 @@ export class Agent {
       bridge: this.deps.bridge,
       memory: this.deps.memory,
       reminders: this.deps.reminders,
+      manuals: this.deps.manuals,
       now: () => this.now(),
+      // 查任务书进度默认看谁的：主人名单里的第一个；没有名单就是刚才跟它说话的人
+      defaultPlayer: () => this.deps.settings().owners[0] ?? this.lastSpeaker,
       laterMessages: async (since, waitMs) => {
         await new Promise((resolve) => setTimeout(resolve, waitMs))
         return this.botMessages.filter((m) => m.at >= since).map((m) => m.text)

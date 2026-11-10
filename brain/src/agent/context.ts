@@ -3,6 +3,9 @@
 import type { BridgeApi } from '../bridge/api.ts'
 import { BridgeError } from '../bridge/protocol.ts'
 import type { BotStatus } from '../bridge/protocol.ts'
+import type { Message } from '../llm/index.ts'
+import { manualInText, manualVersion } from '../store/manuals.ts'
+import type { Manual } from '../store/manuals.ts'
 import { formatServerInfo, formatStatus } from '../tools/format.ts'
 import { eventLine } from './events.ts'
 import type { AgentEvent } from './events.ts'
@@ -86,4 +89,31 @@ export function composeTurnMessage(
   }
   parts.push(`[当前状态]\n${snapshot}`)
   return parts.join('\n\n')
+}
+
+/**
+ * 哪几本手册的原文现在还完整地留在这段对话里。
+ * 只认 read_manual 的工具结果里完整的那种：被历史压缩截短了的不算，主人后来改过的（版本对不上）也不算——
+ * 这两种情况模型手里都没有能用的原文，要用时得重新读。
+ */
+export function manualsInContext(messages: readonly Message[], manuals: readonly Manual[]): string[] {
+  const current = new Map(manuals.map((m) => [m.name, manualVersion(m)]))
+  const found = new Set<string>()
+  for (const m of messages) {
+    if (m.role !== 'user') continue
+    for (const part of m.content) {
+      if (part.type !== 'tool_result' || part.isError) continue
+      const seen = manualInText(part.content)
+      if (seen && current.get(seen.name) === seen.version) found.add(seen.name)
+    }
+  }
+  return manuals.filter((m) => found.has(m.name)).map((m) => m.name)
+}
+
+/** “当前状态”里讲手册的那一行。没有手册时返回空字符串。 */
+export function manualStatusLine(manuals: readonly Manual[], inContext: readonly string[]): string {
+  if (manuals.length === 0) return ''
+  if (inContext.length === 0) return '手册：这段对话里现在没有任何一本手册的内容，要做某类事之前先 read_manual。'
+  if (inContext.length === manuals.length) return '手册：每一本的内容都还在这段对话里，不用重看。'
+  return `手册：${inContext.join('、')} 的内容还在这段对话里，不用重看；其余的要用之前先 read_manual。`
 }

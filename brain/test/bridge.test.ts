@@ -177,6 +177,21 @@ describe('bridge 客户端', () => {
     assert.equal(block.name, big)
   })
 
+  it('2 MiB 的图纸文件（协议允许的最大）经 blueprint.put 完整送到身体', async () => {
+    const file = Buffer.alloc(2 * 1024 * 1024)
+    for (let i = 0; i < file.length; i++) file[i] = (i * 31 + (i >> 8)) & 0xff
+    let received: Buffer | undefined
+    bridge.on('blueprint.put', (p) => {
+      received = Buffer.from(String(p.data), 'base64')
+      return { name: p.name, size: { x: 1, y: 1, z: 1 }, blocks: 1 }
+    })
+    const h = connect()
+    await connected(h)
+    const saved = await new BridgeApi(h.client).blueprintPut('big', file.toString('base64'))
+    assert.equal(saved.name, 'big')
+    assert.ok(received && received.equals(file), 'the body got every byte of the file')
+  })
+
   it('事件按发生顺序交给监听者', async () => {
     const h = connect()
     await connected(h)

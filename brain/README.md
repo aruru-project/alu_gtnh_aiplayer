@@ -17,7 +17,7 @@ node src/main.ts          # 或 npm start
 首次启动会在标准输出打印面板地址和随机生成的访问口令：
 
 ```
-[panel] 面板地址：http://127.0.0.1:8765/
+[panel] 面板地址：http://127.0.0.1:28765/
 [panel] 首次启动，已生成面板访问口令：xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
@@ -38,13 +38,13 @@ node src/main.ts          # 或 npm start
 npm run dev:testserver
 ```
 
-它等于 `AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts`。
+它等于 `AIPLAYER_PANEL_HOST=0.0.0.0 AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts`。
 数据目录是单独的 `brain/data/testserver/`，所以测试服上的记忆、对话历史、续传位置不会和正式运行的（`brain/data/`）混在一起；模型服务商和面板口令两边各配各的。
 
 | 环境变量 | 作用 | 默认 |
 |---|---|---|
 | `AIPLAYER_DATA_DIR` | 数据目录（相对路径相对 `brain/`） | `brain/data/` |
-| `AIPLAYER_PANEL_HOST` / `AIPLAYER_PANEL_PORT` | 面板监听地址 | `127.0.0.1` / `8765` |
+| `AIPLAYER_PANEL_HOST` / `AIPLAYER_PANEL_PORT` | 面板监听地址 | `127.0.0.1` / `28765` |
 | `AIPLAYER_BRIDGE_HOST` / `AIPLAYER_BRIDGE_PORT` | 身体的 bridge 地址 | `127.0.0.1` / `25590` |
 | `AIPLAYER_BRIDGE_TOKEN_FILE` | bridge 口令文件（相对路径相对 `brain/`） | 无，不配就不连 |
 | `AIPLAYER_BRIDGE_TOKEN` | 直接给 bridge 口令（优先于文件） | – |
@@ -58,7 +58,7 @@ bot 的皮肤不归大脑管：服务器上的 PierceSkinRestorer 认 bot，主�
 ### 不连游戏、不用真模型，先看看面板
 
 ```sh
-npm run mock-bridge       # 模拟身体，127.0.0.1:25600，口令 mock-token，带一个在线的 Alu
+npm run mock-bridge       # 模拟身体，127.0.0.1:25600，口令 mock-token，带一个在线的 Alu、一个箱子、一组抽屉、一个工作台、一张图纸 hut、一本小配方书、一本六个任务的任务书、两台 GT 机器（一台有电的车床、一台没电的组装机）
 npm run mock-llm          # 模拟模型，127.0.0.1:25601，只认“平 / 跟 / 停 / 看看”几个字
 AIPLAYER_DATA_DIR=/tmp/aiplayer-demo AIPLAYER_BRIDGE_PORT=25600 AIPLAYER_BRIDGE_TOKEN=mock-token node src/main.ts
 ```
@@ -81,27 +81,30 @@ AIPLAYER_DATA_DIR=/tmp/aiplayer-demo AIPLAYER_BRIDGE_PORT=25600 AIPLAYER_BRIDGE_
 | `reminders.json` | 它给自己定的、还没到点的提醒 | 提醒丢失 |
 | `bridge-state.json` | 上次见到的 `serverEpoch` 和 `lastSeq`，断线续传用 | 下次连接不补发错过的事件 |
 | `agent-state.json` | 它启动后还没结束的任务 id、已处理过的任务结束、已排队但没处理完的事件 | 重启时正排着队的事会丢 |
+| `manuals/*.md` | 你在面板“手册”页写的手册，和你改过的默认手册（同名的盖住 `brain/manuals/` 里默认的那本） | 你写的手册没了；改过的默认手册恢复成默认的 |
 | `logs/activity-YYYY-MM-DD.jsonl` | 面板“对话”页的日志（聊天、模型文本、工具调用和结果、错误），留 14 天 | 面板上看不到之前的记录 |
 
 ## 面板
 
-默认 `http://127.0.0.1:8765/`，只监听本机。六个页面：
+默认 `http://127.0.0.1:28765/`，只监听本机；把 `AIPLAYER_PANEL_HOST` 设成 `0.0.0.0`（`npm run dev:testserver` 和 systemd 模板已经这样设）后，局域网里用 `http://这台机器的地址:28765/` 打开。八个页面：
 
 - **概览**：bridge 连接状态、bot 的位置/血量/背包、当前任务和队列（可取消）、当前模型和最近一次调用结果、今日用量、提醒、清空对话历史。
 - **对话**：实时日志（聊天、它说的话、模型的文本、工具调用和结果、错误）；下面的输入框以主人身份直接给它下指令（只有它看得到，不进游戏聊天）。
 - **模型**：服务商增删改、选当前使用的、测试连接。改完立刻生效。
-- **AI 玩家**：名字、别名、主人名单、什么时候回应聊天、各项上限、人设提示词（可恢复默认）；上线/下线；无敌和饥饿开关（“会饿”打开后它会饿死，因为它不会吃东西）。上线、下线的选择会被记住；它被踢下线也算“下线”，要回来得有人在这里点“上线”。
+- **AI 玩家**：名字、别名、主人名单、什么时候回应聊天、各项上限、人设提示词（也就是核心提示词，可恢复默认）；上线/下线；无敌和饥饿开关（“会饿”打开后它会饿死，因为它不会吃东西）。上线、下线的选择会被记住；它被踢下线也算“下线”，要回来得有人在这里点“上线”。
 - **记忆**：查看、编辑、删除它的笔记。
+- **手册**：看每本手册的名字、“什么时候看”那一句和正文；改默认手册（存下来的是你的一份，随时可以“恢复默认”）；新写、改名、删除自己的手册（比如“基地布局”“材料仓库在哪”）。改完立刻生效：它下次要用时读到的就是新的。
+- **图纸**：列出游戏服务器上的图纸（Schematica 的 `.schematic` 文件：名字、尺寸、方块数，读不了的显示原因），上传本地文件（最大 2 MiB，同名覆盖），删除。图纸存在游戏服务器的 `config/aiplayer/schematics/` 里，面板只是经 bridge 转手，所以要连着游戏才能用；文件是不是能用的图纸由身体判断。
 - **设置**：bridge 的端口和口令文件路径（保存后立刻重连）、修改面板口令（要先输入当前口令）。
 
 安全方面：
 
 - 登录后发 HttpOnly、SameSite=Strict 的会话 cookie（30 天，大脑重启不用重新登录）。除登录外所有接口都要会话；连续输错 5 次口令锁 60 秒。
-- 所有写操作校验 `Origin` 必须和访问的地址同源。用 curl 之类调接口要自己带上，例如 `-H 'Origin: http://127.0.0.1:8765'`。
+- 所有写操作校验 `Origin` 必须和访问的地址同源。用 curl 之类调接口要自己带上，例如 `-H 'Origin: http://127.0.0.1:28765'`。
 - **API key 只写不读**：任何接口都不返回完整的 key，只给掩码（如 `sk-…abcd`）和“已设置”标记；编辑时 key 留空表示不修改。名字里带 key/token/auth 之类的自定义请求头同样只显示掩码。
 - 把服务地址改到另一台主机时必须重新填 key——否则登上面板的人可以把地址指向自己的机器把 key 套走。
 - bridge 的主机不能在面板上改，口令文件的内容不像口令（多行、带空格、超长）时不会发出去——否则登上面板的人可以把路径指向别的文件、把主机指向自己的机器，把文件内容套走。
-- 要从别的机器访问面板，建议用 SSH 隧道或带 HTTPS 的反向代理，不要直接把 `AIPLAYER_PANEL_HOST` 改成 `0.0.0.0`：面板本身是明文 HTTP。
+- 面板本身是明文 HTTP：对局域网开放时，面板口令和你填的 API key 在局域网里不加密。家里的网络可以接受；要经过不信任的网络访问，用 SSH 隧道或带 HTTPS 的反向代理，不要把这个端口映射到公网。
 
 ## 代码结构
 
@@ -113,11 +116,22 @@ src/
   tools/           模型能用的工具：名字、参数 schema、执行函数。只调 bridge，不含策略
   bridge/          协议客户端：连接、握手、重连续传、请求超时、事件分发；协议方法的有类型封装
   panel/           面板的 HTTP API 和静态页面（panel/public/，手写的 HTML/CSS/JS）
-  store/           配置、记忆、历史、用量、提醒、活动日志的落盘
+  store/           配置、记忆、历史、用量、提醒、活动日志、手册的落盘
+manuals/           随代码发布的默认手册（Markdown，一类活一本）
 test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型服务（mock-llm.ts）
 ```
 
 依赖方向：`main` → `panel` / `agent` → `tools` → `bridge`；`agent` → `llm`；谁都可以用 `store`。`llm/` 不导入其他任何一层。
+
+### 提示词和手册
+
+每次调模型的系统提示词 = **核心提示词** + 程序生成的几节（手册目录、名字、主人、记忆）。
+
+- 核心提示词（`agent/prompt.ts` 的 `DEFAULT_PERSONA`，一千三百字左右）只放任何时候都用得上的：它是谁、怎么说话和汇报、任务怎么运作、底线。面板“AI 玩家”页的“人设提示词”改的就是它；自定义过的照旧整段替换默认的，后面那几节照样附上。
+- 各类活具体怎么做写在**手册**里：`brain/manuals/*.md` 是默认的（`blueprint` 照图纸盖、`crafting` 办目标、`containers` 箱子和抽屉、`terrain` 地形活、`travel` 走路和传送、`quests` 任务书、`failures` 失败和重启），数据目录的 `manuals/` 是主人写的，同名时主人的盖住默认的。文件第一行是一句“什么时候看这本”，其余是正文。
+- 提示词里只列每本手册的名字和那一句；模型要干那类事时用 `read_manual` 读整本（`list_manuals` 列目录）。手册整本给模型，不受“单个工具结果上限”截断，所以正文有自己的上限（8000 字符）。
+- 每一轮的“当前状态”里有一行写明哪几本手册的原文现在还在对话历史里。这是程序从历史里数出来的：历史压缩把较早的手册原文换成了一句“要用时重新读”的、主人后来改过内容的，都不算，模型要用时会重新读。
+- 加一类新的活：在 `brain/manuals/` 里放一个 `名字.md`，第一行写什么时候看。不用改代码。
 
 ### agent 一轮是怎么跑的
 
@@ -199,11 +213,14 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 ## 测试
 
 ```sh
-npm test            # node:test，约 6 秒
+npm test            # node:test，约 10 秒
 npm run typecheck   # tsc --noEmit
 ```
 
 - `test/mock-bridge.ts`：按协议实现的服务端，代替游戏里的 mod。测试里可以推事件、让任务按设定结束、断开连接、模拟服务器重启、让 bot 死亡或被踢。它的行为（响应里有哪些字段、事件和响应谁先谁后、指令的回显、任务结果的形状）是对着测试服上的真实 mod 校对过的；世界本身是假的。
+  图纸那部分（`blueprint.list/check/put/remove` 和 `blueprint` 任务）是照协议和 mod 的源码写的，还没有对着测试服校对过：它读得了真的 `.schematic` 文件，拿假地形逐格对比，任务“做完”时按背包和 `supply` 里的材料算结果（不够就是 `no_material`）；够不着、没工具、背包满这些情况不模拟。
+  物品、配方、库存那部分（`item.search`、`recipe.find`、`world.stock` 和 `craft` 任务）同样是照协议和 mod 的源码写的、没对着测试服校对过：一本十来种物品的假配方书（`defaultRecipeBook()`，够走一遍“做一个 Copter Blades”），`withdraw` 和 `craft` 会真的增减箱子和背包里的东西；`recipesReady = false` 时前两个方法返回 `busy`。`world.machines` 和 `process` 任务也在这部分：机器有电、空闲、等级够、给的原料凑得出它的一条配方（不带流体）才开工，否则像真实 mod 那样以 `invalid` 失败并带上机器状态。
+  任务书（`quest.lines/search/get`）也是照协议和 mod 的源码写的：两章六个任务，自带 Steve 的进度；`questBook = undefined` 就是服务器没装任务书。
 - `test/mock-llm.ts`：一个 HTTP 服务，同时会说 OpenAI chat completions 和 Anthropic messages 两种线格式，按脚本回应。它像真实接口那样拒绝格式不对的请求（工具调用没有紧跟结果、角色不交替等，回 400），所以适配器漏了整理、历史压缩把配对拆散时，测试会失败。
 - `test/e2e.test.ts`：模拟 bridge + 模拟模型 + 真实启动 `src/main.ts` 子进程，像主人那样登录面板、配模型、让 bot 上线，然后从一条聊天走到任务启动、任务结束再唤醒、`say` 回话。
 
@@ -263,3 +280,5 @@ journalctl --user -u aiplayer-brain -f      # 首次启动的面板口令在这�
 - 一个大脑进程只管一个 bot。
 - 面板自己的监听地址、bridge 的主机不能在面板上改（改 `config.json` 或用环境变量）。
 - 协议里的 `bot.look`、`bot.drop`、`bot.remove` 和任务 `wait` 有封装（`bridge/api.ts`）但没有做成给模型用的工具；没有删除 home 的工具。
+- 任务书只能查（`list_quest_lines` / `find_quests` / `get_quest`）：它替不了谁提交任务或领奖励。
+- 机器只会用 GregTech 的单方块加工机器（`find_machines` / `process_items`）：多方块机器、蒸汽机器、别的 mod 的机器和原版熔炉用不了；配方要流体的，得机器已经接好流体。

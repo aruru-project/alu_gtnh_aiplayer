@@ -8,7 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { it } from 'node:test'
-import { tmpDir, waitFor } from './helpers.ts'
+import { makeSchematic, tmpDir, waitFor } from './helpers.ts'
 import { MockBridge } from './mock-bridge.ts'
 import { MockLlm } from './mock-llm.ts'
 
@@ -258,6 +258,344 @@ it('端到端：大脑进程重启后，重启期间结束的任务照样把它�
   // 第二次握手带着落盘的续传位置
   assert.equal(bridge.hellos[1]!.serverEpoch, bridge.epoch)
   assert.equal(typeof bridge.hellos[1]!.lastSeq, 'number')
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比再动手 → 材料不够时它被叫醒，看到每种还缺多少', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 1. 主人登录面板，在“图纸”页上传一张图纸：4×3×4 的石砖小屋（地板加两层墙），屋里一个箱子
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+  const cabin = makeSchematic({ width: 4, height: 3, length: 4 }, (x, y, z) => {
+    if (x === 1 && y === 1 && z === 1) return ['minecraft:chest', 3]
+    return y === 0 || x === 0 || x === 3 || z === 0 || z === 3 ? 'minecraft:stonebrick' : undefined
+  })
+  const notAPlan = await call('POST', '/blueprints', { name: 'notes.schematic', data: Buffer.from('just some text').toString('base64') })
+  assert.equal(notAPlan.status, 400)
+  assert.match(notAPlan.json.error.message, /not a \.schematic file/)
+  const uploaded = await call('POST', '/blueprints', { name: 'cabin.schematic', data: cabin.toString('base64') })
+  assert.equal(uploaded.status, 200, `${JSON.stringify(uploaded.json)}${diag()}`)
+  assert.deepEqual(uploaded.json.saved, { name: 'cabin', size: { x: 4, y: 3, z: 4 }, blocks: 41 })
+  assert.ok((await call('GET', '/blueprints')).json.blueprints.some((b: { name: string }) => b.name === 'cabin'))
+
+  // 2. 箱子里只有 25 块石砖，盖这间小屋要 40 块
+  const chest = bridge.containers[0]!
+  chest.items.push({ id: 'minecraft:stonebrick', meta: 0, count: 25, name: 'Stone Bricks' })
+  const supply = [{ x: chest.x, y: chest.y, z: chest.z }]
+
+  // 3. 主人叫它盖：它先对比，再启动任务
+  llm.enqueue(
+    { toolCalls: [{ name: 'check_blueprint', input: { name: 'cabin', x: 30, y: 65, z: 30 } }] },
+    { toolCalls: [{ name: 'build_blueprint', input: { name: 'cabin', x: 30, y: 65, z: 30, supply } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '照 cabin 那张图纸在 30 65 30 盖，石砖在你旁边的箱子里')
+  const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'cabin', x: 30, y: 65, z: 30, supply }, mode: 'replace' })
+  await waitFor('first turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 对比的结果：要 40 块石砖、它身上一块都没有；箱子得由人放
+  const checked = JSON.stringify(llm.requests[1]!.body.messages.at(-1))
+  assert.match(checked, /- toPlace: 40 empty spots you can fill/)
+  assert.match(checked, /- 40× minecraft:stonebrick \\"Stonebrick\\" \(you carry 0\)/)
+  assert.match(checked, /- 1× minecraft:chest\/3 \\"Chest\\" \(it holds contents or settings\)/)
+
+  // 4. 任务做完能做的部分后以 no_material 失败：它被叫醒，看到还缺什么，告诉主人
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '还差 15 块石砖，箱子得你自己放。' } }] }, { text: '' })
+  bridge.completeTask('Alu')
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const woken = JSON.stringify(llm.requests[3]!.body.messages.at(-1))
+  assert.match(woken, /任务 t1（blueprint）失败了：no_material — 15 blocks were left unplaced for want of material/)
+  assert.match(woken, /missing \(left unplaced for want of material\): 15× minecraft:stonebrick/)
+  assert.match(woken, /removed 0, placed 25, freeSlots \d+/)
+  assert.match(woken, /now \(the world compared with the blueprint\): cells 41, done 25, toPlace 15, byHand 1, blocked 0, extra 0/)
+  assert.match(woken, /byHandBlocks \(a player has to place them\): 1× minecraft:chest\/3/)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人只给目标（做一个 Copter Blades）→ 它查物品、查配方、找库存、取料、合成 → 做成后告诉主人', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  /** 第 n 次请求里，模型看到的最后一条消息（工具结果或事件），JSON 文本。 */
+  const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
+  const chest = bridge.containers[0]!
+  const at = { x: chest.x, y: chest.y, z: chest.z }
+  const blades = { id: 'adventurebackpack:backpackComponent', meta: 6 }
+
+  // 1. 一轮里：确认物品 → 看配方 → 找库存 → 把取料和合成排好队
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_item', input: { query: 'copter blades' } }] },
+    { toolCalls: [{ name: 'find_recipes', input: blades }] },
+    { toolCalls: [{ name: 'find_in_storage', input: { items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { ore: 'craftingToolScrewdriver' }] } }] },
+    {
+      toolCalls: [
+        {
+          name: 'withdraw_items',
+          input: {
+            container: at,
+            items: [
+              { id: 'IC2:itemRecipePart', meta: 12, count: 4 },
+              { id: 'gregtech:gt.metaitem.01', meta: 27305, count: 3 },
+              { id: 'gregtech:gt.metatool.01', meta: 22, count: 1 },
+            ],
+          },
+        },
+        { name: 'craft_item', input: { ...blades, queue: true } },
+      ],
+    },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '做一个直升机桨叶')
+  await waitFor('goal turn finished', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(1), /adventurebackpack:backpackComponent\/6 \\"Copter Blades\\": recipes: 1 crafting/)
+  assert.match(seen(2), /recipe 0: gives 1, 3x3 grid/)
+  assert.match(seen(2), /4× IC2:itemRecipePart\/12 \\"Shaft \(Refined Iron\)\\", you carry 0/)
+  assert.match(seen(2), /3× any screwSteel \(ore name; e\.g\. gregtech:gt\.metaitem\.01\/27305 \\"Steel Screw\\"\), you carry 0/)
+  assert.match(seen(2), /1× any craftingToolScrewdriver \(ore name; e\.g\. gregtech:gt\.metatool\.01\/22 \\"Screwdriver\\"\) \[tool: /)
+  assert.match(seen(3), /IC2:itemRecipePart\/12: 8 in total\\n  - \(12,64,-4\) Chest: 8/)
+  assert.match(seen(3), /any screwSteel \(ore name\): 16 in total\\n  - \(12,64,-4\) Chest: 16 \(16× gregtech:gt\.metaitem\.01\/27305 \\"Steel Screw\\"\)/)
+  assert.deepEqual(
+    bridge.requestsOf('task.start').map((p) => [(p.task as { type: string }).type, p.mode]),
+    [
+      ['withdraw', 'replace'],
+      ['craft', 'append'],
+    ],
+  )
+
+  // 2. 取料任务一做完就轮到合成（3x3 的配方，它旁边有工作台）；取料结束把它叫醒了一次，它什么都不用做
+  await waitFor('woken by the withdraw', () => llm.requests.length === 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(5), /任务 t1（withdraw）完成了。 结果：\{\\"moved\\":8\}/)
+  assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft')
+
+  // 3. 合成做完：被叫醒，看到做出了什么，告诉主人
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '桨叶做好了。' } }] }, { text: '' })
+  bridge.completeTask('Alu')
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(6), /任务 t2（craft）完成了。 结果：crafted 1× adventurebackpack:backpackComponent\/6 \\"Copter Blades\\", freeSlots \d+/)
+  // 背包里：成品在，轴和螺丝用掉了，螺丝刀还在
+  const carried = (id: string, meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === id && i.meta === meta).reduce((n, i) => n + i.count, 0)
+  assert.deepEqual(
+    [carried(blades.id, 6), carried('IC2:itemRecipePart', 12), carried('gregtech:gt.metaitem.01', 27305), carried('gregtech:gt.metatool.01', 22)],
+    [1, 0, 0, 1],
+  )
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：主人在面板写了一本手册，然后问“任务书下一步做什么” → 它先翻手册再查任务书 → 把能做的任务告诉主人', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      panel: { password: 'preset-password-for-e2e' },
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 1. 面板的“手册”页：默认手册都在；主人新写一本
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+  const shipped = (await call('GET', '/manuals')).json.manuals.map((m: { name: string }) => m.name)
+  for (const name of ['blueprint', 'crafting', 'containers', 'terrain', 'travel', 'quests']) assert.ok(shipped.includes(name), `the panel shows the default manual ${name}${diag()}`)
+  const saved = await call('PUT', '/manuals', { name: '基地布局', summary: '要在基地里找仓库、机器、工作台时看。', body: '仓库在 (12,64,-4) 那一排箱子。' })
+  assert.equal(saved.status, 200, JSON.stringify(saved.json))
+  // 落在数据目录里
+  assert.equal(fs.readFileSync(path.join(tmp.dir, 'manuals', '基地布局.md'), 'utf8'), '要在基地里找仓库、机器、工作台时看。\n\n仓库在 (12,64,-4) 那一排箱子。\n')
+
+  // 2. 主人问下一步做什么：先翻任务书手册，再查他现在能做的任务，看其中一个的详情，然后回话
+  llm.enqueue(
+    { toolCalls: [{ name: 'read_manual', input: { name: 'quests' } }] },
+    { toolCalls: [{ name: 'find_quests', input: { state: 'available' } }] },
+    { toolCalls: [{ name: 'get_quest', input: { id: '4a' } }] },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '能做的有 3 个，最近的是做个直升机背包交任务。' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '任务书下一步做什么')
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
+
+  // 提示词里只有手册目录：默认的和主人刚写的；正文没塞进去
+  const system = JSON.stringify(llm.requests[0]!.body.system)
+  assert.match(system, /# 手册/)
+  assert.match(system, /- quests：[^\\]+/)
+  assert.match(system, /- 基地布局（主人写的）：要在基地里找仓库、机器、工作台时看。/)
+  assert.equal(system.includes('仓库在 (12,64,-4)'), false)
+  assert.match(seen(0), /手册：这段对话里现在没有任何一本手册的内容/)
+  // 读到的是整本任务书手册
+  assert.match(seen(1), /Manual \\"quests\\": /)
+  assert.match(seen(1), /任务书里的文字是英文的/)
+  // 没设主人名单：看刚才跟它说话的那个人的进度
+  assert.deepEqual(bridge.requestsOf('quest.search'), [{ state: 'available', player: 'Steve' }])
+  assert.match(seen(2), /3 quest\(s\) match \(state available\) for Steve:/)
+  assert.match(seen(2), /- 43 \\"Wired, Weird\?!\\" \[Tier 0\.5 - Steam\]: available/)
+  assert.match(seen(2), /- 4a \\"Take to the Skies\\" \[Tier 0\.5 - Steam\]: available/)
+  assert.equal(/Basic Crafting: Motors/.test(seen(2)), false, 'a locked quest is not listed as available')
+  assert.deepEqual(bridge.requestsOf('quest.get'), [{ id: '4a', player: 'Steve' }])
+  assert.match(seen(3), /Quest 4a \\"Take to the Skies\\", chapter \\"Tier 0\.5 - Steam\\"\. State for Steve: available/)
+  assert.match(seen(3), /- retrieval, not done, the items are kept: 1× adventurebackpack:copterPack \\"Copter Pack\\"/)
+  assert.match(seen(3), /- item: 10× gregtech:gt\.metaitem\.01\/32000 \\"Copper Coin\\"/)
+  assert.deepEqual(bridge.commandLog[0], { bot: 'Alu', command: 'tell Steve 能做的有 3 个，最近的是做个直升机背包交任务。' })
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机器、取料、用车床加工 → 取回产物后告诉主人；没电的机器开不了工', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+    }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
+  const GT = 'gregtech:gt.metaitem.01'
+  const chest = bridge.containers[0]!
+  const lathe = bridge.machines.find((m) => m.recipes === 'Lathe')!
+  const assembler = bridge.machines.find((m) => m.recipes === 'Assembler')!
+
+  // 1. 查配方 → 找车床 → 取两个钢锭、排上加工
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_recipes', input: { id: GT, meta: 23305 } }] },
+    { toolCalls: [{ name: 'find_machines', input: {} }] },
+    {
+      toolCalls: [
+        { name: 'withdraw_items', input: { container: { x: chest.x, y: chest.y, z: chest.z }, items: [{ id: GT, meta: 11305, count: 2 }] } },
+        { name: 'process_items', input: { machine: { x: lathe.x, y: lathe.y, z: lathe.z }, inputs: [{ id: GT, meta: 11305, count: 2 }], queue: true } },
+      ],
+    },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '车两根钢杆')
+  await waitFor('first turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(1), /Lathe, LV \(16 EU\/t\), 8 s: 1× gregtech:gt\.metaitem\.01\/11305 \\"Steel Ingot\\" -> 1× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\" \+ 2× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"/)
+  assert.match(seen(2), /- \(16,64,-4\) \\"Advanced Lathe\\": runs Lathe recipes, tier MV, has power \(51200 EU stored\), idle, 6 blocks away/)
+  assert.match(seen(2), /- \(18,64,-4\) \\"Basic Assembling Machine\\": runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle/)
+  assert.deepEqual(
+    bridge.requestsOf('task.start').map((p) => p.task),
+    [
+      { type: 'withdraw', container: { x: chest.x, y: chest.y, z: chest.z }, items: [{ id: GT, meta: 11305, count: 2 }] },
+      { type: 'process', machine: { x: lathe.x, y: lathe.y, z: lathe.z }, inputs: [{ id: GT, meta: 11305, count: 2 }] },
+    ],
+  )
+
+  // 2. 取料做完就轮到加工；车床做完，它被叫醒，看到取回了什么
+  await waitFor('woken by the withdraw', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.equal(bridge.bots.get('Alu')?.task?.type, 'process')
+  llm.enqueue(
+    // 再拿这两根钢杆去没电的组装机试一下：开不了工
+    { toolCalls: [{ name: 'process_items', input: { machine: { x: assembler.x, y: assembler.y, z: assembler.z }, inputs: [{ id: GT, meta: 23305, count: 2 }] } }] },
+    { text: '' },
+  )
+  bridge.completeTask('Alu')
+  await waitFor('second process task ended', () => bridge.bots.get('Alu')?.recent.some((x) => x.id === 't3'), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(5), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
+
+  // 3. 没电的机器：任务以 invalid 失败，它看到机器状态，告诉主人
+  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '钢杆车好了两根；组装机没电，开不了。' } }] }, { text: '' })
+  await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const failed = seen(7)
+  assert.match(failed, /任务 t3（process）失败了：invalid — the machine did not start/)
+  assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle\. It has no power/)
+  // 原料拿回来了：两根钢杆还在身上，钢锭用掉了
+  const carried = (meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === GT && i.meta === meta).reduce((n, i) => n + i.count, 0)
+  assert.deepEqual([carried(23305), carried(1305), carried(11305)], [2, 4, 0])
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

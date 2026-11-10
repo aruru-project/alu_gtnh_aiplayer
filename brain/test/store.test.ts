@@ -7,10 +7,12 @@ import { ActivityLog } from '../src/store/activity-log.ts'
 import { ConfigStore, maskSecret, overridesFromEnv } from '../src/store/config.ts'
 import { ensureDir } from '../src/store/files.ts'
 import { HistoryStore } from '../src/store/history.ts'
+import { MANUAL_BODY_MAX_CHARS, MANUAL_SUMMARY_MAX_CHARS, ManualError, ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import type { Reminder } from '../src/store/reminders.ts'
 import { ReminderStore } from '../src/store/reminders.ts'
 import { UsageStore } from '../src/store/usage.ts'
+import { DEFAULT_MANUALS_DIR } from './agent-harness.ts'
 import { sleep, tmpDir, waitFor } from './helpers.ts'
 
 const mode = (file: string) => fs.statSync(file).mode & 0o777
@@ -44,7 +46,7 @@ describe('数据目录', () => {
     t.after(tmp.cleanup)
     fs.writeFileSync(path.join(tmp.dir, 'config.json'), '{ "panel": { "port": 9000, ')
     const config = new ConfigStore(tmp.dir)
-    assert.equal(config.get().panel.port, 8765)
+    assert.equal(config.get().panel.port, 28765)
     assert.ok(fs.readdirSync(tmp.dir).some((f) => f.startsWith('config.json.corrupt-')))
   })
 
@@ -61,7 +63,7 @@ describe('数据目录', () => {
       }),
     )
     const c = new ConfigStore(tmp.dir).get()
-    assert.equal(c.panel.port, 8765)
+    assert.equal(c.panel.port, 28765)
     assert.equal(c.panel.password, 'keep-me')
     assert.equal(c.bot.name, 'Alu')
     assert.deepEqual(c.bot.aliases, [])
@@ -69,6 +71,27 @@ describe('数据目录', () => {
     assert.equal(c.bot.wake.mode, 'mention')
     assert.deepEqual(c.providers.map((p) => p.id), ['ok'])
     assert.equal(c.activeProviderId, 'ok')
+  })
+
+  it('对话窗口默认 5 分钟（说过话以后隔一两分钟再说，不用再叫名字）；配置文件里已经存着的值不动', (t) => {
+    const fresh = tmpDir()
+    const existing = tmpDir()
+    t.after(fresh.cleanup)
+    t.after(existing.cleanup)
+    assert.equal(new ConfigStore(fresh.dir).get().bot.wake.conversationWindowSec, 300)
+    // 以前的版本默认 60 秒，并且已经把 60 写进了配置文件：主人没改过，也不替他改
+    fs.writeFileSync(path.join(existing.dir, 'config.json'), JSON.stringify({ bot: { wake: { mode: 'mention', conversationWindowSec: 60 } } }))
+    assert.equal(new ConfigStore(existing.dir).get().bot.wake.conversationWindowSec, 60)
+  })
+
+  it('每轮最多调模型的次数默认 30（查配方、找材料的目标要走很多步）；配置文件里已经存着的值不动', (t) => {
+    const fresh = tmpDir()
+    const existing = tmpDir()
+    t.after(fresh.cleanup)
+    t.after(existing.cleanup)
+    assert.equal(new ConfigStore(fresh.dir).get().bot.limits.maxSteps, 30)
+    fs.writeFileSync(path.join(existing.dir, 'config.json'), JSON.stringify({ bot: { limits: { maxSteps: 16 } } }))
+    assert.equal(new ConfigStore(existing.dir).get().bot.limits.maxSteps, 16)
   })
 
   it('环境变量覆盖面板和 bridge 的地址，但不写回配置文件', (t) => {
@@ -83,7 +106,7 @@ describe('数据目录', () => {
     assert.equal(config.bridgeSettings().tokenFile, '/tmp/token.txt')
     assert.equal(config.bridgeSettings().host, '127.0.0.1')
     const onDisk = JSON.parse(fs.readFileSync(path.join(tmp.dir, 'config.json'), 'utf8'))
-    assert.equal(onDisk.panel.port, 8765)
+    assert.equal(onDisk.panel.port, 28765)
     // 默认按正式部署来：端口 25590，口令文件没有默认值（不配就不连）
     assert.equal(onDisk.bridge.port, 25590)
     assert.equal(onDisk.bridge.tokenFile, '')
@@ -149,6 +172,88 @@ describe('记忆、历史、用量', () => {
     assert.deepEqual(b.recent().map((e) => e.text), ['hello', 'hi'])
     assert.equal(b.add({ kind: 'info', text: 'after restart' }).id, 3)
     assert.deepEqual(b.recent(2).map((e) => e.text), ['after restart'])
+  })
+})
+
+describe('手册', () => {
+  /** 一个临时的“默认手册”目录加一个临时的数据目录。 */
+  function setup(t: { after(fn: () => void): void }) {
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    const defaults = path.join(tmp.dir, 'shipped')
+    const mine = path.join(tmp.dir, 'data', 'manuals')
+    fs.mkdirSync(defaults)
+    fs.writeFileSync(path.join(defaults, 'blueprint.md'), '照图纸盖建筑之前看。\n\n# 准备\n先 check_blueprint。\n')
+    fs.writeFileSync(path.join(defaults, 'travel.md'), '\n要去某个地方时看。\n\n走不到就先传送。\n')
+    return { tmp, defaults, mine, store: new ManualStore(defaults, mine) }
+  }
+
+  it('随代码发布的默认手册：要求的那几本都在，每本第一行是“什么时候看”，正文不超过上限', () => {
+    const shipped = new ManualStore(DEFAULT_MANUALS_DIR, path.join(DEFAULT_MANUALS_DIR, 'no-such-user-dir')).list()
+    const names = shipped.map((m) => m.name)
+    for (const name of ['blueprint', 'crafting', 'containers', 'terrain', 'travel', 'quests']) assert.ok(names.includes(name), `${name} is shipped`)
+    for (const m of shipped) {
+      assert.equal(m.source, 'default')
+      assert.ok(m.summary.length >= 8 && m.summary.length <= MANUAL_SUMMARY_MAX_CHARS, `${m.name} starts with a one-line "when to read": ${m.summary}`)
+      assert.equal(m.summary.startsWith('#'), false, `${m.name}: the first line is a sentence, not a heading`)
+      assert.ok(m.body.length > 100 && m.body.length <= MANUAL_BODY_MAX_CHARS, `${m.name} body is ${m.body.length} chars`)
+    }
+  })
+
+  it('文件的第一行是“什么时候看”，其余是正文；默认的和主人写的列在一起，主人新写的排在后面', (t) => {
+    const s = setup(t)
+    assert.deepEqual(s.store.list(), [
+      { name: 'blueprint', summary: '照图纸盖建筑之前看。', body: '# 准备\n先 check_blueprint。', source: 'default', overridesDefault: false },
+      { name: 'travel', summary: '要去某个地方时看。', body: '走不到就先传送。', source: 'default', overridesDefault: false },
+    ])
+    s.store.save({ name: '基地布局', summary: '要在基地里找仓库、机器时看。', body: '仓库在 (100,64,200) 一带。' })
+    assert.deepEqual(s.store.list().map((m) => [m.name, m.source]), [['blueprint', 'default'], ['travel', 'default'], ['基地布局', 'user']])
+    assert.equal(s.store.get('基地布局')?.body, '仓库在 (100,64,200) 一带。')
+    // 落在数据目录里，和别的数据文件一样只有属主能读
+    assert.equal(mode(path.join(s.mine, '基地布局.md')), 0o600)
+    assert.equal(mode(s.mine), 0o700)
+  })
+
+  it('主人写了一本和默认手册同名的：读到的是主人的；删掉主人的那本，默认的就回来了', (t) => {
+    const s = setup(t)
+    const saved = s.store.save({ name: 'blueprint', summary: '盖房子之前看（我们服的规矩）。', body: '一律先问我。' })
+    assert.equal(saved.overridesDefault, true)
+    assert.deepEqual(s.store.get('blueprint'), { name: 'blueprint', summary: '盖房子之前看（我们服的规矩）。', body: '一律先问我。', source: 'user', overridesDefault: true })
+    assert.deepEqual(s.store.list().map((m) => m.name), ['blueprint', 'travel'])
+    // 默认的那份原封不动
+    assert.equal(s.store.defaults().find((m) => m.name === 'blueprint')?.body, '# 准备\n先 check_blueprint。')
+
+    assert.equal(s.store.remove('blueprint'), true)
+    assert.equal(s.store.get('blueprint')?.source, 'default')
+    assert.equal(s.store.get('blueprint')?.body, '# 准备\n先 check_blueprint。')
+    // 默认手册本身删不掉
+    assert.equal(s.store.remove('blueprint'), false)
+    assert.equal(fs.existsSync(path.join(s.defaults, 'blueprint.md')), true)
+  })
+
+  it('手册名带路径、带点、带空格的一律存不进去也删不到：数据目录外面的文件不受影响', (t) => {
+    const s = setup(t)
+    const outside = path.join(s.tmp.dir, 'data', 'config.md')
+    fs.mkdirSync(path.dirname(outside), { recursive: true })
+    fs.writeFileSync(outside, 'keep me')
+    for (const name of ['../config', '..', 'a/b', 'a\\b', '.hidden', 'has space', 'x.md', '', 'a'.repeat(41)]) {
+      assert.throws(() => s.store.save({ name, summary: 's', body: 'b' }), ManualError, `save "${name}"`)
+      assert.throws(() => s.store.remove(name), ManualError, `remove "${name}"`)
+    }
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'keep me')
+    // 什么都没写出来
+    assert.deepEqual(fs.readdirSync(path.join(s.tmp.dir, 'data')), ['config.md'])
+  })
+
+  it('没写“什么时候看”、正文是空的或者太长的手册存不进去；名字只差大小写的不能并存', (t) => {
+    const s = setup(t)
+    assert.throws(() => s.store.save({ name: 'base', summary: '  ', body: '正文' }), /什么时候看/)
+    assert.throws(() => s.store.save({ name: 'base', summary: '找仓库时看', body: '   ' }), /正文不能是空的/)
+    assert.throws(() => s.store.save({ name: 'base', summary: '找仓库时看', body: '长'.repeat(MANUAL_BODY_MAX_CHARS + 1) }), /最长/)
+    assert.throws(() => s.store.save({ name: 'Blueprint', summary: '盖房子时看', body: '正文' }), /已经有一本叫“blueprint”/)
+    assert.deepEqual(s.store.list().map((m) => m.name), ['blueprint', 'travel'])
+    // 找的时候不计较大小写和多写的后缀
+    assert.equal(s.store.get('Blueprint.md')?.name, 'blueprint')
   })
 })
 

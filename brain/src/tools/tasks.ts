@@ -14,11 +14,11 @@ export const BLOCK_LIST_MAX = 256
 export const BOX_MAX_VOLUME = 32768
 export const FLATTEN_MAX_SIDE = 64
 
-const queue = bool(
+export const queue = bool(
   'false (default): cancel whatever you are doing and start this now. true: add it to the end of your task queue instead.',
 )
 
-const pos = (description: string): Schema => obj({ x: int('x'), y: int('y'), z: int('z') }, ['x', 'y', 'z'], description)
+export const pos = (description: string): Schema => obj({ x: int('x'), y: int('y'), z: int('z') }, ['x', 'y', 'z'], description)
 
 const itemFilter = obj(
   {
@@ -29,10 +29,12 @@ const itemFilter = obj(
   ['id'],
 )
 
-const chestList = (description: string): Schema => arr(description, pos('Position of a chest.'), { min: 1, max: 8 })
+/** supply / dropoff：容器坐标的列表。箱子这类有界面的储物方块和抽屉（Storage Drawers）都行。 */
+export const containerList = (description: string): Schema =>
+  arr(description, pos('Position of a container: a chest (or similar storage block) or a Storage Drawers block.'), { min: 1, max: 8 })
 
-const overflow = str(
-  'What to do when your inventory is full and no dropoff chest is given: "fail" (default) stops the task with inventory_full; "leave" keeps digging and leaves the drops lying on the ground.',
+export const overflow = str(
+  'What to do when your inventory is full and no dropoff container is given: "fail" (default) stops the task with inventory_full; "leave" keeps digging and leaves the drops lying on the ground.',
   { enum: ['fail', 'leave'] },
 )
 
@@ -230,8 +232,8 @@ export const flattenArea: Tool = {
         max: 16,
       }),
       maxFillDepth: int('Deepest hole to fill, in layers (default 3). Deeper holes are skipped and reported.', { min: 1, max: 64 }),
-      dropoff: chestList('Chests to unload into when the inventory fills up.'),
-      supply: chestList('Chests to fetch fill material from when it runs out.'),
+      dropoff: containerList('Containers (chests or drawers) to unload into when the inventory fills up.'),
+      supply: containerList('Containers (chests or drawers) to fetch fill material from when it runs out.'),
       overflow,
       queue,
     },
@@ -250,8 +252,11 @@ export const flattenArea: Tool = {
 
 export const clearArea: Tool = {
   name: 'clear_area',
-  description: `Dig out every block in a box, layer by layer from the top (task, volume at most ${BOX_MAX_VOLUME}). Chests, machines, liquids and bedrock are left alone and counted in the result's "skipped". What you dig goes into your inventory. Re-running continues where it stopped.`,
-  inputSchema: obj({ ...boxProps, dropoff: chestList('Chests to unload into when the inventory fills up.'), overflow, queue }, boxRequired),
+  description: `Dig out every block in a box, layer by layer from the top (task, volume at most ${BOX_MAX_VOLUME}). Blocks that hold data (chests, drawers, machines), liquids and bedrock are left alone and counted in the result's "skipped". What you dig goes into your inventory. Re-running continues where it stopped.`,
+  inputSchema: obj(
+    { ...boxProps, dropoff: containerList('Containers (chests or drawers) to unload into when the inventory fills up.'), overflow, queue },
+    boxRequired,
+  ),
   async run(ctx, i) {
     const volume = boxVolume(i)
     if (volume > BOX_MAX_VOLUME) return fail(`box volume is ${volume}; at most ${BOX_MAX_VOLUME} per task. Split it and queue the pieces.`)
@@ -262,14 +267,14 @@ export const clearArea: Tool = {
 
 export const fillArea: Tool = {
   name: 'fill_area',
-  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). shape "hollow" builds only the six faces, "walls" only the four sides. Blocks come from your inventory (and the supply chests); it fails with no_material when they run out. Re-running continues where it stopped.`,
+  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). shape "hollow" builds only the six faces, "walls" only the four sides. Blocks come from your inventory (and the supply containers); it fails with no_material when they run out. Re-running continues where it stopped.`,
   inputSchema: obj(
     {
       ...boxProps,
       item: str('Block item id to place, e.g. "minecraft:cobblestone".'),
       meta: int('Item meta (default 0).', { min: 0 }),
       shape: str('solid (default), hollow or walls.', { enum: ['solid', 'hollow', 'walls'] }),
-      supply: chestList('Chests to fetch more of the block from when you run out.'),
+      supply: containerList('Containers (chests or drawers) to fetch more of the block from when you run out.'),
       queue,
     },
     [...boxRequired, 'item'],
@@ -284,14 +289,14 @@ export const fillArea: Tool = {
 
 export const digBlocks: Tool = {
   name: 'dig_blocks',
-  description: `Dig specific blocks one by one, nearest first (task, at most ${BLOCK_LIST_MAX}). Chests, machines, liquids and bedrock are left alone and counted as skipped. Re-running continues where it stopped. Use clear_area for whole boxes.`,
+  description: `Dig specific blocks one by one, nearest first (task, at most ${BLOCK_LIST_MAX}). Blocks that hold data (chests, drawers, machines), liquids and bedrock are left alone and counted as skipped. Re-running continues where it stopped. Use clear_area for whole boxes.`,
   inputSchema: obj({ blocks: arr('Positions to dig.', pos('A block position.'), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
   run: (ctx, i: { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks }, i.queue),
 }
 
 export const placeBlocks: Tool = {
   name: 'place_blocks',
-  description: `Place specific blocks one by one, lowest first (task, at most ${BLOCK_LIST_MAX}). Each block needs an existing block next to it to attach to; ones with nothing to attach to are skipped. Blocks come from your inventory (and the supply chests). Re-running continues where it stopped. Use fill_area for whole boxes.`,
+  description: `Place specific blocks one by one, lowest first (task, at most ${BLOCK_LIST_MAX}). Each block needs an existing block next to it to attach to; ones with nothing to attach to are skipped. Blocks come from your inventory (and the supply containers). Re-running continues where it stopped. Use fill_area for whole boxes.`,
   inputSchema: obj(
     {
       blocks: arr(
@@ -302,7 +307,7 @@ export const placeBlocks: Tool = {
         ),
         { min: 1, max: BLOCK_LIST_MAX },
       ),
-      supply: chestList('Chests to fetch more blocks from when you run out.'),
+      supply: containerList('Containers (chests or drawers) to fetch more blocks from when you run out.'),
       queue,
     },
     ['blocks'],
@@ -316,10 +321,10 @@ export const placeBlocks: Tool = {
 export const depositItems: Tool = {
   name: 'deposit_items',
   description:
-    'Walk to a chest and put items into it (task). Without "items", deposits everything except tools, food and the ids listed in "keep". Fails with container_full if it does not fit.',
+    'Walk to a container and put items into it (task). The container can be a chest, an iron chest or any similar storage block with an inventory screen, or a Storage Drawers block (used the way a player does: right-click its front). Without "items", deposits everything except tools, food and the ids listed in "keep". Fails with container_full if it does not fit; a drawer only takes an item its slots already hold, or any item while a slot is still unassigned.',
   inputSchema: obj(
     {
-      container: pos('Position of the chest.'),
+      container: pos('Position of the chest or drawers.'),
       items: arr('What to deposit. Omit for everything except tools and food.', itemFilter, { min: 1, max: 36 }),
       keep: arr('Item ids to keep in your inventory.', str('item id'), { min: 1, max: 36 }),
       queue,
@@ -333,9 +338,9 @@ export const depositItems: Tool = {
 export const withdrawItems: Tool = {
   name: 'withdraw_items',
   description:
-    'Walk to a chest and take items out of it (task). The task ends as done even when the chest did not have enough: check "missing" in the result.',
+    'Walk to a container and take items out of it (task): a chest, an iron chest or any similar storage block with an inventory screen, or a Storage Drawers block (used the way a player does: punch its front; the count is exact). The task ends as done even when the container did not have enough: check "missing" in the result.',
   inputSchema: obj(
-    { container: pos('Position of the chest.'), items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue },
+    { container: pos('Position of the chest or drawers.'), items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue },
     ['container', 'items'],
   ),
   run: (ctx, i: { container: unknown; items: unknown[]; queue?: boolean }) =>
@@ -345,11 +350,11 @@ export const withdrawItems: Tool = {
 export const haulItems: Tool = {
   name: 'haul_items',
   description:
-    'Carry items from one chest to another, making as many trips as needed (task). Without "items", moves everything in the source chest. Your own inventory is not touched.',
+    'Carry items from one container to another, making as many trips as needed (task). Either end can be a chest (or similar storage block) or a Storage Drawers block. Without "items", moves everything in the source container. Your own inventory is not touched.',
   inputSchema: obj(
     {
-      from: pos('Source chest.'),
-      to: pos('Destination chest.'),
+      from: pos('Source container (chest or drawers).'),
+      to: pos('Destination container (chest or drawers).'),
       items: arr('What to move (with optional counts). Omit for everything.', itemFilter, { min: 1, max: 36 }),
       queue,
     },

@@ -1,6 +1,7 @@
 // 模拟 bridge：按 docs/PROTOCOL.md 实现的服务端，代替游戏里的 mod。
 // 行为向真实 mod 看齐（响应的字段、事件和响应的先后顺序、指令回显、任务结果的形状都是对着测试服实测过的），
-// 世界本身是假的：一小块固定地形、一个箱子、一个真人玩家。
+// 世界本身是假的：一小块固定地形、一个箱子、一组抽屉、一个工作台、一张图纸、一本只有十来种物品的配方书、
+// 一本只有六个任务的任务书、两台 GregTech 机器（一台有电的车床、一台没电的组装机）、一个真人玩家。
 // 测试里可以脚本化地推事件、让任务按设定结束、断开连接、模拟服务器重启。
 // 也能独立运行，方便手动看面板：
 //   npm run mock-bridge -- [--port 25600] [--token mock-token] [--auto 5000] [--bot Alu]
@@ -10,6 +11,7 @@
 import crypto from 'node:crypto'
 import net from 'node:net'
 import readline from 'node:readline'
+import zlib from 'node:zlib'
 import { MOCK_BRIDGE_DEFAULT_PORT, checkMockPort } from './ports.ts'
 
 type Json = Record<string, unknown>
@@ -61,6 +63,76 @@ export interface MockContainer {
   name: string
   slots: number
   items: { id: string; meta: number; count: number; name: string }[]
+  /** 抽屉（Storage Drawers）是 "drawers"：count 是真实库存，slots 是抽屉格数。 */
+  kind?: 'drawers'
+}
+
+/** 假图纸。读得了的有尺寸和每一格是什么；读不了的只有名字和原因。 */
+export interface MockBlueprint {
+  name: string
+  size: { x: number; y: number; z: number }
+  /** kinds[0] 是“这里没有方块”。byHand：得由人来放的原因。 */
+  kinds: { id: string; meta: number; name: string; byHand?: string }[]
+  /** 每格是 kinds 的下标：cells[x + (y * size.z + z) * size.x]，和 .schematic 文件里的顺序一样。 */
+  cells: Uint16Array
+}
+export type MockBlueprintFile = MockBlueprint | { name: string; error: string }
+
+/** 假配方书里的一种物品，和它的做法。 */
+export interface MockRecipeItem {
+  id: string
+  meta: number
+  name: string
+  /** 登记在哪些矿辞名下。 */
+  ores?: string[]
+  crafting?: MockCrafting[]
+  /** 机器配方，形状就是协议里 recipe.find 的 machines 的一项。 */
+  machines?: Json[]
+  smeltedFrom?: { id: string; meta: number; name: string; count: number }[]
+}
+
+/** 一台 GregTech 单方块加工机器。 */
+export interface MockMachine {
+  x: number
+  y: number
+  z: number
+  name: string
+  /** 跑哪种配方：和配方书里机器配方的 machine 是同一个词。 */
+  recipes: string
+  /** 机器的等级：ULV、LV、MV…… */
+  tier: string
+  inputSlots: number
+  /** 为 0 就是没电。 */
+  storedEU: number
+  inputVoltage: number
+  /** 正在加工别的东西。 */
+  active?: boolean
+  /** 被人关掉了。 */
+  switchedOff?: boolean
+}
+
+/** 假任务书里的一个任务。tasks / rewards 的形状就是协议里 quest.get 的（不带 complete，那是按玩家算的）。 */
+export interface MockQuest {
+  /** 任务书自己的编号：老任务是一小段十六进制数，新任务是完整的 UUID。 */
+  id: string
+  name: string
+  /** 所在的章节。 */
+  line: string
+  description: string
+  /** 前置任务的 id。 */
+  requires: string[]
+  tasks: Json[]
+  rewards: Json[]
+}
+
+export interface MockCrafting {
+  /** 做一次出几个。 */
+  gives: number
+  grid: '2x2' | '3x3'
+  /** 一样原料：一种确定的物品（id，meta 缺省是任何变体），或者一个矿辞名（ore）。tool 是只磨损不消耗的工具。 */
+  ingredients: { count: number; id?: string; meta?: number; ore?: string; tool?: boolean }[]
+  /** 某个 mod 自己的配方类型，读不出原料。 */
+  unreadable?: boolean
 }
 
 export interface RecordedRequest {
@@ -94,7 +166,7 @@ class RpcError extends Error {
   }
 }
 
-const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'wait'])
+const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'blueprint', 'craft', 'process', 'wait'])
 
 /** 真实 mod 默认的 allowedCommands。一项可以是几个词：team join 只放行 team join …。 */
 const ALLOWED_COMMANDS = ['home', 'sethome', 'delhome', 'homes', 'spawn', 'back', 'tell', 'msg', 'w', 'tpa', 'tpaccept', 'team join']
@@ -114,6 +186,23 @@ const JOIN_MESSAGES = ['A magic bubble of protection appears...', 'Welcome to Gr
 
 /** 这个范围以外算“区块没加载”。 */
 const LOADED_RADIUS = 1000
+
+/** 图纸文件的上限，和真实 mod 一样。 */
+const BLUEPRINT_MAX_BYTES = 2 * 1024 * 1024
+/** blueprint 任务一次最多处理这么宽的范围。 */
+const BLUEPRINT_MAX_SIDE = 64
+/** blueprint.check 的各张表最多 30 种；任务结果里最多 8 种。 */
+const BLUEPRINT_LIST_LIMIT = 30
+const BLUEPRINT_SUMMARY_LIMIT = 8
+const BLUEPRINT_FOLDER = 'config/aiplayer/schematics'
+/** GregTech 的电压等级，由低到高。 */
+const TIERS = ['ULV', 'LV', 'MV', 'HV', 'EV', 'IV', 'LuV', 'ZPM', 'UV', 'UHV']
+/** craft 任务找工作台的范围。 */
+const CRAFT_TABLE_SEARCH = 24
+/** clear 里的 "natural"：配置的天然方块。 */
+const NATURAL_BLOCKS = new Set(['minecraft:dirt', 'minecraft:grass', 'minecraft:sand', 'minecraft:gravel', 'minecraft:snow_layer', 'minecraft:leaves'])
+/** clear 里的 "plants"：长出来的东西。 */
+const PLANT_BLOCKS = new Set(['minecraft:leaves', 'minecraft:tallgrass', 'minecraft:red_flower', 'minecraft:yellow_flower', 'minecraft:wheat'])
 
 export class MockBridge {
   readonly token: string
@@ -144,9 +233,47 @@ export class MockBridge {
       items: [
         { id: 'minecraft:cobblestone', meta: 0, count: 320, name: 'Cobblestone' },
         { id: 'minecraft:torch', meta: 0, count: 12, name: 'Torch' },
+        // 做 Copter Blades 的料：轴、螺丝、一把螺丝刀（配方见 defaultRecipeBook）
+        { id: 'IC2:itemRecipePart', meta: 12, count: 8, name: 'Shaft (Refined Iron)' },
+        { id: 'gregtech:gt.metaitem.01', meta: 27305, count: 16, name: 'Steel Screw' },
+        { id: 'gregtech:gt.metatool.01', meta: 22, count: 1, name: 'Screwdriver' },
+        // 车床的料：钢锭车成钢杆
+        { id: 'gregtech:gt.metaitem.01', meta: 11305, count: 8, name: 'Steel Ingot' },
       ],
     },
+    // 一组抽屉：两格，一格装着上万的圆石，另一格还没指定物品
+    {
+      x: 14,
+      y: 64,
+      z: -4,
+      id: 'StorageDrawers:fullDrawers2',
+      name: 'Oak Drawers 1x2',
+      slots: 2,
+      kind: 'drawers',
+      items: [{ id: 'minecraft:cobblestone', meta: 0, count: 12800, name: 'Cobblestone' }],
+    },
   ]
+  /** GregTech 单方块机器：一台有电的 MV 车床，一台没电的 LV 组装机。 */
+  machines: MockMachine[] = [
+    { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 1, storedEU: 51200, inputVoltage: 128 },
+    { x: 18, y: 64, z: -4, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, storedEU: 0, inputVoltage: 0 },
+  ]
+  /** 工作台（3x3 的配方要走到一个旁边才能做）。 */
+  craftingTables: { x: number; y: number; z: number }[] = [{ x: 8, y: 64, z: -4 }]
+  /** 配方书：item.search / recipe.find / craft 任务都查它。 */
+  recipeBook: MockRecipeItem[] = defaultRecipeBook()
+  /** 服务器刚启动时配方索引还没建好：设成 false，item.search 和 recipe.find 就返回 busy。 */
+  recipesReady = true
+  /** 任务书（BetterQuesting）。设成 undefined 就是服务器没装任务书。 */
+  questBook: MockQuest[] | undefined = defaultQuestBook()
+  /** 每个玩家的进度：玩家名（小写）→ 做完了哪些任务、其中哪些已经领了奖励。任务书只认识这里有的和在线的玩家。 */
+  readonly questProgress = new Map<string, { complete: Set<string>; claimed: Set<string> }>([
+    ['steve', { complete: new Set(['1', '2']), claimed: new Set(['1']) }],
+  ])
+  /** 服务器上的图纸（config/aiplayer/schematics 里的文件），按名字。 */
+  readonly blueprints = new Map<string, MockBlueprintFile>([['hut', hutBlueprint('hut')]])
+  /** blueprint 任务放下或挖掉的方块，盖在假地形上："x,y,z" → 方块；null 是挖成了空气。 */
+  readonly changedBlocks = new Map<string, { id: string; meta: number; name: string } | null>()
   autoFinishMs: number | undefined
 
   private readonly host: string
@@ -302,6 +429,20 @@ export class MockBridge {
     this.markRunning(bot, task)
     this.endTask(bot, task, outcome.state ?? (outcome.error ? 'failed' : 'done'), outcome)
     return task
+  }
+
+  /**
+   * 让当前任务“自然结束”：blueprint 任务按假世界算出结果（材料不够就以 no_material 失败），
+   * 其余任务给一个形状和真实 mod 一致的样例结果。自动完成和独立运行时的 done 指令用的就是它。
+   */
+  completeTask(botName: string): MockTask {
+    const task = this.bot(botName).task
+    if (!task) throw new Error(`no running task for ${botName}`)
+    const bot = this.bot(botName)
+    if (task.type === 'blueprint') return this.finishTask(botName, this.buildBlueprint(bot, task))
+    if (task.type === 'craft') return this.finishTask(botName, this.craft(bot, task))
+    if (task.type === 'process') return this.finishTask(botName, this.process(bot, task))
+    return this.finishTask(botName, { result: sampleResult(task) })
   }
 
   /** bot 死亡：当前任务以 interrupted 失败、队列清空，约 1.5 秒后自动重生。 */
@@ -497,14 +638,25 @@ export class MockBridge {
     }
   }
 
-  /** 假世界里某一格是什么：y=64 是草地，往下是石头，往上是空气。 */
+  /** 假世界里某一格是什么：y=64 是草地，往下是石头，往上是空气；blueprint 任务动过的格子以动过的为准。 */
   private blockAt(x: number, y: number, z: number): Json {
     if (Math.abs(x) > LOADED_RADIUS || Math.abs(z) > LOADED_RADIUS) return { x, y, z, loaded: false }
     const chest = this.containers.find((c) => c.x === x && c.y === y && c.z === z)
     if (chest) {
       return { x, y, z, id: chest.id, meta: 3, name: chest.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: true, inventory: true }
     }
-    if (y > 64) return { x, y, z, id: 'minecraft:air', meta: 0, name: 'Air', air: true, solid: false, liquid: false, replaceable: true, hardness: 0, tileEntity: false, inventory: false }
+    const machine = this.machines.find((m) => m.x === x && m.y === y && m.z === z)
+    if (machine) {
+      return { x, y, z, id: 'gregtech:gt.blockmachines', meta: 0, name: machine.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2, tileEntity: true, inventory: true }
+    }
+    if (this.craftingTables.some((t) => t.x === x && t.y === y && t.z === z)) {
+      return { x, y, z, id: 'minecraft:crafting_table', meta: 0, name: 'Crafting Table', air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: false, inventory: false }
+    }
+    const changed = this.changedBlocks.get(`${x},${y},${z}`)
+    if (changed) {
+      return { x, y, z, id: changed.id, meta: changed.meta, name: changed.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2, tileEntity: false, inventory: false }
+    }
+    if (y > 64 || changed === null) return { x, y, z, id: 'minecraft:air', meta: 0, name: 'Air', air: true, solid: false, liquid: false, replaceable: true, hardness: 0, tileEntity: false, inventory: false }
     const grass = y === 64
     return {
       x,
@@ -584,17 +736,234 @@ export class MockBridge {
       case 'world.find': {
         const c = this.center(p)
         const wanted = Array.isArray(p.blocks) ? (p.blocks as string[]) : []
-        const matches = this.containers
-          .filter((box) => wanted.includes(box.id))
-          .map((box) => ({ x: box.x, y: box.y, z: box.z, id: box.id, meta: 3, dist: Math.hypot(box.x - c.x, box.y - c.y, box.z - c.z) }))
+        const matches = [
+          ...this.containers.map((box) => ({ x: box.x, y: box.y, z: box.z, id: box.id, meta: 3 })),
+          ...this.craftingTables.map((t) => ({ ...t, id: 'minecraft:crafting_table', meta: 0 })),
+        ]
+          .filter((b) => wanted.includes(b.id))
+          .map((b) => ({ ...b, dist: Math.hypot(b.x - c.x, b.y - c.y, b.z - c.z) }))
           .sort((a, b) => a.dist - b.dist)
         return { matches, total: matches.length }
       }
       case 'world.containers': {
         this.center(p)
-        const containers = this.containers.map((c) => ({ x: c.x, y: c.y, z: c.z, id: c.id, name: c.name, slots: c.slots, usedSlots: c.items.length, items: c.items }))
+        // 抽屉带 kind:"drawers"，普通箱子没有这一项
+        const containers = this.containers.map((c) => ({
+          x: c.x,
+          y: c.y,
+          z: c.z,
+          id: c.id,
+          name: c.name,
+          slots: c.slots,
+          usedSlots: c.items.length,
+          items: c.items,
+          ...(c.kind ? { kind: c.kind } : {}),
+        }))
         return { containers, total: containers.length }
       }
+      case 'item.search': {
+        this.requireRecipes()
+        const query = String(p.query ?? '').trim().toLowerCase()
+        if (query.length < 2) throw new RpcError('bad_request', 'query needs at least two characters')
+        const limit = Math.max(1, Math.min(40, typeof p.limit === 'number' ? p.limit : 12))
+        const words = query.split(/\s+/)
+        // 名字或 id 里包含 query 的每个词；名字完全一样的最前，其次是以它开头的，做得出来的排在做不出来的前面
+        const hits = this.recipeBook
+          .filter((e) => words.every((w) => e.name.toLowerCase().includes(w) || e.id.toLowerCase().includes(w)))
+          .map((e) => {
+            const lower = e.name.toLowerCase()
+            const made = (e.crafting?.length ?? 0) + (e.machines?.length ?? 0) + (e.smeltedFrom?.length ?? 0) > 0
+            return { e, score: (lower === query ? 0 : (lower.startsWith(query) ? 1000 : 2000) + lower.length) + (made ? 0 : 500) }
+          })
+          .sort((a, b) => a.score - b.score)
+          .slice(0, limit)
+        return {
+          items: hits.map(({ e }) => ({
+            id: e.id,
+            meta: e.meta,
+            name: e.name,
+            recipes: { crafting: e.crafting?.length ?? 0, machine: e.machines?.length ?? 0, smelting: e.smeltedFrom?.length ?? 0 },
+            ...(e.ores && e.ores.length > 0 ? { ores: e.ores } : {}),
+          })),
+        }
+      }
+      case 'recipe.find': {
+        this.requireRecipes()
+        const meta = typeof p.meta === 'number' ? Math.max(0, p.meta) : 0
+        const entry = this.recipeEntry(p.id, meta)
+        if (!entry) throw new RpcError('not_found', `no such item is known: ${String(p.id)}/${meta}; item.search finds ids`)
+        // 带了 bot 时它必须在线，原料里有它身上现有的数量
+        const bot = p.bot !== undefined ? this.onlineBot(p.bot) : undefined
+        const craftingLimit = Math.max(0, Math.min(12, typeof p.crafting === 'number' ? p.crafting : 4))
+        const machineLimit = Math.max(0, Math.min(24, typeof p.machines === 'number' ? p.machines : 8))
+        const filter = typeof p.machine === 'string' && p.machine.trim().length > 0 ? p.machine.trim().toLowerCase() : undefined
+        const crafting = (entry.crafting ?? []).slice(0, craftingLimit).map((r, index) =>
+          r.unreadable
+            ? { index, gives: r.gives, unreadable: true }
+            : { index, gives: r.gives, grid: r.grid, ingredients: r.ingredients.map((ing) => this.ingredientJson(ing, ing.count, bot)) },
+        )
+        // 每种机器先各列两条；指定了 machine 就只列那种机器的
+        const all = [...(entry.machines ?? [])].sort((a, b) => Number(a.eut) - Number(b.eut) || Number(a.seconds) - Number(b.seconds))
+        const perMachine: Record<string, number> = {}
+        for (const m of all) perMachine[String(m.machine)] = (perMachine[String(m.machine)] ?? 0) + 1
+        const shown: Record<string, number> = {}
+        const machines: Json[] = []
+        for (const m of all) {
+          const name = String(m.machine)
+          if (machines.length >= machineLimit) break
+          if (filter !== undefined && !name.toLowerCase().includes(filter)) continue
+          if (filter === undefined && (shown[name] = (shown[name] ?? 0) + 1) > 2) continue
+          machines.push(m)
+        }
+        return {
+          item: { id: entry.id, meta: entry.meta, name: entry.name },
+          crafting,
+          machines,
+          ...(all.length > 0 ? { machineRecipeCounts: perMachine } : {}),
+          ...(entry.smeltedFrom && entry.smeltedFrom.length > 0 ? { smeltedFrom: entry.smeltedFrom.slice(0, 6) } : {}),
+          total: { crafting: entry.crafting?.length ?? 0, machines: all.length, smelting: entry.smeltedFrom?.length ?? 0 },
+        }
+      }
+      case 'world.machines': {
+        const c = this.center(p)
+        const radius = Math.max(1, typeof p.radius === 'number' ? p.radius : 32)
+        if (radius > 64) throw new RpcError('too_large', 'radius is limited to 64')
+        const want = typeof p.name === 'string' && p.name.trim().length > 0 ? p.name.trim().toLowerCase() : undefined
+        const limit = Math.max(1, Math.min(60, typeof p.limit === 'number' ? p.limit : 30))
+        // 由近到远；name 给了就只列名字或配方种类里含它的
+        const found = this.machines
+          .filter((m) => Math.max(Math.abs(m.x - c.x), Math.abs(m.y - c.y), Math.abs(m.z - c.z)) <= radius)
+          .filter((m) => want === undefined || `${m.name} ${m.recipes}`.toLowerCase().includes(want))
+          .map((m) => ({ ...describeMachine(m), dist: Math.round(Math.hypot(m.x - c.x, m.y - c.y, m.z - c.z) * 10) / 10 }))
+          .sort((a, b) => a.dist - b.dist)
+        return { machines: found.slice(0, limit), total: found.length }
+      }
+      case 'world.stock': {
+        const c = this.center(p)
+        const wanted = Array.isArray(p.items) ? (p.items as Json[]) : []
+        if (wanted.length === 0 || wanted.length > 24) throw new RpcError('bad_request', 'items must list 1 to 24 items')
+        const radius = Math.max(1, typeof p.radius === 'number' ? p.radius : 32)
+        if (radius > 64) throw new RpcError('too_large', 'radius is limited to 64')
+        const near = this.containers.filter((box) => Math.max(Math.abs(box.x - c.x), Math.abs(box.y - c.y), Math.abs(box.z - c.z)) <= radius)
+        const items = wanted.map((want) => {
+          const ore = typeof want.ore === 'string' ? want.ore : undefined
+          const id = String(want.id ?? '')
+          const meta = typeof want.meta === 'number' ? want.meta : undefined
+          const matches = (i: { id: string; meta: number }) => (ore !== undefined ? this.hasOre(i, ore) : i.id === id && (meta === undefined || i.meta === meta))
+          const places = near
+            .map((box) => ({ box, found: box.items.filter((i) => matches(i) && i.count > 0) }))
+            .filter((x) => x.found.length > 0)
+            .map(({ box, found }) => ({
+              x: box.x,
+              y: box.y,
+              z: box.z,
+              container: box.name,
+              ...(box.kind ? { kind: box.kind } : {}),
+              count: found.reduce((n, i) => n + i.count, 0),
+              // 按矿辞名或不带 meta 查时，说清这一处具体是哪几种
+              ...(ore !== undefined || meta === undefined ? { items: found.slice(0, 4).map((i) => ({ id: i.id, meta: i.meta, count: i.count, name: i.name })) } : {}),
+            }))
+            .sort((a, b) => b.count - a.count)
+          return {
+            ...(ore !== undefined ? { ore } : meta === undefined ? { id } : { id, meta }),
+            total: places.reduce((n, pl) => n + pl.count, 0),
+            places: places.slice(0, 6),
+            ...(places.length > 6 ? { morePlaces: places.length - 6 } : {}),
+          }
+        })
+        return { items, containersLookedInto: near.length }
+      }
+      case 'quest.lines': {
+        const book = this.quests()
+        const who = this.questPlayer(p.player)
+        const lines: Json[] = []
+        for (const name of new Set(book.map((q) => q.line))) {
+          const inLine = book.filter((q) => q.line === name)
+          const states = inLine.map((q) => this.questState(q, who))
+          lines.push({
+            name,
+            quests: inLine.length,
+            // complete / available 只在给了 player 时有
+            ...(who ? { complete: states.filter((st) => st?.startsWith('complete')).length, available: states.filter((st) => st === 'available').length } : {}),
+          })
+        }
+        return { lines, quests: book.length }
+      }
+      case 'quest.search': {
+        const book = this.quests()
+        const state = typeof p.state === 'string' ? p.state : undefined
+        if (state !== undefined && !['available', 'complete', 'locked'].includes(state)) throw new RpcError('bad_request', 'state must be available, complete or locked')
+        const who = this.questPlayer(p.player)
+        if (state !== undefined && !who) throw new RpcError('bad_request', 'state needs a player')
+        const words = typeof p.query === 'string' && p.query.trim().length > 0 ? p.query.trim().toLowerCase().split(/\s+/) : []
+        const line = typeof p.line === 'string' ? p.line.trim().toLowerCase() : undefined
+        const limit = Math.max(1, Math.min(60, typeof p.limit === 'number' ? p.limit : 20))
+        const hits: { q: MockQuest; st: string | undefined; score: number }[] = []
+        for (const q of book) {
+          if (line !== undefined && !q.line.toLowerCase().includes(line)) continue
+          const st = this.questState(q, who)
+          if (state !== undefined && !st?.startsWith(state)) continue
+          const title = q.name.toLowerCase()
+          const text = q.description.toLowerCase()
+          if (!words.every((w) => title.includes(w) || text.includes(w))) continue
+          // 只在说明里出现的词，比标题里出现的排得靠后
+          hits.push({ q, st, score: words.filter((w) => !title.includes(w)).length * 10 + (words.length > 0 ? Math.floor(title.length / 8) : 0) })
+        }
+        hits.sort((a, b) => a.score - b.score)
+        return {
+          quests: hits.slice(0, limit).map(({ q, st }) => ({ id: q.id, name: q.name, line: q.line, ...(st !== undefined ? { state: st } : {}) })),
+          total: hits.length,
+        }
+      }
+      case 'quest.get': {
+        const book = this.quests()
+        const id = String(p.id ?? '').trim().toLowerCase()
+        if (!/^[0-9a-f]{1,12}$/.test(id) && !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) throw new RpcError('bad_request', `not a quest id: ${String(p.id)}`)
+        const q = book.find((x) => x.id === id)
+        if (!q) throw new RpcError('not_found', `there is no quest with id ${String(p.id)}`)
+        const who = this.questPlayer(p.player)
+        const done = who ? who.complete.has(q.id) : undefined
+        const st = this.questState(q, who)
+        return {
+          id: q.id,
+          name: q.name,
+          line: q.line,
+          description: q.description,
+          ...(st !== undefined ? { state: st } : {}),
+          requires: q.requires
+            .map((r) => book.find((x) => x.id === r))
+            .filter((r): r is MockQuest => r !== undefined)
+            .map((r) => ({ id: r.id, name: r.name, ...(who ? { complete: who.complete.has(r.id) } : {}) })),
+          // 这里简化成：任务做完了，它的每个子任务就都算完成
+          tasks: q.tasks.map((t) => ({ type: t.type, ...(done !== undefined ? { complete: done } : {}), ...t })),
+          rewards: q.rewards,
+        }
+      }
+      case 'blueprint.list':
+        return {
+          blueprints: [...this.blueprints.values()]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((b) => ('error' in b ? { name: b.name, error: b.error } : { name: b.name, ...describeBlueprint(b) })),
+          folder: BLUEPRINT_FOLDER,
+        }
+      case 'blueprint.check': {
+        const plan = this.blueprintPlan(p)
+        // 带了 bot 时它必须在线，materials 里有它身上的数量
+        const bot = p.bot !== undefined ? this.onlineBot(p.bot) : undefined
+        return this.surveyBlueprint(plan, bot, p.layers !== false)
+      }
+      case 'blueprint.put': {
+        const name = blueprintName(p.name)
+        if (typeof p.data !== 'string') throw new RpcError('bad_request', 'missing or non-text field: data')
+        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(p.data)) throw new RpcError('bad_request', 'data must be the file in base64')
+        const bytes = Buffer.from(p.data, 'base64')
+        if (bytes.length > BLUEPRINT_MAX_BYTES) throw new RpcError('bad_request', `the file is larger than ${BLUEPRINT_MAX_BYTES / 1024} KiB`)
+        const blueprint = readSchematic(name, bytes)
+        this.blueprints.set(name, blueprint)
+        return { name, ...describeBlueprint(blueprint) }
+      }
+      case 'blueprint.remove':
+        return { removed: this.blueprints.delete(blueprintName(p.name)) }
       case 'world.entities': {
         const c = this.center(p)
         const entities = [
@@ -790,6 +1159,27 @@ export class MockBridge {
       this.num(spec, 'x')
       this.num(spec, 'z')
     }
+    if (type === 'process') {
+      if (positions(spec.machine).length === 0) throw new RpcError('bad_request', 'missing or non-numeric field: machine')
+      const inputs = Array.isArray(spec.inputs) ? (spec.inputs as Json[]) : []
+      if (inputs.length === 0 || inputs.length > 9) throw new RpcError('bad_request', 'inputs must list 1 to 9 items')
+      if (inputs.some((i) => typeof i.count !== 'number' || i.count <= 0)) throw new RpcError('bad_request', 'each input needs a count')
+    }
+    if (type === 'craft' && !this.recipeBook.some((e) => e.id === spec.id)) {
+      throw new RpcError('bad_request', `unknown item id: ${String(spec.id)}`)
+    }
+    if (type === 'blueprint') {
+      // 和真实 mod 一样：参数不对、没有这张图纸、范围超过 64×64 列，都在启动时就以 bad_request 拒绝
+      const plan = this.blueprintPlan(spec)
+      const wide = plan.x2 - plan.x1 + 1
+      const deep = plan.z2 - plan.z1 + 1
+      if (wide > BLUEPRINT_MAX_SIDE || deep > BLUEPRINT_MAX_SIDE) {
+        throw new RpcError(
+          'bad_request',
+          `one task works on at most ${BLUEPRINT_MAX_SIDE}x${BLUEPRINT_MAX_SIDE} columns and this covers ${wide}x${deep}; give x1, x2, z1, z2 to take it a part at a time`,
+        )
+      }
+    }
     if (p.mode === 'append' && bot.task && bot.queue.length >= MAX_QUEUE) {
       throw new RpcError('too_large', `at most ${MAX_QUEUE} tasks may wait in the queue`)
     }
@@ -862,16 +1252,37 @@ export class MockBridge {
         return
       }
       if (task.type === 'withdraw') {
-        // 箱子里不够的部分记在 missing 里，任务照样是 done
+        // 东西真的从箱子（或抽屉）挪到背包里。箱子里不够的部分记在 missing 里，任务照样是 done
         const missing: Json[] = []
         let moved = 0
         for (const want of (Array.isArray(p.items) ? p.items : []) as Json[]) {
-          const have = box.items.filter((i) => i.id === want.id).reduce((n, i) => n + i.count, 0)
+          const fits = (i: { id: string; meta: number }) => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta)
+          const have = box.items.filter(fits).reduce((n, i) => n + i.count, 0)
           const count = typeof want.count === 'number' ? want.count : have
-          moved += Math.min(have, count)
-          if (have < count) missing.push({ id: want.id, count: count - have })
+          for (const got of takeItems(box.items, fits, count)) {
+            putInInventory(bot, got, got.count)
+            moved += got.count
+          }
+          if (have < count) missing.push({ id: want.id, ...(typeof want.meta === 'number' ? { meta: want.meta } : {}), count: count - have })
         }
+        box.items = box.items.filter((i) => i.count > 0)
         this.endTask(bot, task, 'done', { result: missing.length > 0 ? { moved, missing } : { moved } })
+        return
+      }
+    }
+    if (task.type === 'craft') {
+      // 配方读不了、材料不够、要工作台而附近没有：真实 mod 在第一刻就失败
+      const plan = this.craftPlan(bot, task)
+      if ('error' in plan) {
+        this.endTask(bot, task, 'failed', plan)
+        return
+      }
+    }
+    if (task.type === 'process') {
+      // 不是机器、原料没带、机器没开工（真实 mod 等 3 秒看它开不开工，这里立刻知道）
+      const plan = this.processPlan(bot, task)
+      if ('error' in plan) {
+        this.endTask(bot, task, 'failed', plan)
         return
       }
     }
@@ -886,7 +1297,7 @@ export class MockBridge {
     if (this.autoFinishMs !== undefined && task.type !== 'follow') {
       const timer = setTimeout(() => {
         this.timers.delete(timer)
-        if (bot.task === task) this.endTask(bot, task, 'done', { result: sampleResult(task) })
+        if (bot.task === task) this.completeTask(bot.name)
       }, this.autoFinishMs)
       this.timers.add(timer)
     }
@@ -952,6 +1363,454 @@ export class MockBridge {
     return ids
   }
 
+  // ── 任务书 ──
+
+  private quests(): MockQuest[] {
+    if (!this.questBook) throw new RpcError('not_found', 'this server has no quest book (BetterQuesting)')
+    return this.questBook
+  }
+
+  /** 看谁的进度：在线的，或者任务书见过的。没给名字就是不看进度。 */
+  private questPlayer(name: unknown): { complete: Set<string>; claimed: Set<string> } | undefined {
+    if (typeof name !== 'string' || name.length === 0) return undefined
+    const key = name.toLowerCase()
+    const known = this.questProgress.get(key)
+    if (known) return known
+    const online = this.players.some((pl) => pl.name.toLowerCase() === key) || [...this.bots.values()].some((b) => b.online && b.name.toLowerCase() === key)
+    if (!online) throw new RpcError('not_found', `the quest book knows no player named ${name}`)
+    return { complete: new Set(), claimed: new Set() }
+  }
+
+  private questState(q: MockQuest, who: { complete: Set<string>; claimed: Set<string> } | undefined): string | undefined {
+    if (!who) return undefined
+    if (who.complete.has(q.id)) return who.claimed.has(q.id) ? 'complete' : 'complete, reward unclaimed'
+    return q.requires.every((r) => who.complete.has(r)) ? 'available' : 'locked'
+  }
+
+  // ── 物品、配方、合成 ──
+
+  private requireRecipes(): void {
+    if (!this.recipesReady) throw new RpcError('busy', 'the recipe index is still being built; try again in a few seconds')
+  }
+
+  private recipeEntry(id: unknown, meta: number): MockRecipeItem | undefined {
+    return this.recipeBook.find((e) => e.id === id && e.meta === meta)
+  }
+
+  /** 这个物品是不是登记在这个矿辞名下。 */
+  private hasOre(item: { id: string; meta: number }, ore: string): boolean {
+    return this.recipeEntry(item.id, item.meta)?.ores?.includes(ore) === true
+  }
+
+  /** 一件物品合不合一样原料的要求。 */
+  private fitsIngredient(item: { id: string; meta: number }, ing: MockCrafting['ingredients'][number]): boolean {
+    if (ing.ore !== undefined) return this.hasOre(item, ing.ore)
+    return item.id === ing.id && (ing.meta === undefined || item.meta === ing.meta)
+  }
+
+  /** 配方里的一样原料，形状和真实 mod 的 ingredients / missing 一样；给了 bot 时带 have。 */
+  private ingredientJson(ing: MockCrafting['ingredients'][number], count: number, bot?: MockBot): Json {
+    const out: Json = { count }
+    if (ing.ore !== undefined) {
+      const fits = this.recipeBook.filter((e) => e.ores?.includes(ing.ore!))
+      out.name = `${fits[0]?.name ?? '?'} (any ${ing.ore})`
+      out.ore = ing.ore
+      if (fits[0]) out.example = { id: fits[0].id, meta: fits[0].meta }
+      if (fits.length > 1) out.alternatives = fits.length
+    } else {
+      // 没有 meta 表示任何变体都行
+      const known = this.recipeBook.find((e) => e.id === ing.id && (ing.meta === undefined || e.meta === ing.meta))
+      out.name = ing.meta === undefined ? `${known?.name ?? ing.id} (any variant)` : (known?.name ?? ing.id)
+      out.id = ing.id
+      if (ing.meta !== undefined) out.meta = ing.meta
+    }
+    if (ing.tool) out.tool = true
+    if (bot) out.have = bot.inventory.filter((i) => this.fitsIngredient(i, ing)).reduce((n, i) => n + i.count, 0)
+    return out
+  }
+
+  /**
+   * craft 任务第一刻做的事：找到配方、数清材料、找到工作台。哪一步不行就是任务失败的原因（原话照真实 mod 的）。
+   */
+  private craftPlan(
+    bot: MockBot,
+    task: MockTask,
+  ): { entry: MockRecipeItem; recipe: MockCrafting; rounds: number } | { error: NonNullable<MockTask['error']>; result: Json } {
+    const p = task.params
+    const meta = typeof p.meta === 'number' ? Math.max(0, p.meta) : 0
+    const index = typeof p.recipe === 'number' ? Math.max(0, p.recipe) : 0
+    const wanted = Math.max(1, Math.min(2304, typeof p.count === 'number' ? p.count : 1))
+    const freeSlots = 36 - bot.inventory.length
+    const entry = this.recipeEntry(p.id, meta)
+    const invalid = (message: string, result: Json) => ({ error: { code: 'invalid', message }, result })
+    if (!entry || !entry.crafting || entry.crafting.length === 0) {
+      return invalid(`no crafting-table recipe is known for ${String(p.id)}/${meta}`, { crafted: 0, freeSlots })
+    }
+    const result = { crafted: 0, item: { id: entry.id, meta: entry.meta, name: entry.name }, freeSlots }
+    const recipe = entry.crafting[index]
+    if (!recipe) return invalid(`it has ${entry.crafting.length} crafting recipes; there is no number ${index}`, { crafted: 0, freeSlots })
+    if (recipe.unreadable) return invalid('this recipe is of a kind the bot cannot lay out by itself', { crafted: 0, freeSlots })
+    const rounds = Math.ceil(wanted / recipe.gives)
+    // 工具每一轮都放在那一格里，只要一件；别的原料每轮用掉一份
+    const missing: Json[] = []
+    for (const ing of recipe.ingredients) {
+      const need = ing.tool ? ing.count : ing.count * rounds
+      const have = bot.inventory.filter((i) => this.fitsIngredient(i, ing)).reduce((n, i) => n + i.count, 0)
+      if (have < need) missing.push(this.ingredientJson(ing, need - have))
+    }
+    if (missing.length > 0) {
+      return { error: { code: 'no_material', message: `the inventory lacks ingredients for ${rounds} round(s) of this recipe`, detail: { missing } }, result }
+    }
+    if (recipe.grid === '3x3') {
+      const here = this.blockOf(bot)
+      const given = positions(p.table)[0]
+      const table = given ?? this.craftingTables.find((t) => Math.max(Math.abs(t.x - here.x), Math.abs(t.y - here.y), Math.abs(t.z - here.z)) <= CRAFT_TABLE_SEARCH)
+      if (!table) return invalid(`this recipe needs a crafting table and none is within ${CRAFT_TABLE_SEARCH} blocks; give the position of one`, result)
+      if (this.blockAt(table.x, table.y, table.z).air === true) {
+        return { error: { code: 'invalid', message: 'there is no crafting table at that position', detail: { x: table.x, y: table.y, z: table.z } }, result }
+      }
+    }
+    return { entry, recipe, rounds }
+  }
+
+  /** craft 任务做完时的样子：原料从背包里用掉（工具留着），成品进背包。 */
+  private craft(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+    const plan = this.craftPlan(bot, task)
+    if ('error' in plan) return plan
+    for (const ing of plan.recipe.ingredients) {
+      if (!ing.tool) takeItems(bot.inventory, (i) => this.fitsIngredient(i, ing), ing.count * plan.rounds)
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    const crafted = plan.recipe.gives * plan.rounds
+    putInInventory(bot, plan.entry, crafted)
+    return { result: { crafted, item: { id: plan.entry.id, meta: plan.entry.meta, name: plan.entry.name }, freeSlots: 36 - bot.inventory.length } }
+  }
+
+  // ── 机器 ──
+
+  /**
+   * process 任务开头做的事：走到机器跟前把原料放进去，看它开不开工。
+   * 开工的条件：有电、没被关掉、没在忙，而且放进去的东西凑得出它的一条配方（等级够、不带流体；不消耗的电路和模具也得在）。
+   * 不开工时原料拿回来，以 invalid 失败，detail 是机器的状态（原话照真实 mod 的）。
+   */
+  private processPlan(
+    bot: MockBot,
+    task: MockTask,
+  ): { machine: MockMachine; recipe: Json; rounds: number; given: { id: string; meta: number | undefined; count: number }[] } | { error: NonNullable<MockTask['error']>; result: Json } {
+    const p = task.params
+    const at = positions(p.machine)[0]!
+    const freeSlots = 36 - bot.inventory.length
+    const machine = this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
+    if (!machine) {
+      return { error: { code: 'invalid', message: 'that is not a processing machine', detail: { x: at.x, y: at.y, z: at.z } }, result: { put: 0, outputs: [], freeSlots } }
+    }
+    // 每样原料实际放得进去多少：以身上有的为限
+    const given = ((Array.isArray(p.inputs) ? p.inputs : []) as Json[]).map((want) => {
+      const meta = typeof want.meta === 'number' ? want.meta : undefined
+      const have = bot.inventory.filter((i) => i.id === want.id && (meta === undefined || i.meta === meta)).reduce((n, i) => n + i.count, 0)
+      return { id: String(want.id), meta, count: Math.min(Number(want.count), have) }
+    })
+    const put = given.reduce((n, g) => n + g.count, 0)
+    if (put <= 0) {
+      return {
+        error: { code: 'invalid', message: 'the machine took none of the inputs: they are not in the inventory, or its input slots are occupied', detail: describeMachine(machine) },
+        result: { put: 0, outputs: [], freeSlots },
+      }
+    }
+    const has = (need: Json): number => given.filter((g) => g.id === need.id && (g.meta === undefined || g.meta === need.meta)).reduce((n, g) => n + g.count, 0)
+    const recipe = this.recipeBook
+      .flatMap((e) => e.machines ?? [])
+      .find(
+        (r) =>
+          r.machine === machine.recipes &&
+          TIERS.indexOf(String(r.tier)) <= TIERS.indexOf(machine.tier) &&
+          !(Array.isArray(r.fluidInputs) && r.fluidInputs.length > 0) &&
+          ((r.inputs ?? []) as Json[]).every((need) => has(need) >= Math.max(1, Number(need.count))),
+      )
+    if (machine.storedEU <= 0 || machine.switchedOff === true || machine.active === true || !recipe) {
+      return {
+        error: {
+          code: 'invalid',
+          message:
+            'the machine did not start: it may lack power, a programmed circuit or a fluid, or these inputs are not a recipe it runs. The inputs are back in the inventory.',
+          detail: describeMachine(machine),
+        },
+        result: { put, outputs: [], freeSlots },
+      }
+    }
+    const consumed = ((recipe.inputs ?? []) as Json[]).filter((need) => need.notConsumed !== true)
+    const rounds = Math.min(...consumed.map((need) => Math.floor(has(need) / Number(need.count))))
+    return { machine, recipe, rounds, given }
+  }
+
+  /** process 任务做完时的样子：原料用掉，产物进背包；没被消耗的电路、模具和没用完的原料也一并“取回来”，算在 outputs 里。 */
+  private process(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+    const plan = this.processPlan(bot, task)
+    if ('error' in plan) return plan
+    const put = plan.given.reduce((n, g) => n + g.count, 0)
+    const outputs: Json[] = []
+    for (const out of (plan.recipe.outputs ?? []) as Json[]) {
+      const made = { id: String(out.id), meta: Number(out.meta ?? 0), name: String(out.name ?? out.id), count: Number(out.count) * plan.rounds }
+      putInInventory(bot, made, made.count)
+      outputs.push(made)
+    }
+    for (const need of (plan.recipe.inputs ?? []) as Json[]) {
+      const fits = (i: { id: string; meta: number }) => i.id === need.id && i.meta === Number(need.meta ?? 0)
+      const g = plan.given.find((x) => x.id === need.id && (x.meta === undefined || x.meta === need.meta))
+      const used = need.notConsumed === true ? 0 : Number(need.count) * plan.rounds
+      takeItems(bot.inventory, fits, used)
+      // 放进去却没被用掉的，做完后原样取回
+      const back = (g?.count ?? 0) - used
+      if (back > 0) outputs.push({ id: String(need.id), meta: Number(need.meta ?? 0), name: String(need.name ?? need.id), count: back })
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    return { result: { put, outputs, freeSlots: 36 - bot.inventory.length } }
+  }
+
+  // ── 图纸 ──
+
+  /** blueprint.check 和 blueprint 任务共用的参数：哪张图纸、放在哪、只处理哪一部分、哪些方块管不管、允许挖什么。 */
+  private blueprintPlan(p: Json): BlueprintPlan {
+    const name = blueprintName(p.name)
+    const file = this.blueprints.get(name)
+    if (!file) throw new RpcError('bad_request', `there is no blueprint named "${name}"; blueprint.list shows the ones there are`)
+    if ('error' in file) throw new RpcError('bad_request', `blueprint "${name}": ${file.error}`)
+    const ox = this.num(p, 'x')
+    const oy = this.num(p, 'y')
+    const oz = this.num(p, 'z')
+    const range = (a: string, b: string, lo: number, hi: number): [number, number] => {
+      if (p[a] === undefined && p[b] === undefined) return [lo, hi]
+      if (p[a] === undefined || p[b] === undefined) throw new RpcError('bad_request', `${a} and ${b} go together`)
+      const u = this.num(p, a)
+      const v = this.num(p, b)
+      return [Math.max(lo, Math.min(u, v)), Math.min(hi, Math.max(u, v))]
+    }
+    const [x1, x2] = range('x1', 'x2', ox, ox + file.size.x - 1)
+    const [y1, y2] = range('y1', 'y2', Math.max(0, oy), Math.min(255, oy + file.size.y - 1))
+    const [z1, z2] = range('z1', 'z2', oz, oz + file.size.z - 1)
+    if (x1 > x2 || y1 > y2 || z1 > z2) {
+      throw new RpcError(
+        'bad_request',
+        `the given range does not touch the blueprint, which set down there spans x ${ox}..${ox + file.size.x - 1}, y ${oy}..${oy + file.size.y - 1}, z ${oz}..${oz + file.size.z - 1}`,
+      )
+    }
+    const ids = (key: string): string[] | undefined => {
+      if (p[key] === undefined) return undefined
+      if (!Array.isArray(p[key])) throw new RpcError('bad_request', `${key} must be a list of block ids`)
+      return (p[key] as unknown[]).map(String)
+    }
+    const only = ids('only')
+    const clear = ids('clear') ?? []
+    return {
+      blueprint: file,
+      ox,
+      oy,
+      oz,
+      x1,
+      y1,
+      z1,
+      x2,
+      y2,
+      z2,
+      ...(only ? { only: new Set(only) } : {}),
+      skip: new Set(ids('skip') ?? []),
+      clear: new Set(clear.filter((id) => id !== 'natural' && id !== 'plants')),
+      clearNatural: clear.includes('natural'),
+      clearPlants: clear.includes('plants'),
+    }
+  }
+
+  /** 图纸在世界的这一格要什么：kinds 的下标（0 是“要空着”）；undefined 是图纸不管这一格。 */
+  private blueprintWant(plan: BlueprintPlan, x: number, y: number, z: number): number | undefined {
+    const b = plan.blueprint
+    const index = b.cells[x - plan.ox + ((y - plan.oy) * b.size.z + (z - plan.oz)) * b.size.x]!
+    if (index === 0) return plan.only ? undefined : 0
+    const id = b.kinds[index]!.id
+    if ((plan.only && !plan.only.has(id)) || plan.skip.has(id)) return undefined
+    return index
+  }
+
+  /** 挡路的这种方块，clear 允不允许挖。 */
+  private blueprintMayRemove(plan: BlueprintPlan, id: string): boolean {
+    return plan.clear.has(id) || (plan.clearNatural && NATURAL_BLOCKS.has(id)) || (plan.clearPlants && PLANT_BLOCKS.has(id))
+  }
+
+  /** 把假世界和图纸逐格对比，结果的形状和真实 mod 的 blueprint.check 一样。 */
+  private surveyBlueprint(plan: BlueprintPlan, bot: MockBot | undefined, layers: boolean): Json {
+    const kinds = plan.blueprint.kinds
+    let cells = 0
+    let done = 0
+    let toPlace = 0
+    let byHand = 0
+    let blocked = 0
+    let extra = 0
+    let unloaded = 0
+    let willRemove = 0
+    const need = new Array<number>(kinds.length).fill(0)
+    const hand = new Array<number>(kinds.length).fill(0)
+    type Tally = { id: string; name: string; count: number; removable: number; holdsData: number }
+    const blockedBy = new Map<string, Tally>()
+    const extras = new Map<string, Tally>()
+    const tally = (into: Map<string, Tally>, block: Json, removable: boolean): boolean => {
+      const id = String(block.id)
+      const t = into.get(id) ?? { id, name: String(block.name), count: 0, removable: 0, holdsData: 0 }
+      into.set(id, t)
+      t.count++
+      // 带数据的方块谁也不动，哪怕 clear 里写了它
+      if (block.tileEntity === true) t.holdsData++
+      else if (removable) t.removable++
+      return removable && block.tileEntity !== true
+    }
+    const perLayer: number[][] = []
+    for (let y = plan.y1; y <= plan.y2; y++) {
+      const row = [y, 0, 0, 0, 0, 0] // [y, 图纸方块数, done, toPlace, blocked, extra]
+      for (let x = plan.x1; x <= plan.x2; x++) {
+        for (let z = plan.z1; z <= plan.z2; z++) {
+          const want = this.blueprintWant(plan, x, y, z)
+          if (want === undefined) continue
+          if (want !== 0) row[1]!++
+          const block = this.blockAt(x, y, z)
+          if (block.loaded === false) {
+            unloaded++
+          } else if (want === 0) {
+            if (block.air === true) continue
+            row[5]!++
+            if (tally(extras, block, this.blueprintMayRemove(plan, String(block.id)))) willRemove++
+          } else if (block.id === kinds[want]!.id && block.meta === kinds[want]!.meta) {
+            row[2]!++
+          } else if (block.air === true) {
+            if (kinds[want]!.byHand === undefined) {
+              row[3]!++
+              need[want]!++
+            } else {
+              byHand++
+              hand[want]!++
+            }
+          } else {
+            row[4]!++
+            if (tally(blockedBy, block, this.blueprintMayRemove(plan, String(block.id)))) {
+              willRemove++
+              // 挖掉以后这一格也要放
+              if (kinds[want]!.byHand === undefined) need[want]!++
+            }
+          }
+        }
+      }
+      cells += row[1]!
+      done += row[2]!
+      toPlace += row[3]!
+      blocked += row[4]!
+      extra += row[5]!
+      if (row[1]! > 0 || row[5]! > 0) perLayer.push(row)
+    }
+
+    const byCount = (counts: number[]) =>
+      kinds
+        .map((k, i) => ({ k, n: counts[i]! }))
+        .filter((e) => e.n > 0)
+        .sort((a, b) => b.n - a.n)
+        .slice(0, BLUEPRINT_LIST_LIMIT)
+    const tallies = (map: Map<string, Tally>) =>
+      [...map.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, BLUEPRINT_LIST_LIMIT)
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          count: t.count,
+          removable: t.removable,
+          ...(t.holdsData > 0 ? { holdsData: t.holdsData } : {}),
+          ...(NATURAL_BLOCKS.has(t.id) ? { natural: true } : {}),
+        }))
+    const byHandBlocks = byCount(hand).map(({ k, n }) => ({ id: k.id, meta: k.meta, name: k.name, count: n, why: k.byHand }))
+    return {
+      name: plan.blueprint.name,
+      origin: { x: plan.ox, y: plan.oy, z: plan.oz },
+      box: { x1: plan.x1, y1: plan.y1, z1: plan.z1, x2: plan.x2, y2: plan.y2, z2: plan.z2 },
+      cells,
+      done,
+      toPlace,
+      byHand,
+      blocked,
+      extra,
+      willRemove,
+      // 为 0 时省略
+      ...(unloaded > 0 ? { unloaded } : {}),
+      // have 只在给了 bot 时有
+      materials: byCount(need).map(({ k, n }) => ({ id: k.id, meta: k.meta, name: k.name, need: n, ...(bot ? { have: carried(bot, k) } : {}) })),
+      ...(byHandBlocks.length > 0 ? { byHandBlocks } : {}),
+      ...(blockedBy.size > 0 ? { blockedBy: tallies(blockedBy) } : {}),
+      ...(extras.size > 0 ? { extraBlocks: tallies(extras) } : {}),
+      ...(layers ? { layers: perLayer } : {}),
+    }
+  }
+
+  /**
+   * blueprint 任务做完时的样子：先挖掉挡路又允许挖的，再放方块，材料从背包拿、不够时从 supply 的容器拿。
+   * 哪种都拿不到的先跳过，最后以 no_material 失败，detail.missing 列出每种缺多少。
+   * 结果里的 now 是做完以后再对比一次得到的。（够不着、没工具、背包满这些情况这里不模拟。）
+   */
+  private buildBlueprint(bot: MockBot, task: MockTask): { result: Json; error?: NonNullable<MockTask['error']> } {
+    const plan = this.blueprintPlan(task.params)
+    const kinds = plan.blueprint.kinds
+    const supply = positions(task.params.supply)
+      .map((at) => this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z))
+      .filter((c): c is MockContainer => c !== undefined)
+    let removed = 0
+    let placed = 0
+    const starved = new Array<number>(kinds.length).fill(0)
+    for (let y = plan.y2; y >= plan.y1; y--) {
+      for (let x = plan.x1; x <= plan.x2; x++) {
+        for (let z = plan.z1; z <= plan.z2; z++) {
+          const want = this.blueprintWant(plan, x, y, z)
+          const block = this.blockAt(x, y, z)
+          if (want === undefined || block.loaded === false || block.air === true || block.tileEntity === true) continue
+          if (want !== 0 && block.id === kinds[want]!.id && block.meta === kinds[want]!.meta) continue
+          if (!this.blueprintMayRemove(plan, String(block.id))) continue
+          this.changedBlocks.set(`${x},${y},${z}`, null)
+          removed++
+        }
+      }
+    }
+    for (let y = plan.y1; y <= plan.y2; y++) {
+      for (let x = plan.x1; x <= plan.x2; x++) {
+        for (let z = plan.z1; z <= plan.z2; z++) {
+          const want = this.blueprintWant(plan, x, y, z)
+          if (!want || kinds[want]!.byHand !== undefined || this.blockAt(x, y, z).air !== true) continue
+          const kind = kinds[want]!
+          if (takeOne(bot.inventory, kind) || supply.some((box) => takeOne(box.items, kind))) {
+            this.changedBlocks.set(`${x},${y},${z}`, { id: kind.id, meta: kind.meta, name: kind.name })
+            placed++
+          } else {
+            starved[want]!++
+          }
+        }
+      }
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    for (const box of supply) box.items = box.items.filter((i) => i.count > 0)
+
+    const now = this.surveyBlueprint(plan, bot, false)
+    const result: Json = { removed, placed, freeSlots: 36 - bot.inventory.length, now: {} }
+    for (const key of ['cells', 'done', 'toPlace', 'byHand', 'blocked', 'extra', 'unloaded']) {
+      if (now[key] !== undefined) (result.now as Json)[key] = now[key]
+    }
+    for (const key of ['materials', 'byHandBlocks', 'blockedBy', 'extraBlocks']) {
+      if (Array.isArray(now[key])) result[key] = (now[key] as unknown[]).slice(0, BLUEPRINT_SUMMARY_LIMIT)
+    }
+    const missing = starved.map((count, i) => ({ id: kinds[i]!.id, meta: kinds[i]!.meta, name: kinds[i]!.name, count })).filter((m) => m.count > 0)
+    if (missing.length === 0) return { result }
+    const total = missing.reduce((n, m) => n + m.count, 0)
+    return {
+      result,
+      error: {
+        code: 'no_material',
+        message: `${total} blocks were left unplaced for want of material${supply.length === 0 ? '; no supply container was given' : ''}`,
+        detail: { missing },
+      },
+    }
+  }
+
   /** 下线或死亡：当前任务以 interrupted 失败。（下线时任务留在存档里，这里简化成直接结束。） */
   private interrupt(bot: MockBot, message: string): void {
     if (!bot.task) return
@@ -1002,6 +1861,472 @@ export function sampleResult(task: MockTask): Json {
 /** 在 on() 的处理函数里返回它，表示这条请求不回复（用来测超时）。 */
 export const NO_REPLY = Symbol('no-reply')
 
+// ── 机器 ──
+
+/** world.machines 里一台机器的样子；process 任务失败时的 detail 也是它。 */
+function describeMachine(m: MockMachine): Json {
+  return {
+    x: m.x,
+    y: m.y,
+    z: m.z,
+    name: m.name,
+    recipes: m.recipes,
+    tier: m.tier,
+    inputSlots: m.inputSlots,
+    active: m.active === true,
+    storedEU: m.storedEU,
+    inputVoltage: m.inputVoltage,
+    ...(m.switchedOff ? { switchedOff: true } : {}),
+  }
+}
+
+// ── 任务书 ──
+
+/**
+ * 模拟 bridge 自带的任务书：两章六个任务，各种子任务类型都有一个。
+ * 自带的进度里 Steve 做完了前两个（第二个的奖励还没领），所以他现在能做的是 43、4a 和那个 UUID 任务，47 还锁着。
+ */
+export function defaultQuestBook(): MockQuest[] {
+  const GT = 'gregtech:gt.metaitem.01'
+  return [
+    {
+      id: '1',
+      name: 'The Beginning',
+      line: 'Tier 0 - Stone Age',
+      description: 'Welcome to GregTech: New Horizons! Punch a tree to get some wood.',
+      requires: [],
+      tasks: [{ type: 'retrieval', consumed: false, items: [{ id: 'minecraft:log', count: 4, name: 'Oak Wood', ore: 'logWood' }] }],
+      rewards: [{ type: 'item', items: [{ id: 'minecraft:apple', meta: 0, count: 4, name: 'Apple' }] }],
+    },
+    {
+      id: '2',
+      name: 'Tools of the Trade',
+      line: 'Tier 0 - Stone Age',
+      description: 'Vanilla tools do not work here. Build a Tinkers Construct pickaxe.',
+      requires: ['1'],
+      tasks: [{ type: 'crafting', items: [{ id: 'TConstruct:pickaxe', count: 1, name: 'Pickaxe' }] }],
+      rewards: [{ type: 'choice', items: [{ id: 'minecraft:bread', meta: 0, count: 8, name: 'Bread' }, { id: 'minecraft:torch', meta: 0, count: 16, name: 'Torch' }] }],
+    },
+    {
+      id: '43',
+      name: 'Wired, Weird?!',
+      line: 'Tier 0.5 - Steam',
+      description: 'Cables carry electricity. Make some tin cables to get started with LV.',
+      requires: ['2'],
+      tasks: [{ type: 'retrieval', consumed: true, items: [{ id: 'gregtech:gt.blockmachines', meta: 1246, count: 4, name: '1x Tin Cable' }] }],
+      rewards: [{ type: 'item', items: [{ id: GT, meta: 32000, count: 5, name: 'Copper Coin' }] }],
+    },
+    {
+      id: '47',
+      name: 'Basic Crafting: Motors',
+      line: 'Tier 0.5 - Steam',
+      description: 'Motors are little devices that turn electricity into motion. You will need a lot of them.',
+      requires: ['43'],
+      tasks: [
+        { type: 'crafting', items: [{ id: GT, meta: 32600, count: 2, name: 'Electric Motor (LV)' }] },
+        { type: 'optional_retrieval', consumed: false, items: [{ id: GT, meta: 23032, count: 2, name: 'Magnetic Iron Rod' }] },
+      ],
+      rewards: [{ type: 'item', items: [{ id: GT, meta: 32000, count: 15, name: 'Copper Coin' }] }],
+    },
+    {
+      id: '4a',
+      name: 'Take to the Skies',
+      line: 'Tier 0.5 - Steam',
+      description: 'A Copter Pack lets you hover around your base. Build one and show it to me.',
+      requires: [],
+      tasks: [{ type: 'retrieval', consumed: false, items: [{ id: 'adventurebackpack:copterPack', meta: 0, count: 1, name: 'Copter Pack' }] }],
+      rewards: [{ type: 'item', items: [{ id: GT, meta: 32000, count: 10, name: 'Copper Coin' }] }],
+    },
+    {
+      id: 'a81f1f2c-3d7e-4a4c-9a55-1f2e3d4c5b6a',
+      name: 'Night Watch',
+      line: 'Tier 0 - Stone Age',
+      description: 'The nights are dangerous. Thin out the zombies, then visit the old watchtower and bring a bucket of water.',
+      requires: [],
+      tasks: [
+        { type: 'hunt', target: 'Zombie', count: 10 },
+        { type: 'location', location: { x: 120, y: 70, z: -340, dim: 0 } },
+        { type: 'fluid', fluids: [{ fluid: 'water', mb: 1000 }] },
+      ],
+      rewards: [],
+    },
+  ]
+}
+
+// ── 物品、配方、合成 ──
+
+/** 从一组物品里拿走最多 n 个符合条件的，返回拿到的（按种类）。 */
+function takeItems<T extends { id: string; meta: number; name: string; count: number }>(
+  items: T[],
+  fits: (item: T) => boolean,
+  n: number,
+): { id: string; meta: number; name: string; count: number }[] {
+  const taken: { id: string; meta: number; name: string; count: number }[] = []
+  for (const stack of items) {
+    if (n <= 0) break
+    if (!fits(stack) || stack.count <= 0) continue
+    const take = Math.min(stack.count, n)
+    stack.count -= take
+    n -= take
+    taken.push({ id: stack.id, meta: stack.meta, name: stack.name, count: take })
+  }
+  return taken
+}
+
+/** 往背包里放东西：同种的叠在已有的那一格上（这里不管一组 64 个的上限），否则占一个空格。 */
+function putInInventory(bot: MockBot, item: { id: string; meta: number; name: string }, count: number): void {
+  if (count <= 0) return
+  const stack = bot.inventory.find((i) => i.id === item.id && i.meta === item.meta)
+  if (stack) {
+    stack.count += count
+    return
+  }
+  let slot = 0
+  while (bot.inventory.some((i) => i.slot === slot)) slot++
+  bot.inventory.push({ slot, id: item.id, meta: item.meta, count, name: item.name })
+}
+
+/**
+ * 模拟 bridge 自带的配方书：够走一遍“给一个目标它自己去办”——
+ * Copter Pack 要 Copter Blades（手工 3x3，要螺丝和一把只磨损不消耗的螺丝刀）和 Copter Engine（只有机器配方）；
+ * 螺丝只有机器配方；木板、木棍是 2x2 的；铁锭是熔炉烧的。
+ */
+export function defaultRecipeBook(): MockRecipeItem[] {
+  const GT = 'gregtech:gt.metaitem.01'
+  return [
+    {
+      id: 'adventurebackpack:copterPack',
+      meta: 0,
+      name: 'Copter Pack',
+      crafting: [
+        {
+          gives: 1,
+          grid: '3x3',
+          ingredients: [
+            { count: 1, id: 'adventurebackpack:backpackComponent', meta: 6 },
+            { count: 1, id: 'adventurebackpack:backpackComponent', meta: 5 },
+            { count: 4, ore: 'plateSteel' },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'adventurebackpack:backpackComponent',
+      meta: 6,
+      name: 'Copter Blades',
+      crafting: [
+        {
+          gives: 1,
+          grid: '3x3',
+          ingredients: [
+            { count: 4, id: 'IC2:itemRecipePart', meta: 12 },
+            { count: 3, ore: 'screwSteel' },
+            { count: 1, ore: 'craftingToolScrewdriver', tool: true },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'adventurebackpack:backpackComponent',
+      meta: 5,
+      name: 'Copter Engine',
+      machines: [
+        {
+          machine: 'Assembler',
+          tier: 'LV',
+          eut: 30,
+          seconds: 10,
+          inputs: [
+            { id: GT, meta: 32600, name: 'Electric Motor (LV)', count: 2 },
+            { id: GT, meta: 17305, name: 'Steel Plate', count: 4 },
+            { id: 'gregtech:gt.integrated_circuit', meta: 2, name: 'Programmed Circuit', count: 0, notConsumed: true },
+          ],
+          outputs: [{ id: 'adventurebackpack:backpackComponent', meta: 5, name: 'Copter Engine', count: 1 }],
+        },
+      ],
+    },
+    { id: 'IC2:itemRecipePart', meta: 12, name: 'Shaft (Refined Iron)' },
+    {
+      id: GT,
+      meta: 27305,
+      name: 'Steel Screw',
+      ores: ['screwSteel'],
+      machines: [
+        { machine: 'Lathe', tier: 'LV', eut: 16, seconds: 2.5, inputs: [{ id: GT, meta: 26305, name: 'Steel Bolt', count: 1 }], outputs: [{ id: GT, meta: 27305, name: 'Steel Screw', count: 1 }] },
+        ...[8, 24, 30].map((eut) => ({
+          machine: 'Fluid Solidifier',
+          tier: eut <= 8 ? 'ULV' : 'LV',
+          eut,
+          seconds: 1.6,
+          inputs: [{ id: GT, meta: 32307, name: 'Mold (Screw)', count: 0, notConsumed: true }],
+          fluidInputs: [{ name: 'Molten Steel', mb: 18 }],
+          outputs: [{ id: GT, meta: 27305, name: 'Steel Screw', count: 1 }],
+        })),
+      ],
+    },
+    { id: GT, meta: 17305, name: 'Steel Plate', ores: ['plateSteel'] },
+    { id: GT, meta: 11305, name: 'Steel Ingot', ores: ['ingotSteel'] },
+    {
+      // 真实基地里验证过的那条：车床把钢锭车成钢杆，带出两小堆钢粉
+      id: GT,
+      meta: 23305,
+      name: 'Steel Rod',
+      ores: ['stickSteel'],
+      machines: [
+        {
+          machine: 'Lathe',
+          tier: 'LV',
+          eut: 16,
+          seconds: 8,
+          inputs: [{ id: GT, meta: 11305, name: 'Steel Ingot', count: 1 }],
+          outputs: [
+            { id: GT, meta: 23305, name: 'Steel Rod', count: 1 },
+            { id: GT, meta: 1305, name: 'Small Pile of Steel Dust', count: 2 },
+          ],
+        },
+      ],
+    },
+    { id: 'gregtech:gt.metatool.01', meta: 22, name: 'Screwdriver', ores: ['craftingToolScrewdriver'] },
+    { id: 'minecraft:log', meta: 0, name: 'Oak Wood', ores: ['logWood'] },
+    { id: 'minecraft:planks', meta: 0, name: 'Oak Wood Planks', ores: ['plankWood'], crafting: [{ gives: 4, grid: '2x2', ingredients: [{ count: 1, ore: 'logWood' }] }] },
+    { id: 'minecraft:stick', meta: 0, name: 'Stick', ores: ['stickWood'], crafting: [{ gives: 4, grid: '2x2', ingredients: [{ count: 2, ore: 'plankWood' }] }] },
+    { id: 'minecraft:iron_ingot', meta: 0, name: 'Iron Ingot', ores: ['ingotIron'], smeltedFrom: [{ id: 'minecraft:iron_ore', meta: 0, name: 'Iron Ore', count: 1 }] },
+    { id: 'minecraft:cobblestone', meta: 0, name: 'Cobblestone', ores: ['cobblestone'] },
+  ]
+}
+
+// ── 图纸 ──
+
+interface BlueprintPlan {
+  blueprint: MockBlueprint
+  /** 图纸最小角落在世界里的位置。 */
+  ox: number
+  oy: number
+  oz: number
+  /** 实际处理的范围（世界坐标）。 */
+  x1: number
+  y1: number
+  z1: number
+  x2: number
+  y2: number
+  z2: number
+  only?: Set<string>
+  skip: Set<string>
+  clear: Set<string>
+  clearNatural: boolean
+  clearPlants: boolean
+}
+
+/** 图纸名就是去掉后缀的文件名：不能带目录，不能是隐藏文件。 */
+function blueprintName(raw: unknown): string {
+  if (typeof raw !== 'string') throw new RpcError('bad_request', 'missing or non-text field: name')
+  const name = raw.endsWith('.schematic') ? raw.slice(0, -'.schematic'.length) : raw
+  if (name.length === 0 || name.length > 80 || name.startsWith('.') || name.includes('..') || /[/\\:*?"<>|\u0000-\u001f]/.test(name)) {
+    throw new RpcError('bad_request', `not a usable blueprint name: ${name}`)
+  }
+  return name
+}
+
+function describeBlueprint(b: MockBlueprint): Json {
+  return { size: { ...b.size }, blocks: b.cells.reduce((n, kind) => n + (kind === 0 ? 0 : 1), 0) }
+}
+
+/** 这种方块 bot 放不了的原因（带内容或设置、朝向取决于怎么放）；能放的返回 undefined。 */
+function byHandReason(id: string): string | undefined {
+  if (/chest|drawers|furnace|hopper|dispenser|blockmachines/i.test(id)) return 'it holds contents or settings'
+  if (/stairs|log|torch|ladder|door|lever|button|rail|sign|piston/i.test(id)) return 'which way it faces depends on how it is placed'
+  return undefined
+}
+
+/** minecraft:stone_slab → Stone Slab：给图纸里的方块编一个显示名。 */
+function blockLabel(id: string): string {
+  return id
+    .slice(id.indexOf(':') + 1)
+    .split(/[_.]/)
+    .filter((w) => w.length > 0)
+    .map((w) => w[0]!.toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+/** 背包里有多少个这种方块。 */
+function carried(bot: MockBot, kind: { id: string; meta: number }): number {
+  return bot.inventory.filter((i) => i.id === kind.id && i.meta === kind.meta).reduce((n, i) => n + i.count, 0)
+}
+
+/** 从一组物品里拿走一个这种方块；没有就返回 false。 */
+function takeOne(items: { id: string; meta: number; count: number }[], kind: { id: string; meta: number }): boolean {
+  const stack = items.find((i) => i.id === kind.id && i.meta === kind.meta && i.count > 0)
+  if (!stack) return false
+  stack.count--
+  return true
+}
+
+/** supply / dropoff：一个坐标或坐标数组。 */
+function positions(v: unknown): { x: number; y: number; z: number }[] {
+  const list = Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]
+  return list.filter((p): p is { x: number; y: number; z: number } => p !== null && typeof p === 'object' && typeof (p as Json).x === 'number')
+}
+
+/**
+ * 模拟 bridge 自带的一张图纸：5×4×5 的圆石小屋（地板、四面墙、屋顶），屋里一个箱子，南墙上留了一个两格高的门洞。
+ * 圆石 bot 能放，箱子得由人放。
+ */
+export function hutBlueprint(name: string): MockBlueprint {
+  const size = { x: 5, y: 4, z: 5 }
+  const cells = new Uint16Array(size.x * size.y * size.z)
+  for (let y = 0; y < size.y; y++) {
+    for (let z = 0; z < size.z; z++) {
+      for (let x = 0; x < size.x; x++) {
+        const shell = y === 0 || y === size.y - 1 || x === 0 || x === size.x - 1 || z === 0 || z === size.z - 1
+        const doorway = x === 2 && z === size.z - 1 && (y === 1 || y === 2)
+        if (shell && !doorway) cells[x + (y * size.z + z) * size.x] = 1
+      }
+    }
+  }
+  cells[1 + (1 * size.z + 1) * size.x] = 2
+  return {
+    name,
+    size,
+    kinds: [
+      { id: 'minecraft:air', meta: 0, name: 'Air' },
+      { id: 'minecraft:cobblestone', meta: 0, name: 'Cobblestone' },
+      { id: 'minecraft:chest', meta: 3, name: 'Chest', byHand: 'it holds contents or settings' },
+    ],
+    cells,
+  }
+}
+
+/** 读未压缩的 NBT，返回根复合标签。字节数组是 Buffer，整数数组不需要所以跳过。数据不完整时抛错。 */
+function readNbt(buf: Buffer): Json {
+  let at = 0
+  const text = (): string => {
+    const n = buf.readUInt16BE(at)
+    at += 2 + n
+    return buf.toString('utf8', at - n, at)
+  }
+  const payload = (type: number): unknown => {
+    switch (type) {
+      case 1:
+        return buf.readInt8(at++)
+      case 2:
+        at += 2
+        return buf.readInt16BE(at - 2)
+      case 3:
+        at += 4
+        return buf.readInt32BE(at - 4)
+      case 4:
+        at += 8
+        return buf.readBigInt64BE(at - 8)
+      case 5:
+        at += 4
+        return buf.readFloatBE(at - 4)
+      case 6:
+        at += 8
+        return buf.readDoubleBE(at - 8)
+      case 7: {
+        const n = buf.readInt32BE(at)
+        at += 4 + n
+        if (n < 0 || at > buf.length) throw new Error('truncated byte array')
+        return buf.subarray(at - n, at)
+      }
+      case 8:
+        return text()
+      case 9: {
+        const itemType = buf.readUInt8(at)
+        const n = buf.readInt32BE(at + 1)
+        at += 5
+        const out: unknown[] = []
+        for (let i = 0; i < n; i++) out.push(payload(itemType))
+        return out
+      }
+      case 10: {
+        const out: Json = {}
+        for (;;) {
+          const t = buf.readUInt8(at++)
+          if (t === 0) return out
+          const name = text()
+          out[name] = payload(t)
+        }
+      }
+      case 11: {
+        const n = buf.readInt32BE(at)
+        at += 4 + n * 4
+        return undefined
+      }
+      default:
+        throw new Error(`unknown NBT tag ${type}`)
+    }
+  }
+  if (buf.readUInt8(at++) !== 10) throw new Error('the root is not a compound tag')
+  text()
+  return payload(10) as Json
+}
+
+/**
+ * 把一个 Schematica 的 .schematic 文件读成假图纸。和真实 mod 一样：方块按文件自带的注册名（SchematicaMapping）对应，
+ * 不是能用的图纸时以 bad_request 说明原因（原话照真实 mod 的）。
+ */
+function readSchematic(name: string, bytes: Buffer): MockBlueprint {
+  const bad = (message: string) => new RpcError('bad_request', message)
+  let tag: Json
+  try {
+    tag = readNbt(zlib.gunzipSync(bytes))
+  } catch {
+    throw bad('not a .schematic file (it is not gzip-compressed NBT)')
+  }
+  const size = { x: Number(tag.Width ?? 0), y: Number(tag.Height ?? 0), z: Number(tag.Length ?? 0) }
+  if (!(size.x > 0 && size.y > 0 && size.z > 0)) throw bad('the file gives no size')
+  if (size.y > 256) throw bad(`the plan is ${size.y} high; the world is 256`)
+  const volume = size.x * size.y * size.z
+  const ids = tag.Blocks
+  const data = tag.Data
+  if (!Buffer.isBuffer(ids) || !Buffer.isBuffer(data) || ids.length !== volume || data.length !== volume) {
+    throw bad('the block data does not match the size the file gives')
+  }
+  const names = new Map<number, string>()
+  const mapping = tag.SchematicaMapping
+  if (mapping !== null && typeof mapping === 'object') {
+    for (const [blockId, n] of Object.entries(mapping as Json)) if (typeof n === 'number') names.set(n & 0xffff, blockId)
+  }
+  if (names.size === 0) throw bad('the file does not say which blocks its numbers stand for; save it with Schematica')
+  // 255 以上的 id，高位存在 AddBlocks 的半字节里。哪个半字节对应哪一格有两种习惯，每个 id 都有名字的那种才对。
+  const nibbles = Buffer.isBuffer(tag.AddBlocks) && tag.AddBlocks.length >= Math.floor((volume + 1) / 2) ? tag.AddBlocks : undefined
+  const idAt = (i: number, schematicaOrder: boolean): number => {
+    if (!nibbles) return ids[i]!
+    const b = nibbles[i >> 1]!
+    return ids[i]! | (((i & 1) === 0) === schematicaOrder ? b >> 4 : b & 0xf) << 8
+  }
+  const allKnown = (order: boolean): boolean => {
+    for (let i = 0; i < volume; i++) if (!names.has(idAt(i, order))) return false
+    return true
+  }
+  let schematicaOrder = true
+  if (nibbles && !allKnown(true)) {
+    if (!allKnown(false)) throw bad('the block ids do not match the block names in the file')
+    schematicaOrder = false
+  }
+
+  const kinds: MockBlueprint['kinds'] = [{ id: 'minecraft:air', meta: 0, name: 'Air' }]
+  const kindOf = new Map<string, number>()
+  const cells = new Uint16Array(volume)
+  for (let i = 0; i < volume; i++) {
+    const blockId = names.get(idAt(i, schematicaOrder))
+    if (blockId === undefined) throw bad('the file uses a block id it gives no name for')
+    if (blockId === 'minecraft:air') continue
+    const meta = data[i]! & 0xf
+    const key = `${blockId}/${meta}`
+    let index = kindOf.get(key)
+    if (index === undefined) {
+      index = kinds.length
+      const why = byHandReason(blockId)
+      kinds.push({ id: blockId, meta, name: blockLabel(blockId), ...(why ? { byHand: why } : {}) })
+      kindOf.set(key, index)
+    }
+    cells[i] = index
+  }
+  return { name, size, kinds, cells }
+}
+
 // ── 独立运行 ──
 
 function arg(name: string): string | undefined {
@@ -1027,7 +2352,7 @@ async function standalone(): Promise<void> {
   const help = [
     'chat <玩家> <话>        在公共聊天说一句',
     'whisper <玩家> <话>     私聊 bot',
-    'done                   当前任务完成',
+    'done                   当前任务完成（照图纸建的任务按背包和 supply 里的材料算结果，不够就是 no_material）',
     'fail <错误码> [说明]    当前任务失败（如 fail no_tool 没有镐子）',
     'join <玩家> / leave <玩家>',
     'hurt <血量>            bot 受伤后剩余血量',
@@ -1050,11 +2375,9 @@ async function standalone(): Promise<void> {
         case 'whisper':
           bridge.whisper(botName, a ?? 'Steve', text)
           break
-        case 'done': {
-          const running = bridge.bots.get(botName)?.task
-          bridge.finishTask(botName, running ? { result: sampleResult(running) } : {})
+        case 'done':
+          bridge.completeTask(botName)
           break
-        }
         case 'fail':
           bridge.finishTask(botName, { error: { code: a ?? 'stuck', message: text || 'failed by hand' } })
           break

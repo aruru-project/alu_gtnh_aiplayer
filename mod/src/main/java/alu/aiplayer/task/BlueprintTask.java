@@ -54,6 +54,10 @@ public final class BlueprintTask extends ClearTask {
     private boolean needsClimbingBlocks;
     private boolean relieved;
     private boolean finishing;
+    /** Kinds there is no room to fetch for the moment, and the cells that wait for them. */
+    private final Set<Integer> postponed = new HashSet<>();
+    private List<int[]> waiting = new ArrayList<>();
+    private int placedWhenLastStuck = -1;
 
     public BlueprintTask(JsonObject params) {
         super("blueprint", params);
@@ -99,6 +103,8 @@ public final class BlueprintTask extends ClearTask {
                 phase = "placing";
                 note = "";
                 stage = 3;
+                // Spoil from the digging would crowd out the building blocks: get rid of it before fetching any.
+                if (!targets.isEmpty() && crowded()) startDropoff(materialIds, null);
                 break;
             case 3:
                 placeTick();
@@ -167,6 +173,7 @@ public final class BlueprintTask extends ClearTask {
 
     private void placeTick() {
         World w = bot.player().worldObj;
+        phase = "placing";
         if (digging != null) {
             Act a = digCell(digging[0], digging[1], digging[2]);
             if (a == Act.BUSY || a == Act.FAILED) return;
@@ -193,6 +200,8 @@ public final class BlueprintTask extends ClearTask {
                 if (unavailable.contains(kind.index)) {
                     starved[kind.index]++;
                     gaveUp.add(key(x, y, z));
+                } else if (postponed.contains(kind.index)) {
+                    waiting.add(current);
                 } else {
                     int before = placed;
                     Act a = placeCell(x, y, z, kind.item);
@@ -211,6 +220,17 @@ public final class BlueprintTask extends ClearTask {
             progressDone = removed + placed;
             current = null;
             if (digging != null) return;
+        }
+        if (targets.isEmpty() && !waiting.isEmpty()) {
+            // What the bot carried has been used; now there is room to fetch the kinds that had to wait.
+            if (placed == placedWhenLastStuck) {
+                fail("inventory_full", "there is no room in the inventory to fetch building blocks");
+                return;
+            }
+            placedWhenLastStuck = placed;
+            targets = waiting;
+            waiting = new ArrayList<>();
+            postponed.clear();
         }
         if (targets.isEmpty()) {
             if (!deferred.isEmpty() && progressSinceDeferral) {
@@ -276,11 +296,21 @@ public final class BlueprintTask extends ClearTask {
             return;
         }
         final List<Blueprint.Kind> asked = new ArrayList<>();
+        if (crowded() && !relieved) {
+            relieved = true;
+            startDropoff(materialIds, null);
+            return;
+        }
         List<ItemFilter> want = shoppingList(now, asked);
         if (want.isEmpty()) {
             if (!dropoff.isEmpty() && !relieved) {
                 relieved = true;
                 startDropoff(materialIds, null);
+                return;
+            }
+            if (carriesWork()) {
+                // Full of other building blocks: use those up first and come back for this kind.
+                postponed.add(now.index);
                 return;
             }
             fail("inventory_full", "there is no room in the inventory to fetch building blocks");
@@ -294,8 +324,37 @@ public final class BlueprintTask extends ClearTask {
                 phase = "placing";
                 EntityPlayerMP p = bot.player();
                 for (Blueprint.Kind k : asked) if (Inventories.count(p, k.item) == 0) unavailable.add(k.index);
+                targets.addAll(waiting);
+                waiting.clear();
+                postponed.clear();
             }
         });
+    }
+
+    /** Whether the bot carries blocks that some cell still to do can take. */
+    private boolean carriesWork() {
+        EntityPlayerMP p = bot.player();
+        Set<Integer> seen = new HashSet<>();
+        List<int[]> open = new ArrayList<>(targets);
+        open.addAll(deferred);
+        for (int[] t : open) {
+            if (!seen.add(t[3]) || postponed.contains(t[3]) || unavailable.contains(t[3])) continue;
+            Blueprint.Kind k = plan.blueprint.kinds[t[3]];
+            if (k.item != null && Inventories.count(p, k.item) > 0) return true;
+        }
+        return false;
+    }
+
+    /** Whether there is a drop-off to use and enough spoil in the inventory to be worth a trip there. */
+    private boolean crowded() {
+        if (dropoff.isEmpty()) return false;
+        int spoil = 0;
+        for (net.minecraft.item.ItemStack st : bot.player().inventory.mainInventory) {
+            if (st == null || Inventories.isTool(st) || Inventories.isFood(st)) continue;
+            if (!materialIds.contains(Names.itemId(st.getItem()))) spoil++;
+        }
+        // One of those stacks is the climbing blocks, which stay.
+        return spoil >= 6;
     }
 
     /** What to bring from the supply: the kind needed now, then the others in the order the work will want them. */
@@ -307,6 +366,7 @@ public final class BlueprintTask extends ClearTask {
         Arrays.fill(lowest, Integer.MAX_VALUE);
         List<int[]> open = new ArrayList<>(targets);
         open.addAll(deferred);
+        open.addAll(waiting);
         if (current != null) open.add(current);
         for (int[] t : open) {
             count[t[3]]++;

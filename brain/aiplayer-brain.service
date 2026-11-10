@@ -26,8 +26,9 @@ Environment=AIPLAYER_BRIDGE_TOKEN_FILE=<正式服目录>/config/aiplayer/bridge-
 # ── 数据和面板（按需改）──
 # 数据目录：配置（含 API key）、记忆、历史都在这里。正式服和测试服不要共用一个。
 Environment=AIPLAYER_DATA_DIR=%h/workshop/alu_gtnh_aiplayer/brain/data
-Environment=AIPLAYER_PANEL_HOST=127.0.0.1
-Environment=AIPLAYER_PANEL_PORT=8765
+# 0.0.0.0 = 局域网里的其他电脑也能打开面板（要口令）；只想本机访问就改成 127.0.0.1。
+Environment=AIPLAYER_PANEL_HOST=0.0.0.0
+Environment=AIPLAYER_PANEL_PORT=28765
 
 # ── 模型接口要走代理时取消注释 ──
 #Environment=NODE_USE_ENV_PROXY=1

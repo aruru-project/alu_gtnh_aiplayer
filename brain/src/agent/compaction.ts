@@ -4,6 +4,7 @@
 import { textOf } from '../llm/index.ts'
 import type { LlmClient, Message } from '../llm/index.ts'
 import type { Turn } from '../store/history.ts'
+import { manualInText } from '../store/manuals.ts'
 
 /** 估算 token：字符数 / 3。 */
 export function estimateTokens(value: unknown): number {
@@ -42,6 +43,11 @@ export function truncateOldToolResults(
       const content = m.content.map((p) => {
         if (p.type !== 'tool_result' || p.content.length <= maxChars) return p
         messageChanged = true
+        // 手册留半截没有用：整段换成一句话，要用时它会重新读（“当前状态”里也不再把这本算作看过）
+        const manual = manualInText(p.content)
+        if (manual) {
+          return { ...p, content: `[the text of manual "${manual.name}" was dropped from the history to save space; read_manual it again when you need it]` }
+        }
         return { ...p, content: `${p.content.slice(0, maxChars)} …[older result shortened, ${p.content.length} chars originally]` }
       })
       if (!messageChanged) return m
@@ -112,7 +118,7 @@ export const SUMMARY_SYSTEM = `你在替一个 Minecraft 服务器里的 AI 玩�
 - 重要的地点、箱子的坐标和里面放什么；
 - 试过但失败的做法和原因；
 - 答应过别人但还没做的事。
-已经做完且没有后续的事一句带过或不写。直接写摘要正文，不要开场白。`
+已经做完且没有后续的事一句带过或不写。它读过哪些手册、手册里写了什么都不要写：手册的内容不会留在摘要里，要用时它会重新读。直接写摘要正文，不要开场白。`
 
 /** 调一次不带工具的模型，把旧摘要和若干轮合并成新摘要。失败时把错误抛给调用方。 */
 export async function summarize(
