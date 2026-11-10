@@ -10,6 +10,7 @@ import org.apache.logging.log4j.Logger;
 import alu.aiplayer.bot.BotManager;
 import alu.aiplayer.bridge.BridgeApi;
 import alu.aiplayer.bridge.BridgeServer;
+import alu.aiplayer.craft.RecipeBook;
 import alu.aiplayer.world.BlueprintStore;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
@@ -82,6 +83,9 @@ public class AiPlayerMod {
     public void serverStarted(FMLServerStartedEvent event) {
         bots.onServerStarted();
         bridge.start();
+        // By now mods and scripts have finished changing recipes.
+        RecipeBook.reset();
+        RecipeBook.buildInBackground();
     }
 
     @Mod.EventHandler

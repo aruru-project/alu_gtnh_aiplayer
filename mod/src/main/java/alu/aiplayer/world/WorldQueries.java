@@ -26,9 +26,11 @@ import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import alu.aiplayer.act.Drawers;
+import alu.aiplayer.act.ItemFilter;
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.util.J;
@@ -283,6 +285,154 @@ public final class WorldQueries {
         o.add("containers", list);
         o.addProperty("total", found.size());
         return o;
+    }
+
+    /** One thing to look for in storage: an item (with or without a particular meta) or an ore-dictionary name. */
+    private static final class Sought {
+
+        final ItemFilter filter;
+        final String ore;
+        final List<ItemStack> alternatives;
+
+        Sought(JsonObject o) {
+            ore = J.str(o, "ore", null);
+            if (ore != null) {
+                filter = null;
+                alternatives = net.minecraftforge.oredict.OreDictionary.getOres(ore);
+            } else {
+                filter = ItemFilter.parse(o);
+                alternatives = null;
+            }
+        }
+
+        boolean matches(ItemStack s) {
+            if (filter != null) return filter.matches(s);
+            for (ItemStack alt : alternatives) {
+                if (net.minecraftforge.oredict.OreDictionary.itemMatches(alt, s, false)) return true;
+            }
+            return false;
+        }
+
+        /** Whether the answer should say which exact items were found, because the question left that open. */
+        boolean open() {
+            return filter == null || filter.meta < 0;
+        }
+    }
+
+    /**
+     * Where the listed items are kept: every container and drawer in loaded chunks within the radius is looked
+     * into, and for each item the total and the places holding the most are reported.
+     */
+    public static JsonObject stock(World w, int cx, int cy, int cz, int radius, JsonArray wantedJson) {
+        if (radius > 64) throw RpcException.tooLarge("radius is limited to 64");
+        List<Sought> wanted = new ArrayList<>();
+        for (JsonElement e : wantedJson) wanted.add(new Sought(e.getAsJsonObject()));
+        int n = wanted.size();
+        long[] totals = new long[n];
+        List<List<Object[]>> places = new ArrayList<>();
+        for (int i = 0; i < n; i++) places.add(new ArrayList<Object[]>());
+        int looked = 0;
+        for (TileEntity te : tileEntities(w, cx - radius, cz - radius, cx + radius, cz + radius)) {
+            if (!(te instanceof IInventory) || Math.abs(te.yCoord - cy) > radius) continue;
+            // A drawer controller shows what the drawers behind it hold; counting it would count them twice.
+            if (Names.blockId(te.getBlockType())
+                .startsWith("StorageDrawers:controller")) continue;
+            looked++;
+            int[] found = new int[n];
+            List<Map<String, JsonObject>> kinds = new ArrayList<>();
+            for (int i = 0; i < n; i++) kinds.add(new LinkedHashMap<String, JsonObject>());
+            try {
+                if (Drawers.is(te)) {
+                    for (Drawers.Slot d : Drawers.slots(te)) {
+                        if (d.prototype == null || d.count <= 0) continue;
+                        for (int i = 0; i < n; i++) {
+                            if (wanted.get(i)
+                                .matches(d.prototype)) {
+                                found[i] += d.count;
+                                tallyKind(kinds.get(i), d.prototype, d.count);
+                            }
+                        }
+                    }
+                } else {
+                    IInventory inv = (IInventory) te;
+                    int size = inv.getSizeInventory();
+                    for (int slot = 0; slot < size; slot++) {
+                        ItemStack s = inv.getStackInSlot(slot);
+                        if (s == null || s.stackSize <= 0) continue;
+                        for (int i = 0; i < n; i++) {
+                            if (wanted.get(i)
+                                .matches(s)) {
+                                found[i] += s.stackSize;
+                                tallyKind(kinds.get(i), s, s.stackSize);
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                continue;
+            }
+            for (int i = 0; i < n; i++) {
+                if (found[i] <= 0) continue;
+                totals[i] += found[i];
+                places.get(i)
+                    .add(new Object[] { te, found[i], kinds.get(i) });
+            }
+        }
+        JsonArray items = new JsonArray();
+        for (int i = 0; i < n; i++) {
+            Sought want = wanted.get(i);
+            JsonObject o;
+            if (want.ore != null) {
+                o = new JsonObject();
+                o.addProperty("ore", want.ore);
+            } else {
+                o = want.filter.toJson();
+                o.remove("count");
+            }
+            o.addProperty("total", totals[i]);
+            List<Object[]> at = places.get(i);
+            Collections.sort(at, (a, b) -> (Integer) b[1] - (Integer) a[1]);
+            JsonArray where = new JsonArray();
+            for (Object[] pl : at) {
+                if (where.size() >= 6) break;
+                TileEntity te = (TileEntity) pl[0];
+                JsonObject c = J.pos(te.xCoord, te.yCoord, te.zCoord);
+                c.addProperty("container", blockName(te.getBlockType(), te.getBlockMetadata()));
+                if (Drawers.is(te)) c.addProperty("kind", "drawers");
+                c.addProperty("count", (Integer) pl[1]);
+                if (want.open()) {
+                    // Which exact items these are, so they can be asked for by id and meta.
+                    JsonArray exact = new JsonArray();
+                    @SuppressWarnings("unchecked")
+                    Map<String, JsonObject> found = (Map<String, JsonObject>) pl[2];
+                    for (JsonObject k : found.values()) if (exact.size() < 4) exact.add(k);
+                    c.add("items", exact);
+                }
+                where.add(c);
+            }
+            o.add("places", where);
+            if (at.size() > where.size()) o.addProperty("morePlaces", at.size() - where.size());
+            items.add(o);
+        }
+        JsonObject out = new JsonObject();
+        out.add("items", items);
+        out.addProperty("containersLookedInto", looked);
+        return out;
+    }
+
+    private static void tallyKind(Map<String, JsonObject> into, ItemStack s, int count) {
+        String key = Names.itemId(s.getItem()) + "@" + Names.meta(s);
+        JsonObject k = into.get(key);
+        int had = 0;
+        if (k == null) {
+            k = Names.describe(s);
+            k.remove("durability");
+            into.put(key, k);
+        } else {
+            had = k.get("count")
+                .getAsInt();
+        }
+        k.addProperty("count", had + count);
     }
 
     public static JsonObject describeContainer(World w, TileEntity te) {

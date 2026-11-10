@@ -21,6 +21,7 @@ import alu.aiplayer.act.Tools;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.bot.BotManager;
 import alu.aiplayer.bot.Motion;
+import alu.aiplayer.craft.RecipeBook;
 import alu.aiplayer.task.Task;
 import alu.aiplayer.task.TaskFactory;
 import alu.aiplayer.util.J;
@@ -69,6 +70,42 @@ public final class BridgeApi {
                 Math.max(1, J.i(p, "radius", 16)),
                 wanted,
                 limit);
+        });
+        bridge.register("item.search", p -> {
+            String query = J.reqStr(p, "query");
+            if (query.trim()
+                .length() < 2) throw RpcException.badRequest("query needs at least two characters");
+            return RecipeBook.get()
+                .searchJson(query, Math.max(1, Math.min(40, J.i(p, "limit", 12))));
+        });
+        bridge.register("recipe.find", p -> {
+            RecipeBook book = RecipeBook.get();
+            RecipeBook.Entry e = book.entry(J.reqStr(p, "id"), Math.max(0, J.i(p, "meta", 0)));
+            if (e == null) {
+                throw RpcException
+                    .notFound("no such item is known: " + J.reqStr(p, "id") + "/" + J.i(p, "meta", 0) + "; item.search finds ids");
+            }
+            Bot b = J.has(p, "bot") ? bots.requireOnline(J.reqStr(p, "bot")) : null;
+            return book.recipesJson(
+                e,
+                b == null ? null : b.player(),
+                Math.max(0, Math.min(12, J.i(p, "crafting", 4))),
+                Math.max(0, Math.min(24, J.i(p, "machines", 8))),
+                J.str(p, "machine", null));
+        });
+        bridge.register("world.stock", p -> {
+            JsonArray wanted = J.array(p, "items");
+            if (wanted == null || wanted.size() == 0 || wanted.size() > 24) {
+                throw RpcException.badRequest("items must list 1 to 24 items");
+            }
+            int[] c = centre(p);
+            return WorldQueries.stock(
+                world(p),
+                c[0],
+                c[1],
+                c[2],
+                Math.max(1, J.i(p, "radius", 32)),
+                wanted);
         });
         bridge.register(
             "blueprint.list",

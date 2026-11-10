@@ -303,6 +303,12 @@ public final class ContainerSession {
      * and it works with a full inventory too.
      */
     private void clickEmptyHanded(EntityPlayerMP p) {
+        clickEmptyHanded(bot, x, y, z);
+    }
+
+    /** Right-clicks a block as if nothing were held; see the instance method. */
+    public static void clickEmptyHanded(Bot bot, int x, int y, int z) {
+        EntityPlayerMP p = bot.player();
         int slot = p.inventory.currentItem;
         ItemStack held = p.inventory.mainInventory[slot];
         p.inventory.mainInventory[slot] = null;

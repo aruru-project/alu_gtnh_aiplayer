@@ -137,6 +137,51 @@
 **服务器重启**：重启前在线的 bot 在服务器启动约 2 秒后自动上线，没做完的任务从头重新开始。
 区域任务因此只是接着做；但 `withdraw` 会再取一份，`haul` 重启时拿在手上的那一趟货会留在 bot 身上不再送达。
 
+### 物品、配方、库存（只读）
+
+配方数据都在服务器上：合成台配方、GregTech 各机器的配方、熔炉配方。服务器启动后约 20 秒建好索引，在那之前这几个方法返回 `busy`，过几秒再试。
+物品名是服务器上的英文显示名（例如 `Electric Motor (LV)`、`Copter Pack`）。
+
+| 方法 | 参数 | 结果 |
+|---|---|---|
+| `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
+| `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
+| `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
+
+`recipe.find` 的结果：
+
+```jsonc
+{
+  "item":{"id":"adventurebackpack:backpackComponent","meta":6,"name":"Copter Blades"},
+  "crafting":[{
+    "index":0,              // craft 任务的 recipe 参数
+    "gives":1,              // 做一次出几个
+    "grid":"3x3",           // "2x2" 的不需要工作台
+    "ingredients":[
+      {"count":4,"name":"Shaft (Refined Iron)","id":"IC2:itemRecipePart","meta":12,"have":0},
+      {"count":3,"name":"Steel Screw (any screwSteel)","ore":"screwSteel","example":{"id":"gregtech:gt.metaitem.01","meta":27305},"have":0},
+      {"count":1,"name":"Single Use Screwdriver (any craftingToolScrewdriver)","ore":"craftingToolScrewdriver","example":{…},"alternatives":6,"tool":true,"have":0}
+    ]
+  }],
+  "machines":[{
+    "machine":"Lathe","tier":"LV","eut":16,"seconds":2.5,
+    "inputs":[{"id":"…","meta":0,"name":"Steel Bolt","count":1}],     // notConsumed:true 的要放在机器里但不消耗（编程电路、模具）
+    "fluidInputs":[{"name":"Molten Steel","mb":18}],
+    "outputs":[{"id":"…","meta":0,"name":"Steel Screw","count":1}],
+    "fluidOutputs":[…]
+  }],
+  "machineRecipeCounts":{"Lathe":1,"Fluid Solidifier":3},   // 每种机器有几条配方；默认每种机器最多列 2 条
+  "smeltedFrom":[{"id":"…","meta":0,"name":"…","count":1}],
+  "total":{"crafting":1,"machines":4,"smelting":0}
+}
+```
+
+- `ingredients` 里一项要么是一种确定的物品（`id`、`meta`；没有 `meta` 表示任何变体都行），要么是一个矿辞名（`ore`，任何登记在这个名字下的物品都行，`example` 是其中一种）。
+- `tool:true` 是锤子、扳手、锉刀这类：做的时候要带着，只磨损不消耗。
+- `have` 是给了 `bot` 时它身上现有的数量。
+- 有些 mod 自己的配方类型读不出原料，标 `unreadable:true`；这种配方 `craft` 做不了。
+- `tier` 是按 `eut` 算出的最低机器等级。
+
 ### 图纸
 
 图纸是 Schematica 的 `.schematic` 文件，放在服务器的 `config/aiplayer/schematics/` 里（随时可以放进去，不用重启），名字就是去掉后缀的文件名。
@@ -219,6 +264,7 @@
 | `invalid` | 参数不合法，或服务器拒绝了指令 | | 修正参数 |
 | `interrupted` | bot 下线、死亡，或被带到了别的维度 | | – |
 | `internal` | mod 内部出错 | | 报告给人 |
+| `busy` | 配方索引还在建（服务器刚启动） | | 过几秒再试 |
 
 区域类任务（`dig` `place` `clear` `fill` `flatten`）是可重入的：失败后用同样参数再启动，只做还没做完的部分。
 
@@ -241,6 +287,7 @@
 | `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
+| `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}` | 手工合成：用身上的材料按配方摆好、取成品。`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index` |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -269,6 +316,12 @@
   - 结束时（成功或失败）结果里有 `now`：`{cells, done, toPlace, byHand, blocked, extra}`，以及各最多 8 项的 `materials`（还缺的）、`byHandBlocks`、`blockedBy`、`extraBlocks`。
     够不着又没有垫脚方块时带 `needsClimbingBlocks:true`。
   - 重新执行会接着做：已经对的格子不动。
+- **`craft`**：
+  - 材料和工具必须已经在身上（先 `withdraw`）。不够时以 `no_material` 失败，`error.detail.missing` 列出每样还差多少（格式同 `recipe.find` 的 `ingredients`）。
+  - `2x2` 的配方在随身的合成格里做，不用走动。`3x3` 的要工作台：`table` 给位置，不给就找 24 格内最近的（原版工作台、匠魂的合成站都行；任何界面里有 3×3 合成格的方块都可以用 `table` 指定）。附近没有时以 `invalid` 失败。
+  - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
+  - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
+  - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
 - **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。
   数量按 bot 背包里实际增减的数目计。
 
