@@ -99,6 +99,14 @@ public final class Drawers {
             .equals(PKG + "block.tile.TileEntityController");
     }
 
+    private static int coordinate(Object coord, String axis) throws Exception {
+        // The class is not public, so its public getters have to be opened up before they can be called.
+        java.lang.reflect.Method m = coord.getClass()
+            .getDeclaredMethod(axis);
+        m.setAccessible(true);
+        return (Integer) m.invoke(coord);
+    }
+
     /** Where the drawer blocks a controller manages are; empty when it cannot be told. */
     public static List<int[]> managed(TileEntity controller) {
         List<int[]> out = new ArrayList<>();
@@ -106,14 +114,15 @@ public final class Drawers {
             java.lang.reflect.Field f = controller.getClass()
                 .getDeclaredField("storage");
             f.setAccessible(true);
+            if (((java.util.Map<?, ?>) f.get(controller)).isEmpty()) {
+                // After a restart the controller has not looked around yet; it does on its next block update.
+                // This is that same look, asked for now.
+                controller.getClass()
+                    .getMethod("updateCache")
+                    .invoke(controller);
+            }
             for (Object coord : new ArrayList<Object>(((java.util.Map<?, ?>) f.get(controller)).keySet())) {
-                Class<?> c = coord.getClass();
-                int x = (Integer) c.getMethod("x")
-                    .invoke(coord);
-                int y = (Integer) c.getMethod("y")
-                    .invoke(coord);
-                int z = (Integer) c.getMethod("z")
-                    .invoke(coord);
+                int x = coordinate(coord, "x"), y = coordinate(coord, "y"), z = coordinate(coord, "z");
                 TileEntity te = controller.getWorldObj()
                     .getTileEntity(x, y, z);
                 if (is(te)) out.add(new int[] { x, y, z });

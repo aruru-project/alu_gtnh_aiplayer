@@ -216,7 +216,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 |---|---|---|
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
-| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 单方块加工机器，由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
+| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
@@ -252,6 +252,33 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 - `have` 是给了 `bot` 时它身上现有的数量。
 - 有些 mod 自己的配方类型读不出原料，标 `unreadable:true`；这种配方 `craft` 做不了。
 - `tier` 是按 `eut` 算出的最低机器等级。
+
+多方块机器在 `world.machines` 里是它的主机，字段不同：
+
+```jsonc
+{
+  "x":-569,"y":69,"z":41, "name":"Electric Blast Furnace", "id":"gregtech:gt.blockmachines","meta":1000,
+  "kind":"multiblock",
+  "formed":true,                      // 结构完整。false 时下面的总线和仓都是空的，用不了
+  "recipes":"Blast Furnace", "recipeKey":"gt.recipe.blastfurnace",
+  "inputVoltage":1024, "tier":"EV",   // 能源仓合计能给的电压和对应的等级；配方的 eut 不能超过它
+  "heat":3801,                        // 只有高炉一类有：线圈给的炉温，配方的 special 不能超过它
+  "active":false, "progress":40, "maxProgress":200, "switchedOff":true,
+  "idleReason":"No valid recipe found",        // 没在干活时，机器自己界面上说的原因（英文）；结构不完整、有维护问题也写在这里
+  "inputBuses":[ {"x":-568,"y":69,"z":41,"name":"Input Bus (LV)","kind":"input bus","slots":4,"usedSlots":4,"circuit":2,
+                  "attached":[{"x":-568,"y":69,"z":42,"name":"Hopper","kind":"hopper"}]} ],
+  "outputBuses":[ {"x":-570,"y":69,"z":41,"name":"Output Bus (LV)","kind":"output bus","slots":4,"usedSlots":0,
+                   "passesTo":[{"x":-570,"y":69,"z":42,"name":"Chest"}]} ],   // 输出总线不留东西时，东西会到这些箱子里
+  "inputHatches":[ {"x":-570,"y":69,"z":40,"name":"Input Hatch (LV)","kind":"input hatch","capacity":16000,
+                    "fluid":"argon","fluidName":"Argon","amount":16000} ],
+  "outputHatches":[ … ],
+  "dist":12.4
+}
+```
+
+- 总线和仓也是容器：`deposit` / `withdraw` 可以直接对着它们的位置用（输入总线的电路格碰不到；仓只有放单元和取单元的两格）。
+- `attached` 说明这个口有漏斗或管道在自动喂料、抽料：输入总线可能一直是满的，输出总线里的东西可能留不住。
+- 蒸汽多方块、以及用特殊总线的机器，`inputBuses` 等是空的，`process` 用不了它们。
 
 ### 任务书（只读）
 
@@ -389,7 +416,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}` | 手工合成：用身上的材料按配方摆好、取成品。`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index` |
-| `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], wait?=180}` | 用一台 GT 单方块机器加工一批：把原料放进输入格，等它做完，把产物取回来。`wait` 是最多等多少秒（5–1800） |
+| `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -425,11 +452,16 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
 - **`process`**：
-  - 原料必须已经在身上。要编程电路或模具的配方，把电路、模具也列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
-  - 机器 3 秒内没开工就把原料取回来，以 `invalid` 失败，`error.detail` 是这台机器的状态（没电时 `storedEU` 是 0）。原因可能是没电、缺电路或流体、这台机器没有这个配方、输出格被占着。
-  - 不处理流体：需要流体的配方要机器已经接好了流体来源。
-  - 结果 `{put, outputs:[{id,meta,name,count}], timedOut?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
-  - 只认 GregTech 的单方块加工机器（`world.machines` 列出来的那些）。多方块机器、蒸汽机器、其他 mod 的机器不行。
+  - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
+  - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。
+  - **多方块机器**：原料放进输入总线（有几个时挑空格最多的，或用 `bus` 指定），产物从各个输出总线取。
+    - `fluids`：身上装着流体的单元，放进第一个输入仓让它倒空，空单元取回；仓装不下的满单元也取回，不算倒了。配方要的流体如果已经由管道接好，就不用给。
+    - 输出总线自己不留东西（它会把东西推给旁边的箱子，或被管道抽走）时：给了 `expect` 就去它推往的箱子（`passedTo`）里把 `expect` 列的产物取回来；没给就以 `done` 结束，`outputs` 为空，带 `note` 和 `passedTo` 说明东西去了哪。
+    - 流体产物留在输出仓里，不取。
+  - 机器没开工（单方块 3 秒、多方块 10 秒）就把原料取回来，以 `invalid` 失败，`error.message` 里带原因（多方块是它界面上的说法，如 `No valid recipe found`），`error.detail` 是这台机器的状态。可能是没电、缺电路或流体、没有这个配方、炉温或电压不够、输出口被占着。
+  - 原料一样都放不进去（输入格、输入总线满了）也以 `invalid` 失败。输入总线带 `attached` 时多半是被自动喂料占满的，这要主人决定怎么办。
+  - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], timedOut?, note?, passedTo?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
+  - 不行的：蒸汽机器、其他 mod 的机器、单方块机器的流体（要它已经接好流体来源）。
 - **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。
   会坐 OpenBlocks 电梯（站上去，相当于跳一下上楼、蹲一下下楼）。门打不开或电梯不动时换别的路。
 - **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。

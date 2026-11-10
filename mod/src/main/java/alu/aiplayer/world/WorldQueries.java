@@ -301,6 +301,34 @@ public final class WorldQueries {
     }
 
     /**
+     * Where the things that land in a container end up when it does not keep them: the chests standing against it
+     * and the ones its hoppers lead to. An output bus pushes into whatever it faces, so its products are often to
+     * be found one block further on.
+     */
+    public static List<TileEntity> passesTo(World w, TileEntity from) {
+        List<TileEntity> out = new ArrayList<>();
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        java.util.ArrayDeque<int[]> queue = new java.util.ArrayDeque<>();
+        queue.add(new int[] { from.xCoord, from.yCoord, from.zCoord, 0 });
+        seen.add(packed(from.xCoord, from.yCoord, from.zCoord));
+        while (!queue.isEmpty() && out.size() < 4) {
+            int[] at = queue.poll();
+            for (int[] d : SIDES) {
+                int x = at[0] + d[0], y = at[1] + d[1], z = at[2] + d[2];
+                if (y < 0 || y > 255 || !w.blockExists(x, y, z) || !seen.add(packed(x, y, z))) continue;
+                TileEntity n = w.getTileEntity(x, y, z);
+                if (!(n instanceof IInventory)) continue;
+                if (n instanceof net.minecraft.tileentity.TileEntityHopper) {
+                    if (at[3] < 3) queue.add(new int[] { x, y, z, at[3] + 1 });
+                } else if (!Machines.isGregTech(n) && !Drawers.isController(n)) {
+                    out.add(n);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
      * Every drawer a controller manages (or the drawers of one block), slot by slot, with what each really holds.
      *
      * @param below only slots holding something, and fewer than this; 0 for all slots, empty ones included
@@ -480,7 +508,7 @@ public final class WorldQueries {
                     .toLowerCase(java.util.Locale.ROOT);
         List<Object[]> found = new ArrayList<>();
         for (TileEntity te : tileEntities(w, cx - radius, cz - radius, cx + radius, cz + radius)) {
-            if (Math.abs(te.yCoord - cy) > radius || !Machines.isProcessor(te)) continue;
+            if (Math.abs(te.yCoord - cy) > radius || !Machines.isRunnable(te)) continue;
             JsonObject m = Machines.describe(te);
             if (m == null) continue;
             if (want != null) {
