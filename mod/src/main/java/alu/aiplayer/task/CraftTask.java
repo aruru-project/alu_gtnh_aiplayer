@@ -43,6 +43,9 @@ public final class CraftTask extends Task {
 
     private static final int TABLE_SEARCH = 64;
 
+    /** A layout spelled out by the caller instead of one of the recipes this server knows by number. */
+    private final JsonArray gridGiven;
+    private final int rounds;
     private final String itemId;
     private final int meta;
     private final int recipeIndex;
@@ -69,9 +72,20 @@ public final class CraftTask extends Task {
 
     public CraftTask(JsonObject params) {
         super("craft", params);
-        itemId = J.reqStr(params, "id");
-        if (Names.item(itemId) == null) throw new IllegalArgumentException("unknown item id: " + itemId);
-        meta = Math.max(0, J.i(params, "meta", 0));
+        gridGiven = J.has(params, "grid") ? J.array(params, "grid") : null;
+        if (gridGiven != null) {
+            // Checked now, so that a slip in the layout is refused before the bot sets off.
+            Layout.fromGrid(gridGiven, null);
+            JsonObject gives = J.has(params, "gives") ? J.object(params, "gives") : null;
+            itemId = gives == null ? null : J.reqStr(gives, "id");
+            meta = gives == null ? 0 : Math.max(0, J.i(gives, "meta", 0));
+            rounds = Math.max(1, Math.min(64, J.i(params, "rounds", 1)));
+        } else {
+            itemId = J.reqStr(params, "id");
+            meta = Math.max(0, J.i(params, "meta", 0));
+            rounds = 0;
+        }
+        if (itemId != null && Names.item(itemId) == null) throw new IllegalArgumentException("unknown item id: " + itemId);
         recipeIndex = Math.max(0, J.i(params, "recipe", 0));
         wanted = Math.max(1, Math.min(2304, J.i(params, "count", 1)));
         tableGiven = J.has(params, "table") ? Params.pos(params, "table") : null;
@@ -172,23 +186,31 @@ public final class CraftTask extends Task {
             return;
         }
         RecipeBook book = RecipeBook.get();
-        RecipeBook.Entry entry = book.entry(itemId, meta);
-        if (entry == null || entry.crafting.isEmpty()) {
-            fail("invalid", "no crafting-table recipe is known for " + itemId + "/" + meta);
-            return;
+        if (gridGiven != null) {
+            layout = Layout.fromGrid(gridGiven, book);
+            // What the grid gives is the game's to say. If the caller named it, anything else is a failure;
+            // if not, whatever comes out the first time is what the rest must be too.
+            expected = itemId == null ? null : new ItemStack(Names.item(itemId), 1, meta);
+            crafts = rounds;
+        } else {
+            RecipeBook.Entry entry = book.entry(itemId, meta);
+            if (entry == null || entry.crafting.isEmpty()) {
+                fail("invalid", "no crafting-table recipe is known for " + itemId + "/" + meta);
+                return;
+            }
+            if (recipeIndex >= entry.crafting.size()) {
+                fail("invalid", "it has " + entry.crafting.size() + " crafting recipes; there is no number " + recipeIndex);
+                return;
+            }
+            IRecipe recipe = entry.crafting.get(recipeIndex);
+            layout = Layout.of(recipe, book);
+            expected = recipe.getRecipeOutput();
+            if (layout == null || expected == null) {
+                fail("invalid", "this recipe is of a kind the bot cannot lay out by itself");
+                return;
+            }
+            crafts = (wanted + expected.stackSize - 1) / expected.stackSize;
         }
-        if (recipeIndex >= entry.crafting.size()) {
-            fail("invalid", "it has " + entry.crafting.size() + " crafting recipes; there is no number " + recipeIndex);
-            return;
-        }
-        IRecipe recipe = entry.crafting.get(recipeIndex);
-        layout = Layout.of(recipe, book);
-        expected = recipe.getRecipeOutput();
-        if (layout == null || expected == null) {
-            fail("invalid", "this recipe is of a kind the bot cannot lay out by itself");
-            return;
-        }
-        crafts = (wanted + expected.stackSize - 1) / expected.stackSize;
         JsonArray missing = new JsonArray();
         for (Object kind : layout.distinct()) {
             int need = layout.cellsWanting(kind) * needPerCell(kind);
@@ -201,7 +223,7 @@ public final class CraftTask extends Task {
             fail("no_material", "the inventory lacks ingredients for " + crafts + " round(s) of this recipe", detail);
             return;
         }
-        before = Inventories.count(p, outputFilter());
+        before = expected == null ? 0 : Inventories.count(p, outputFilter());
         if (!layout.needsTable()) {
             if (p.openContainer != p.inventoryContainer) bot.conn()
                 .closeWindow();
@@ -348,12 +370,15 @@ public final class CraftTask extends Task {
     private void takeResult(EntityPlayerMP p) {
         Slot result = grid.getSlot(resultSlot);
         ItemStack out = result.getStack();
+        if (expected == null && out != null) {
+            expected = out.copy();
+            before = Inventories.count(p, outputFilter());
+        }
         if (out == null || out.getItem() != expected.getItem() || Names.meta(out) != Names.meta(expected)) {
             failCode = "invalid";
             failMessage = "laid out as the recipe says, the grid gives "
                 + (out == null ? "nothing" : Names.displayName(out))
-                + " instead of "
-                + Names.displayName(expected);
+                + (expected == null ? "" : " instead of " + Names.displayName(expected));
             return;
         }
         // Shift-click: the game repeats the craft for as long as the grid still holds the recipe.

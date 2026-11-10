@@ -415,7 +415,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
-| `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}` | 手工合成：用身上的材料按配方摆好、取成品。`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index` |
+| `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
@@ -451,6 +451,8 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
+  - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。
+    四周空着的行列会被去掉，摆得进 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
 - **`process`**：
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
   - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。

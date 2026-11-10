@@ -75,6 +75,48 @@ public final class Layout {
         return null;
     }
 
+    /**
+     * A layout somebody spells out cell by cell: nine cells of a three-by-three grid, row by row, each null, an
+     * item ({id, meta?}) or an ore-dictionary name ({ore}). Empty rows and columns around it are trimmed away, so
+     * a recipe that fits two by two can be made without a table.
+     *
+     * @throws IllegalArgumentException when a cell names nothing that exists
+     */
+    public static Layout fromGrid(com.google.gson.JsonArray grid, RecipeBook book) {
+        if (grid.size() != 9) throw new IllegalArgumentException("grid must have 9 cells, row by row");
+        Object[] all = new Object[9];
+        int minX = 3, minY = 3, maxX = -1, maxY = -1;
+        for (int i = 0; i < 9; i++) {
+            com.google.gson.JsonElement e = grid.get(i);
+            if (e == null || e.isJsonNull()) continue;
+            JsonObject o = e.getAsJsonObject();
+            if (o.has("ore")) {
+                String ore = o.get("ore")
+                    .getAsString();
+                List<ItemStack> any = OreDictionary.getOres(ore);
+                if (any == null || any.isEmpty()) throw new IllegalArgumentException("nothing is registered as " + ore);
+                all[i] = any;
+            } else {
+                String id = o.get("id")
+                    .getAsString();
+                net.minecraft.item.Item item = Names.item(id);
+                if (item == null) throw new IllegalArgumentException("unknown item id: " + id);
+                int meta = o.has("meta") ? o.get("meta")
+                    .getAsInt() : OreDictionary.WILDCARD_VALUE;
+                all[i] = new ItemStack(item, 1, meta);
+            }
+            minX = Math.min(minX, i % 3);
+            maxX = Math.max(maxX, i % 3);
+            minY = Math.min(minY, i / 3);
+            maxY = Math.max(maxY, i / 3);
+        }
+        if (maxX < 0) throw new IllegalArgumentException("the grid is empty");
+        int w = maxX - minX + 1, h = maxY - minY + 1;
+        Object[] cells = new Object[w * h];
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) cells[y * w + x] = all[(y + minY) * 3 + x + minX];
+        return new Layout(w, h, cells, book);
+    }
+
     private static Layout checked(Layout l) {
         for (Object c : l.cells) {
             if (c != null && !(c instanceof ItemStack) && !(c instanceof List)) return null;

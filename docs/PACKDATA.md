@@ -202,7 +202,8 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 - `id` 是方块的注册名，`meta` 是放在世界里的 meta（0–15，不写当 0；超出这个范围的行会被跳过——那是物品的 meta，图纸里放不下）。
 - `color` 是 `[红, 绿, 蓝]`，0–255。`name` 可以没有。
 
-用在两处：模型写的程序里的 `palette()` / `nearestBlock()`（做像素画时把颜色换成方块，见 `docs/SCRIPTS.md`），和面板上草稿预览的着色。
+用在两处：模型写的程序里的 `palette()` / `nearestBlock()`（做像素画时把颜色换成方块，见 `docs/SCRIPTS.md`），和简图的着色（`brain/src/render/`：`view_area`、`view_draft` 的图，面板“图纸”页和对话日志里的图都是它画的）。
+简图里侧面用 `color`、顶面用 `top`。表里没有的方块这样上色（`brain/src/render/looks.ts`）：草方块、水、树叶、玻璃、火把、楼梯、半砖这些常见的原版方块用渲染器内置的颜色和形状；别的模组的树叶、玻璃、水按注册名猜一类（图例里带 `~`）；其余的由注册名和 meta 算一个固定的颜色，只为了区分（图例里带 `?`）。同一个注册名、表里没有的 meta 不借用别的 meta 的颜色。
 文件不在时用内置的小表（`brain/src/packdata/blocks.ts`）：16 色羊毛和 16 色染色粘土，颜色是原版 1.7.10 贴图逐像素的平均值。
 这张表里应该只放“放下去就是一整块、哪面看都是这个颜色”的方块：`nearestBlock()` 会从整张表里挑。
 
