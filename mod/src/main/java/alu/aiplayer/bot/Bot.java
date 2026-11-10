@@ -18,6 +18,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import alu.aiplayer.act.Inventories;
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.task.TaskQueue;
 import alu.aiplayer.util.J;
@@ -361,7 +362,7 @@ public final class Bot implements BotConnection.Listener {
         for (int i = 0; i < p.inventory.mainInventory.length; i++) {
             ItemStack s = p.inventory.mainInventory[i];
             if (s == null) {
-                free++;
+                if (i < Inventories.CARRY_SLOTS) free++;
                 continue;
             }
             JsonObject item = Names.describe(s);

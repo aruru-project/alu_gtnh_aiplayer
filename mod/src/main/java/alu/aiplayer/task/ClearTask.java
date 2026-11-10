@@ -178,6 +178,7 @@ public class ClearTask extends AreaTask {
             }
         }
         if (layer.isEmpty()) return 0;
+        phase = "clearing";
         note = "layer y=" + layerY;
         current = takeNearest(layer, false);
         return 0;

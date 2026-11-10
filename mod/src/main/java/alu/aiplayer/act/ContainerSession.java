@@ -443,7 +443,7 @@ public final class ContainerSession {
     private static boolean splitOff(EntityPlayerMP p, int invSlot, int count) {
         ItemStack[] inv = p.inventory.mainInventory;
         if (invSlot < 0 || invSlot >= inv.length || inv[invSlot] == null) return false;
-        for (int i = 9; i < inv.length; i++) {
+        for (int i = 9; i < inv.length && i < Inventories.CARRY_SLOTS; i++) {
             if (inv[i] == null) {
                 inv[i] = inv[invSlot].splitStack(count);
                 p.inventory.markDirty();
@@ -542,7 +542,9 @@ public final class ContainerSession {
     private static int roomFor(EntityPlayerMP p, ItemStack like) {
         int room = 0;
         int max = like.getMaxStackSize();
-        for (ItemStack s : p.inventory.mainInventory) {
+        ItemStack[] inv = p.inventory.mainInventory;
+        for (int i = 0; i < inv.length && i < Inventories.CARRY_SLOTS; i++) {
+            ItemStack s = inv[i];
             if (s == null) room += max;
             else if (sameItem(s, like) && s.isStackable()) room += Math.max(0, max - s.stackSize);
         }

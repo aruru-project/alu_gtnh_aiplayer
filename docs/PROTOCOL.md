@@ -182,6 +182,34 @@
 - 有些 mod 自己的配方类型读不出原料，标 `unreadable:true`；这种配方 `craft` 做不了。
 - `tier` 是按 `eut` 算出的最低机器等级。
 
+### 任务书（只读）
+
+服务器上的任务书（BetterQuesting）：章节、每个任务的说明和要求、某个玩家的进度。只查不改，不会替谁提交任务或领奖励。服务器没装任务书时这三个方法返回 `not_found`。
+`player` 是玩家名（在线的，或任务书见过的）；给了才有进度相关的字段。任务 id 是任务书自己的编号：老任务是一小段十六进制数（如 `47`），新任务是完整的 UUID。
+
+| 方法 | 参数 | 结果 |
+|---|---|---|
+| `quest.lines` | `{player?}` | `{lines:[{name, quests, complete?, available?}], quests}`，按任务书里章节的顺序 |
+| `quest.search` | `{query?, line?, state?, player?, limit?=20(≤60)}` | `{quests:[{id, name, line?, state?}], total}`。`query` 的每个词都要出现在标题或说明里（标题里出现的排前面）；`line` 是章节名的一部分；`state` 是 `available`（已解锁未完成）、`complete`、`locked` 之一，需要 `player` |
+| `quest.get` | `{id, player?}` | 见下 |
+
+```jsonc
+{
+  "id":"47","name":"Basic Crafting: Motors","line":"Tier 0.5 - Steam",
+  "description":"Motors are little devices that …",      // 最多 3000 字
+  "state":"complete, reward unclaimed",                  // available | locked | complete | complete, reward unclaimed
+  "requires":[{"id":"43","name":"Wired, Weird?!","complete":true}],
+  "tasks":[
+    {"type":"crafting","complete":true,"items":[{"id":"gregtech:gt.metaitem.01","meta":32600,"count":2,"name":"Electric Motor (LV)"}]},
+    {"type":"optional_retrieval","complete":false,"consumed":false,"items":[…]}
+    // 其他类型可能带 fluids:[{fluid,mb}]、target+count（猎杀）、location:{x,y,z,dim}
+  ],
+  "rewards":[{"type":"item","items":[{"id":"…","meta":0,"count":15,"name":"…"}]}]
+}
+```
+
+任务书里的文字是英文。
+
 ### 图纸
 
 图纸是 Schematica 的 `.schematic` 文件，放在服务器的 `config/aiplayer/schematics/` 里（随时可以放进去，不用重启），名字就是去掉后缀的文件名。

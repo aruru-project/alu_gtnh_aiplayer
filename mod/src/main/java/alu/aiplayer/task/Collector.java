@@ -97,7 +97,9 @@ final class Collector {
     }
 
     static boolean hasRoomFor(EntityPlayerMP p, ItemStack stack) {
-        for (ItemStack s : p.inventory.mainInventory) {
+        ItemStack[] inv = p.inventory.mainInventory;
+        for (int i = 0; i < inv.length && i < alu.aiplayer.act.Inventories.CARRY_SLOTS; i++) {
+            ItemStack s = inv[i];
             if (s == null) return true;
             if (s.getItem() == stack.getItem() && s.isStackable()
                 && s.stackSize < s.getMaxStackSize()

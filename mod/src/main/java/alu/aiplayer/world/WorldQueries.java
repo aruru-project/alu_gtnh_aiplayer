@@ -31,6 +31,7 @@ import com.google.gson.JsonObject;
 
 import alu.aiplayer.act.Drawers;
 import alu.aiplayer.act.ItemFilter;
+import alu.aiplayer.act.Machines;
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.util.J;
@@ -287,6 +288,44 @@ public final class WorldQueries {
         return o;
     }
 
+    /**
+     * The GregTech machines around a point, nearest first: what each is, which recipes it runs, whether it is busy
+     * and whether it has power.
+     *
+     * @param like only machines whose name or recipe list contains this; null for all
+     */
+    public static JsonObject machines(World w, int cx, int cy, int cz, int radius, String like, int limit) {
+        if (radius > 64) throw RpcException.tooLarge("radius is limited to 64");
+        String want = like == null || like.trim()
+            .isEmpty() ? null
+                : like.trim()
+                    .toLowerCase(java.util.Locale.ROOT);
+        List<Object[]> found = new ArrayList<>();
+        for (TileEntity te : tileEntities(w, cx - radius, cz - radius, cx + radius, cz + radius)) {
+            if (Math.abs(te.yCoord - cy) > radius || !Machines.isProcessor(te)) continue;
+            JsonObject m = Machines.describe(te);
+            if (m == null) continue;
+            if (want != null) {
+                String text = (J.str(m, "name", "") + " " + J.str(m, "recipes", "")).toLowerCase(java.util.Locale.ROOT);
+                if (!text.contains(want)) continue;
+            }
+            long dx = te.xCoord - cx, dy = te.yCoord - cy, dz = te.zCoord - cz;
+            found.add(new Object[] { dx * dx + dy * dy + dz * dz, m });
+        }
+        Collections.sort(found, (a, b) -> Long.compare((Long) a[0], (Long) b[0]));
+        JsonArray list = new JsonArray();
+        for (Object[] f : found) {
+            if (list.size() >= limit) break;
+            JsonObject m = (JsonObject) f[1];
+            m.addProperty("dist", J.round(Math.sqrt((Long) f[0])));
+            list.add(m);
+        }
+        JsonObject out = new JsonObject();
+        out.add("machines", list);
+        out.addProperty("total", found.size());
+        return out;
+    }
+
     /** One thing to look for in storage: an item (with or without a particular meta) or an ore-dictionary name. */
     private static final class Sought {
 
@@ -397,7 +436,8 @@ public final class WorldQueries {
                 if (where.size() >= 6) break;
                 TileEntity te = (TileEntity) pl[0];
                 JsonObject c = J.pos(te.xCoord, te.yCoord, te.zCoord);
-                c.addProperty("container", blockName(te.getBlockType(), te.getBlockMetadata()));
+                String machine = Machines.name(te);
+                c.addProperty("container", machine != null ? machine : blockName(te.getBlockType(), te.getBlockMetadata()));
                 if (Drawers.is(te)) c.addProperty("kind", "drawers");
                 c.addProperty("count", (Integer) pl[1]);
                 if (want.open()) {
@@ -440,7 +480,9 @@ public final class WorldQueries {
         JsonObject c = J.pos(te.xCoord, te.yCoord, te.zCoord);
         Block b = te.getBlockType();
         c.addProperty("id", Names.blockId(b));
-        c.addProperty("name", blockName(b, te.getBlockMetadata()));
+        String machine = Machines.name(te);
+        c.addProperty("name", machine != null ? machine : blockName(b, te.getBlockMetadata()));
+        if (machine != null) c.addProperty("kind", "machine");
         int size = 0, used = 0;
         Map<String, JsonObject> merged = new LinkedHashMap<>();
         if (Drawers.is(te)) {

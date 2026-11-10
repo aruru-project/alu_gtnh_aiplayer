@@ -27,6 +27,7 @@ import alu.aiplayer.task.TaskFactory;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 import alu.aiplayer.world.BlueprintPlan;
+import alu.aiplayer.world.Quests;
 import alu.aiplayer.world.WorldQueries;
 
 /** The bridge methods of docs/PROTOCOL.md. Each runs on the server thread. */
@@ -71,6 +72,27 @@ public final class BridgeApi {
                 wanted,
                 limit);
         });
+        bridge.register("quest.lines", p -> {
+            requireQuestBook();
+            return Quests.lines(Quests.player(J.str(p, "player", null)));
+        });
+        bridge.register("quest.search", p -> {
+            requireQuestBook();
+            String state = J.str(p, "state", null);
+            if (state != null && !state.equals("available") && !state.equals("complete") && !state.equals("locked")) {
+                throw RpcException.badRequest("state must be available, complete or locked");
+            }
+            return Quests.search(
+                J.str(p, "query", null),
+                J.str(p, "line", null),
+                state,
+                Quests.player(J.str(p, "player", null)),
+                Math.max(1, Math.min(60, J.i(p, "limit", 20))));
+        });
+        bridge.register("quest.get", p -> {
+            requireQuestBook();
+            return Quests.get(J.reqStr(p, "id"), Quests.player(J.str(p, "player", null)));
+        });
         bridge.register("item.search", p -> {
             String query = J.reqStr(p, "query");
             if (query.trim()
@@ -92,6 +114,17 @@ public final class BridgeApi {
                 Math.max(0, Math.min(12, J.i(p, "crafting", 4))),
                 Math.max(0, Math.min(24, J.i(p, "machines", 8))),
                 J.str(p, "machine", null));
+        });
+        bridge.register("world.machines", p -> {
+            int[] c = centre(p);
+            return WorldQueries.machines(
+                world(p),
+                c[0],
+                c[1],
+                c[2],
+                Math.max(1, J.i(p, "radius", 32)),
+                J.str(p, "name", null),
+                Math.max(1, Math.min(60, J.i(p, "limit", 30))));
         });
         bridge.register("world.stock", p -> {
             JsonArray wanted = J.array(p, "items");
@@ -275,6 +308,10 @@ public final class BridgeApi {
         if (!J.has(p, "bot")) throw RpcException.badRequest("give x, y, z or a bot to centre on");
         Bot b = bots.requireOnline(J.reqStr(p, "bot"));
         return new int[] { b.blockX(), b.blockY(), b.blockZ() };
+    }
+
+    private static void requireQuestBook() {
+        if (!Quests.present()) throw RpcException.notFound("this server has no quest book (BetterQuesting)");
     }
 
     /** The world a request is about: its dim, else the world of the bot it names, else the overworld. */

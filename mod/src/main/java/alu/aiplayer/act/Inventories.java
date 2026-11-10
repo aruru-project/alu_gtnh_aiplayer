@@ -28,9 +28,16 @@ public final class Inventories {
         return out;
     }
 
+    /**
+     * The slots things picked up or taken can land in. Mods lengthen the inventory array for slots of their own
+     * (an off hand, for one); those never fill by themselves and must not be mistaken for room.
+     */
+    public static final int CARRY_SLOTS = 36;
+
     public static int freeSlots(EntityPlayerMP p) {
         int n = 0;
-        for (ItemStack s : p.inventory.mainInventory) if (s == null) n++;
+        ItemStack[] inv = p.inventory.mainInventory;
+        for (int i = 0; i < inv.length && i < CARRY_SLOTS; i++) if (inv[i] == null) n++;
         return n;
     }
 
