@@ -14,6 +14,7 @@ import alu.aiplayer.craft.RecipeBook;
 import alu.aiplayer.world.BlueprintStore;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
+import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
 import cpw.mods.fml.common.event.FMLServerStartedEvent;
 import cpw.mods.fml.common.event.FMLServerStartingEvent;
@@ -64,6 +65,23 @@ public class AiPlayerMod {
         configDir = new File(event.getModConfigurationDirectory(), "aiplayer");
         config = ModConfig.load(new File(configDir, "aiplayer.json"));
         blueprints = new BlueprintStore(new File(configDir, "schematics"));
+    }
+
+    /**
+     * In a client started for it (tools/client), write down what NEI shows. The class is named in a string so
+     * that a server never tries to load client code.
+     */
+    @Mod.EventHandler
+    public void init(FMLInitializationEvent event) {
+        if (!event.getSide()
+            .isClient() || System.getProperty("aiplayer.export") == null) return;
+        try {
+            Class.forName("alu.aiplayer.export.ExportClient")
+                .getMethod("install")
+                .invoke(null);
+        } catch (Throwable t) {
+            LOG.error("the export could not be set up", t);
+        }
     }
 
     @Mod.EventHandler

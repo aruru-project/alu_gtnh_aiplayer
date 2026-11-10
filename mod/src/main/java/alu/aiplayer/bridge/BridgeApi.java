@@ -89,6 +89,10 @@ public final class BridgeApi {
                 Quests.player(J.str(p, "player", null)),
                 Math.max(1, Math.min(60, J.i(p, "limit", 20))));
         });
+        bridge.register("quest.progress", p -> {
+            requireQuestBook();
+            return Quests.progress(J.reqStr(p, "player"));
+        });
         bridge.register("quest.get", p -> {
             requireQuestBook();
             return Quests.get(J.reqStr(p, "id"), Quests.player(J.str(p, "player", null)));

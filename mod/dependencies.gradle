@@ -36,4 +36,6 @@
 dependencies {
     // Only compiled against: the quest book is read when the mod is present and left alone when it is not.
     compileOnly("com.github.GTNewHorizons:BetterQuesting:3.8.92-GTNH:dev") { transitive = false }
+    // Only for the export that runs inside a client (alu.aiplayer.export); never touched on a server.
+    compileOnly("com.github.GTNewHorizons:NotEnoughItems:2.8.171-GTNH:dev") { transitive = false }
 }

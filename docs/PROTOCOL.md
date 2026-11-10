@@ -185,7 +185,8 @@
 
 ### 任务书（只读）
 
-服务器上的任务书（BetterQuesting）：章节、每个任务的说明和要求、某个玩家的进度。只查不改，不会替谁提交任务或领奖励。服务器没装任务书时这三个方法返回 `not_found`。
+服务器上的任务书（BetterQuesting）：章节、每个任务的说明和要求、某个玩家的进度。只查不改，不会替谁提交任务或领奖励。服务器没装任务书时这些方法返回 `not_found`（消息里有 `no quest book`）。
+任务书的内容对所有人都一样，也都在客户端包里，大脑可以自己存一份（见 `docs/PACKDATA.md`）；那样只需要 `quest.progress`。
 `player` 是玩家名（在线的，或任务书见过的）；给了才有进度相关的字段。任务 id 是任务书自己的编号：老任务是一小段十六进制数（如 `47`），新任务是完整的 UUID。
 
 | 方法 | 参数 | 结果 |
@@ -193,6 +194,7 @@
 | `quest.lines` | `{player?}` | `{lines:[{name, quests, complete?, available?}], quests}`，按任务书里章节的顺序 |
 | `quest.search` | `{query?, line?, state?, player?, limit?=20(≤60)}` | `{quests:[{id, name, line?, state?}], total}`。`query` 的每个词都要出现在标题或说明里（标题里出现的排前面）；`line` 是章节名的一部分；`state` 是 `available`（已解锁未完成）、`complete`、`locked` 之一，需要 `player` |
 | `quest.get` | `{id, player?}` | 见下 |
+| `quest.progress` | `{player}` | `{player, completed:[id…], unclaimed:[id…], known?}`。`completed` 是这个玩家已完成的全部任务；`unclaimed` 是其中有奖励还没领的。任务书没见过这个玩家时两个都是空数组，并带 `known:false` |
 
 ```jsonc
 {

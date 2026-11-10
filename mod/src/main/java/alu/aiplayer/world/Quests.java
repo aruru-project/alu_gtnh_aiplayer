@@ -18,6 +18,7 @@ import net.minecraft.server.MinecraftServer;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.util.Names;
@@ -87,6 +88,35 @@ public final class Quests {
         if (who == null) return null;
         if (q.isComplete(who)) return q.hasClaimed(who) ? "complete" : "complete, reward unclaimed";
         return q.isUnlocked(who) ? "available" : "locked";
+    }
+
+    /**
+     * Everything one player has finished, as ids only. The book itself is the same for everybody and whoever asks
+     * can keep a copy; who has done what lives in the save and changes while people play.
+     */
+    public static JsonObject progress(String name) {
+        JsonObject out = new JsonObject();
+        out.addProperty("player", name);
+        JsonArray completed = new JsonArray();
+        JsonArray unclaimed = new JsonArray();
+        out.add("completed", completed);
+        out.add("unclaimed", unclaimed);
+        UUID who;
+        try {
+            who = player(name);
+        } catch (RpcException unknown) {
+            out.addProperty("known", false);
+            return out;
+        }
+        for (Map.Entry<UUID, IQuest> e : new ArrayList<>(QuestDatabase.INSTANCE.entrySet())) {
+            IQuest q = e.getValue();
+            if (!q.isComplete(who)) continue;
+            String id = shortId(e.getKey());
+            completed.add(new JsonPrimitive(id));
+            if (!q.hasClaimed(who) && q.getRewards()
+                .size() > 0) unclaimed.add(new JsonPrimitive(id));
+        }
+        return out;
     }
 
     /** Which chapter each quest is in (the first one, for quests shown in several). */
