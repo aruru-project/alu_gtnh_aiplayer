@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AI 玩家 · 大脑面板</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>AI 玩家 · 大脑面板</h1>
+      <input type="text" name="username" autocomplete="username" value="owner" hidden>
+      <label for="login-password">访问口令</label>
+      <input id="login-password" type="password" autocomplete="current-password" required autofocus>
+      <p class="hint">口令在大脑首次启动时打印过，也保存在数据目录的 config.json（panel.password）里。</p>
+      <p id="login-error" class="error" role="alert" hidden></p>
+      <button type="submit" class="primary">登录</button>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <h1>AI 玩家</h1>
+      <div class="badges" aria-live="polite">
+        <span id="badge-bridge" class="badge">游戏：…</span>
+        <span id="badge-bot" class="badge">玩家：…</span>
+        <span id="badge-agent" class="badge">大脑：…</span>
+      </div>
+      <button id="logout" type="button" class="quiet">退出</button>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="页面">
+      <button type="button" role="tab" data-tab="overview" aria-selected="true">概览</button>
+      <button type="button" role="tab" data-tab="chat" aria-selected="false">对话</button>
+      <button type="button" role="tab" data-tab="models" aria-selected="false">模型</button>
+      <button type="button" role="tab" data-tab="bot" aria-selected="false">AI 玩家</button>
+      <button type="button" role="tab" data-tab="memory" aria-selected="false">记忆</button>
+      <button type="button" role="tab" data-tab="settings" aria-selected="false">设置</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" role="tabpanel"></section>
+
+      <section id="tab-chat" role="tabpanel" hidden>
+        <div class="chat-tools">
+          <label class="check"><input id="chat-show-tools" type="checkbox" checked> 显示工具调用和结果</label>
+          <label class="check"><input id="chat-show-events" type="checkbox" checked> 显示游戏事件</label>
+          <span id="chat-stream-state" class="muted"></span>
+        </div>
+        <div id="chat-log" class="log" aria-live="polite"></div>
+        <form id="chat-form" class="chat-form">
+          <textarea id="chat-input" rows="2" maxlength="2000" placeholder="以主人身份直接给它下指令。回车发送，Shift+回车换行"></textarea>
+          <button type="submit" class="primary">发送</button>
+        </form>
+        <p class="hint">这里发的话只有它看得到，不会出现在游戏聊天里。它在游戏里说的话会显示在上面的日志里。</p>
+      </section>
+
+      <section id="tab-models" role="tabpanel" hidden></section>
+      <section id="tab-bot" role="tabpanel" hidden></section>
+      <section id="tab-memory" role="tabpanel" hidden></section>
+      <section id="tab-settings" role="tabpanel" hidden></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

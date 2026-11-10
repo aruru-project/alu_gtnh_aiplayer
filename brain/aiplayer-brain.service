@@ -1,0 +1,47 @@
+# systemd 用户服务模板（正式部署用）。没有安装；要用时：
+#   1. 把下面标了 <…> 的占位值换成正式服的实际值
+#   2. cp aiplayer-brain.service ~/.config/systemd/user/
+#   3. systemctl --user daemon-reload && systemctl --user enable --now aiplayer-brain
+# 首次启动生成的面板口令看：journalctl --user -u aiplayer-brain
+# 想让它在没人登录时也运行：loginctl enable-linger $USER
+
+[Unit]
+Description=GTNH AI player brain (aiplayer-brain)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h 是用户的家目录。仓库不在这个位置时改这两行。
+WorkingDirectory=%h/workshop/alu_gtnh_aiplayer/brain
+ExecStart=%h/.nvm/versions/node/v24.22.1/bin/node src/main.ts
+
+# ── 连哪个游戏（必填）──
+# 身体（mod）的 bridge 端口：正式服是 25590（游戏服务器 config/aiplayer/aiplayer.json 的 bridgePort）。
+Environment=AIPLAYER_BRIDGE_PORT=25590
+# bridge 口令文件：游戏服务器目录下的 config/aiplayer/bridge-token.txt，写绝对路径。
+# 这一项没有默认值；不配的话大脑不会去连游戏（也可以启动后在面板的“设置”页填）。
+Environment=AIPLAYER_BRIDGE_TOKEN_FILE=<正式服目录>/config/aiplayer/bridge-token.txt
+
+# ── 数据和面板（按需改）──
+# 数据目录：配置（含 API key）、记忆、历史都在这里。正式服和测试服不要共用一个。
+Environment=AIPLAYER_DATA_DIR=%h/workshop/alu_gtnh_aiplayer/brain/data
+Environment=AIPLAYER_PANEL_HOST=127.0.0.1
+Environment=AIPLAYER_PANEL_PORT=8765
+
+# ── 模型接口要走代理时取消注释 ──
+#Environment=NODE_USE_ENV_PROXY=1
+#Environment=HTTPS_PROXY=http://127.0.0.1:7890
+
+# 收到 SIGTERM 后它会打断当前这一轮并把状态落盘，一般 1 秒内退出。
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+
+# 新建的文件默认只有属主可读写（数据目录里有 API key）。
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

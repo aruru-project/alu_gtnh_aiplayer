@@ -1,0 +1,23 @@
+{
+  "name": "aiplayer-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GTNH AI 玩家的大脑服务：听事件、调模型、通过 bridge 协议指挥游戏里的身体",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev:testserver": "AIPLAYER_DATA_DIR=data/testserver AIPLAYER_BRIDGE_PORT=25591 AIPLAYER_BRIDGE_TOKEN_FILE=../testserver/config/aiplayer/bridge-token.txt node src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "mock-bridge": "node test/mock-bridge.ts",
+    "mock-llm": "node test/mock-llm.ts",
+    "live:testserver": "node test/live-testserver.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -9,8 +9,12 @@ import net.minecraft.network.NetworkManager;
 import net.minecraft.network.Packet;
 
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.GenericFutureListener;
 
 /**
@@ -24,7 +28,16 @@ public final class BotNetworkManager extends NetworkManager {
 
     public BotNetworkManager() {
         super(false);
-        EmbeddedChannel channel = new EmbeddedChannel(new ChannelDuplexHandler());
+        // First in the pipeline is last on the way out: anything written straight to the channel ends here
+        // instead of collecting in the embedded channel's outbound queue.
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                ReferenceCountUtil.release(msg);
+                promise.setSuccess();
+            }
+        });
         ChannelPipeline pipeline = channel.pipeline();
         // Mods insert their own handlers relative to the names of a real connection's pipeline.
         for (String name : PIPELINE_NAMES) pipeline.addLast(name, new ChannelDuplexHandler());

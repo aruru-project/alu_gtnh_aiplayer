@@ -131,7 +131,8 @@ public final class TaskQueue {
                 AiPlayerMod.LOG.error("Task {} failed to start", active.type, t);
                 active.failExternally("internal", String.valueOf(t));
             }
-            listener.onTaskUpdate(bot, active);
+            // A task that failed while starting is announced once, as ended, further down.
+            if (!active.finished()) listener.onTaskUpdate(bot, active);
         }
         if (!active.finished() && active.dimensionBound() && bot.player().dimension != active.startDim) {
             active.failExternally("interrupted", "the bot was moved to another dimension");
