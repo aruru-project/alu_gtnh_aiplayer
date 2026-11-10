@@ -12,21 +12,42 @@ public abstract class Goal {
     /** A lower bound on the remaining cost, in ticks. */
     public abstract double heuristic(int x, int y, int z);
 
-    /** Within a horizontal range of a block position, and about level with it. */
+    /**
+     * Within a horizontal range of a block position, and about level with it: up to two blocks off in height, so a
+     * position read off a map or a player still counts when the ground there is a little higher or lower.
+     */
     public static Goal near(final int gx, final int gy, final int gz, final int range) {
+        final int slack = Math.max(2, range);
         return new Goal() {
 
             @Override
             public boolean reached(int x, int y, int z) {
                 int dx = x - gx, dz = z - gz;
-                return dx * dx + dz * dz <= range * range && Math.abs(y - gy) <= Math.max(1, range);
+                return dx * dx + dz * dz <= range * range && Math.abs(y - gy) <= slack;
             }
 
             @Override
             public double heuristic(int x, int y, int z) {
                 int flat = Math.max(0, Math.abs(x - gx) + Math.abs(z - gz) - range);
-                int vert = Math.max(0, Math.abs(y - gy) - Math.max(1, range));
+                int vert = Math.max(0, Math.abs(y - gy) - slack);
                 return flat * WALK + vert * 6.0;
+            }
+        };
+    }
+
+    /** Within a horizontal range of a column, at whatever height the ground is. */
+    public static Goal column(final int gx, final int gz, final int range) {
+        return new Goal() {
+
+            @Override
+            public boolean reached(int x, int y, int z) {
+                int dx = x - gx, dz = z - gz;
+                return dx * dx + dz * dz <= range * range;
+            }
+
+            @Override
+            public double heuristic(int x, int y, int z) {
+                return Math.max(0, Math.abs(x - gx) + Math.abs(z - gz) - range) * WALK;
             }
         };
     }

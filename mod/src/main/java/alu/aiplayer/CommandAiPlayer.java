@@ -89,7 +89,8 @@ public final class CommandAiPlayer extends CommandBase {
                     reply(sender, "Logged out.");
                     break;
                 case "stop": {
-                    int n = bots.require(arg(sender, args)).tasks.cancel(null);
+                    int n = bots.require(arg(sender, args)).tasks.cancel(null)
+                        .size();
                     reply(sender, "Canceled " + n + " task(s).");
                     break;
                 }

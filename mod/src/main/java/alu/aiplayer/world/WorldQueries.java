@@ -151,8 +151,15 @@ public final class WorldQueries {
         o.add("heights", heights);
         o.add("tops", tops);
         JsonArray pal = new JsonArray();
-        for (String id : palette.keySet()) pal.add(J.prim(id));
+        JsonArray liquids = new JsonArray();
+        for (Map.Entry<String, Integer> e : palette.entrySet()) {
+            pal.add(J.prim(e.getKey()));
+            Block pb = Names.block(e.getKey());
+            if (pb != null && pb.getMaterial()
+                .isLiquid()) liquids.add(J.prim(e.getValue()));
+        }
         o.add("palette", pal);
+        o.add("liquidPalette", liquids);
         JsonObject stats = new JsonObject();
         int mode = -1;
         for (int y = 0; y < 256; y++) if (mode < 0 || histogram[y] > histogram[mode]) mode = y;

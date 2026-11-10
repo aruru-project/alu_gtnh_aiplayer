@@ -3,18 +3,22 @@ package alu.aiplayer.task;
 import com.google.gson.JsonObject;
 
 import alu.aiplayer.bot.Bot;
+import alu.aiplayer.nav.Goal;
 import alu.aiplayer.nav.Navigator;
+import alu.aiplayer.nav.Rules;
 import alu.aiplayer.util.J;
 
 /** Walks to within a range of a block position. */
 public final class GotoTask extends MoveTask {
 
-    private final int x, y, z, range;
+    private final int x, z, range;
+    /** Null means "wherever the ground is at x, z". */
+    private final Integer y;
 
     public GotoTask(JsonObject params) {
         super("goto", params);
         x = J.reqInt(params, "x");
-        y = J.reqInt(params, "y");
+        y = J.has(params, "y") ? J.reqInt(params, "y") : null;
         z = J.reqInt(params, "z");
         range = Math.max(0, Math.min(32, J.i(params, "range", 1)));
     }
@@ -27,7 +31,8 @@ public final class GotoTask extends MoveTask {
             return;
         }
         phase = "walking";
-        walkTo(x, y, z, range);
+        if (y == null) nav.go(Goal.column(x, z, range), Rules.NATURAL_ONLY);
+        else walkTo(x, y, z, range);
     }
 
     @Override

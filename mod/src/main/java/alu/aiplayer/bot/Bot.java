@@ -150,12 +150,14 @@ public final class Bot implements BotConnection.Listener {
     /** Queues text for public chat, split into lines a client could send. */
     public void say(String message) {
         for (String part : message.split("\\r?\\n")) {
-            String rest = part.trim();
+            // Chat is never a command, whatever the text starts with.
+            String rest = part.trim()
+                .replaceFirst("^/+", "");
             while (rest.length() > 100) {
                 chatOut.add(rest.substring(0, 100));
                 rest = rest.substring(100);
             }
-            if (!rest.isEmpty() && !rest.startsWith("/")) chatOut.add(rest);
+            if (!rest.isEmpty()) chatOut.add(rest);
         }
     }
 
@@ -194,6 +196,8 @@ public final class Bot implements BotConnection.Listener {
             String key = tr.getKey();
             // Public chat reaches the brain as a chat event already.
             if ("chat.type.text".equals(key) || "chat.type.announcement".equals(key)) return;
+            // Comings and goings are player.join / player.leave events.
+            if (key.startsWith("multiplayer.player.")) return;
             if ("commands.message.display.incoming".equals(key)) {
                 Object[] args = tr.getFormatArgs();
                 if (args.length >= 2) {

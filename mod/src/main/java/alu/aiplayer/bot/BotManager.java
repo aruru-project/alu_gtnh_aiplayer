@@ -156,12 +156,14 @@ public final class BotManager implements TaskQueue.Listener {
             throw RpcException.denied("a player named " + name + " is online");
         }
         if (b == null) {
-            if (bots.size() >= config.maxBots) throw RpcException.denied("bot limit reached: " + config.maxBots);
             b = new Bot(this, name, offlineUuid(name));
             b.invulnerable = config.defaultInvulnerable;
             b.hunger = config.defaultHunger;
             bots.put(name.toLowerCase(), b);
         }
+        int online = 0;
+        for (Bot other : bots.values()) if (other.online()) online++;
+        if (online >= config.maxBots) throw RpcException.denied("at most " + config.maxBots + " bots may be online");
         if (skin != null) b.skin = skin;
         b.wantOnline = true;
         login(b, pos == null ? null : new Placement(dim, pos));
@@ -172,6 +174,13 @@ public final class BotManager implements TaskQueue.Listener {
     public void despawn(Bot b) {
         b.wantOnline = false;
         if (b.online()) logout(b, "despawned", false);
+        dirty = true;
+    }
+
+    /** Forgets an offline bot. Its player data (inventory, position) stays in the world save. */
+    public void remove(Bot b) {
+        if (b.online()) throw RpcException.badRequest("despawn the bot first: " + b.name);
+        bots.remove(b.name.toLowerCase());
         dirty = true;
     }
 

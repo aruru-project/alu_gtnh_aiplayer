@@ -203,8 +203,10 @@ public final class BridgeServer {
         res.addProperty("ok", true);
         res.add("result", result);
         conn.send(res.toString());
-        if (epoch.equals(J.str(params, "serverEpoch", "")) && J.has(params, "lastSeq")) {
-            long last = J.l(params, "lastSeq", seq);
+        // A client that has been here before gets what it missed: everything after its last event if the server
+        // is the same one, or everything this server has emitted so far if it restarted in between.
+        if (J.has(params, "serverEpoch")) {
+            long last = epoch.equals(J.str(params, "serverEpoch", "")) ? J.l(params, "lastSeq", seq) : 0L;
             for (BufferedEvent e : events) {
                 if (e.seq > last) conn.send(e.line);
             }

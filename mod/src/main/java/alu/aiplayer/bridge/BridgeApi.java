@@ -58,31 +58,25 @@ public final class BridgeApi {
                 wanted.add(b);
             }
             int limit = Math.max(1, Math.min(64, J.i(p, "limit", 16)));
+            int[] c = centre(p);
             return WorldQueries.find(
                 world(p),
-                J.reqInt(p, "x"),
-                J.reqInt(p, "y"),
-                J.reqInt(p, "z"),
+                c[0],
+                c[1],
+                c[2],
                 Math.max(1, J.i(p, "radius", 16)),
                 wanted,
                 limit);
         });
-        bridge.register(
-            "world.containers",
-            p -> WorldQueries.containers(
-                world(p),
-                J.reqInt(p, "x"),
-                J.reqInt(p, "y"),
-                J.reqInt(p, "z"),
-                Math.max(1, J.i(p, "radius", 12))));
-        bridge.register(
-            "world.entities",
-            p -> WorldQueries.entities(
-                world(p),
-                J.reqInt(p, "x") + 0.5,
-                J.reqInt(p, "y"),
-                J.reqInt(p, "z") + 0.5,
-                Math.max(1, J.i(p, "radius", 16))));
+        bridge.register("world.containers", p -> {
+            int[] c = centre(p);
+            return WorldQueries.containers(world(p), c[0], c[1], c[2], Math.max(1, J.i(p, "radius", 12)));
+        });
+        bridge.register("world.entities", p -> {
+            int[] c = centre(p);
+            return WorldQueries
+                .entities(world(p), c[0] + 0.5, c[1], c[2] + 0.5, Math.max(1, J.i(p, "radius", 16)));
+        });
 
         bridge.register("bot.list", p -> {
             JsonArray a = new JsonArray();
@@ -102,6 +96,10 @@ public final class BridgeApi {
         });
         bridge.register("bot.despawn", p -> {
             bots.despawn(bots.require(J.reqStr(p, "bot")));
+            return null;
+        });
+        bridge.register("bot.remove", p -> {
+            bots.remove(bots.require(J.reqStr(p, "bot")));
             return null;
         });
         bridge.register(
@@ -179,20 +177,39 @@ public final class BridgeApi {
             JsonObject spec = J.object(p, "task");
             if (spec == null) throw RpcException.badRequest("task is required");
             Task t = TaskFactory.create(J.reqStr(spec, "type"), spec);
-            b.tasks.add(t, "append".equals(J.str(p, "mode", "replace")));
+            List<String> replaced = b.tasks.add(t, "append".equals(J.str(p, "mode", "replace")));
             JsonObject o = new JsonObject();
             o.add("task", t.info());
+            o.add("replaced", strings(replaced));
             return o;
         });
         bridge.register("task.cancel", p -> {
             Bot b = bots.require(J.reqStr(p, "bot"));
+            List<String> ids = b.tasks.cancel(J.str(p, "id", null));
             JsonObject o = new JsonObject();
-            o.addProperty("canceled", b.tasks.cancel(J.str(p, "id", null)));
+            o.addProperty("canceled", ids.size());
+            o.add("ids", strings(ids));
             return o;
         });
         bridge.register(
             "task.list",
             p -> bots.require(J.reqStr(p, "bot")).tasks.list());
+    }
+
+    private static JsonArray strings(List<String> values) {
+        JsonArray a = new JsonArray();
+        for (String v : values) a.add(J.prim(v));
+        return a;
+    }
+
+    /** The point a search is centred on: x, y, z if given, else where the named bot stands. */
+    private int[] centre(JsonObject p) {
+        if (J.has(p, "x") && J.has(p, "y") && J.has(p, "z")) {
+            return new int[] { J.reqInt(p, "x"), J.reqInt(p, "y"), J.reqInt(p, "z") };
+        }
+        if (!J.has(p, "bot")) throw RpcException.badRequest("give x, y, z or a bot to centre on");
+        Bot b = bots.requireOnline(J.reqStr(p, "bot"));
+        return new int[] { b.blockX(), b.blockY(), b.blockZ() };
     }
 
     /** The world a request is about: its dim, else the world of the bot it names, else the overworld. */

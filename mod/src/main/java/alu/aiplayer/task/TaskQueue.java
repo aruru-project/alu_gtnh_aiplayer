@@ -47,39 +47,40 @@ public final class TaskQueue {
         return active == null && queue.isEmpty();
     }
 
-    public Task add(Task task, boolean append) {
-        if (!append) cancel(null);
+    /** Queues a task. Unless appending, whatever was pending is canceled first; those ids are returned. */
+    public List<String> add(Task task, boolean append) {
+        List<String> replaced = append ? new ArrayList<String>() : cancel(null);
         task.id = "t" + (++counter);
         queue.addLast(task);
         listener.onQueueChanged(bot);
-        return task;
+        return replaced;
     }
 
-    /** Cancels one task by id, or everything when id is null. Returns how many were canceled. */
-    public int cancel(String id) {
-        int n = 0;
+    /** Cancels one task by id, or everything when id is null. Returns the ids of the tasks it canceled. */
+    public List<String> cancel(String id) {
+        List<String> canceled = new ArrayList<>();
         if (active != null && (id == null || id.equals(active.id))) {
+            canceled.add(active.id);
             active.cancel();
             end(active);
             active = null;
-            n++;
         }
         List<Task> keep = new ArrayList<>();
         for (Task t : queue) {
             if (id == null || id.equals(t.id)) {
+                canceled.add(t.id);
                 t.cancel();
                 t.finishedAt = System.currentTimeMillis();
                 remember(t);
                 listener.onTaskUpdate(bot, t);
-                n++;
             } else {
                 keep.add(t);
             }
         }
         queue.clear();
         queue.addAll(keep);
-        if (n > 0) listener.onQueueChanged(bot);
-        return n;
+        if (!canceled.isEmpty()) listener.onQueueChanged(bot);
+        return canceled;
     }
 
     /** Fails the running task and drops the queue, e.g. because the bot died. */
