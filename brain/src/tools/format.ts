@@ -109,6 +109,8 @@ export function displayName(name: string | undefined): string | undefined {
 export interface LocalNames {
   get(id: string, meta?: number): { name: string; en?: string; variants?: number } | undefined
   byEnglishName(id: string, english: string): { name: string } | undefined
+  /** 只有英文名、没有 id 的东西（接着的管道、东西所在的容器）：整张表里英文名正好是它的那个。 */
+  byEnglishNameAlone?(english: string): { name: string } | undefined
 }
 
 /**
@@ -127,6 +129,7 @@ export function useLocalNames(names: LocalNames | undefined): void {
  * - 再按 id + meta 查（block 为 true 时不查：方块的 meta 是朝向之类，不是物品的 meta）。
  *   同一个 id + meta 下有好几种只靠附加数据区分的变体（匠魂工具每种材质一个）时，表里的名字只是其中一种的：
  *   服务器给了名字又和表里的对不上，说明手里这件是另一种变体，用服务器给的（英文但是准的）；
+ * - 还对不上、或者压根没有 id（身体只报了名字：接着的管道、东西所在的容器），拿英文名在整张表里对；
  * - 都没有就是服务器给的名字（没翻译的语言键不算名字）。
  */
 export function nameOf(x: { id?: unknown; meta?: unknown; name?: unknown }, opts: { block?: boolean } = {}): string | undefined {
@@ -139,7 +142,28 @@ export function nameOf(x: { id?: unknown; meta?: unknown; name?: unknown }, opts
       if (exact && !(exact.variants && server !== undefined)) return exact.name
     }
   }
+  if (localNames && server !== undefined) {
+    const alone = localNames.byEnglishNameAlone?.(server)
+    if (alone) return alone.name
+  }
   return server
+}
+
+/**
+ * 任务结果、错误详情这类原样给模型看的 JSON：里面带 id 的东西补上（或换成）本地物品表的名字。
+ * 没有本地物品表时原样返回。
+ */
+export function withLocalNames(value: unknown, depth = 0): unknown {
+  if (!localNames || depth > 6 || value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((v) => withLocalNames(v, depth + 1))
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value)) out[k] = withLocalNames(v, depth + 1)
+  const thing = value as { id?: unknown; meta?: unknown; name?: unknown }
+  if (typeof thing.id === 'string' && thing.id.includes(':')) {
+    const name = nameOf(thing)
+    if (name !== undefined) out.name = name
+  }
+  return out
 }
 
 export function formatItem(m: MergedItem): string {
@@ -181,19 +205,19 @@ export function formatTask(task: TaskInfo, opts: { params?: boolean } = {}): str
     if (p.phase) s += ` ${p.phase}`
     if (p.note) s += ` (${p.note})`
   }
-  if (opts.params && task.params) s += ` params=${compactJson(task.params, 300)}`
+  if (opts.params && task.params) s += ` params=${compactJson(withLocalNames(task.params), 300)}`
   const lines = taskLines(task)
   if (task.state === 'failed' || task.error) {
     const e = task.error
     s += ` error=${e?.code ?? 'unknown'}`
     if (e?.message) s += `: ${e.message}`
     if (e?.detail && Object.keys(e.detail).length > 0) {
-      s += lines.error ? lines.error.map((l) => `; ${l}`).join('') : ` detail=${compactJson(e.detail, 300)}`
+      s += lines.error ? lines.error.map((l) => `; ${l}`).join('') : ` detail=${compactJson(withLocalNames(e.detail), 300)}`
     }
   }
   if (task.result && Object.keys(task.result).length > 0) {
     const label = task.state === 'done' ? 'result' : 'partial result'
-    s += lines.result ? `; ${label}: ${lines.result.join('; ')}` : ` ${label}=${compactJson(trimTaskResult(task.result), 600)}`
+    s += lines.result ? `; ${label}: ${lines.result.join('; ')}` : ` ${label}=${compactJson(withLocalNames(trimTaskResult(task.result)), 600)}`
   }
   return s
 }
@@ -896,14 +920,14 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
 }
 
 /** world.stock 的结果：每样东西一共多少、在哪几处（坐标、容器名、是不是抽屉、数量、具体是哪种物品）。 */
-export function formatStock(res: StockResult, radius: number): string {
+export function formatStock(res: StockResult, radius: number, from: { of: string; hint: string } = { of: 'you', hint: '' }): string {
   const looked = count(res.containersLookedInto)
   const items = res.items ?? []
   if (looked === 0) {
-    return `There is no container within ${radius} blocks of you (only loaded chunks are searched). Go to where the storage is and look again.`
+    return `There is no container within ${radius} blocks of ${from.of} (only loaded chunks are searched). ${from.of === 'you' ? 'Look around where the storage is instead: give "at" (the position of a chest or drawer controller there, or where your owner stands), or go there.' : 'Check the position with your owner.'}`
   }
   const lines: string[] = [
-    `Looked into ${looked} container(s) within ${radius} blocks of you. Take things out with withdraw_items (container = the position, items = the exact id/meta).`,
+    `Looked into ${looked} container(s) within ${radius} blocks of ${from.of}. Take things out with withdraw_items (container = the position, items = the exact id/meta).`,
   ]
   for (const it of items) {
     // 点名了 meta 的带上名字（不限 meta 的不带：那会是 meta 0 的名字，具体是哪几种下面每一处都写着）
@@ -915,7 +939,7 @@ export function formatStock(res: StockResult, radius: number): string {
     lines.push(`- ${what}: ${it.total} in total`)
     for (const p of it.places ?? []) {
       const exact = (p.items ?? []).map((x) => kindText(x.count, x)).join(', ')
-      lines.push(`  - ${formatPos(p)} ${p.container ?? 'container'}${p.kind ? ` [${p.kind}]` : ''}: ${p.count}${exact ? ` (${exact})` : ''}`)
+      lines.push(`  - ${formatPos(p)} ${nameOf({ name: p.container }) ?? 'container'}${p.kind ? ` [${p.kind}]` : ''}: ${p.count}${exact ? ` (${exact})` : ''}`)
     }
     if (count(it.morePlaces) > 0) lines.push(`  - … and ${it.morePlaces} more place(s) holding less`)
   }
@@ -1092,7 +1116,7 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
 /** 紧挨着一个容器、会自己送料抽料的方块：写出来提醒这是自动化的一环。 */
 export function attachedText(attached: readonly AttachedBlock[] | undefined): string {
   if (!attached || attached.length === 0) return ''
-  return `AUTOMATED: ${attached.map((a) => `${a.name ?? a.kind ?? 'pipe'} at ${formatPos(a)}`).join(', ')} feeds or drains it`
+  return `AUTOMATED: ${attached.map((a) => `${nameOf(a, { block: true }) ?? a.kind ?? 'pipe'} at ${formatPos(a)}`).join(', ')} feeds or drains it`
 }
 
 /** 多方块机器的一个总线或仓。 */
@@ -1101,7 +1125,7 @@ function hatchLine(h: MachineHatch): string {
   if (h.slots !== undefined) parts.push(`${h.usedSlots ?? '?'}/${h.slots} slots used`)
   if (typeof h.circuit === 'number') parts.push(`circuit ${h.circuit}`)
   if (h.capacity !== undefined) parts.push(h.fluid ? `${h.amount ?? 0}/${h.capacity} mB ${h.fluidName ?? h.fluid}` : `empty (${h.capacity} mB)`)
-  const passes = (h.passesTo ?? []).map((p) => `${p.name ?? 'container'} at ${formatPos(p)}`)
+  const passes = (h.passesTo ?? []).map((p) => `${nameOf(p, { block: true }) ?? 'container'} at ${formatPos(p)}`)
   if (passes.length > 0) parts.push(`keeps nothing: pushes into ${passes.join(', ')}`)
   const auto = attachedText(h.attached)
   if (auto) parts.push(auto)
@@ -1109,14 +1133,15 @@ function hatchLine(h: MachineHatch): string {
 }
 
 /** world.machines 的结果：每台机器的坐标、名字、跑哪种配方、等级、有没有电、是不是正在忙。 */
-export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string; wayName?: WayName }): string {
+export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string; wayName?: WayName; of?: string; hint?: string }): string {
+  const of = asked.of ?? 'you'
   const machines = res.machines ?? []
   const filter = asked.name ? ` whose name or recipe type contains "${asked.name}"` : ''
   if (machines.length === 0) {
     return (
-      `No GregTech machine${filter} within ${asked.radius} blocks of you (only loaded chunks are searched). ` +
+      `No GregTech machine${filter} within ${asked.radius} blocks of ${of} (only loaded chunks are searched). ` +
       (asked.name ? 'Look again without "name" to see every machine here. ' : '') +
-      'Steam machines and machines of other mods are never listed and cannot be used.'
+      `Steam machines and machines of other mods are never listed and cannot be used.${asked.hint ?? ''}`
     )
   }
   const total = Math.max(count(res.total), machines.length)
@@ -1128,7 +1153,7 @@ export function formatMachines(res: { machines?: MachineInfo[]; total?: number }
   }
   const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown: give "name" or a smaller radius to see the others)` : ''
   return (
-    `${machines.length} GregTech machine(s)${filter} within ${asked.radius} blocks of you${more}, nearest first. ` +
+    `${machines.length} GregTech machine(s)${filter} within ${asked.radius} blocks of ${of}${more}, nearest first. ` +
     `A machine can run a recipe when it runs that kind of recipe, its tier is at least the recipe's, it has power and is idle:\n${lines.join('\n')}`
   )
 }

@@ -3,6 +3,8 @@
 // 入口是模型用的工具和 agent 给模型的那条消息；游戏是按方法名应答的假服务器。
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import { eventLine, fromBridgeEvent } from '../src/agent/events.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
@@ -75,7 +77,8 @@ describe('list_containers：容器一页一页列', () => {
     const beyond = await s.run('list_containers', { radius: 24, page: 4 })
     assert.deepEqual([beyond.isError, beyond.content], [true, 'There is no page 4: 45 container(s) within 24 blocks, 3 page(s).'])
     s.game.handlers['world.containers'] = paged([])
-    assert.equal((await s.run('list_containers')).content, 'No containers within 16 blocks of you.')
+    // 身边一个都没有：这不等于别处没有，提醒可以换个中心看
+    assert.equal((await s.run('list_containers')).content, 'No containers within 16 blocks of you. If it is at some other place (where your owner is, or a position they named), look around that place: give "at".')
   })
 
   it('接着漏斗、管道的容器标成 AUTOMATED；抽屉写明归哪个管理器管；抽屉管理器自己不装东西，指到 list_drawers；服务器没列全的种类如实说', async (t) => {
@@ -149,7 +152,7 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
       { bot: 'Alu', radius: 32, offset: 100, limit: 100 },
     ])
     assert.deepEqual(res.content.split('\n'), [
-      'Looked into 132 chest(s) and drawer(s) within 32 blocks (2 machine(s) and drawer controller(s) not counted): 2 kind(s) of item. 2 item(s), most first:',
+      'Looked into 132 chest(s) and drawer(s) within 32 blocks of you (2 machine(s) and drawer controller(s) not counted): 2 kind(s) of item. 2 item(s), most first:',
       // 5000 + 130×2
       '- 5260× Coal [minecraft:coal]: (200,64,0) drawers 5000, (0,64,0) 2, and 129 more place(s)',
       '- 64× Steel Ingot [gregtech:gt.metaitem.01/11305]: (200,64,0) drawers 40, (201,64,0) AUTOMATED 24 (24 of them in automated containers)',
@@ -213,6 +216,69 @@ describe('中文名：服务器回来的东西按本地物品表叫名字', () =
 
     s.game.handlers['world.machines'] = () => ({ machines: [{ x: 16, y: 64, z: -4, name: 'Basic Bending Machine', id: 'gregtech:gt.blockmachines', meta: 221, recipes: 'Bending Machine', recipeKey: 'gt.recipe.metalbender', tier: 'LV', active: false, storedEU: 5000, dist: 6 }], total: 1 })
     assert.match((await s.run('find_machines')).content, /\n- \(16,64,-4\) "基础卷板机": runs Bending Machine recipes, tier LV, has power \(5000 EU stored\), idle, 6 blocks away$/)
+  })
+})
+
+describe('中文名：只有英文名、或者只有 id 的地方', () => {
+  /** 一张小物品表：箱子另有一条“任何 meta”的同名条目（真实的物品表里配方引用过的物品都有），管道和机器是 GregTech 的。 */
+  function names(t: { after(fn: () => void): void }) {
+    const s = setup(t)
+    const dir = tmpDir()
+    t.after(dir.cleanup)
+    const items = [
+      { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
+      { id: 'minecraft:chest', meta: 32767, name: '箱子', en: 'Chest' },
+      { id: 'avaritiaddons:CompressedChest', meta: 0, name: '压缩箱子', en: 'Compressed Chest' },
+      { id: 'gregtech:gt.blockmachines', meta: 5602, name: '黄铜物品管道', en: 'Brass Item Pipe' },
+      { id: 'gregtech:gt.blockmachines', meta: 282, name: '进阶压模机', en: 'Advanced Extruder' },
+      { id: 'gregtech:gt.metaitem.01', meta: 11305, name: '钢锭', en: 'Steel Ingot' },
+      // 两个 mod 各有一个英文名都叫 Hopper、中文名不同的东西：只凭英文名认不出是哪个，不认
+      { id: 'minecraft:hopper', meta: 0, name: '漏斗', en: 'Hopper' },
+      { id: 'othermod:hopper', meta: 0, name: '料斗', en: 'Hopper' },
+    ]
+    fs.writeFileSync(path.join(dir.dir, 'items.jsonl'), items.map((i) => JSON.stringify(i)).join('\n'))
+    useLocalNames(loadPackData(dir.dir).items)
+    t.after(() => useLocalNames(undefined))
+    return s
+  }
+
+  it('箱子、接着的管道、输出总线推往的箱子、东西所在的容器和机器：身体只给了英文名的，也换成物品表里的中文名；认不准的保持原样', async (t) => {
+    const s = names(t)
+    s.game.handlers['world.containers'] = paged([chest(1, [], { attached: [{ x: 1, y: 65, z: 0, name: 'Brass Item Pipe', kind: 'item pipe' }, { x: 2, y: 64, z: 0, name: 'Hopper', kind: 'hopper' }] })])
+    assert.equal((await s.run('list_containers')).content.split('\n')[1], '- (1,64,0) 箱子 [minecraft:chest] 0/27 slots used (AUTOMATED: 黄铜物品管道 at (1,65,0), Hopper at (2,64,0) feeds or drains it): empty')
+
+    s.game.handlers['world.stock'] = () => ({
+      containersLookedInto: 3,
+      items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, total: 9, places: [{ x: 5, y: 64, z: 5, container: 'Compressed Chest', count: 8 }, { x: 6, y: 64, z: 5, container: 'Advanced Extruder', count: 1 }] }],
+    })
+    assert.deepEqual((await s.run('find_in_storage', { items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305 }] })).content.split('\n').slice(1), [
+      '- gregtech:gt.metaitem.01/11305 "钢锭": 9 in total',
+      '  - (5,64,5) 压缩箱子: 8',
+      '  - (6,64,5) 进阶压模机: 1',
+    ])
+
+    s.game.handlers['world.machines'] = () => ({
+      machines: [{ x: 0, y: 64, z: 0, name: 'Advanced Extruder', id: 'gregtech:gt.blockmachines', meta: 282, kind: 'multiblock', formed: true, recipes: 'Extruder', active: false, outputBuses: [{ x: 1, y: 64, z: 0, kind: 'output bus', slots: 4, usedSlots: 0, passesTo: [{ x: 1, y: 64, z: 1, name: 'Chest' }] }], dist: 2 }],
+      total: 1,
+    })
+    const machines = (await s.run('find_machines')).content.split('\n')
+    assert.match(machines[1]!, /^- \(0,64,0\) "进阶压模机": /)
+    assert.equal(machines[2], '    output bus (1,64,0), 0/4 slots used, keeps nothing: pushes into 箱子 at (1,64,1)')
+  })
+
+  it('任务结果、失败详情里只带 id 的东西补上中文名：取货缺的、任务参数里的', async (t) => {
+    const s = names(t)
+    s.game.handlers['task.list'] = () => ({
+      active: { id: 't3', type: 'withdraw', state: 'running', params: { type: 'withdraw', container: { x: 1, y: 64, z: 1 }, items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 5 }] } },
+      queue: [],
+      recent: [{ id: 't2', type: 'withdraw', state: 'done', finishedAt: 100, result: { moved: 2, missing: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 3 }] } }],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    assert.equal(lines[0], 'Running: t3 withdraw [running] params={"type":"withdraw","container":{"x":1,"y":64,"z":1},"items":[{"id":"gregtech:gt.metaitem.01","meta":11305,"count":5,"name":"钢锭"}]}')
+    assert.equal(lines.at(-1), '- t2 withdraw [done] result={"moved":2,"missing":[{"id":"gregtech:gt.metaitem.01","meta":11305,"count":3,"name":"钢锭"}]}')
+    // 被任务结束叫醒时看到的那句话也一样
+    const ev = fromBridgeEvent({ event: 'task.update', seq: 1, time: NOW, data: { bot: 'Alu', task: { id: 't2', type: 'withdraw', state: 'done', result: { moved: 2, missing: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 3 }] } } } }, 'Alu', NOW)!
+    assert.match(eventLine(ev, NOW), /任务 t2（withdraw）完成了。 结果：\{"moved":2,"missing":\[\{"id":"gregtech:gt\.metaitem\.01","meta":11305,"count":3,"name":"钢锭"\}\]\}$/)
   })
 })
 

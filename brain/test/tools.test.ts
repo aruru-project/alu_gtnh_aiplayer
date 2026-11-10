@@ -67,7 +67,7 @@ describe('工具清单', () => {
       'list_blueprints', 'check_blueprint', 'build_blueprint',
       'run_program', 'start_routine', 'routine_status', 'stop_routine', 'list_images', 'view_image', 'list_drafts', 'view_draft', 'publish_draft', 'delete_draft',
       'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item',
-      'find_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
+      'find_item', 'plan_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
       'list_quest_lines', 'find_quests', 'get_quest',
       'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
       'list_manuals', 'read_manual',
@@ -326,6 +326,52 @@ describe('观察', () => {
     assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16, offset: 0, limit: 20 })
     // 一次 bot.status 都没多查
     assert.equal(s.game.callsOf('bot.status').length, 0)
+  })
+
+  it('主人说的是五十格外那个地方的东西：以自己为中心什么都看不到，结果里提醒换个中心；给 at 就以那里为中心看，六个“看周围”的工具都一样', async (t) => {
+    const s = setup(t)
+    // 抽屉管理器在 (60,64,-4)，旁边是主人的箱子和一台车床；它站在 (10,64,-4)，离着五十格。
+    // 像身体那样：每次查询只看得到中心周围 radius 格以内的东西，中心是 {bot} 时就是它站的地方
+    const CHEST = { x: 61, y: 64, z: -4 }
+    const sees = (p: Record<string, unknown>): boolean => {
+      const c = typeof p.x === 'number' ? (p as unknown as { x: number; y: number; z: number }) : { x: 10, y: 64, z: -4 }
+      return Math.max(Math.abs(CHEST.x - c.x), Math.abs(CHEST.y - c.y), Math.abs(CHEST.z - c.z)) <= Number(p.radius)
+    }
+    const dirt = { id: 'minecraft:dirt', meta: 0, count: 27, name: 'Dirt' }
+    s.game.handlers['world.containers'] = (p) => (sees(p) ? { containers: [{ ...CHEST, id: 'minecraft:chest', name: 'Chest', slots: 27, usedSlots: 1, items: [dirt] }], total: 1, offset: 0 } : { containers: [], total: 0, offset: 0 })
+    s.game.handlers['world.find'] = (p) => (sees(p) ? { matches: [{ ...CHEST, id: 'minecraft:chest', meta: 3, dist: 1 }], total: 1 } : { matches: [], total: 0 })
+    s.game.handlers['world.stock'] = (p) => (sees(p) ? { items: [{ id: 'minecraft:dirt', meta: 0, total: 27, places: [{ ...CHEST, container: 'Chest', count: 27 }] }], containersLookedInto: 1 } : { items: [{ id: 'minecraft:dirt', meta: 0, total: 0, places: [] }], containersLookedInto: 0 })
+    s.game.handlers['world.machines'] = (p) => (sees(p) ? { machines: [{ x: 62, y: 64, z: -4, name: 'Basic Lathe', recipes: 'Lathe', tier: 'LV', inputSlots: 1, active: false, storedEU: 900, inputVoltage: 32, dist: 2 }], total: 1 } : { machines: [], total: 0 })
+    s.game.handlers['world.entities'] = () => ({ entities: [] })
+    s.game.handlers['world.scan'] = (p) => ({ ...p, heights: [[64]], tops: [[0]], palette: ['minecraft:grass'] })
+
+    const AT = { x: 60, y: 64, z: -4 }
+    const hint = ' If it is at some other place (where your owner is, or a position they named), look around that place: give "at".'
+    // 以自己为中心：没有。这不等于那边没有，所以每个结果都说可以换个中心
+    assert.equal((await s.run('list_containers')).content, `No containers within 16 blocks of you.${hint}`)
+    assert.equal((await s.run('list_stock')).content, `No containers within 16 blocks of you.${hint}`)
+    assert.equal((await s.run('find_blocks', { ids: ['minecraft:chest'] })).content, `No minecraft:chest within 24 blocks of you.${hint}`)
+    assert.match((await s.run('find_machines')).content, /^No GregTech machine within 32 blocks of you .* give "at"\.$/)
+    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }] })).content, /^There is no container within 32 blocks of you .*give "at" \(the position of a chest or drawer controller there, or where your owner stands\), or go there\.$/)
+    assert.match((await s.run('look_around')).content, /\nContainers: none near you \(to look around another place, give "at"\)\n/)
+
+    // 以抽屉管理器为中心：都看得到，结果里写明是那个地方的周围
+    const boxes = await s.run('list_containers', { at: AT })
+    assert.deepEqual(boxes.content.split('\n'), ['Within 16 blocks of (60,64,-4): 1 container(s).', '- (61,64,-4) Chest [minecraft:chest] 1/27 slots used: 27× minecraft:dirt "Dirt"'])
+    assert.match((await s.run('list_stock', { at: AT })).content, /^Looked into 1 chest\(s\) and drawer\(s\) within 16 blocks of \(60,64,-4\): 1 kind\(s\) of item\. 1 item\(s\), most first:\n- 27× /)
+    assert.equal((await s.run('find_blocks', { ids: ['minecraft:chest'], at: AT })).content, 'Found 1, nearest to (60,64,-4) first:\n(61,64,-4) minecraft:chest/3 — 1 away')
+    assert.match((await s.run('find_machines', { at: AT })).content, /^1 GregTech machine\(s\) within 32 blocks of \(60,64,-4\), nearest first\.[^\n]*\n- \(62,64,-4\) "Basic Lathe"/)
+    assert.deepEqual((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], at: AT })).content.split('\n').map((l) => l.replace(/\. Take things out.*$/, '.')), ['Looked into 1 container(s) within 32 blocks of (60,64,-4).', '- minecraft:dirt: 27 in total', '  - (61,64,-4) Chest: 27'])
+    const around = await s.run('look_around', { at: AT })
+    assert.match(around.content, /^You are at \(10,64,-4\) in overworld \(dim 0\)\. Within 16 blocks of \(60,64,-4\):\n/)
+    assert.match(around.content, /\nContainers \(1\):\n- \(61,64,-4\) Chest /)
+    // 地形也是那个地方的，不是它脚下的
+    assert.deepEqual(s.game.callsOf('world.scan').at(-1), { x1: 44, z1: -20, x2: 76, z2: 12, dim: 0 })
+    // 坐标不带维度，不说的话身体当成主世界：带上它自己所在的维度
+    assert.deepEqual(s.game.callsOf('world.containers').at(-1), { x: 60, y: 64, z: -4, dim: 0, radius: 16 })
+    // at 要给全
+    const half = await s.run('list_containers', { at: { x: 60, z: -4 } })
+    assert.equal(half.isError, true)
   })
 
   it('抽屉在 list_containers 和 look_around 里标成 [drawers]，数量是抽屉里的真实库存；箱子照旧', async (t) => {
@@ -1012,7 +1058,7 @@ describe('物品、配方、库存、合成', () => {
     const s = setup(t)
     s.game.handlers['world.stock'] = () => ({ items: [{ ore: 'screwSteel', total: 0, places: [] }], containersLookedInto: 0 })
     const nothing = await s.run('find_in_storage', { items: [{ ore: 'screwSteel' }], radius: 48 })
-    assert.match(nothing.content, /no container within 48 blocks of you.*Go to where the storage is/)
+    assert.match(nothing.content, /no container within 48 blocks of you.*Look around where the storage is instead: give "at"/)
     for (const bad of [{}, { id: 'minecraft:wool', ore: 'blockWool' }, { meta: 3 }]) {
       const res = await s.run('find_in_storage', { items: [{ ore: 'screwSteel' }, bad] })
       assert.equal(res.isError, true)

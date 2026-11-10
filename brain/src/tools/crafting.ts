@@ -7,11 +7,14 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { StockQuery } from '../bridge/protocol.ts'
 import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey } from './format.ts'
-import { carried, craftGrid, findItemLocal, findRecipesLocal, findUsesLocal, isHandCraft, processPlan, quantity } from './recipe-book.ts'
+import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
+import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, isHandCraft, processPlan, quantity, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
 import { arr, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
+import { AT, lookFrom } from './where.ts'
+import type { At } from './where.ts'
 import type { Tool, ToolContext } from './types.ts'
 
 // 协议里的上限
@@ -79,6 +82,22 @@ export const findRecipes: Tool = {
   },
 }
 
+export const planItem: Tool = {
+  name: 'plan_item',
+  description:
+    'Work out how to make an item, all the way down to what is in storage: looks through the storage and machines of the whole base around you (about 100 blocks each way), picks for every part the way that wastes least, counts the amounts, and returns the steps to do in order (ready-made tool calls), what is missing, and what to ask your owner first. When asked to make something, call this first and follow its steps.',
+  inputSchema: obj(
+    {
+      id: str('Item id, e.g. "gregtech:gt.metaitem.01" (from find_item).'),
+      meta: int('Item meta (default 0).', { min: 0 }),
+      count: int('How many you want (default 1).', { min: 1, max: PLAN_MAX_COUNT }),
+      page: int('Page of the steps (default 1).', { min: 1 }),
+    },
+    ['id'],
+  ),
+  run: (ctx, i: { id: string; meta?: number; count?: number; page?: number }) => planItemLocal(ctx, i),
+}
+
 export const findUses: Tool = {
   name: 'find_uses',
   description:
@@ -92,7 +111,7 @@ export const findUses: Tool = {
 
 export const findInStorage: Tool = {
   name: 'find_in_storage',
-  description: `Where things are kept around you: for each item (id, with or without meta) or ore-dictionary name, the total and the containers holding the most, with the exact items found there. Looks into every chest, drawer and other inventory within the radius (loaded chunks only). Ask for all the ingredients of a recipe in one call.`,
+  description: `Where things are kept around you, or around a place you give ("at"): for each item (id, with or without meta) or ore-dictionary name, the total and the containers holding the most, with the exact items found there. Looks into every chest, drawer and other inventory within the radius (loaded chunks only). Ask for all the ingredients of a recipe in one call.`,
   inputSchema: obj(
     {
       items: arr(
@@ -105,10 +124,11 @@ export const findInStorage: Tool = {
         { min: 1, max: STOCK_MAX_ITEMS },
       ),
       radius: int('Search radius in blocks (default 32).', { min: 1, max: STOCK_MAX_RADIUS }),
+      at: AT,
     },
     ['items'],
   ),
-  async run(ctx, i: { items: { id?: string; meta?: number; ore?: string }[]; radius?: number }) {
+  async run(ctx, i: { items: { id?: string; meta?: number; ore?: string }[]; radius?: number; at?: At }) {
     const wanted: StockQuery[] = []
     for (const [n, it] of i.items.entries()) {
       if ((it.id === undefined) === (it.ore === undefined)) return fail(`items[${n}] needs exactly one of "id" (an item) or "ore" (an ore-dictionary name)`)
@@ -116,9 +136,22 @@ export const findInStorage: Tool = {
       else wanted.push(it.meta === undefined ? { id: it.id! } : { id: it.id!, meta: it.meta })
     }
     const radius = i.radius ?? 32
-    const res = await ctx.bridge.worldStock({ bot: ctx.botName }, { items: wanted, radius })
-    return formatStock(res, radius)
+    const from = await lookFrom(ctx, i.at)
+    const res = await ctx.bridge.worldStock(from.center, { items: wanted, radius })
+    return formatStock(res, radius, from)
   },
+}
+
+/** 离它现在站的地方最近的合成台（身体认的那几种）；附近没有、或者问不到，就是 undefined。 */
+async function nearestTable(ctx: ToolContext): Promise<{ x: number; y: number; z: number } | undefined> {
+  try {
+    const me = await whereItStands(ctx)
+    const nearest = me ? (await findTables(ctx, me, 1))[0] : undefined
+    return nearest ? { x: nearest.x, y: nearest.y, z: nearest.z } : undefined
+  } catch (e) {
+    if (e instanceof BridgeError) return undefined
+    throw e
+  }
 }
 
 /** 身上现在有什么；问不到（没连上、不在线）就当不知道。 */
@@ -135,11 +168,11 @@ async function carriedOrNone(ctx: ToolContext): Promise<Carried | undefined> {
 export const craftItem: Tool = {
   name: 'craft_item',
   description:
-    'Craft by hand from what you carry (task): give the # number of a hand-crafting recipe from find_recipes. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the nearest one, or at "table".',
+    'Craft by hand from what you carry (task): give the # number of a hand-crafting recipe from find_recipes or plan_item. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the one nearest to you; leave "table" out unless your owner names one.',
   inputSchema: obj({
     recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
     count: int('How many of the product you want (default: one round of the recipe).', { min: 1, max: CRAFT_MAX_COUNT }),
-    table: pos('Crafting table or crafting station to use. Omit for the nearest.'),
+    table: pos('Only when your owner names a crafting table: its position. Omit for the nearest.'),
     id: str('Only without a recipe book: id of the item to make (then "recipe" is the number find_recipes gave).'),
     meta: int('Only without a recipe book: its meta.', { min: 0 }),
     queue,
@@ -164,27 +197,32 @@ export const craftItem: Tool = {
       return fail(`${i.count} would take ${rounds} rounds of this recipe (${quantity(product.n)} per round); one task does at most ${CRAFT_MAX_ROUNDS} rounds (${CRAFT_MAX_ROUNDS * product.n}). Split it into several tasks.`)
     }
     const grid = craftGrid(recipe, await carriedOrNone(ctx))
-    return startTask(ctx, { type: 'craft', grid, gives: { id: product.id, meta: product.meta }, rounds, table: i.table }, i.queue)
+    // 要工作台又没指定：现在就动手的，找离它此刻最近的一个交给身体（它查做法和动手合成常常不在同一个地方）；
+    // 排队的不知道轮到时它在哪，留给身体到时自己找
+    const table = i.table ?? (i.queue || fitsPocketGrid(recipe) ? undefined : await nearestTable(ctx))
+    return startTask(ctx, { type: 'craft', grid, gives: { id: product.id, meta: product.meta }, rounds, table }, i.queue)
   },
 }
 
 export const findMachines: Tool = {
   name: 'find_machines',
-  description: `The GregTech machines around you, nearest first: single-block machines and the controllers of multiblocks, with what recipes each runs, its tier, power, and whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Steam machines and other mods' machines are not listed.`,
+  description: `The GregTech machines around you, or around a place you give ("at"), nearest first: single-block machines and the controllers of multiblocks, with what recipes each runs, its tier, power, and whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Steam machines and other mods' machines are not listed.`,
   inputSchema: obj({
     name: str('Only machines whose name or recipe type contains this (English), e.g. "Lathe".', { maxLength: 60 }),
     radius: int('Search radius in blocks (default 32).', { min: 1, max: MACHINES_MAX_RADIUS }),
     limit: int('How many to return (default 30).', { min: 1, max: MACHINES_MAX_LIMIT }),
+    at: AT,
   }),
-  async run(ctx, i: { name?: string; radius?: number; limit?: number }) {
+  async run(ctx, i: { name?: string; radius?: number; limit?: number; at?: At }) {
     const name = i.name?.trim() || undefined
     const radius = i.radius ?? 32
+    const from = await lookFrom(ctx, i.at)
     const res = await ctx.bridge.worldMachines(
-      { bot: ctx.botName },
+      from.center,
       { radius, ...(name !== undefined ? { name } : {}), ...(i.limit !== undefined ? { limit: i.limit } : {}) },
     )
     const handlers = ctx.packdata?.recipes?.handlers
-    return formatMachines(res, { radius, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName: (key: string) => handlers.find((h) => h.key === key)?.name } : {}) })
+    return formatMachines(res, { radius, of: from.of, hint: from.hint, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName: (key: string) => handlers.find((h) => h.key === key)?.name } : {}) })
   },
 }
 

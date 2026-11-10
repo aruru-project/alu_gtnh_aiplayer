@@ -1,7 +1,7 @@
 // agent 的输入事件：来自 bridge 的游戏事件，加上大脑自己产生的（面板指令、提醒、内部通知）。
 
 import type { BridgeEvent, PlayerView, SeenBlock, TaskInfo } from '../bridge/protocol.ts'
-import { compactJson, nameOf, taskLines, trimTaskResult } from '../tools/format.ts'
+import { compactJson, nameOf, taskLines, trimTaskResult, withLocalNames } from '../tools/format.ts'
 
 export type AgentEvent =
   /** speaker：他说这句话时站在哪、朝哪看、指着什么（身体给的；老的身体不给）。 */
@@ -109,14 +109,14 @@ function describeTaskEnd(task: TaskInfo): string {
   // 整理过的文字：只有一行就接在后面，多行则每行缩进另起
   const block = (ls: string[]) => (ls.length === 1 ? ls[0]! : ls.map((l) => `\n  ${l}`).join(''))
   const hasResult = task.result !== undefined && Object.keys(task.result).length > 0
-  const result = !hasResult ? '' : lines.result ? block(lines.result) : compactJson(trimTaskResult(task.result!), 700)
+  const result = !hasResult ? '' : lines.result ? block(lines.result) : compactJson(withLocalNames(trimTaskResult(task.result!)), 700)
   if (task.state === 'done') return `${head}完成了。${result ? ` 结果：${result}` : ''}`
   if (task.state === 'canceled') return `${head}被取消了。${result ? ` 已完成的部分：${result}` : ''}`
   const e = task.error
   let text = `${head}失败了：${e?.code ?? 'unknown'}`
   if (e?.message) text += ` — ${e.message}`
   if (e?.detail && Object.keys(e.detail).length > 0) {
-    text += lines.error ? lines.error.map((l) => `\n  ${l}`).join('') : ` detail=${compactJson(e.detail, 500)}`
+    text += lines.error ? lines.error.map((l) => `\n  ${l}`).join('') : ` detail=${compactJson(withLocalNames(e.detail), 500)}`
   }
   if (result) text += `${lines.error || (lines.result?.length ?? 0) > 1 ? '\n  ' : ' '}已完成的部分：${result}`
   return text

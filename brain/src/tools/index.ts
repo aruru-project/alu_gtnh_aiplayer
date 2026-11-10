@@ -4,7 +4,7 @@ import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
 import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
-import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
+import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, planItem, processItems } from './crafting.ts'
 import { deleteDraft, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
 import { reportProblem } from './feedback.ts'
 import { clip } from './format.ts'
@@ -98,6 +98,7 @@ export const ALL_TOOLS: readonly Tool[] = [
   giveItems,
   useItem,
   findItem,
+  planItem,
   findRecipes,
   findUses,
   findInStorage,
@@ -138,6 +139,7 @@ export const QUERY_TOOLS: readonly string[] = [
   'list_images',
   'list_drafts',
   'find_item',
+  'plan_item',
   'find_recipes',
   'find_uses',
   'find_in_storage',

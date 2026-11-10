@@ -15,6 +15,8 @@ import {
 import { arr, int, obj, str } from './schema.ts'
 import { ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
+import { AT, lookFrom } from './where.ts'
+import type { At } from './where.ts'
 
 // 协议里各方法的上限
 export const SCAN_MAX_SIDE = 64
@@ -65,19 +67,21 @@ export const getStatus: Tool = {
 export const lookAround: Tool = {
   name: 'look_around',
   description:
-    'Summary of what is near you: players, mobs and dropped items, containers (chests, Storage Drawers and the like; drawers are marked [drawers]) with their main contents, and the lay of the land. Use scan_area for exact terrain heights and list_containers for full contents.',
-  inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: ENTITIES_MAX_RADIUS }) }),
-  async run(ctx, input: { radius?: number }) {
+    'Summary of what is near you, or near a place you give ("at"): players, mobs and dropped items, containers (chests, Storage Drawers and the like; drawers are marked [drawers]) with their main contents, and the lay of the land. Use scan_area for exact terrain heights and list_containers for full contents.',
+  inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: ENTITIES_MAX_RADIUS }), at: AT }),
+  async run(ctx, input: { radius?: number; at?: At }) {
     const radius = input.radius ?? 16
     const me = await botBlock(ctx)
-    const center = { bot: ctx.botName }
+    // 给了 at：看的是那个地方（和它自己在同一个维度），不是它身边
+    const mid = input.at ?? me
+    const center = input.at ? { ...input.at, ...(me.dim !== undefined ? { dim: me.dim } : {}) } : { bot: ctx.botName }
     const terrainR = Math.min(radius, 16)
     const [entities, containers, scan] = await Promise.allSettled([
       ctx.bridge.worldEntities(center, { radius }),
       ctx.bridge.worldContainers(center, { radius: Math.min(radius, CONTAINERS_MAX_RADIUS) }),
-      ctx.bridge.worldScan({ x1: me.x - terrainR, z1: me.z - terrainR, x2: me.x + terrainR, z2: me.z + terrainR }),
+      ctx.bridge.worldScan({ x1: mid.x - terrainR, z1: mid.z - terrainR, x2: mid.x + terrainR, z2: mid.z + terrainR, ...(input.at && me.dim !== undefined ? { dim: me.dim } : {}) }),
     ])
-    const lines: string[] = [`You are at ${formatPos(me)} in ${dimName(me.dim)}. Within ${radius} blocks:`]
+    const lines: string[] = [`You are at ${formatPos(me)} in ${dimName(me.dim)}. Within ${radius} blocks${input.at ? ` of ${formatPos(input.at)}` : ''}:`]
 
     if (entities.status === 'fulfilled') {
       const list = (entities.value.entities ?? []).filter((e) => !(e.type === 'player' && e.name === ctx.botName))
@@ -90,7 +94,7 @@ export const lookAround: Tool = {
       const list = containers.value.containers ?? []
       const total = containers.value.total ?? list.length
       if (list.length === 0) {
-        lines.push('Containers: none')
+        lines.push(`Containers: none${input.at ? '' : ' near you (to look around another place, give "at")'}`)
       } else {
         lines.push(`Containers (${total}):`)
         for (const c of list.slice(0, 12)) lines.push(`- ${formatContainer(c, 3)}`)
@@ -186,25 +190,27 @@ export const probeBlock: Tool = {
 
 export const findBlocks: Tool = {
   name: 'find_blocks',
-  description: `Find the nearest blocks of the given ids around you (radius at most ${FIND_MAX_RADIUS}). Returns positions from nearest to farthest.`,
+  description: `Find the nearest blocks of the given ids around you, or around a place you give ("at") (radius at most ${FIND_MAX_RADIUS}). Returns positions from nearest to farthest.`,
   inputSchema: obj(
     {
       ids: arr('Block ids, e.g. ["minecraft:chest", "minecraft:log"].', str('block id'), { min: 1, max: 16 }),
       radius: int('Search radius in blocks (default 24).', { min: 1, max: FIND_MAX_RADIUS }),
+      at: AT,
     },
     ['ids'],
   ),
-  async run(ctx, input: { ids: string[]; radius?: number }) {
+  async run(ctx, input: { ids: string[]; radius?: number; at?: At }) {
     const radius = input.radius ?? 24
-    const res = await ctx.bridge.worldFind({ bot: ctx.botName }, { blocks: input.ids, radius, limit: 32 })
+    const from = await lookFrom(ctx, input.at)
+    const res = await ctx.bridge.worldFind(from.center, { blocks: input.ids, radius, limit: 32 })
     const matches = res.matches ?? []
-    if (matches.length === 0) return `No ${input.ids.join(' / ')} within ${radius} blocks of you.`
+    if (matches.length === 0) return `No ${input.ids.join(' / ')} within ${radius} blocks of ${from.of}.${from.hint}`
     const total = res.total ?? matches.length
     const lines = matches.map(
       (m) => `${formatPos(m)} ${m.id}${m.meta ? `/${m.meta}` : ''}${typeof m.dist === 'number' ? ` — ${m.dist.toFixed(0)} away` : ''}`,
     )
     const more = total > matches.length ? ` (${total} in range, showing the nearest ${matches.length})` : ''
-    return `Found ${matches.length}${more}, nearest first:\n${lines.join('\n')}`
+    return `Found ${matches.length}${more}, nearest ${input.at ? `to ${from.of} ` : ''}first:\n${lines.join('\n')}`
   },
 }
 

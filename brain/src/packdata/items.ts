@@ -30,6 +30,7 @@ export class ItemTable {
   private haystacks: string[] | undefined
   private ores: Map<string, PackItemInfo[]> | undefined
   private english: Map<string, PackItemInfo | null> | undefined
+  private englishAnyId: Map<string, PackItemInfo | null> | undefined
 
   constructor(items: Iterable<PackItemInfo>) {
     for (const item of items) {
@@ -44,6 +45,11 @@ export class ItemTable {
     return this.byKey.size
   }
 
+  /** 全部物品（按文件里的顺序）。 */
+  all(): readonly PackItemInfo[] {
+    return this.list
+  }
+
   /** meta 缺省（任何变体都行）时拿 meta 0 的那个来叫名字。 */
   get(id: string, meta?: number): PackItemInfo | undefined {
     return this.byKey.get(`${id}/${meta === undefined || meta === ANY_META ? 0 : meta}`)
@@ -51,18 +57,34 @@ export class ItemTable {
 
   /**
    * 服务器给的英文显示名 → 物品表里的那一项：同一个 id 下英文名正好是它的那个。
-   * 世界里的方块（箱子、机器）只知道 id 和英文名，它的 meta 不是物品的 meta，所以靠名字对；同名的有好几个时不认（返回 undefined）。
+   * 世界里的方块（箱子、机器）只知道 id 和英文名，它的 meta 不是物品的 meta，所以靠名字对。
+   * 同一个英文名对着几个中文名不一样的物品时不认（返回 undefined）；中文名也一样的（比如物品表里另有一条“任何 meta”的同名条目）照认。
    */
   byEnglishName(id: string, english: string): PackItemInfo | undefined {
-    if (!this.english) {
-      this.english = new Map()
-      for (const item of this.list) {
-        const key = `${item.id}\n${(item.en ?? item.name).toLowerCase()}`
-        // 同一个 id 下两个物品英文名一样：记成 null，谁也不认
-        this.english.set(key, this.english.has(key) ? null : item)
-      }
-    }
+    this.english ??= this.englishIndex((item) => `${item.id}\n${(item.en ?? item.name).toLowerCase()}`)
     return this.english.get(`${id}\n${english.toLowerCase()}`) ?? undefined
+  }
+
+  /**
+   * 只有英文显示名、连 id 都没有的东西（身体报的“旁边接着的管道”“东西在哪个容器里”）：整张物品表里英文名正好是它的那个。
+   * 几个物品英文名相同而中文名不同时不认。
+   */
+  byEnglishNameAlone(english: string): PackItemInfo | undefined {
+    this.englishAnyId ??= this.englishIndex((item) => (item.en ?? item.name).toLowerCase())
+    return this.englishAnyId.get(english.toLowerCase()) ?? undefined
+  }
+
+  private englishIndex(keyOf: (item: PackItemInfo) => string): Map<string, PackItemInfo | null> {
+    const index = new Map<string, PackItemInfo | null>()
+    for (const item of this.list) {
+      const key = keyOf(item)
+      const seen = index.get(key)
+      if (seen === undefined) index.set(key, item)
+      // 同一个英文名、中文名不一样：记成 null，谁也不认；“任何 meta”的条目让位给点名 meta 的
+      else if (seen !== null && seen.name !== item.name) index.set(key, null)
+      else if (seen !== null && seen.meta === ANY_META) index.set(key, item)
+    }
+    return index
   }
 
   /** 登记在这个矿辞名下的物品。 */

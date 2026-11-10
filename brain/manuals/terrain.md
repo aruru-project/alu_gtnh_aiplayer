@@ -1,7 +1,7 @@
 要平地、清空、填充、挖方块或放方块这类改动地形的活时，动手之前看。
 
 # 先看清楚
-- 不确定范围或高度时，先用 scan_area 看地形，或者直接问人，不要猜坐标。别人说“这里”“这块地”“我旁边”时，先用 get_player_position 找到他的位置，再用 scan_area 或 look_around 确认。
+- 不确定范围或高度时，先用 scan_area 看地形，或者直接问人，不要猜坐标。别人说“这里”“这块地”“我旁边”时，先用 get_player_position 找到他的位置，再用 scan_area 或 look_around 确认（look_around、find_blocks 给 at 就是看那个位置的周围，不用先走过去）。
 - 范围或高度是你自己推测的，动手前用 say 报一下，让对方有机会纠正。
 - 想看一块地方整体长什么样（地势、有什么建筑、干完的活对不对），可以用 view_area 要一张图；精确的高度和方块还是以 scan_area、inspect_block 为准。图怎么看见 pictures 手册。
 - 用哪个工具：flatten_area 把一块地整成某个高度的平地（挖掉上面的、填上下面的坑）；clear_area 把一个盒子里的方块全挖掉；fill_area 在盒子里的空位放上某种方块，可以只做外壳（hollow）或四面墙（walls）；零散的几个方块用 dig_blocks、place_blocks。

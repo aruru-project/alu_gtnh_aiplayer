@@ -20,10 +20,17 @@ export const ITEMS_PER_PAGE = 12
 const WAY_RECIPES_SHOWN = 3
 const WAYS_SHOWN = 20
 const USE_WAYS_SHOWN = 30
-export const MACHINES_RADIUS = 64
+// 基地常常比身体一次查询的范围大（仓库在这头，高炉在那头，隔着六七十格）。所以看“基地里有什么”时，
+// 以它站的地方为中心、往四个方向各错开一点各查一次，合起来看：下面的 REACH 是这样合起来每个方向看得到多远。
+/** 身体的 world.machines 一次最多看 64 格、world.find 一次最多看 48 格。 */
+const MACHINES_QUERY_RADIUS = 64
+const MACHINES_QUERY_STEP = 48
 export const TABLES_RADIUS = 48
-/** 有 3×3 合成格、身体会用的方块。 */
-export const CRAFTING_TABLES = ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab']
+const TABLES_QUERY_STEP = 40
+export const MACHINES_REACH = MACHINES_QUERY_STEP + MACHINES_QUERY_RADIUS
+export const TABLES_REACH = TABLES_QUERY_STEP + TABLES_RADIUS
+/** 有 3×3 合成格、身体不给 table 时会自己去找的方块（和 mod 的 CraftTask.TABLES 是同一张表）。 */
+export const CRAFTING_TABLES = ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab', 'Natura:Natura.workbench']
 
 // GregTech 的电压等级：每刻耗电不超过这个数的配方，这一级的机器做得了
 const TIERS: readonly [string, number][] = [
@@ -64,7 +71,7 @@ function seconds(ticks: number): string {
 
 // ── 名字 ──
 
-interface Namer {
+export interface Namer {
   /** 中文名；物品表里没有就是 id/meta。 */
   name(id: string, meta: number): string
   /** "钢板 [gregtech:gt.metaitem.01/17305]" */
@@ -77,7 +84,7 @@ function idText(id: string, meta: number): string {
   return meta === ANY_META ? `${id} (any meta)` : itemKey({ id, meta })
 }
 
-function namer(items: ItemTable | undefined): Namer {
+export function namer(items: ItemTable | undefined): Namer {
   const name = (id: string, meta: number): string => items?.get(id, meta)?.name ?? idText(id, meta)
   return {
     name,
@@ -93,6 +100,16 @@ function namer(items: ItemTable | undefined): Namer {
 // GregTech 把登记在同一个“材料件”矿辞名下的物品当成同一种东西（玄钢锭有 EnderIO 的和 GregTech 的两个 id，
 // 机器配方写的是其中一个，放哪个都行；高炉出的也是其中一个）。只有这些前缀的矿辞名是这样。
 const UNIFIED_ORE = /^(ingot|ingotHot|plate|plateDouble|plateDense|dust|dustSmall|dustTiny|gem|nugget|block|stick|stickLong|bolt|screw|ring|gear|gearGt|gearGtSmall|foil|rotor|spring|springSmall|round|wireFine|lens)[A-Z]/
+const UNIFIED_PREFIXES = ['ingotHot', 'ingot', 'plateDouble', 'plateDense', 'plate', 'dustSmall', 'dustTiny', 'dust', 'gem', 'nugget', 'block', 'stickLong', 'stick', 'bolt', 'screw', 'ring', 'gearGtSmall', 'gearGt', 'gear', 'foil', 'rotor', 'springSmall', 'spring', 'round', 'wireFine', 'lens']
+
+/** 材料件矿辞名里的材料那一半（plateSteel → Steel）；不是材料件矿辞名时是 undefined。 */
+export function materialOfOre(ore: string): string | undefined {
+  const m = UNIFIED_ORE.exec(ore)
+  if (!m) return undefined
+  // 前缀取最长的那个（plateDoubleSteel 是 plateDouble + Steel，不是 plate + DoubleSteel）
+  const prefix = UNIFIED_PREFIXES.find((p) => ore.startsWith(p) && /[A-Z]/.test(ore.charAt(p.length))) ?? m[1]!
+  return ore.slice(prefix.length)
+}
 
 /** 这个物品的“材料件”矿辞名（有的话）：同名下的别的物品和它可以互换。 */
 export function unifiedOre(info: PackItemInfo | undefined): string | undefined {
@@ -107,12 +124,12 @@ function interchangeable(items: ItemTable | undefined, id: string, meta: number)
   return others.length > 0 ? { ore, others } : undefined
 }
 
-const isTool = (slot: RecipeSlot): boolean => slot.kind === 'ore' && slot.ore.startsWith('craftingTool')
+export const isTool = (slot: RecipeSlot): boolean => slot.kind === 'ore' && slot.ore.startsWith('craftingTool')
 /** 编程电路：配方里 n 为 0 的那个物品，meta 是电路号。不是这种格子时返回 undefined。 */
-const circuitOf = (slot: RecipeSlot): number | undefined => (slot.kind === 'item' && slot.id === CIRCUIT_ID && slot.n === 0 ? slot.meta : undefined)
+export const circuitOf = (slot: RecipeSlot): number | undefined => (slot.kind === 'item' && slot.id === CIRCUIT_ID && slot.n === 0 ? slot.meta : undefined)
 
 /** 一格原料叫什么。ids：带不带 id（拿去找货、取货要用）。 */
-function slotName(slot: RecipeSlot, nm: Namer, ids: boolean): string {
+export function slotName(slot: RecipeSlot, nm: Namer, ids: boolean): string {
   if (slot.kind === 'item') return ids ? nm.label(slot.id, slot.meta, slot.name) : (slot.name ?? nm.name(slot.id, slot.meta))
   // 举哪一种当例子：GregTech 自己的那种最常见（列在最前面的常常是别的 mod 里登记了同一个矿辞名的东西）
   const first = slot.any.find(([id]) => id.startsWith('gregtech:')) ?? slot.any[0]
@@ -122,12 +139,12 @@ function slotName(slot: RecipeSlot, nm: Namer, ids: boolean): string {
   return `${ids && first ? nm.label(first[0], first[1]) : (example ?? 'one of several items')}${others > 0 ? ` or ${others} similar` : ''}`
 }
 
-function slotKey(slot: RecipeSlot): string {
+export function slotKey(slot: RecipeSlot): string {
   return slot.kind === 'item' ? `${slot.id}/${slot.meta}/${slot.name ?? ''}` : slot.kind === 'ore' ? `ore:${slot.ore}` : `any:${slot.any.map((a) => a.join('/')).join(',')}`
 }
 
 /** 同一种原料占了好几格的合成一项（合成台配方里 4 格同样的东西）。 */
-function mergedSlots(slots: readonly RecipeSlot[]): RecipeSlot[] {
+export function mergedSlots(slots: readonly RecipeSlot[]): RecipeSlot[] {
   const merged = new Map<string, RecipeSlot>()
   for (const s of slots) {
     const key = `${slotKey(s)}|${s.n === 0 ? 0 : 1}`
@@ -139,7 +156,7 @@ function mergedSlots(slots: readonly RecipeSlot[]): RecipeSlot[] {
 }
 
 /** 两条配方是不是一模一样（导出的配方册里同一条常常重复好几遍）。 */
-function signature(r: Recipe): string {
+export function signature(r: Recipe): string {
   return JSON.stringify([r.handler.key, r.in.map((s) => [slotKey(s), s.n, s.g ?? -1]), r.out.map((o) => [o.id, o.meta, o.n, o.chance ?? 1]), r.fin.map((f) => [f.f, f.mb]), r.fout.map((f) => [f.f, f.mb]), r.eut ?? 0, r.ticks ?? 0, r.special ?? 0])
 }
 
@@ -195,9 +212,11 @@ export function carried(inventory: readonly InventoryItem[], items: ItemTable | 
 // ── 附近有什么机器、工作台 ──
 
 export interface Surroundings {
+  /** 由近到远（dist 是到它站的地方的距离）。 */
   machines: MachineInfo[]
-  /** 范围里一共多少台（machines 只是最近的那些）。 */
+  /** 范围里一共多少台（machines 只是每次查询里最近的那些）。 */
   machinesTotal: number
+  /** 合成台，由近到远。 */
   tables: FindMatch[]
   /** 没看成（没连上游戏、bot 不在线）时的原因。 */
   error?: string
@@ -229,16 +248,57 @@ export class SurroundingsCache {
   }
 }
 
+export interface Spot {
+  x: number
+  y: number
+  z: number
+  dim?: number
+}
+
+/** 它现在站在哪。不在线、没有位置时是 undefined。 */
+export async function whereItStands(ctx: ToolContext): Promise<Spot | undefined> {
+  const status = await ctx.bridge.botStatus(ctx.botName)
+  const at = status.block ?? status.pos
+  if (status.online === false || !at) return undefined
+  return { x: Math.floor(at.x), y: Math.floor(at.y), z: Math.floor(at.z), ...(status.dim !== undefined ? { dim: status.dim } : {}) }
+}
+
+/** 以 me 为中心、在水平面上排成 n×n 的一格格查询点，相邻两个点隔 step（n 为 2 时是往四个斜方向各错开 step）。 */
+export function spread(me: Spot, step: number, n: 2 | 3 = 2): Spot[] {
+  const offsets = n === 2 ? [-step, step] : [-step, 0, step]
+  return offsets.flatMap((dx) => offsets.map((dz) => ({ ...me, x: me.x + dx, z: me.z + dz })))
+}
+
+const distance = (a: Spot, b: { x: number; y: number; z: number }): number => Math.round(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 10) / 10
+
+/** 它周围（每个方向 TABLES_REACH 格以内）的合成台，由近到远。 */
+export async function findTables(ctx: ToolContext, me: Spot, limit = 4): Promise<FindMatch[]> {
+  const found = await Promise.all(spread(me, TABLES_QUERY_STEP).map((at) => ctx.bridge.worldFind(at, { blocks: CRAFTING_TABLES, radius: TABLES_RADIUS, limit })))
+  const tables = new Map<string, FindMatch>()
+  for (const t of found.flatMap((f) => f.matches ?? [])) tables.set(`${t.x},${t.y},${t.z}`, { ...t, dist: distance(me, t) })
+  return [...tables.values()].sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0))
+}
+
 export async function lookAround(ctx: ToolContext): Promise<Surroundings> {
   const cached = ctx.surroundings?.get()
   if (cached) return cached
   let around: Surroundings
   try {
-    const [machines, tables] = await Promise.all([
-      ctx.bridge.worldMachines({ bot: ctx.botName }, { radius: MACHINES_RADIUS, limit: 60 }),
-      ctx.bridge.worldFind({ bot: ctx.botName }, { blocks: CRAFTING_TABLES, radius: TABLES_RADIUS, limit: 4 }),
+    const me = await whereItStands(ctx)
+    if (!me) return { machines: [], machinesTotal: 0, tables: [], error: `offline: ${ctx.botName} is not in the game world` }
+    const [sets, tables] = await Promise.all([
+      Promise.all(spread(me, MACHINES_QUERY_STEP).map((at) => ctx.bridge.worldMachines(at, { radius: MACHINES_QUERY_RADIUS, limit: 60 }))),
+      findTables(ctx, me),
     ])
-    around = { machines: machines.machines ?? [], machinesTotal: Math.max(machines.total ?? 0, machines.machines?.length ?? 0), tables: tables.matches ?? [] }
+    const machines = new Map<string, MachineInfo>()
+    let missed = 0
+    for (const set of sets) {
+      const got = set.machines ?? []
+      missed += Math.max(0, (set.total ?? 0) - got.length)
+      for (const m of got) machines.set(`${m.x},${m.y},${m.z}`, { ...m, dist: distance(me, m) })
+    }
+    const sorted = [...machines.values()].sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0))
+    around = { machines: sorted, machinesTotal: sorted.length + missed, tables }
     // 没看成的不记：下次再试
     ctx.surroundings?.set(around)
   } catch (e) {
@@ -248,17 +308,17 @@ export async function lookAround(ctx: ToolContext): Promise<Surroundings> {
   return around
 }
 
-function runsWay(m: MachineInfo, h: RecipeHandler): boolean {
+export function runsWay(m: MachineInfo, h: RecipeHandler): boolean {
   return m.recipeKey === h.key || (m.id !== undefined && h.machines.some((x) => x.id === m.id && x.meta === m.meta))
 }
 
-function machineText(m: MachineInfo): string {
+export function machineText(m: MachineInfo): string {
   const tier = m.tier ? ` ${m.tier}` : ''
   return `${nameOf(m) ?? 'machine'} at ${formatPos(m)}${tier}${m.active === true ? ', busy right now' : ''}`
 }
 
 /** 这台机器现在做不了这条配方的原因；空的就是做得了。 */
-function machineProblems(m: MachineInfo, recipe: Recipe | undefined): string[] {
+export function machineProblems(m: MachineInfo, recipe: Recipe | undefined): string[] {
   const problems: string[] = []
   if (m.unreadable === true) return ['its state cannot be read']
   if (m.kind === 'multiblock' && m.formed === false) problems.push(`its structure is not complete${m.idleReason ? ` (${m.idleReason})` : ''}`)
@@ -286,7 +346,7 @@ export function isHandCraft(recipe: Recipe): boolean {
 }
 
 /** 这种方式是哪一类：GregTech 机器、手工合成，还是它自己操作不了的（别的 mod 的机器、熔炉……）。 */
-function wayKind(h: RecipeHandler): 'machine' | 'craft' | 'other' {
+export function wayKind(h: RecipeHandler): 'machine' | 'craft' | 'other' {
   return h.grid ? 'craft' : h.gregtech ? 'machine' : 'other'
 }
 
@@ -308,13 +368,15 @@ function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surr
     if (craftable.some(fitsPocketGrid)) return { rank: tools ? 1 : 0, text: ['CAN CRAFT NOW in your own 2x2 grid (no table needed)', hand].filter(Boolean).join('; ') }
     if (around.error) return { rank: tools ? 1 : 0, text: ['by hand at a crafting table', hand].filter(Boolean).join('; ') }
     const table = around.tables[0]
-    if (!table) return { rank: 3, text: [`needs a crafting table: none within ${TABLES_RADIUS} blocks`, hand].filter(Boolean).join('; ') }
-    return { rank: tools ? 1 : 0, text: [`CAN CRAFT NOW (crafting table at ${formatPos(table)})`, hand].filter(Boolean).join('; ') }
+    if (!table) return { rank: 3, text: [`needs a crafting table: none within ${TABLES_REACH} blocks`, hand].filter(Boolean).join('; ') }
+    // 不给坐标：合成时由 craft_item 找离它那时最近的一个（它查做法和动手合成常常不在同一个地方）
+    const far = typeof table.dist === 'number' ? `, the nearest ${Math.max(1, Math.round(table.dist))} block(s) from here` : ''
+    return { rank: tools ? 1 : 0, text: [`CAN CRAFT NOW (needs a crafting table${far}; craft_item walks to the nearest one by itself)`, hand].filter(Boolean).join('; ') }
   }
   // 看不了附近有什么机器时：机器做法照样排在手工工具配方前面
   if (around.error) return { rank: 0, text: 'machine recipe' }
   const candidates = around.machines.filter((m) => runsWay(m, h))
-  if (candidates.length === 0) return { rank: 3, text: `no such machine within ${MACHINES_RADIUS} blocks` }
+  if (candidates.length === 0) return { rank: 3, text: `no such machine within ${MACHINES_REACH} blocks` }
   // 拿最省电的那条配方来比：它都做不了，别的更做不了
   const easiest = [...recipes].sort((a, b) => (a.eut ?? 0) - (b.eut ?? 0) || (a.special ?? 0) - (b.special ?? 0))[0]
   const judged = candidates.map((m) => ({ m, problems: machineProblems(m, easiest) }))
@@ -342,7 +404,7 @@ function outputText(recipe: Recipe, nm: Namer): string {
 }
 
 /** 这条配方出几个要查的那个物品（有概率的按期望算）。 */
-function yieldOf(recipe: Recipe, target: { id: string; meta: number; same?: readonly { id: string; meta: number }[] }): number {
+export function yieldOf(recipe: Recipe, target: { id: string; meta: number; same?: readonly { id: string; meta: number }[] }): number {
   const is = (o: { id: string; meta: number }): boolean => (o.id === target.id && o.meta === target.meta) || (target.same ?? []).some((t) => t.id === o.id && t.meta === o.meta)
   return recipe.out.reduce((n, o) => (is(o) ? n + o.n * (o.chance ?? 1) : n), 0)
 }
@@ -560,7 +622,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     .sort((a, b) => a.avail.rank - b.avail.rank || machineFirst(a.handler) - machineFirst(b.handler) || a.order - b.order)
   const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}.${twinNote} Ways you can use now come first:`]
   if (around.error) lines.push(`(Which machines and crafting tables are around you could not be checked: ${around.error}.)`)
-  else if (around.machinesTotal > around.machines.length) lines.push(`(Only the nearest ${around.machines.length} of ${around.machinesTotal} machines within ${MACHINES_RADIUS} blocks were checked.)`)
+  else if (around.machinesTotal > around.machines.length) lines.push(`(Only ${around.machines.length} of about ${around.machinesTotal} machines within ${MACHINES_REACH} blocks were checked.)`)
   judged.slice(0, WAYS_SHOWN).forEach((w, n) => {
     const count = w.recipes.length
     lines.push(`${n + 1}. ${w.handler.name}${wayLabel(w.handler, ways) === w.handler.name ? '' : ` (way "${w.handler.key}")`} — ${count} recipe(s); ${w.avail.text}`)
@@ -579,7 +641,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   if (judged.length > WAYS_SHOWN) {
     lines.push(`${judged.length - WAYS_SHOWN} more way(s) are not shown: ${judged.slice(WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}" (${w.recipes.length})`).join(', ')}. Ask for one with "way".`)
   }
-  lines.push('"CAN … NOW" is about machines and tables only: check the ingredients with find_in_storage. Use a recipe by its # number: craft_item or process_items.')
+  lines.push('"CAN … NOW" is about machines and tables only, not about the ingredients: plan_item works out the whole chain (what to fetch, what to make first, what is missing). Use a recipe by its # number: craft_item or process_items.')
   return { content: lines.join('\n'), keepWhole: true }
 }
 

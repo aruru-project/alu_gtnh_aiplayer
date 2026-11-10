@@ -115,6 +115,11 @@ export interface MockMachine {
   active?: boolean
   /** 被人关掉了。 */
   switchedOff?: boolean
+  /**
+   * world.machines 里这台机器另外带的字段，原样给出去。多方块机器的主机靠它：
+   * kind:"multiblock"、formed、heat、idleReason、inputBuses / outputBuses / inputHatches（总线和仓，可以带 attached）。
+   */
+  more?: Json
 }
 
 /** 假任务书里的一个任务。tasks / rewards 的形状就是协议里 quest.get 的（不带 complete，那是按玩家算的）。 */
@@ -2152,6 +2157,7 @@ function describeMachine(m: MockMachine): Json {
     ...(m.switchedOff ? { switchedOff: true } : {}),
     ...(m.id !== undefined ? { id: m.id, meta: m.meta ?? 0 } : {}),
     ...(m.recipeKey !== undefined ? { recipeKey: m.recipeKey } : {}),
+    ...(m.more ?? {}),
   }
 }
 

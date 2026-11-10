@@ -360,6 +360,8 @@ tools/make-packdata.py textures \
 
 **同一种东西两个 id。** GregTech 把登记在同一个“材料件”矿辞名下的物品当成一种（`ingotDarkSteel` 下有 EnderIO 的和 GregTech 的两个玄钢锭；机器配方点名的、高炉产出的常常是 EnderIO 那个）。只对 `ingot`、`plate`、`dust`、`gem`、`stick`、`bolt`、`screw`、`ring`、`gear`、`foil`、`rotor`、`spring`、`round`、`wireFine`、`lens`、`nugget`、`block` 这些前缀的矿辞名这样办（`UNIFIED_ORE`）：查其中一个的做法时把做另一个的配方也算上并说明；机器配方里点名的那格标 `(or any 矿辞名)`；`process_items` 身上是哪种就放哪种。手工合成里点名某个 id 的格子不这样办。
 
+**做法规划**（`plan_item`，`brain/src/tools/planner.ts`）拿同一本配方册把整棵树走完：每样东西先看库存，不够的往下展开，按上面那套“现在做得了”的比对挑做法，数量沿树算，最后排成取料和加工的步骤。它另外不走两类配方：页的 `key` 里带 `recycling` 的（回收：把成品拆回材料），和原料里有它自己上游的（绕圈子）。怎么挑、到哪为止见 `brain/README.md` 的“做法规划”。
+
 **交给身体。**
 
 - `craft_item` 把配方变成协议里 `craft` 任务的 `grid` 写法：有序合成每格放在它的 `g`，无序合成从头往后摆；矿辞名的格子原样写成 `{ore}` 交给身体认；`gives` 是配方的第一个产物，`rounds` 按要的个数除以每轮出的个数向上取整。

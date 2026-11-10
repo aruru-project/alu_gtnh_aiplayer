@@ -126,18 +126,22 @@ describe('find_recipes：查做法', () => {
       '1. 卷板机 — 1 recipe(s); CAN RUN NOW on 基础卷板机 at (16,64,-4) LV',
       '   #0: 1× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs programmed circuit 1 → 1× 钢板 — LV (24 EU/t), 2.8 s',
       // 手工锤：2 锭出 1 板；有机器做法时提醒别用它
-      '2. 有序合成 — 1 recipe(s); CAN CRAFT NOW (crafting table at (8,64,-4)); hand-tool recipe: use it only when no machine can make this',
+      // 要工作台的只说附近有、离多远，不给坐标（合成时由 craft_item 找离它那时最近的）
+      '2. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); hand-tool recipe: use it only when no machine can make this',
       '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (worn, not used up) → 1× 钢板 — needs a crafting table (3x3)',
       // 锻造锤：3 锭出 2 板，每个板 1.5 锭；附近那台没电
       '3. 锻造锤 — 1 recipe(s); machine here but not usable now: 基础锻造锤 at (18,64,-4) LV: NO POWER',
       '   #2: 3× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel) → 2× 钢板 (per 钢板: 1.5 钢锭) — LV (16 EU/t), 2.8 s',
-      '4. 合金炉 — 1 recipe(s); no such machine within 64 blocks',
+      '4. 合金炉 — 1 recipe(s); no such machine within 112 blocks',
       '   #4: 2× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs 模具（板） [gregtech:gt.metaitem.01/32301] (stays in the machine, not used up) → 1× 钢板 — LV (30 EU/t), 5.6 s',
-      '"CAN … NOW" is about machines and tables only: check the ingredients with find_in_storage. Use a recipe by its # number: craft_item or process_items.',
+      '"CAN … NOW" is about machines and tables only, not about the ingredients: plan_item works out the whole chain (what to fetch, what to make first, what is missing). Use a recipe by its # number: craft_item or process_items.',
     ])
-    // 看了一眼附近的机器和工作台
-    assert.deepEqual(s.game.callsOf('world.machines'), [{ bot: 'Alu', radius: 64, limit: 60 }])
-    assert.deepEqual(s.game.callsOf('world.find'), [{ bot: 'Alu', blocks: ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab'], radius: 48, limit: 4 }])
+    // 看了一眼基地里的机器和工作台。基地常常比身体一次查询的范围大（仓库在这头，高炉在那头）：
+    // 以它站的地方 (10,64,-4) 为中心，往四个斜方向各错开一点各查一次，合起来每个方向看得到一百来格
+    const around = (step: number) => [[-step, -step], [-step, step], [step, -step], [step, step]].map(([dx, dz]) => ({ x: 10 + dx!, y: 64, z: -4 + dz!, dim: 0 }))
+    assert.deepEqual(s.game.callsOf('world.machines'), around(48).map((at) => ({ ...at, radius: 64, limit: 60 })))
+    // 身体自己会去找的四种合成台都认
+    assert.deepEqual(s.game.callsOf('world.find'), around(40).map((at) => ({ ...at, blocks: ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab', 'Natura:Natura.workbench'], radius: 48, limit: 4 })))
     // 板材切割机那条是 fake 的
     assert.ok(!res.content.includes('板材切割机') && !res.content.includes('#5'))
   })
@@ -174,20 +178,20 @@ describe('find_recipes：查做法', () => {
     assert.equal(await judge({ heat: 1500 }), '1. 工业高炉 — 2 recipe(s); machine here but not usable now: 工业高炉 at (-5,64,9) HV: the recipe needs 1800 K, its coils reach 1500 K')
     // 只凭配方页的 recipeKey 也认得出这台机器跑这类配方（id/meta 不在页的机器表里）
     assert.equal(await judge({ id: 'gregtech:gt.blockmachines', meta: 9999 }), '1. 工业高炉 — 2 recipe(s); CAN RUN NOW on 工业高炉 at (-5,64,9) HV')
-    assert.equal(await judge({ recipeKey: 'gt.recipe.other', meta: 9999 }), '1. 工业高炉 — 2 recipe(s); no such machine within 64 blocks')
+    assert.equal(await judge({ recipeKey: 'gt.recipe.other', meta: 9999 }), '1. 工业高炉 — 2 recipe(s); no such machine within 112 blocks')
   })
 
   it('手工合成：附近没有工作台时说要工作台，摆得进 2×2 的不用；它操作不了的方式（熔炉）照实说；没连上游戏时照样给配方', async (t) => {
     const s = setup(t)
     s.game.handlers['world.find'] = () => ({ matches: [], total: 0 })
-    assert.equal((await s.run('find_recipes', { id: 'Backpack:backpack' })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 48 blocks')
+    assert.equal((await s.run('find_recipes', { id: 'Backpack:backpack' })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks')
     const pocket = (await s.run('find_recipes', { id: 'demo:plateOnAStick' })).content.split('\n')
     assert.equal(pocket[1], '1. 无序合成 — 1 recipe(s); CAN CRAFT NOW in your own 2x2 grid (no table needed)')
     // 一次出 2 个：每个耗半份料
     assert.equal(pocket[2], '   #10: 1× 钢板 [gregtech:gt.metaitem.01/17305] + 1× any stickWood (e.g. 木棍 [minecraft:stick]) → 2× 钢板标牌 (per 钢板标牌: 0.5 钢板 + 0.5 any stickWood (e.g. 木棍)) — fits your 2x2 grid')
     assert.equal((await s.run('find_recipes', { id: 'minecraft:iron_ingot' })).content.split('\n')[1], '1. 烧制 — 1 recipe(s); you cannot run this yourself (not hand crafting, not a GregTech machine you can use)')
     // 只有工具配方一条路时不说“有机器就别用”
-    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 48 blocks')
+    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks')
 
     s.game.connected = false
     const offline = (await s.run('find_recipes', PLATE)).content.split('\n')
@@ -212,7 +216,7 @@ describe('find_recipes：查做法', () => {
     const s = setup(t, { inventory: [{ id: 'demo:ingot', meta: 3, count: 9 }, { id: 'minecraft:stick', count: 2 }] })
     const summary = (await s.run('find_recipes', HAMMER)).content.split('\n')
     assert.equal(summary[0], '锤 [gregtech:gt.metatool.01/12] can be made 1 way(s), 12 recipe(s) in all. Ways you can use now come first:')
-    assert.equal(summary[1], '1. 有序合成 — 12 recipe(s); CAN CRAFT NOW (crafting table at (8,64,-4))')
+    assert.equal(summary[1], '1. 有序合成 — 12 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself)')
     assert.match(summary[2]!, /^ {3}#12: 6× 铜锭 \[demo:ingot\] \+ 1× any stickWood \(e\.g\. 木棍 \[minecraft:stick\]\) → 1× 锤 — needs a crafting table \(3x3\)$/)
     assert.equal(summary[4], '   … 10 more recipe(s) of this way are not shown (often one per material). See them with way "有序合成", narrowed with "contains" (a word of an ingredient), page by page.')
 
@@ -283,6 +287,8 @@ describe('find_uses：查用途', () => {
 describe('craft_item：照配方册里的配方手工合成', () => {
   it('有序合成：每样原料摆在配方册说的那一格，矿辞名的格子交给身体认（工具也是）；要几个就做几轮', async (t) => {
     const s = setup(t)
+    // 它查做法时旁边的工作台在 (8,64,-4)；后来走到别处去取料，动手合成时最近的是另一个
+    s.game.handlers['world.find'] = () => ({ matches: [{ x: -503, y: 69, z: 105, id: 'TConstruct:CraftingStation', meta: 0, dist: 2 }], total: 2 })
     const res = await s.run('craft_item', { recipe: 9 })
     assert.match(res.content, /^Task t1 \(craft\) started\./)
     const shaft = { id: 'IC2:itemRecipePart', meta: 12 }
@@ -293,7 +299,17 @@ describe('craft_item：照配方册里的配方手工合成', () => {
       grid: [shaft, screw, shaft, screw, { id: 'gregtech:gt.metaitem.02', meta: 31305 }, screw, shaft, { ore: 'craftingToolScrewdriver' }, shaft],
       gives: { id: 'adventurebackpack:backpackComponent', meta: 6 },
       rounds: 1,
+      // 没指定工作台：用的是动手这一刻离它最近的那个（身体认的四种都找），不是早先查做法时看到的
+      table: { x: -503, y: 69, z: 105 },
     })
+    assert.deepEqual(s.game.callsOf('world.find').at(-1), { x: 50, y: 64, z: 36, dim: 0, blocks: ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab', 'Natura:Natura.workbench'], radius: 48, limit: 1 })
+    // 排队的不知道轮到时它在哪：不替它定，留给身体到时自己找最近的
+    await s.run('craft_item', { recipe: 9, queue: true })
+    assert.equal('table' in s.lastTask(), false)
+    // 附近找不到工作台：照样开工，由身体去找（找不到它会说）
+    s.game.handlers['world.find'] = () => ({ matches: [], total: 0 })
+    await s.run('craft_item', { recipe: 9 })
+    assert.equal('table' in s.lastTask(), false)
     // 钢板的手工配方只占左边一列；要 3 个就是 3 轮；指定工作台
     await s.run('craft_item', { recipe: 3, count: 3, table: { x: 8, y: 64, z: -4 }, queue: true })
     assert.deepEqual(s.lastTask(), {

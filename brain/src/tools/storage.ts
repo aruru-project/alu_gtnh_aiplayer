@@ -8,6 +8,8 @@ import { attachedText, formatContainer, formatPos, itemKey, nameOf } from './for
 import { int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
+import { AT, lookFrom } from './where.ts'
+import type { At, LookFrom } from './where.ts'
 
 export const CONTAINERS_MAX_RADIUS = 32
 export const CONTAINERS_PER_PAGE = 20
@@ -23,26 +25,28 @@ function pages(total: number, size: number): number {
 
 export const listContainers: Tool = {
   name: 'list_containers',
-  description: `Containers around you, nearest first, a page at a time: position, name, kind (chest, [drawers], [drawer controller], [machine]), slots used and contents merged per item. Drawer counts are what is really stored. "AUTOMATED" marks a container with a hopper or pipe attached: it is part of your owner's automation, so ask before putting things in or taking them out.`,
+  description: `Containers around you, or around a place you give ("at"), nearest first, a page at a time: position, name, kind (chest, [drawers], [drawer controller], [machine]), slots used and contents merged per item. Drawer counts are what is really stored. "AUTOMATED" marks a container with a hopper or pipe attached: it is part of your owner's automation, so ask before putting things in or taking them out.`,
   inputSchema: obj({
     radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }),
     page: int(`Page (${CONTAINERS_PER_PAGE} containers per page, default 1).`, { min: 1 }),
+    at: AT,
   }),
-  async run(ctx, input: { radius?: number; page?: number }): Promise<ToolResult | string> {
+  async run(ctx, input: { radius?: number; page?: number; at?: At }): Promise<ToolResult | string> {
     const radius = input.radius ?? 16
     const page = input.page ?? 1
     const offset = (page - 1) * CONTAINERS_PER_PAGE
-    const res = await ctx.bridge.worldContainers({ bot: ctx.botName }, { radius, offset, limit: CONTAINERS_PER_PAGE })
+    const from = await lookFrom(ctx, input.at)
+    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: CONTAINERS_PER_PAGE })
     // 老的身体不认 offset / limit，一次全给：自己切一页
     const all = res.containers ?? []
     const paged = res.offset === undefined && all.length > CONTAINERS_PER_PAGE ? all.slice(offset, offset + CONTAINERS_PER_PAGE) : all
     // 一共多少个以身体说的为准（它没说时就是给回来的这些）
     const total = res.total ?? (res.offset === undefined ? all.length : offset + all.length)
-    if (total === 0) return `No containers within ${radius} blocks of you.`
+    if (total === 0) return `No containers within ${radius} blocks of ${from.of}.${from.hint}`
     if (paged.length === 0) return fail(`There is no page ${page}: ${total} container(s) within ${radius} blocks, ${pages(total, CONTAINERS_PER_PAGE)} page(s).`)
     const lines = paged.map((c) => `- ${formatContainer(c, 30)}`)
     const range = total > paged.length ? `containers ${offset + 1}–${offset + paged.length} of ${total} (page ${page} of ${pages(total, CONTAINERS_PER_PAGE)}), nearest first` : `${total} container(s)`
-    return { content: `Within ${radius} blocks of you: ${range}.\n${lines.join('\n')}`, data: { total, offset, containers: paged }, keepWhole: true }
+    return { content: `Within ${radius} blocks of ${from.of}: ${range}.\n${lines.join('\n')}`, data: { total, offset, containers: paged }, keepWhole: true }
   },
 }
 
@@ -96,11 +100,11 @@ interface StockLine {
 }
 
 /** 把范围里的容器一页一页全读回来（到上限为止）。 */
-async function allContainers(ctx: ToolContext, radius: number): Promise<{ containers: ContainerInfo[]; total: number }> {
+async function allContainers(ctx: ToolContext, from: LookFrom, radius: number): Promise<{ containers: ContainerInfo[]; total: number }> {
   const containers: ContainerInfo[] = []
   let total = 0
   for (let offset = 0; offset < STOCK_MAX_CONTAINERS; ) {
-    const res = await ctx.bridge.worldContainers({ bot: ctx.botName }, { radius, offset, limit: SERVER_PAGE })
+    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: SERVER_PAGE })
     const got = res.containers ?? []
     total = res.total ?? offset + got.length
     containers.push(...got)
@@ -113,17 +117,19 @@ async function allContainers(ctx: ToolContext, radius: number): Promise<{ contai
 
 export const listStock: Tool = {
   name: 'list_stock',
-  description: `Everything stored around you as one table: each item with its total and where most of it is, summed over all chests and drawers within the radius, most first. Filter with "contains" (a word of the name or id) and "below" (items you have fewer than that of). Machines and drawer controllers are not counted; what sits in automated containers is marked.`,
+  description: `Everything stored around you, or around a place you give ("at"), as one table: each item with its total and where most of it is, summed over all chests and drawers within the radius, most first. Filter with "contains" (a word of the name or id) and "below" (items you have fewer than that of). Machines and drawer controllers are not counted; what sits in automated containers is marked.`,
   inputSchema: obj({
     radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }),
     contains: str('Only items whose name or id contains this.', { maxLength: 60 }),
     below: int('Only items whose total is below this.', { min: 1 }),
     page: int(`Page (${STOCK_LINES_PER_PAGE} items per page, default 1).`, { min: 1 }),
+    at: AT,
   }),
-  async run(ctx, i: { radius?: number; contains?: string; below?: number; page?: number }): Promise<ToolResult | string> {
+  async run(ctx, i: { radius?: number; contains?: string; below?: number; page?: number; at?: At }): Promise<ToolResult | string> {
     const radius = i.radius ?? 16
-    const { containers, total } = await allContainers(ctx, radius)
-    if (total === 0) return `No containers within ${radius} blocks of you.`
+    const from = await lookFrom(ctx, i.at)
+    const { containers, total } = await allContainers(ctx, from, radius)
+    if (total === 0) return `No containers within ${radius} blocks of ${from.of}.${from.hint}`
     const storage = containers.filter((c) => c.kind !== 'machine' && c.kind !== 'drawer_controller')
     const merged = new Map<string, StockLine>()
     let truncated = 0
@@ -148,7 +154,7 @@ export const listStock: Tool = {
     if (i.below !== undefined) list = list.filter((l) => l.count < i.below!)
     const skipped = containers.length - storage.length
     const notes = [
-      `Looked into ${storage.length} chest(s) and drawer(s) within ${radius} blocks${skipped > 0 ? ` (${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
+      `Looked into ${storage.length} chest(s) and drawer(s) within ${radius} blocks of ${from.of}${skipped > 0 ? ` (${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
       ...(total > containers.length ? [`Only the nearest ${containers.length} of ${total} containers were read: the totals are not complete. Use a smaller radius.`] : []),
       ...(truncated > 0 ? [`${truncated} container(s) hold more kinds than the server lists (60 each): their rarer items are missing here. Use find_in_storage for a particular item.`] : []),
     ]

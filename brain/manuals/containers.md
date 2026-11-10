@@ -7,6 +7,7 @@
 - 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。
 
 # 看仓库
+- **主人说的是某个地方的东西，就以那个地方为中心看，不要以自己为中心。**下面这几个工具（还有 look_around、find_blocks、find_machines）默认看的是你身边；给 at（一个坐标）就改成看那个地方的周围。“我这边的箱子”：先 get_player_position 找到主人，at 给他的位置。“抽屉管理器旁边那个箱子”：at 给抽屉管理器的坐标。你站在几十格外时，以自己为中心什么也看不到，这不等于没有。
 - 只想知道某几样东西放在哪：find_in_storage，可以按 id 或矿辞名一次查好几样。
 - 想知道这片仓库一共有什么：list_stock，把范围里所有箱子和抽屉的东西合成一张总表，多的在前；contains 按名字筛，below 只看少于某个数的。
 - 一个个容器看：list_containers，由近到远一页 20 个。
