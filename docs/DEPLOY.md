@@ -41,7 +41,9 @@ journalctl --user -u gtnh.service -f | grep -m1 'Bridge listening'
 
 看到 `Bridge listening on 127.0.0.1:25590` 就是装好了。首次启动会生成：
 
-- `instances/new-server/config/aiplayer/aiplayer.json`：配置（端口、允许的指令、天然方块和垫脚方块清单、默认是否无敌）。
+- `instances/new-server/config/aiplayer/aiplayer.json`：配置（端口、允许的指令、天然方块和垫脚方块清单、默认是否无敌、`newBotCommands`）。
+  想让每个 bot 都用同一个皮肤，在里面写 `"newBotCommands": ["skin {name} set oyaxira"]`，重启后对新建的 bot 生效。
+- `instances/new-server/config/aiplayer/schematics/`：图纸目录，把 `.schematic` 放进去即可，不用重启。
 - `instances/new-server/config/aiplayer/bridge-token.txt`：bridge 口令，只有属主可读。
 
 bridge 只监听本机，不需要开端口。
@@ -68,7 +70,7 @@ systemctl --user enable --now aiplayer-brain
 journalctl --user -u aiplayer-brain | grep 口令      # 首次启动打印的面板口令
 ```
 
-面板在 `http://127.0.0.1:8765/`。从别的电脑看，用 SSH 转发：`ssh -L 8765:127.0.0.1:8765 这台机器`。
+面板在 `http://这台机器的地址:28765/`（服务模板里 `AIPLAYER_PANEL_HOST=0.0.0.0`，局域网可访问，要口令）。只想本机访问就把它改成 `127.0.0.1`，再用 SSH 转发：`ssh -L 28765:127.0.0.1:28765 这台机器`。
 
 ## 三、第一次上线
 
@@ -76,8 +78,8 @@ journalctl --user -u aiplayer-brain | grep 口令      # 首次启动打印的�
 2. 面板“AI 玩家”页：起名字，填主人名单（你们的游戏名），点“上线”。它出现在出生点。
    想让它直接出现在你身边：你在游戏里执行 `/aiplayer spawn 名字`（需要管理员权限）。
 3. 给它工具：把匠魂镐、铲、斧扔到它脚边。
-4. 基地在已认领的区块里的话，把它加进队伍：你执行 `/team status 名字 invited`，然后在面板对话框里让它加入（它会执行 `team join 队伍名`）。
-5. 皮肤：控制台或管理员执行 `skin 名字 set 某个正版用户名`。
+4. 基地在已认领的区块里的话，你执行 `/team status 名字 ally` 把它设成盟友。没设的话它在领地里挖、放、开箱子都会被拒绝，并如实告诉你“被拒绝”。
+5. 皮肤：配置了 `newBotCommands` 的话自动设好；否则控制台或管理员执行 `skin 名字 set 某个正版用户名`。
 6. 在游戏里叫它的名字说话。
 
 ## 更新

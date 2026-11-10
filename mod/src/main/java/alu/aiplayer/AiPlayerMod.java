@@ -10,6 +10,7 @@ import org.apache.logging.log4j.Logger;
 import alu.aiplayer.bot.BotManager;
 import alu.aiplayer.bridge.BridgeApi;
 import alu.aiplayer.bridge.BridgeServer;
+import alu.aiplayer.world.BlueprintStore;
 import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
@@ -39,6 +40,7 @@ public class AiPlayerMod {
     private BridgeServer bridge;
     private BotManager bots;
     private ServerEvents events;
+    private BlueprintStore blueprints;
 
     public AiPlayerMod() {
         instance = this;
@@ -52,10 +54,15 @@ public class AiPlayerMod {
         return instance.config;
     }
 
+    public static BlueprintStore blueprints() {
+        return instance.blueprints;
+    }
+
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
         configDir = new File(event.getModConfigurationDirectory(), "aiplayer");
         config = ModConfig.load(new File(configDir, "aiplayer.json"));
+        blueprints = new BlueprintStore(new File(configDir, "schematics"));
     }
 
     @Mod.EventHandler

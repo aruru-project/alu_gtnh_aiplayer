@@ -42,6 +42,8 @@ public final class TaskFactory {
                 return new CollectTask(params);
             case "give":
                 return new GiveTask(params);
+            case "blueprint":
+                return new BlueprintTask(params);
             default:
                 throw RpcException.badRequest("unknown task type: " + type);
         }

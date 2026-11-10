@@ -62,7 +62,7 @@
 | `world.block` | `{dim?,x,y,z}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory}`；区块没加载时只有 `{loaded:false}` |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
-| `world.containers` | `{radius?(≤32)}` + 中心 | `{containers:[{x,y,z,id,name,slots,usedSlots,items:[Item…]}], total}`，由近到远最多 40 个；items 已按物品合并，每个箱子最多列 60 种 |
+| `world.containers` | `{radius?(≤32)}` + 中心 | `{containers:[{x,y,z,id,name,slots,usedSlots,items:[Item…],kind?}], total}`，由近到远最多 40 个；items 已按物品合并，每个箱子最多列 60 种。抽屉（Storage Drawers）带 `kind:"drawers"`，`count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数 |
 | `world.entities` | `{radius?(≤64)}` + 中心 | `{entities:[{type:"player"\|"mob"\|"animal"\|"item"\|"other",name,pos,dist,item?}], total}` |
 
 “中心”是 `{x,y,z}`，或者 `{bot}`（用该 bot 站的位置）。
@@ -137,6 +137,50 @@
 **服务器重启**：重启前在线的 bot 在服务器启动约 2 秒后自动上线，没做完的任务从头重新开始。
 区域任务因此只是接着做；但 `withdraw` 会再取一份，`haul` 重启时拿在手上的那一趟货会留在 bot 身上不再送达。
 
+### 图纸
+
+图纸是 Schematica 的 `.schematic` 文件，放在服务器的 `config/aiplayer/schematics/` 里（随时可以放进去，不用重启），名字就是去掉后缀的文件名。
+图纸里的方块按文件自带的注册名对应，所以在别的存档上画的图纸也能用。摆放时不旋转、不镜像，`x y z` 是图纸最小角落在世界里的位置（和 Schematica 里显示的原点一致）。
+
+| 方法 | 参数 | 结果 |
+|---|---|---|
+| `blueprint.list` | – | `{blueprints:[{name, size:{x,y,z}, blocks} \| {name, error}], folder}` |
+| `blueprint.check` | `{name, x,y,z, bot?\|dim?, layers?=true}` + 下面的范围和方块选项 | 把世界和图纸逐格对比，见下。只读，不动任何东西 |
+| `blueprint.put` | `{name, data}`，`data` 是文件内容的 base64，最大 2 MiB | `{name, size, blocks}`。同名覆盖；不是能用的图纸时 `bad_request` 并说明原因 |
+| `blueprint.remove` | `{name}` | `{removed:bool}` |
+
+`blueprint.check` 和 `blueprint` 任务共用的选项：
+
+- `x1,x2` / `y1,y2` / `z1,z2`：只处理图纸的一部分（世界坐标，成对给）。大图纸靠它分块，楼层靠 `y1,y2` 分层。
+- `only:[方块id]`：只管图纸里的这几种方块，这时图纸里空着的格子不处理。`skip:[方块id]`：图纸里的这几种不管。
+- `clear:[方块id]`：挡路时允许挖掉的方块。两个词代表一类：`"natural"` 是配置的天然方块（泥土、草方块、沙子、沙砾、雪、树叶……），`"plants"` 是所有长出来的东西（花、灌木、树叶、没有内容的作物）。不给 `clear` 就什么都不挖。
+
+`blueprint.check` 的结果：
+
+```jsonc
+{
+  "name":"02_Workshop_v3","origin":{"x":-592,"y":63,"z":80},
+  "box":{"x1":-592,"y1":63,"z1":80,"x2":-561,"y2":89,"z2":111},   // 实际对比的范围
+  "cells":5294,        // 范围内图纸上有方块的格子数
+  "done":10,           // 已经和图纸一样
+  "toPlace":3823,      // 现在空着，bot 能放
+  "byHand":0,          // 现在空着，但得由人来放（见 byHandBlocks）
+  "blocked":1461,      // 图纸上有方块的位置被别的方块占着
+  "extra":2581,        // 图纸上是空的位置有方块
+  "willRemove":4019,   // blocked 和 extra 里，clear 允许挖、也确实挖得动的
+  "unloaded":0,        // 所在区块没加载、看不到的格子（为 0 时省略）；不为 0 时结果不完整，让 bot 走近些
+  "materials":[{"id":"chisel:nucrete","meta":7,"name":"Structural Concrete","need":1874,"have":0}],  // 要放的方块；have 只在给了 bot 时有
+  "byHandBlocks":[{"id":"minecraft:chest","meta":3,"name":"Chest","count":2,"why":"it holds contents or settings"}],
+  "blockedBy":[{"id":"minecraft:dirt","name":"Dirt","count":1196,"removable":1196,"natural":true}],
+  "extraBlocks":[{"id":"gregtech:gt.blockmachines","name":"…","count":14,"removable":0,"holdsData":14}],
+  "layers":[[63,1024,0,0,1024,0], …]     // 每层 [y, 图纸方块数, done, toPlace, blocked, extra]
+}
+```
+
+`blockedBy` / `extraBlocks` 按世界里的方块种类统计：`removable` 是按现在的 `clear` 会被挖掉的个数，`holdsData` 是带数据（机器、箱子）谁也不会动的个数。列表各最多 30 种，没有时省略。
+
+**bot 能放的**是“放下去就是图纸要的样子”的方块：普通建筑方块及其变体。带内容或设置的（箱子、抽屉、GT 管道和机器）、朝向取决于怎么放的（楼梯、原木、火把）不放，算作 `byHand`。
+
 ### 任务
 
 任务是 bot 在游戏里花时间做的事。每个 bot 同一时刻只执行一个任务，其余排队（最多 32 个）。
@@ -196,6 +240,7 @@
 | `haul` | `{from:{x,y,z}, to:{x,y,z}, items?:[ItemFilter]}` | 在两个箱子之间来回搬，直到源箱子里符合条件的搬完或数量够。只搬这一趟取出来的东西，bot 自己的物品不动 |
 | `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
+| `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -212,7 +257,19 @@
 - **`overflow`**：背包满又没给 dropoff 时，`"fail"`（默认）以 `inventory_full` 失败，`"leave"` 继续挖、把掉落物留在地上。
 - **`flatten` 的填充材料**按 `fillItems`（默认是配置的 `fillerBlocks`）的顺序，用背包里有的第一种；挖出来的泥土、圆石会被捡回来用上。坑比 `maxFillDepth` 深的列不填，记入 skipped。
 - **箱子**：空手右键打开箱子界面，用 shift 点击转移。点击被领地保护之类拒绝时以 `denied` 失败。
-  点击没被拒绝却没有界面的储物方块（桶、抽屉）按漏斗的方式存取。
+  点击没被拒绝却没有界面的储物方块（桶）按漏斗的方式存取。
+- **抽屉**（Storage Drawers）按玩家的方式用：站到正面，左键拍出一组或一个，右键把手里的东西放进去；数量精确。
+  `deposit`/`withdraw`/`haul`/`supply`/`dropoff` 的箱子位置都可以是抽屉。封箱的抽屉、被保护的抽屉以 `denied` 失败。
+  往抽屉里放：已经装着同一种的那格优先，其次是还没指定物品的空格；都没有就算放不下。
+- **`blueprint`**：
+  - 不给 `clear` 时一块都不挖；挡着的位置跳过，留在结果的 `blockedBy` 里。带数据的方块、液体、基岩在任何情况下都不挖。
+  - 一格只从“脚不低于它”的位置放，所以楼板和屋顶是站在上面铺的，bot 不会把自己封在底下；做完时它在建筑顶上。
+  - 材料不够时去 `supply` 取（一次按接下来要用的顺序尽量多拿）；哪种都取不到的，先跳过继续放别的，最后以 `no_material` 失败，`error.detail.missing` 列出每种缺多少。没给 `supply` 也是这样。
+  - 挖出来的东西背包满时送去 `dropoff`，建筑材料留在身上。
+  - 结束时（成功或失败）结果里有 `now`：`{cells, done, toPlace, byHand, blocked, extra}`，以及各最多 8 项的 `materials`（还缺的）、`byHandBlocks`、`blockedBy`、`extraBlocks`。
+    够不着又没有垫脚方块时带 `needsClimbingBlocks:true`。
+  - 重新执行会接着做：已经对的格子不动。
+- **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。
   数量按 bot 背包里实际增减的数目计。
 
 结果 `result`：

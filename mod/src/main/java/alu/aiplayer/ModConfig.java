@@ -22,6 +22,11 @@ public final class ModConfig {
     public String bridgeHost = "127.0.0.1";
     public int bridgePort = 25590;
     public int maxBots = 4;
+    /**
+     * Console commands the server runs once for each bot the first time it joins, with {name} standing for the
+     * bot's name. For giving every bot the same skin or team, e.g. "skin {name} set SomeAccount".
+     */
+    public List<String> newBotCommands = new ArrayList<>();
     public boolean defaultInvulnerable = true;
     public boolean defaultHunger = false;
     /**
@@ -99,6 +104,8 @@ public final class ModConfig {
         c.bridgeHost = J.str(o, "bridgeHost", c.bridgeHost);
         c.bridgePort = J.i(o, "bridgePort", c.bridgePort);
         c.maxBots = J.i(o, "maxBots", c.maxBots);
+        JsonArray first = J.array(o, "newBotCommands");
+        if (first != null) for (JsonElement e : first) c.newBotCommands.add(e.getAsString());
         c.defaultInvulnerable = J.bool(o, "defaultInvulnerable", c.defaultInvulnerable);
         c.defaultHunger = J.bool(o, "defaultHunger", c.defaultHunger);
         c.allowedCommands = stringSet(o, "allowedCommands", c.allowedCommands);
@@ -144,6 +151,7 @@ public final class ModConfig {
         o.addProperty("bridgeHost", bridgeHost);
         o.addProperty("bridgePort", bridgePort);
         o.addProperty("maxBots", maxBots);
+        o.add("newBotCommands", toArray(newBotCommands));
         o.addProperty("defaultInvulnerable", defaultInvulnerable);
         o.addProperty("defaultHunger", defaultHunger);
         o.add("allowedCommands", toArray(new java.util.TreeSet<>(allowedCommands)));

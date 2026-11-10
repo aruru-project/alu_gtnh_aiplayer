@@ -65,7 +65,10 @@ start() {
     echo $! >.pid
     local waited=0 limit=${1:-600}
     while ((waited < limit)); do
-        if grep -qE 'Done \([0-9.]+s\)!' console.log; then
+        # "Done" comes before the mods' own start-up work; with the mod installed the server is only usable
+        # once its bridge is listening (on a large world that can be minutes later).
+        if grep -qaE 'Done \([0-9.]+s\)!' console.log \
+            && { ! ls mods/aiplayer-*.jar >/dev/null 2>&1 || grep -qa 'Bridge listening' console.log; }; then
             printf 'started in %ss (pid %s)\n' "$waited" "$(pid)"
             return
         fi

@@ -52,7 +52,10 @@ public final class PathSearch {
     private static final double WATER_FACTOR = 2.5;
     private static final double PILLAR_COST = 22.0;
     private static final double HEURISTIC_WEIGHT = 1.3;
-    private static final int MAX_DROP = 3;
+    /** How far a bot that can be hurt will let itself fall. */
+    public static final int SAFE_DROP = 3;
+    /** How far one that cannot be hurt will: off a roof, not down a ravine. */
+    public static final int FEARLESS_DROP = 40;
     private static final int[][] DIRS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
 
     private static final class Node {
@@ -91,6 +94,7 @@ public final class PathSearch {
     private final Goal goal;
     private final boolean canPillar;
     private final int maxNodes;
+    private final int maxDrop;
     private final Map<Long, Node> nodes = new HashMap<>();
     private final PriorityQueue<Entry> open = new PriorityQueue<>();
     private final Node start;
@@ -99,7 +103,9 @@ public final class PathSearch {
     private Status status = Status.RUNNING;
     private List<Step> path = Collections.emptyList();
 
-    public PathSearch(NavWorld nav, int sx, int sy, int sz, Goal goal, boolean canPillar, int maxNodes) {
+    public PathSearch(NavWorld nav, int sx, int sy, int sz, Goal goal, boolean canPillar, int maxNodes,
+        int maxDrop) {
+        this.maxDrop = maxDrop;
         this.nav = nav;
         this.goal = goal;
         this.canPillar = canPillar;
@@ -232,7 +238,7 @@ public final class PathSearch {
             if (s == 0 && nav.cls(nx, y - 1, nz) != NavWorld.SOLID) {
                 int c1 = openCost(nx, y, nz), c2 = openCost(nx, y + 1, nz);
                 if (c1 >= 0 && c2 >= 0) {
-                    for (int k = 1; k <= MAX_DROP; k++) {
+                    for (int k = 1; k <= maxDrop; k++) {
                         if (!openOrWater(nav.cls(nx, y - k, nz))) break;
                         int land = stand(nx, y - k, nz);
                         if (land != 0) {

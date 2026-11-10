@@ -82,6 +82,15 @@ abstract class AreaTask extends Task {
     private int recentred;
     private int airborne;
 
+    /** Why the last trip to a supply container went wrong, if one did. */
+    protected String supplyProblem;
+
+    /**
+     * Set by tasks that build upward: a block is then only placed from a footing at its own level or higher, so
+     * the bot ends up on top of what it builds instead of sealed in underneath.
+     */
+    protected boolean placeFromAbove;
+
     private ContainerTrip trip;
     private Runnable afterTrip;
     private int tripIndex;
@@ -178,8 +187,24 @@ abstract class AreaTask extends Task {
         return Act.BUSY;
     }
 
+    /** Kinds of block that turned out to need a tool the bot does not carry. */
+    protected final Set<String> noToolFor = new HashSet<>();
+
+    /**
+     * Whether meeting a block the bot has no tool for ends the task. It does where digging is the whole job;
+     * a task with other work to do passes such blocks by and reports them.
+     */
+    protected boolean stopsWithoutTool() {
+        return true;
+    }
+
     private Act digFailed(int x, int y, int z) {
         String code = digger.failCode;
+        if ("no_tool".equals(code) && !stopsWithoutTool()) {
+            noToolFor.add(digger.failBlock);
+            skip(x, y, z, "no tool for " + digger.failBlock);
+            return Act.SKIPPED;
+        }
         if ("no_tool".equals(code) || "denied".equals(code)) {
             JsonObject detail = J.pos(x, y, z);
             detail.addProperty("block", digger.failBlock);
@@ -193,7 +218,7 @@ abstract class AreaTask extends Task {
 
     private Act walkFailed(int x, int y, int z) {
         // Running out of blocks to climb with only means this cell is too high; a missing tool stops everything.
-        if ("no_tool".equals(nav.failCode)) {
+        if ("no_tool".equals(nav.failCode) && stopsWithoutTool()) {
             JsonObject detail = J.pos(x, y, z);
             if (nav.failBlock != null) detail.addProperty("block", nav.failBlock);
             fail(nav.failCode, nav.failMessage, detail);
@@ -272,7 +297,18 @@ abstract class AreaTask extends Task {
         // Placing while airborne would put the block where the feet are about to be.
         if (!p.onGround && !p.isInWater() && ++airborne < 100) return Act.BUSY;
         airborne = 0;
-        Placer.Result r = Placer.place(bot, x, y, z, item);
+        Placer.Result r;
+        if (placeFromAbove && bot.blockY() < y) {
+            // Standing too low. Find out what a walk up there would be for before setting off.
+            World w = p.worldObj;
+            if (!w.blockExists(x, y, z)) r = Placer.Result.OUT_OF_REACH;
+            else if (!Placer.isReplaceable(w, x, y, z)) r = Placer.Result.OCCUPIED;
+            else if (Inventories.find(p, item) < 0) r = Placer.Result.NO_ITEM;
+            else if (!Placer.hasSupport(w, x, y, z)) r = Placer.Result.NO_SUPPORT;
+            else r = Placer.Result.OUT_OF_REACH;
+        } else {
+            r = Placer.place(bot, x, y, z, item);
+        }
         if (r == Placer.Result.IN_THE_WAY && (bot.blockX() != x || bot.blockZ() != z) && recentred < 3) {
             recentred++;
             recentre = 6;
@@ -303,7 +339,7 @@ abstract class AreaTask extends Task {
                 return Act.BUSY;
             default: // OUT_OF_REACH, IN_THE_WAY
                 if (bump(x, y, z) > MAX_ATTEMPTS_PER_CELL) return Act.UNREACHABLE;
-                nav.go(Goal.reach(x, y, z, true), rule);
+                nav.go(placeFromAbove ? Goal.reachFromAbove(x, y, z) : Goal.reach(x, y, z, true), rule);
                 walking = true;
                 return Act.BUSY;
         }
@@ -349,6 +385,9 @@ abstract class AreaTask extends Task {
         if (st == ContainerTrip.Status.WORKING) return true;
         ContainerTrip finished = trip;
         trip = null;
+        if (st == ContainerTrip.Status.FAILED && !tripIsDropoff) {
+            supplyProblem = finished.failCode + ": " + finished.failMessage;
+        }
         List<int[]> places = tripIsDropoff ? dropoff : supply;
         boolean incomplete = st == ContainerTrip.Status.FAILED
             || (tripIsDropoff ? finished.session.containerFull : !supplySatisfied());
@@ -403,6 +442,10 @@ abstract class AreaTask extends Task {
     /** At most this many items of the kinds to keep stay with the bot on a drop-off trip. */
     private static final int KEEP_LIMIT = 256;
 
+    protected int keepLimit() {
+        return KEEP_LIMIT;
+    }
+
     /** What to leave at a drop-off: everything but tools, food, a limited amount of what the task needs, and one
      * stack of filler to climb with. A fresh plan for each chest, since it counts what it has let through. */
     private ContainerSession.DepositPlan dropPlan(final Set<String> keep) {
@@ -421,7 +464,7 @@ abstract class AreaTask extends Task {
                 int answer = -1;
                 if (Inventories.isTool(stack) || Inventories.isFood(stack)) {
                     answer = 0;
-                } else if (keep != null && keep.contains(Names.itemId(stack.getItem())) && kept < KEEP_LIMIT) {
+                } else if (keep != null && keep.contains(Names.itemId(stack.getItem())) && kept < keepLimit()) {
                     kept += stack.stackSize;
                     answer = 0;
                 } else if (scaffold != null && !keptScaffold && scaffold.matches(stack)) {
@@ -477,25 +520,33 @@ abstract class AreaTask extends Task {
             fail("no_material", missingMessage, detail);
             return false;
         }
-        phase = "fetching material";
-        tripIsDropoff = false;
-        tripIndex = 0;
-        supplyWant = want;
-        supplyHad = new int[want.size()];
-        for (int i = 0; i < supplyHad.length; i++) supplyHad[i] = Inventories.count(bot.player(), want.get(i));
         final int before = countAll(want);
         final String msg = missingMessage;
         final JsonObject det = detail;
-        afterTrip = new Runnable() {
+        fetch(want, new Runnable() {
 
             @Override
             public void run() {
                 // Nothing gained from any supply chest: the material is simply not there.
                 if (countAll(supplyWant) <= before) fail("no_material", msg, det);
             }
-        };
-        beginTrip();
+        });
         return true;
+    }
+
+    /**
+     * Goes round the supply containers for the listed items, then runs {@code then}. Coming back with less than
+     * asked, or nothing, is not a failure here; the caller looks at what the bot now carries.
+     */
+    protected void fetch(List<ItemFilter> want, Runnable then) {
+        phase = "fetching material";
+        tripIsDropoff = false;
+        tripIndex = 0;
+        supplyWant = want;
+        supplyHad = new int[want.size()];
+        for (int i = 0; i < supplyHad.length; i++) supplyHad[i] = Inventories.count(bot.player(), want.get(i));
+        afterTrip = then;
+        beginTrip();
     }
 
     private int countAll(List<ItemFilter> filters) {

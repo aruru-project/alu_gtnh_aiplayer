@@ -282,6 +282,24 @@ public final class Bot implements BotConnection.Listener {
         return clickRefused && clickX == x && clickY == y && clickZ == z && ticksOnline - clickTick <= 10;
     }
 
+    private int punchX, punchY, punchZ;
+    private boolean punchRefused;
+    private long punchTick = -1;
+
+    /** Called for each left-click on a block this bot makes, with whether something refused it. */
+    public void notePunch(int x, int y, int z, boolean refused) {
+        punchX = x;
+        punchY = y;
+        punchZ = z;
+        punchRefused = refused;
+        punchTick = ticksOnline;
+    }
+
+    /** Whether this bot's most recent left-click on that block, within the last few ticks, was refused. */
+    public boolean punchWasRefused(int x, int y, int z) {
+        return punchRefused && punchX == x && punchY == y && punchZ == z && ticksOnline - punchTick <= 10;
+    }
+
     private long placeRefusedTick = -1;
 
     public void notePlacementRefused() {

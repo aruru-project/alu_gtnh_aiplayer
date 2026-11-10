@@ -78,11 +78,13 @@ public final class ServerEvents {
     /** Remembers whether a bot's right-click on a block was refused by anything (land claims, mostly). */
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
     public void onInteract(PlayerInteractEvent event) {
-        if (event.action != PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK) return;
+        boolean right = event.action == PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK;
+        if (!right && event.action != PlayerInteractEvent.Action.LEFT_CLICK_BLOCK) return;
         Bot bot = bots.botOf(event.entityPlayer);
         if (bot == null) return;
         boolean refused = event.isCanceled() || event.useBlock == cpw.mods.fml.common.eventhandler.Event.Result.DENY;
-        bot.noteInteraction(event.x, event.y, event.z, refused);
+        if (right) bot.noteInteraction(event.x, event.y, event.z, refused);
+        else bot.notePunch(event.x, event.y, event.z, refused);
     }
 
     /** Remembers when something refused a block a bot tried to place. */

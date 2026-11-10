@@ -54,6 +54,69 @@ public abstract class Goal {
     }
 
     /**
+     * Within reach of a block and on the side one of its faces looks at (2 north, 3 south, 4 west, 5 east), for
+     * things that are used from the front only.
+     */
+    public static Goal reachFacing(final int bx, final int by, final int bz, final int side) {
+        return new Goal() {
+
+            @Override
+            public boolean reached(int x, int y, int z) {
+                boolean front;
+                switch (side) {
+                    case 2:
+                        front = z < bz;
+                        break;
+                    case 3:
+                        front = z > bz;
+                        break;
+                    case 4:
+                        front = x < bx;
+                        break;
+                    case 5:
+                        front = x > bx;
+                        break;
+                    default:
+                        front = true;
+                        break;
+                }
+                return front && Reach.canPlanReachFrom(x + 0.5, y, z + 0.5, bx, by, bz);
+            }
+
+            @Override
+            public double heuristic(int x, int y, int z) {
+                int flat = Math.max(0, Math.abs(x - bx) + Math.abs(z - bz) - 4);
+                int dy = by - y;
+                int vert = dy > 5 ? dy - 5 : (dy < -3 ? -3 - dy : 0);
+                return flat * WALK + vert * 6.0;
+            }
+        };
+    }
+
+    /**
+     * Somewhere to put a block from that is not below it: within reach, out of its cell, feet at its level or
+     * higher. Building this way a bot cannot close a floor or a roof over its own head.
+     */
+    public static Goal reachFromAbove(final int bx, final int by, final int bz) {
+        return new Goal() {
+
+            @Override
+            public boolean reached(int x, int y, int z) {
+                if (y < by || (x == bx && z == bz && y == by)) return false;
+                return Reach.canPlanReachFrom(x + 0.5, y, z + 0.5, bx, by, bz);
+            }
+
+            @Override
+            public double heuristic(int x, int y, int z) {
+                int flat = Math.max(0, Math.abs(x - bx) + Math.abs(z - bz) - 4);
+                int dy = by - y;
+                int vert = dy > 0 ? dy : (dy < -3 ? -3 - dy : 0);
+                return flat * WALK + vert * 6.0;
+            }
+        };
+    }
+
+    /**
      * Anywhere the block can be touched from. With {@code clear}, the bot must also not occupy the block's cell,
      * which placing a block there requires.
      */

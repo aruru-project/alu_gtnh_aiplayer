@@ -1,7 +1,11 @@
 package alu.aiplayer.act;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.inventory.Container;
@@ -19,8 +23,9 @@ import alu.aiplayer.bot.Motion;
  * One visit to a container the bot is standing next to: open it, move stacks in or out one at a time, close it.
  * <p>
  * The normal way is the container's own screen, driven with the same shift-clicks a player uses, so the block's
- * rules about what goes where apply. Storage that has no screen (barrels, drawers) is filled and emptied through
- * its item-handling interface instead, the way a hopper would.
+ * rules about what goes where apply. Drawers have no screen and are worked the way a player works them: punched
+ * to take, right-clicked with the item in hand to fill. Other storage without a screen (barrels) is filled and
+ * emptied through its item-handling interface, the way a hopper would.
  */
 public final class ContainerSession {
 
@@ -41,13 +46,19 @@ public final class ContainerSession {
 
     private static final int CLICK_INTERVAL = 3;
     private static final int OPEN_WAIT = 4;
+    /** Two right-clicks on a drawer within ten ticks count as a double click, which empties the whole inventory
+     * of that kind into it. */
+    private static final int DRAWER_PUT_INTERVAL = 12;
 
     private final Bot bot;
     private final int x, y, z;
     private DepositPlan deposit;
     private List<ItemFilter> withdraw;
     private int[] withdrawLeft;
-    private int phase; // 0 open, 1 wait for screen, 2 screen transfers, 3 direct transfers, 4 closing
+    private int phase; // 0 open, 1 wait for screen, 2 screen transfers, 3 direct transfers, 4 closing, 5 drawers
+    private int interval = CLICK_INTERVAL;
+    private final Set<ItemStack> unplaceable = Collections.newSetFromMap(new IdentityHashMap<ItemStack, Boolean>());
+    private final Set<Integer> deadDrawers = new HashSet<>();
     private int wait;
     private int cursor;
     private boolean viaScreen;
@@ -112,6 +123,15 @@ public final class ContainerSession {
                 // Some other screen left open would be mistaken for this container's.
                 if (p.openContainer != p.inventoryContainer) bot.conn()
                     .closeWindow();
+                if (Drawers.is(te)) {
+                    if (!Drawers.inFront(p, x, y, z, Drawers.front(te))) {
+                        return fail("out_of_reach", "the front of the drawer cannot be reached from here");
+                    }
+                    if (Drawers.isSealed(te)) return fail("denied", "the drawer is sealed");
+                    phase = 5;
+                    wait = interval;
+                    return Status.WORKING;
+                }
                 Motion.face(p, x + 0.5, y + 0.5, z + 0.5);
                 clickEmptyHanded(p);
                 phase = 1;
@@ -158,10 +178,123 @@ public final class ContainerSession {
                 if (!directStep(p, (IInventory) te)) phase = 4;
                 return Status.WORKING;
             }
+            case 5: {
+                TileEntity te = w.getTileEntity(x, y, z);
+                if (!Drawers.is(te)) return fail("invalid", "the container is gone");
+                if (bot.clickWasRefused(x, y, z) || bot.punchWasRefused(x, y, z)) {
+                    return fail("denied", "using the drawer was refused; it may be protected");
+                }
+                if (++wait < interval) return Status.WORKING;
+                wait = 0;
+                if (!drawerStep(p, te)) phase = 4;
+                return Status.WORKING;
+            }
             default:
                 if (++wait >= 2) return Status.DONE;
                 return Status.WORKING;
         }
+    }
+
+    // ---- drawers ------------------------------------------------------------------------------------------------
+
+    /** Does one click on the drawer block. Returns false when there is nothing left to do. */
+    private boolean drawerStep(EntityPlayerMP p, TileEntity te) {
+        List<Drawers.Slot> slots = Drawers.slots(te);
+        int front = Drawers.front(te);
+        if (deposit != null) {
+            ItemStack[] mine = p.inventory.mainInventory;
+            for (int i = 0; i < mine.length; i++) {
+                ItemStack stack = mine[i];
+                if (stack == null || unplaceable.contains(stack)) continue;
+                int want = deposit.wanted(stack);
+                if (want == 0) continue;
+                // A drawer already holding this kind comes first; an unassigned one only when none does.
+                Drawers.Slot target = null;
+                for (Drawers.Slot s : slots) {
+                    if (s.prototype != null && s.room > 0 && sameItem(s.prototype, stack)) {
+                        target = s;
+                        break;
+                    }
+                }
+                if (target == null) {
+                    for (Drawers.Slot s : slots) {
+                        if (s.prototype == null && Drawers.accepts(te, s.index, stack)) {
+                            target = s;
+                            break;
+                        }
+                    }
+                }
+                float[] hit = target == null ? null : Drawers.hit(te, target.index);
+                if (hit == null) {
+                    unplaceable.add(stack);
+                    rejected++;
+                    continue;
+                }
+                // The click puts in the whole held stack, so the part to keep is set aside first.
+                if (want > 0 && want < stack.stackSize) splitOff(p, i, stack.stackSize - want);
+                ItemStack type = stack.copy();
+                int offered = stack.stackSize;
+                int before = Inventories.count(p, exact(type));
+                Inventories.hold(bot, i);
+                Motion.face(p, x + hit[0], y + hit[1], z + hit[2]);
+                bot.conn()
+                    .useOnBlock(x, y, z, front, hit[0], hit[1], hit[2]);
+                bot.conn()
+                    .swingArm();
+                int gone = before - Inventories.count(p, exact(type));
+                if (gone > 0) {
+                    moved += gone;
+                    deposit.moved(type, gone);
+                }
+                if (gone < offered) {
+                    rejected++;
+                    ItemStack left = p.inventory.getCurrentItem();
+                    if (left != null) unplaceable.add(left);
+                }
+                interval = DRAWER_PUT_INTERVAL;
+                return true;
+            }
+            deposit = null;
+            containerFull = rejected > 0;
+        }
+        if (withdraw != null && !inventoryFull) {
+            for (Drawers.Slot s : slots) {
+                if (s.prototype == null || s.count <= 0 || deadDrawers.contains(s.index)) continue;
+                int f = matchingFilter(s.prototype);
+                if (f < 0) continue;
+                int room = roomFor(p, s.prototype);
+                if (room <= 0) {
+                    inventoryFull = true;
+                    break;
+                }
+                float[] hit = Drawers.hit(te, s.index);
+                if (hit == null) {
+                    deadDrawers.add(s.index);
+                    continue;
+                }
+                // A punch gives a whole stack or a single item, nothing in between.
+                int stack = Math.min(s.prototype.getMaxStackSize(), s.count);
+                boolean whole = Math.min(withdrawLeft[f], room) >= stack;
+                ItemFilter kind = exact(s.prototype);
+                int had = Inventories.count(p, kind);
+                Motion.face(p, x + hit[0], y + hit[1], z + hit[2]);
+                Drawers.punch(te, p, hit, whole);
+                bot.conn()
+                    .swingArm();
+                int got = Inventories.count(p, kind) - had;
+                interval = CLICK_INTERVAL;
+                if (got <= 0) {
+                    // Locked, protected, or otherwise not giving: leave this drawer be.
+                    deadDrawers.add(s.index);
+                    return true;
+                }
+                moved += got;
+                if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] = Math.max(0, withdrawLeft[f] - got);
+                return true;
+            }
+            withdraw = null;
+        }
+        return deposit != null;
     }
 
     /**

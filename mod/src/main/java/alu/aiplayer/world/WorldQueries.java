@@ -28,6 +28,7 @@ import net.minecraft.world.chunk.Chunk;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import alu.aiplayer.act.Drawers;
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.util.J;
@@ -292,7 +293,26 @@ public final class WorldQueries {
         c.addProperty("name", blockName(b, te.getBlockMetadata()));
         int size = 0, used = 0;
         Map<String, JsonObject> merged = new LinkedHashMap<>();
-        try {
+        if (Drawers.is(te)) {
+            // A drawer's hopper-facing slots show one stack; what it really holds is asked of the drawer itself.
+            c.addProperty("kind", "drawers");
+            for (Drawers.Slot d : Drawers.slots(te)) {
+                size++;
+                if (d.prototype == null || d.count <= 0) continue;
+                used++;
+                String key = Names.itemId(d.prototype.getItem()) + "@" + Names.meta(d.prototype);
+                JsonObject item = merged.get(key);
+                int already = item == null ? 0
+                    : item.get("count")
+                        .getAsInt();
+                if (item == null) {
+                    item = Names.describe(d.prototype);
+                    item.remove("durability");
+                    merged.put(key, item);
+                }
+                item.addProperty("count", already + d.count);
+            }
+        } else try {
             size = inv.getSizeInventory();
             for (int i = 0; i < size; i++) {
                 ItemStack s = inv.getStackInSlot(i);

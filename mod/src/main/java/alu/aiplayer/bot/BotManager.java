@@ -118,6 +118,7 @@ public final class BotManager implements TaskQueue.Listener {
     }
 
     public void tick() {
+        if (!later.isEmpty()) runDueCommands();
         ServerConfigurationManager scm = MinecraftServer.getServer()
             .getConfigurationManager();
         if (autoLoginIn >= 0 && autoLoginIn-- == 0) autoLogin();
@@ -187,7 +188,33 @@ public final class BotManager implements TaskQueue.Listener {
         }
         retired.remove(name.toLowerCase());
         dirty = true;
+        if (created) {
+            // Not at once: other mods finish setting up a player a moment after the join.
+            for (String c : config.newBotCommands) later.add(new Object[] { 60, c.replace("{name}", name) });
+        }
         return b;
+    }
+
+    /** Console commands waiting for their moment, as {ticks left, command}. */
+    private final List<Object[]> later = new ArrayList<>();
+
+    private void runDueCommands() {
+        for (java.util.Iterator<Object[]> it = later.iterator(); it.hasNext();) {
+            Object[] e = it.next();
+            int left = (Integer) e[0] - 1;
+            e[0] = left;
+            if (left > 0) continue;
+            it.remove();
+            String command = (String) e[1];
+            try {
+                MinecraftServer server = MinecraftServer.getServer();
+                server.getCommandManager()
+                    .executeCommand(server, command);
+                AiPlayerMod.LOG.info("Ran for a new bot: {}", command);
+            } catch (Throwable t) {
+                AiPlayerMod.LOG.warn("Command for a new bot failed: {}", command, t);
+            }
+        }
     }
 
     private static boolean hasPlayerData(UUID uuid) {

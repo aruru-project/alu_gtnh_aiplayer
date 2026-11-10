@@ -121,7 +121,8 @@ public final class Navigator {
                 bot.blockZ(),
                 goal,
                 !gentle && mayPillar && Rules.scaffold(p) != null,
-                MAX_NODES);
+                MAX_NODES,
+                bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP);
         }
 
         PathSearch.Status st = search.step(budget());

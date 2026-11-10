@@ -14,6 +14,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import alu.aiplayer.AiPlayerMod;
 import alu.aiplayer.act.Inventories;
 import alu.aiplayer.act.Reach;
 import alu.aiplayer.act.Tools;
@@ -24,6 +25,7 @@ import alu.aiplayer.task.Task;
 import alu.aiplayer.task.TaskFactory;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
+import alu.aiplayer.world.BlueprintPlan;
 import alu.aiplayer.world.WorldQueries;
 
 /** The bridge methods of docs/PROTOCOL.md. Each runs on the server thread. */
@@ -68,6 +70,34 @@ public final class BridgeApi {
                 wanted,
                 limit);
         });
+        bridge.register(
+            "blueprint.list",
+            p -> AiPlayerMod.blueprints()
+                .list());
+        bridge.register("blueprint.check", p -> {
+            BlueprintPlan plan = BlueprintPlan.fromParams(p);
+            Bot b = J.has(p, "bot") ? bots.requireOnline(J.reqStr(p, "bot")) : null;
+            return plan.survey(world(p), b == null ? null : b.player(), J.bool(p, "layers", true));
+        });
+        bridge.register("blueprint.put", p -> {
+            byte[] bytes;
+            try {
+                bytes = java.util.Base64.getDecoder()
+                    .decode(J.reqStr(p, "data"));
+            } catch (IllegalArgumentException e) {
+                throw RpcException.badRequest("data must be the file in base64");
+            }
+            try {
+                return AiPlayerMod.blueprints()
+                    .put(J.reqStr(p, "name"), bytes);
+            } catch (java.io.IOException e) {
+                throw new IllegalStateException("cannot store the blueprint: " + e.getMessage());
+            }
+        });
+        bridge.register(
+            "blueprint.remove",
+            p -> AiPlayerMod.blueprints()
+                .remove(J.reqStr(p, "name")));
         bridge.register("world.containers", p -> {
             int[] c = centre(p);
             return WorldQueries.containers(world(p), c[0], c[1], c[2], Math.max(1, J.i(p, "radius", 12)));
