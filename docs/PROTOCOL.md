@@ -198,7 +198,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 离线的 bot 只有 `name uuid online settings task queue`。
 
 **设置**：`invulnerable`（默认开）不受伤害，怪物也不把它当目标；`hunger`（默认关）关着时饱食度不下降。
-现在没有进食的能力，打开 `hunger` 它最终会饿死。
+进食用 `use` 任务（把食物拿在手里右键）；打开 `hunger` 后没人让它吃它就会饿死。
 
 **死亡**：和玩家一样。发 `bot.death`，当前任务以 `interrupted` 失败、队列清空；约 1.5 秒后自动重生（发 `bot.spawned`），位置和掉落物按服务器规则。死亡到重生之间 `bot.status` 的 `health` 是 0。
 
@@ -448,7 +448,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 重新执行会接着做：已经对的格子不动。
 - **`craft`**：
   - 材料和工具必须已经在身上（先 `withdraw`）。不够时以 `no_material` 失败，`error.detail.missing` 列出每样还差多少（格式同 `recipe.find` 的 `ingredients`）。
-  - `2x2` 的配方在随身的合成格里做，不用走动。`3x3` 的要工作台：`table` 给位置，不给就找 64 格内最近的（原版工作台、匠魂的合成站都行；任何界面里有 3×3 合成格的方块都可以用 `table` 指定）。附近没有时以 `invalid` 失败。
+  - `2x2` 的配方在随身的合成格里做，不用走动。`3x3` 的要工作台：`table` 给位置，不给就找 48 格内最近的（原版工作台、匠魂的合成站都行；任何界面里有 3×3 合成格的方块都可以用 `table` 指定）。附近没有时以 `invalid` 失败。
   - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。

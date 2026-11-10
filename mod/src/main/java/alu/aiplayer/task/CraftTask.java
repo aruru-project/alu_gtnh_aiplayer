@@ -41,7 +41,7 @@ import alu.aiplayer.world.WorldQueries;
  */
 public final class CraftTask extends Task {
 
-    private static final int TABLE_SEARCH = 64;
+    private static final int TABLE_SEARCH = 48;
 
     /** A layout spelled out by the caller instead of one of the recipes this server knows by number. */
     private final JsonArray gridGiven;
