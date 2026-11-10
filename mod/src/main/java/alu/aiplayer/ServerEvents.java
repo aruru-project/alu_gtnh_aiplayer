@@ -49,6 +49,8 @@ public final class ServerEvents {
                 .toString());
         data.addProperty("message", event.message);
         data.addProperty("isBot", bots.isBot(event.player));
+        // "This chest", "over there": words that only mean something from where the speaker stands.
+        if (!bots.isBot(event.player)) data.add("speaker", alu.aiplayer.world.PlayerView.describe(event.player));
         bridge.emit("chat", data);
         // The same line is about to be delivered to every player, bots included; they need not hear it twice.
         bots.noteChatBroadcast(event.component == null ? null : event.component.getUnformattedText());

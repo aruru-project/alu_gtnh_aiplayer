@@ -3,6 +3,7 @@ package alu.aiplayer.act;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+import net.minecraft.item.ItemStack;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.StatCollector;
 
@@ -24,6 +25,7 @@ public final class Machines {
     private static boolean usable;
     private static Class<?> baseClass, basicClass;
     private static Method metaOf, localName, progress, maxProgress, active, allowed, storedEu, inputVoltage, recipeMap;
+    private static Method stackForm;
     private static Method inputSlot, outputSlot;
     private static Field tier, inputCount, outputItems, mapName;
 
@@ -37,6 +39,7 @@ public final class Machines {
             Class<?> tiered = Class.forName("gregtech.api.metatileentity.implementations.MTETieredMachineBlock");
             metaOf = baseClass.getMethod("getMetaTileEntity");
             localName = meta.getMethod("getLocalName");
+            stackForm = meta.getMethod("getStackForm", long.class);
             progress = baseClass.getMethod("getProgress");
             maxProgress = baseClass.getMethod("getMaxProgress");
             active = baseClass.getMethod("isActive");
@@ -85,11 +88,41 @@ public final class Machines {
     public static String name(TileEntity te) {
         Object m = meta(te);
         if (m == null) return null;
+        // The item's name is the one players know; pipes and cables have no other.
+        ItemStack item = item(te);
+        if (item != null) {
+            try {
+                String shown = item.getDisplayName();
+                if (shown != null && !shown.isEmpty() && !shown.endsWith(".name")) return shown;
+            } catch (Throwable ignored) {}
+        }
         try {
             return (String) localName.invoke(m);
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** The block as an item, which is how recipe pages and inventories name it; null if this is not GregTech. */
+    public static ItemStack item(TileEntity te) {
+        Object m = meta(te);
+        if (m == null) return null;
+        try {
+            return (ItemStack) stackForm.invoke(m, 1L);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** "item pipe" or "fluid pipe" for GregTech pipes, null for everything else (cables included). */
+    public static String pipeKind(TileEntity te) {
+        Object m = meta(te);
+        if (m == null) return null;
+        String c = m.getClass()
+            .getSimpleName();
+        if (c.contains("ItemPipe")) return "item pipe";
+        if (c.contains("Fluid") && c.contains("Pipe")) return "fluid pipe";
+        return null;
     }
 
     /** For a processing machine, the inventory slots that take input: {first, count}; null otherwise. */
@@ -128,7 +161,13 @@ public final class Machines {
         if (m == null) return null;
         JsonObject o = J.pos(te.xCoord, te.yCoord, te.zCoord);
         try {
-            o.addProperty("name", (String) localName.invoke(m));
+            o.addProperty("name", name(te));
+            ItemStack item = item(te);
+            if (item != null && item.getItem() != null) {
+                // Recipe pages list the machines that run them as items; this is the same pair.
+                o.addProperty("id", alu.aiplayer.util.Names.itemId(item.getItem()));
+                o.addProperty("meta", item.getItemDamage());
+            }
             if (basicClass.isInstance(m)) {
                 Object map = recipeMap.invoke(m);
                 if (map != null) {

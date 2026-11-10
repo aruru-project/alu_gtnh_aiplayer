@@ -5,7 +5,7 @@ It exists for one job: NEI only runs in a client, so the recipe book the brain r
 (see docs/PACKDATA.md). The server does not check accounts, so the client joins under an offline name.
 
   tools/client setup [--pack ZIP]     unpack the client pack into client/ and fetch the game's libraries
-  tools/client start [--join HOST:PORT] [--name NAME] [-D key=value ...]
+  tools/client start [--join HOST:PORT] [--name NAME] [--lang zh_CN] [-D key=value ...]
   tools/client stop
   tools/client status
 """
@@ -206,7 +206,7 @@ def set_options(pairs):
         f.write("\n".join(lines) + "\n")
 
 
-def start(join, name, defines, memory):
+def start(join, name, defines, memory, lang="zh_CN"):
     if running():
         raise SystemExit("already running")
     ps = patches()
@@ -222,7 +222,7 @@ def start(join, name, defines, memory):
     if missing:
         raise SystemExit("missing files, run setup first: " + missing[0])
     # Small, quiet and Chinese: this client is only here to be read from.
-    set_options({"lang": "zh_CN", "renderDistance": "2", "soundCategory_master": "0.0", "fullscreen": "false",
+    set_options({"lang": lang, "renderDistance": "2", "soundCategory_master": "0.0", "fullscreen": "false",
                  "pauseOnLostFocus": "false", "maxFps": "20", "snooperEnabled": "false"})
     uuid = hashlib.md5(("OfflinePlayer:" + name).encode("utf8")).hexdigest()
     values = {"auth_player_name": name, "version_name": "1.7.10", "game_directory": GAME, "assets_root": ASSETS,
@@ -275,7 +275,7 @@ def main():
         setup(opt("--pack", DEFAULT_PACK))
     elif cmd == "start":
         defines = [rest[i + 1] for i, a in enumerate(rest) if a == "-D"]
-        start(opt("--join"), opt("--name", "Exporter"), defines, opt("--memory", "8G"))
+        start(opt("--join"), opt("--name", "Exporter"), defines, opt("--memory", "8G"), opt("--lang", "zh_CN"))
     elif cmd == "stop":
         stop()
     elif cmd == "status":

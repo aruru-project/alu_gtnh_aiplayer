@@ -357,6 +357,10 @@ public final class BotManager implements TaskQueue.Listener {
         data.addProperty("bot", b.name);
         data.addProperty("from", from);
         data.addProperty("message", message);
+        net.minecraft.entity.player.EntityPlayerMP speaker = net.minecraft.server.MinecraftServer.getServer()
+            .getConfigurationManager()
+            .func_152612_a(from);
+        if (speaker != null && !isBot(speaker)) data.add("speaker", alu.aiplayer.world.PlayerView.describe(speaker));
         bridge.emit("whisper", data);
     }
 

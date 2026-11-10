@@ -39,7 +39,6 @@ import codechicken.nei.recipe.RecipeCatalysts;
 import codechicken.nei.recipe.ShapedRecipeHandler;
 import codechicken.nei.recipe.ShapelessRecipeHandler;
 import codechicken.nei.recipe.TemplateRecipeHandler;
-import codechicken.nei.util.ItemUntranslator;
 
 /**
  * Writes down what NEI shows: every item and every recipe of every recipe page, in the language the client runs in.
@@ -70,6 +69,52 @@ public final class NeiExport {
         new NeiExport(dir).all();
     }
 
+    /**
+     * Only the names, in the language this client runs in, of the items an earlier full run listed. Names of some
+     * mods are fixed when the game starts, so a second language takes a second start; this is that second start.
+     */
+    public static void names(File dir) throws Exception {
+        String lang = net.minecraft.client.Minecraft.getMinecraft()
+            .getLanguageManager()
+            .getCurrentLanguage()
+            .getLanguageCode();
+        File listed = new File(dir, "items.jsonl");
+        int n = 0;
+        try (java.io.BufferedReader in = new java.io.BufferedReader(
+            new java.io.InputStreamReader(new java.io.FileInputStream(listed), StandardCharsets.UTF_8));
+            Writer w = new BufferedWriter(
+                new OutputStreamWriter(
+                    new FileOutputStream(new File(dir, "names-" + lang + ".jsonl")),
+                    StandardCharsets.UTF_8))) {
+            JsonParser parser = new JsonParser();
+            for (String line = in.readLine(); line != null; line = in.readLine()) {
+                JsonObject o = parser.parse(line)
+                    .getAsJsonObject();
+                Item item = (Item) Item.itemRegistry.getObject(
+                    o.get("id")
+                        .getAsString());
+                if (item == null) continue;
+                int meta = o.get("meta")
+                    .getAsInt();
+                String name;
+                try {
+                    name = displayName(new ItemStack(item, 1, meta == OreDictionary.WILDCARD_VALUE ? 0 : meta));
+                } catch (Throwable t) {
+                    continue;
+                }
+                if (name.isEmpty()) continue;
+                JsonObject out = new JsonObject();
+                out.add("id", o.get("id"));
+                out.add("meta", o.get("meta"));
+                out.addProperty("name", name);
+                w.write(out.toString());
+                w.write('\n');
+                n++;
+            }
+        }
+        AiPlayerMod.LOG.info("export: {} names in {}", n, lang);
+    }
+
     private void all() throws Exception {
         long t0 = System.currentTimeMillis();
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("cannot create " + dir);
@@ -96,7 +141,7 @@ public final class NeiExport {
         recipes.close();
         replace(tmp, new File(dir, "recipes.jsonl"));
 
-        englishNames();
+        blocks();
         try (Writer w = writer("items.jsonl.part")) {
             for (JsonObject o : items.values()) {
                 w.write(o.toString());
@@ -148,12 +193,24 @@ public final class NeiExport {
         o.addProperty("items", items.size());
         o.addProperty("recipes", recipeCount);
         o.addProperty("pages", handlers.size());
+        o.addProperty("pack", packVersion());
         o.addProperty("seconds", ms / 1000);
         meta.add("nei", o);
         try (Writer w = writer("meta.json.part")) {
             w.write(meta.toString());
         }
         replace(new File(dir, "meta.json.part"), f);
+    }
+
+    /** The pack writes its version next to the game directory; the launcher's instance keeps it there. */
+    private static String packVersion() {
+        try {
+            File f = new File(net.minecraft.client.Minecraft.getMinecraft().mcDataDir.getAbsoluteFile()
+                .getParentFile(), ".gtnh-version");
+            if (!f.isFile()) f = new File(net.minecraft.client.Minecraft.getMinecraft().mcDataDir, ".gtnh-version");
+            if (f.isFile()) return "GTNH " + new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+        } catch (Throwable ignored) {}
+        return "unknown";
     }
 
     // ---- items ----------------------------------------------------------------------------------------------
@@ -219,29 +276,100 @@ public final class NeiExport {
         return o;
     }
 
-    private void englishNames() {
-        ItemUntranslator english;
+    // ---- blocks ---------------------------------------------------------------------------------------------
+
+    /**
+     * The plain full cubes and the colour each shows, for anything that wants to pick blocks by colour. The colour
+     * is the average of the texture file; blocks the game tints (grass, leaves) are left out because the file is
+     * not what you see.
+     */
+    private void blocks() throws Exception {
+        int n = 0;
+        Map<String, int[]> colours = new HashMap<>();
+        try (Writer w = writer("blocks.jsonl.part")) {
+            for (Map.Entry<String, JsonObject> e : items.entrySet()) {
+                ItemStack s = samples.get(e.getKey());
+                if (s == null || !(s.getItem() instanceof net.minecraft.item.ItemBlock)) continue;
+                int meta = s.getItemDamage();
+                if (meta < 0 || meta > 15) continue;
+                try {
+                    net.minecraft.block.Block block = ((net.minecraft.item.ItemBlock) s.getItem()).field_150939_a;
+                    if (block == null || !block.isOpaqueCube()
+                        || !block.renderAsNormalBlock()
+                        || block.hasTileEntity(meta)
+                        || s.getItem()
+                            .getMetadata(meta) != meta
+                        || block.getRenderColor(meta) != 0xFFFFFF) continue;
+                    net.minecraft.util.IIcon sideIcon = block.getIcon(2, meta), topIcon = block.getIcon(1, meta);
+                    int[] side = colour(sideIcon, colours);
+                    if (side == null) continue;
+                    int[] top = colour(topIcon, colours);
+                    JsonObject o = new JsonObject();
+                    o.add(
+                        "id",
+                        e.getValue()
+                            .get("id"));
+                    o.addProperty("meta", meta);
+                    o.add(
+                        "name",
+                        e.getValue()
+                            .get("name"));
+                    o.add("color", rgb(side));
+                    if (top != null && (top[0] != side[0] || top[1] != side[1] || top[2] != side[2])) o.add("top", rgb(top));
+                    // The texture files themselves, for whoever wants to draw the block rather than a colour.
+                    o.addProperty("tex", sideIcon.getIconName());
+                    if (top != null && !topIcon.getIconName()
+                        .equals(sideIcon.getIconName())) o.addProperty("texTop", topIcon.getIconName());
+                    if (block instanceof net.minecraft.block.BlockFalling) o.addProperty("falls", true);
+                    if (block.getLightValue() > 0) o.addProperty("light", block.getLightValue());
+                    w.write(o.toString());
+                    w.write('\n');
+                    n++;
+                } catch (Throwable ignored) {}
+            }
+        }
+        replace(new File(dir, "blocks.jsonl.part"), new File(dir, "blocks.jsonl"));
+        AiPlayerMod.LOG.info("export: {} plain blocks with a colour", n);
+    }
+
+    private static JsonArray rgb(int[] c) {
+        JsonArray a = new JsonArray();
+        for (int v : c) a.add(new JsonPrimitive(v));
+        return a;
+    }
+
+    private static int[] colour(net.minecraft.util.IIcon icon, Map<String, int[]> cache) {
+        if (icon == null || icon.getIconName() == null) return null;
+        String name = icon.getIconName();
+        if (cache.containsKey(name)) return cache.get(name);
+        int[] out = null;
         try {
-            english = ItemUntranslator.getInstance();
-        } catch (Throwable t) {
-            AiPlayerMod.LOG.warn("export: no English names, NEI's untranslator is not there", t);
-            return;
-        }
-        int found = 0;
-        for (Map.Entry<String, JsonObject> e : items.entrySet()) {
-            try {
-                String en = plain(english.getItemStackDisplayName(samples.get(e.getKey())));
-                if (!en.isEmpty() && !en.equals(
-                    e.getValue()
-                        .get("name")
-                        .getAsString())) {
-                    e.getValue()
-                        .addProperty("en", en);
-                    found++;
-                }
-            } catch (Throwable ignored) {}
-        }
-        AiPlayerMod.LOG.info("export: {} items have an English name that differs", found);
+            int colon = name.indexOf(':');
+            net.minecraft.util.ResourceLocation at = new net.minecraft.util.ResourceLocation(
+                colon < 0 ? "minecraft" : name.substring(0, colon),
+                "textures/blocks/" + (colon < 0 ? name : name.substring(colon + 1)) + ".png");
+            java.awt.image.BufferedImage img;
+            try (java.io.InputStream in = net.minecraft.client.Minecraft.getMinecraft()
+                .getResourceManager()
+                .getResource(at)
+                .getInputStream()) {
+                img = javax.imageio.ImageIO.read(in);
+            }
+            // An animated texture is its frames stacked; the first square is enough.
+            int size = Math.min(img.getWidth(), img.getHeight());
+            long r = 0, g = 0, b = 0, count = 0;
+            for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) {
+                int argb = img.getRGB(x, y);
+                if ((argb >>> 24) < 128) continue;
+                r += (argb >> 16) & 255;
+                g += (argb >> 8) & 255;
+                b += argb & 255;
+                count++;
+            }
+            if (count >= (long) size * size / 2) out = new int[] { (int) (r / count), (int) (g / count), (int) (b / count) };
+        } catch (Throwable ignored) {}
+        cache.put(name, out);
+        return out;
     }
 
     private JsonObject stack(ItemStack s) {
@@ -356,7 +484,10 @@ public final class NeiExport {
 
     private void page(ICraftingHandler h, List<ItemStack> listed) throws Exception {
         long t0 = System.currentTimeMillis();
-        String key = h.getHandlerId();
+        String key = null;
+        // GregTech has one class for all of its pages; what tells them apart is the recipe category they show.
+        if (gregTechCache(h) != null) key = h.getOverlayIdentifier();
+        if (key == null || key.isEmpty()) key = h.getHandlerId();
         if (key == null || key.isEmpty()) key = h.getClass()
             .getName();
         String base = key;
@@ -489,7 +620,7 @@ public final class NeiExport {
             for (FluidStack f : fout) if (f != null && f.getFluid() != null) a.add(fluid(f));
             if (a.size() > 0) o.add("fout", a);
         }
-        if (out.size() == 0 && !o.has("fout")) return null;
+        if (out.size() == 0 && !o.has("fout") && in.size() == 0 && !o.has("fin")) return null;
         o.addProperty(
             "eut",
             c.getField("mEUt")

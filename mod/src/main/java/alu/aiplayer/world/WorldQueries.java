@@ -1,6 +1,7 @@
 package alu.aiplayer.world;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -52,7 +53,9 @@ public final class WorldQueries {
         int meta = w.getBlockMetadata(x, y, z);
         o.addProperty("id", Names.blockId(b));
         o.addProperty("meta", meta);
-        o.addProperty("name", blockName(b, meta));
+        TileEntity here = w.getTileEntity(x, y, z);
+        String gregTech = Machines.name(here);
+        o.addProperty("name", gregTech != null ? gregTech : blockName(b, meta));
         o.addProperty("air", b.isAir(w, x, y, z));
         o.addProperty(
             "solid",
@@ -265,7 +268,166 @@ public final class WorldQueries {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    public static JsonObject containers(World w, int cx, int cy, int cz, int radius) {
+    private static final int[][] SIDES = { { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 } };
+    private static final java.util.regex.Pattern MOVER = java.util.regex.Pattern
+        .compile("(?i)pipe|conduit|duct|tube|translocator|chute|funnel|transfernode|hopper|logistic");
+
+    /**
+     * What stands against a container and moves things in or out of it by itself: hoppers, pipes and their like.
+     * A player sees at a glance that a chest is plumbed in; whoever reads a list needs to be told.
+     */
+    public static JsonArray attached(World w, TileEntity te) {
+        JsonArray out = new JsonArray();
+        for (int[] d : SIDES) {
+            int x = te.xCoord + d[0], y = te.yCoord + d[1], z = te.zCoord + d[2];
+            if (y < 0 || y > 255 || !w.blockExists(x, y, z)) continue;
+            TileEntity n = w.getTileEntity(x, y, z);
+            if (n == null) continue;
+            String kind = null;
+            if (n instanceof net.minecraft.tileentity.TileEntityHopper) kind = "hopper";
+            else if (Machines.isGregTech(n)) kind = Machines.pipeKind(n);
+            else if (MOVER.matcher(
+                n.getClass()
+                    .getSimpleName())
+                .find()) kind = "pipe";
+            if (kind == null) continue;
+            JsonObject o = J.pos(x, y, z);
+            String name = Machines.name(n);
+            o.addProperty("name", name != null ? name : blockName(n.getBlockType(), n.getBlockMetadata()));
+            o.addProperty("kind", kind);
+            out.add(o);
+        }
+        return out;
+    }
+
+    /**
+     * Every drawer a controller manages (or the drawers of one block), slot by slot, with what each really holds.
+     *
+     * @param below only slots holding something, and fewer than this; 0 for all slots, empty ones included
+     */
+    public static JsonObject drawers(World w, int x, int y, int z, int below, int offset, int limit) {
+        TileEntity te = w.blockExists(x, y, z) ? w.getTileEntity(x, y, z) : null;
+        List<int[]> blocks = new ArrayList<>();
+        JsonObject out = new JsonObject();
+        if (Drawers.isController(te)) {
+            blocks = Drawers.managed(te);
+            out.add("controller", J.pos(x, y, z));
+        } else if (Drawers.is(te)) {
+            blocks.add(new int[] { x, y, z });
+        } else {
+            throw RpcException.notFound("there is no drawer or drawer controller at " + x + "," + y + "," + z);
+        }
+        out.addProperty("drawers", blocks.size());
+        JsonArray slots = new JsonArray();
+        int all = 0, used = 0, matched = 0;
+        for (int[] b : blocks) {
+            TileEntity d = w.getTileEntity(b[0], b[1], b[2]);
+            if (!Drawers.is(d)) continue;
+            for (Drawers.Slot slot : Drawers.slots(d)) {
+                all++;
+                boolean holds = slot.prototype != null && slot.count > 0;
+                if (holds) used++;
+                if (below > 0 && (!holds || slot.count >= below)) continue;
+                if (matched++ < offset || slots.size() >= limit) continue;
+                JsonObject o = J.pos(b[0], b[1], b[2]);
+                o.addProperty("slot", slot.index);
+                if (slot.prototype == null) {
+                    o.addProperty("empty", true);
+                } else {
+                    o.addProperty("id", Names.itemId(slot.prototype.getItem()));
+                    o.addProperty("meta", Names.meta(slot.prototype));
+                    o.addProperty("name", Names.displayName(slot.prototype));
+                    o.addProperty("count", slot.count);
+                    o.addProperty("room", slot.room);
+                }
+                slots.add(o);
+            }
+        }
+        out.addProperty("slotsTotal", all);
+        out.addProperty("slotsUsed", used);
+        out.add("slots", slots);
+        out.addProperty("total", matched);
+        out.addProperty("offset", offset);
+        return out;
+    }
+
+    /**
+     * The blocks of a box, for drawing it: a palette and runs of palette indexes, x fastest, then z, then y.
+     */
+    public static JsonObject blocks(World w, int ax, int ay, int az, int bx, int by, int bz) {
+        int x1 = Math.min(ax, bx), x2 = Math.max(ax, bx), z1 = Math.min(az, bz), z2 = Math.max(az, bz);
+        int y1 = Math.max(0, Math.min(ay, by)), y2 = Math.min(255, Math.max(ay, by));
+        if (x2 - x1 >= 64 || z2 - z1 >= 64 || y2 - y1 >= 64) throw RpcException.tooLarge("each side is limited to 64 blocks");
+        Map<String, Integer> index = new HashMap<>();
+        JsonArray palette = new JsonArray();
+        JsonObject air = new JsonObject();
+        air.addProperty("id", "minecraft:air");
+        air.addProperty("meta", 0);
+        palette.add(air);
+        index.put("minecraft:air/0", 0);
+        JsonArray runs = new JsonArray();
+        int last = -1, run = 0, unloaded = 0;
+        for (int y = y1; y <= y2; y++) for (int z = z1; z <= z2; z++) for (int x = x1; x <= x2; x++) {
+            int i;
+            if (!w.blockExists(x, y, z)) {
+                unloaded++;
+                Integer known = index.get("?");
+                if (known == null) {
+                    JsonObject o = new JsonObject();
+                    o.addProperty("id", "?");
+                    palette.add(o);
+                    known = palette.size() - 1;
+                    index.put("?", known);
+                }
+                i = known;
+            } else {
+                Block b = w.getBlock(x, y, z);
+                if (b.isAir(w, x, y, z)) {
+                    i = 0;
+                } else {
+                    int meta = w.getBlockMetadata(x, y, z);
+                    String key = Names.blockId(b) + "/" + meta;
+                    Integer known = index.get(key);
+                    if (known == null) {
+                        JsonObject o = new JsonObject();
+                        o.addProperty("id", Names.blockId(b));
+                        o.addProperty("meta", meta);
+                        palette.add(o);
+                        known = palette.size() - 1;
+                        index.put(key, known);
+                    }
+                    i = known;
+                }
+            }
+            if (i == last) {
+                run++;
+            } else {
+                if (run > 0) {
+                    runs.add(J.prim(last));
+                    runs.add(J.prim(run));
+                }
+                last = i;
+                run = 1;
+            }
+        }
+        if (run > 0) {
+            runs.add(J.prim(last));
+            runs.add(J.prim(run));
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("x", x1);
+        o.addProperty("y", y1);
+        o.addProperty("z", z1);
+        o.addProperty("sx", x2 - x1 + 1);
+        o.addProperty("sy", y2 - y1 + 1);
+        o.addProperty("sz", z2 - z1 + 1);
+        o.add("palette", palette);
+        o.add("runs", runs);
+        o.addProperty("unloaded", unloaded);
+        return o;
+    }
+
+    public static JsonObject containers(World w, int cx, int cy, int cz, int radius, int offset, int limit) {
         if (radius > 32) throw RpcException.tooLarge("radius is limited to 32");
         List<TileEntity> found = new ArrayList<>();
         for (TileEntity te : tileEntities(w, cx - radius, cz - radius, cx + radius, cz + radius)) {
@@ -277,15 +439,31 @@ public final class WorldQueries {
             (a, b) -> Long.compare(
                 dist2(new int[] { a.xCoord, a.yCoord, a.zCoord }, fx, fy, fz),
                 dist2(new int[] { b.xCoord, b.yCoord, b.zCoord }, fx, fy, fz)));
-        JsonArray list = new JsonArray();
+        // Which controller, if any, each drawer block answers to.
+        Map<Long, TileEntity> controllerOf = new HashMap<>();
         for (TileEntity te : found) {
-            if (list.size() >= 40) break;
-            list.add(describeContainer(w, te));
+            if (!Drawers.isController(te)) continue;
+            for (int[] b : Drawers.managed(te)) controllerOf.put(packed(b[0], b[1], b[2]), te);
+        }
+        JsonArray list = new JsonArray();
+        for (int i = Math.max(0, offset); i < found.size() && list.size() < limit; i++) {
+            TileEntity te = found.get(i);
+            JsonObject c = describeContainer(w, te);
+            TileEntity controller = controllerOf.get(packed(te.xCoord, te.yCoord, te.zCoord));
+            if (controller != null) c.add("controller", J.pos(controller.xCoord, controller.yCoord, controller.zCoord));
+            JsonArray attached = attached(w, te);
+            if (attached.size() > 0) c.add("attached", attached);
+            list.add(c);
         }
         JsonObject o = new JsonObject();
         o.add("containers", list);
         o.addProperty("total", found.size());
+        o.addProperty("offset", Math.max(0, offset));
         return o;
+    }
+
+    private static long packed(int x, int y, int z) {
+        return ((long) (x + 30000000) << 36) | ((long) (z + 30000000) << 10) | (y & 1023);
     }
 
     /**
@@ -485,7 +663,19 @@ public final class WorldQueries {
         if (machine != null) c.addProperty("kind", "machine");
         int size = 0, used = 0;
         Map<String, JsonObject> merged = new LinkedHashMap<>();
-        if (Drawers.is(te)) {
+        if (Drawers.isController(te)) {
+            // It shows every drawer it manages as if it were one chest, a stack per slot. The drawers are listed
+            // in their own right with their real counts (world.drawers gives them all at once), so nothing here.
+            c.addProperty("kind", "drawer_controller");
+            List<int[]> managed = Drawers.managed(te);
+            c.addProperty("drawers", managed.size());
+            for (int[] at : managed) {
+                for (Drawers.Slot d : Drawers.slots(w.getTileEntity(at[0], at[1], at[2]))) {
+                    size++;
+                    if (d.prototype != null && d.count > 0) used++;
+                }
+            }
+        } else if (Drawers.is(te)) {
             // A drawer's hopper-facing slots show one stack; what it really holds is asked of the drawer itself.
             c.addProperty("kind", "drawers");
             for (Drawers.Slot d : Drawers.slots(te)) {
@@ -534,6 +724,7 @@ public final class WorldQueries {
             items.add(item);
         }
         c.add("items", items);
+        if (merged.size() > items.size()) c.addProperty("moreKinds", merged.size() - items.size());
         return c;
     }
 

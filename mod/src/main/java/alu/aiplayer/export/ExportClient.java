@@ -34,6 +34,7 @@ public final class ExportClient {
     private int pagesSeen = -1;
     private int pagesStableSince;
     private boolean started;
+    private final boolean namesOnly = "names".equals(System.getProperty("aiplayer.export.only"));
 
     private ExportClient(File dir, String join) {
         this.dir = dir;
@@ -54,8 +55,25 @@ public final class ExportClient {
         if (event.phase != TickEvent.Phase.END || started) return;
         ticks++;
         Minecraft mc = Minecraft.getMinecraft();
+        if (namesOnly) {
+            // Names need no world, only a game that has finished starting.
+            if (mc.currentScreen == null || ticks < 100) return;
+            started = true;
+            work(true);
+            return;
+        }
         if (mc.theWorld == null || mc.thePlayer == null) {
             inWorldSince = -1;
+            // A handshake that hangs never comes back; better to end here and let whoever started us try again.
+            if (join != null && joinAttempts > 0 && mc.currentScreen instanceof GuiConnecting && ticks > nextJoinAt + 4200) {
+                AiPlayerMod.LOG.error("export: still not in the world five minutes after joining, giving up");
+                started = true;
+                try {
+                    new File(dir, "export.failed").createNewFile();
+                } catch (Throwable ignored) {}
+                mc.shutdown();
+                return;
+            }
             // The pack has a title screen of its own, so "not busy connecting" is the test rather than a class.
             boolean idle = mc.currentScreen != null && !(mc.currentScreen instanceof GuiConnecting);
             if (join != null && idle && ticks >= nextJoinAt) {
@@ -94,15 +112,24 @@ public final class ExportClient {
             && ticks - inWorldSince >= 1200;
         if (!ready) return;
         started = true;
+        work(false);
+    }
+
+    private void work(boolean names) {
         Thread t = new Thread(() -> {
             boolean ok = false;
             try {
-                NeiExport.run(dir);
+                if (names) NeiExport.names(dir);
+                else NeiExport.run(dir);
                 ok = true;
             } catch (Throwable e) {
                 AiPlayerMod.LOG.error("export: failed", e);
             }
             AiPlayerMod.LOG.info("export: {}, closing the game", ok ? "finished" : "did not finish");
+            try {
+                // Read by tools/export-packdata, which cannot tell a finished run from a crash otherwise.
+                new File(dir, ok ? "export.ok" : "export.failed").createNewFile();
+            } catch (Throwable ignored) {}
             Minecraft.getMinecraft()
                 .shutdown();
         }, "aiplayer-export");

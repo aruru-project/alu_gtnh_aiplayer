@@ -92,6 +92,39 @@ public final class Drawers {
         return te != null && available() && tileClass.isInstance(te);
     }
 
+    /** The block that ties a wall of drawers into one store. It holds nothing itself. */
+    public static boolean isController(TileEntity te) {
+        return te != null && te.getClass()
+            .getName()
+            .equals(PKG + "block.tile.TileEntityController");
+    }
+
+    /** Where the drawer blocks a controller manages are; empty when it cannot be told. */
+    public static List<int[]> managed(TileEntity controller) {
+        List<int[]> out = new ArrayList<>();
+        try {
+            java.lang.reflect.Field f = controller.getClass()
+                .getDeclaredField("storage");
+            f.setAccessible(true);
+            for (Object coord : new ArrayList<Object>(((java.util.Map<?, ?>) f.get(controller)).keySet())) {
+                Class<?> c = coord.getClass();
+                int x = (Integer) c.getMethod("x")
+                    .invoke(coord);
+                int y = (Integer) c.getMethod("y")
+                    .invoke(coord);
+                int z = (Integer) c.getMethod("z")
+                    .invoke(coord);
+                TileEntity te = controller.getWorldObj()
+                    .getTileEntity(x, y, z);
+                if (is(te)) out.add(new int[] { x, y, z });
+            }
+        } catch (Throwable t) {
+            AiPlayerMod.LOG.warn("Cannot read a drawer controller", t);
+        }
+        java.util.Collections.sort(out, (a, b) -> a[1] != b[1] ? b[1] - a[1] : a[0] != b[0] ? a[0] - b[0] : a[2] - b[2]);
+        return out;
+    }
+
     /** The face the drawer fronts are on (0 down .. 5 east), or -1 if it cannot be told. */
     public static int front(TileEntity te) {
         try {

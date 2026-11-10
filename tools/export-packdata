@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Export what NEI shows (items, recipes, block colours) from our own client into brain/packdata.
+
+Run once per version of the pack; takes about a quarter of an hour. Needs `tools/client setup` done, the mod
+built, and a server the client may join (it joins as "Exporter", who has to be on the whitelist).
+
+  tools/export-packdata [--join HOST:PORT] [--out DIR]
+
+The game is started twice: once in Chinese for everything, once in English for the names only, because some
+mods fix their names when the game starts.
+"""
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLIENT = os.path.join(ROOT, "tools", "client")
+WORK = os.path.join(ROOT, "client", "export")
+MODS = os.path.join(ROOT, "client", "instance", ".minecraft", "mods")
+PIDFILE = os.path.join(ROOT, "client", "client.pid")
+
+
+def opt(flag, default):
+    argv = sys.argv[1:]
+    return argv[argv.index(flag) + 1] if flag in argv else default
+
+
+def running():
+    try:
+        os.kill(int(open(PIDFILE).read()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def run_client(args, limit_minutes):
+    for mark in ("export.ok", "export.failed"):
+        path = os.path.join(WORK, mark)
+        if os.path.exists(path):
+            os.remove(path)
+    subprocess.run([CLIENT, "start"] + args, check=True)
+    deadline = time.time() + limit_minutes * 60
+    while running():
+        if time.time() > deadline:
+            subprocess.run([CLIENT, "stop"])
+            raise SystemExit("the client did not finish in %d minutes; see client/client.log" % limit_minutes)
+        time.sleep(5)
+    if not os.path.exists(os.path.join(WORK, "export.ok")):
+        raise SystemExit("the client closed without finishing the export; see client/client.log")
+
+
+def read_lines(path):
+    with open(path, encoding="utf8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def write_lines(path, rows):
+    with open(path + ".part", "w", encoding="utf8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.replace(path + ".part", path)
+
+
+def main():
+    join = opt("--join", "127.0.0.1:10186")
+    out = opt("--out", os.path.join(ROOT, "brain", "packdata"))
+    if running():
+        raise SystemExit("a client is already running (tools/client stop)")
+    jars = [j for j in sorted(glob.glob(os.path.join(ROOT, "mod", "build", "libs", "*.jar")), key=os.path.getmtime)
+            if not j.endswith(("-dev.jar", "-sources.jar", "-javadoc.jar"))]
+    if not jars:
+        raise SystemExit("build the mod first (tools/gradle build)")
+    for old in glob.glob(os.path.join(MODS, "aiplayer-*.jar")):
+        os.remove(old)
+    shutil.copy2(jars[-1], MODS)
+    os.makedirs(WORK, exist_ok=True)
+
+    t0 = time.time()
+    print("1/2 everything, in Chinese")
+    # The export joins by itself once the title screen is up; the game's own --server argument is unreliable here.
+    full = ["--lang", "zh_CN", "-D", "aiplayer.export=" + WORK, "-D", "aiplayer.export.join=" + join,
+            "-D", "fml.readTimeout=180"]
+    try:
+        run_client(full, 30)
+    except SystemExit as first:
+        print("first attempt failed (%s), trying once more" % first)
+        run_client(full, 30)
+    print("2/2 names, in English")
+    run_client(["--lang", "en_US", "-D", "aiplayer.export=" + WORK, "-D", "aiplayer.export.only=names"], 15)
+
+    english = {(r["id"], r["meta"]): r["name"] for r in read_lines(os.path.join(WORK, "names-en_US.jsonl"))}
+    for name in ("items.jsonl", "blocks.jsonl"):
+        rows = read_lines(os.path.join(WORK, name))
+        for row in rows:
+            en = english.get((row["id"], row["meta"]))
+            if en and en != row["name"]:
+                row["en"] = en
+        write_lines(os.path.join(WORK, name), rows)
+
+    os.makedirs(out, exist_ok=True)
+    for name in ("items.jsonl", "blocks.jsonl", "recipes.jsonl", "handlers.json"):
+        shutil.copy2(os.path.join(WORK, name), os.path.join(out, name + ".part"))
+        os.replace(os.path.join(out, name + ".part"), os.path.join(out, name))
+    meta_path = os.path.join(out, "meta.json")
+    meta = json.load(open(meta_path, encoding="utf8")) if os.path.exists(meta_path) else {}
+    nei = json.load(open(os.path.join(WORK, "meta.json"), encoding="utf8"))["nei"]
+    nei["english"] = sum(1 for _ in english)
+    nei["blocks"] = len(read_lines(os.path.join(WORK, "blocks.jsonl")))
+    meta["nei"] = nei
+    with open(meta_path + ".part", "w", encoding="utf8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    os.replace(meta_path + ".part", meta_path)
+    print("done in %d s: %s" % (time.time() - t0, json.dumps(nei, ensure_ascii=False)))
+
+
+if __name__ == "__main__":
+    main()

@@ -28,6 +28,7 @@ import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 import alu.aiplayer.world.BlueprintPlan;
 import alu.aiplayer.world.Quests;
+import alu.aiplayer.world.PlayerView;
 import alu.aiplayer.world.WorldQueries;
 
 /** The bridge methods of docs/PROTOCOL.md. Each runs on the server thread. */
@@ -174,7 +175,44 @@ public final class BridgeApi {
                 .remove(J.reqStr(p, "name")));
         bridge.register("world.containers", p -> {
             int[] c = centre(p);
-            return WorldQueries.containers(world(p), c[0], c[1], c[2], Math.max(1, J.i(p, "radius", 12)));
+            return WorldQueries.containers(
+                world(p),
+                c[0],
+                c[1],
+                c[2],
+                Math.max(0, J.i(p, "radius", 12)),
+                Math.max(0, J.i(p, "offset", 0)),
+                Math.max(1, Math.min(100, J.i(p, "limit", 40))));
+        });
+        bridge.register(
+            "world.drawers",
+            p -> WorldQueries.drawers(
+                world(p),
+                J.reqCoord(p, "x"),
+                J.reqHeight(p, "y"),
+                J.reqCoord(p, "z"),
+                Math.max(0, J.i(p, "below", 0)),
+                Math.max(0, J.i(p, "offset", 0)),
+                Math.max(1, Math.min(500, J.i(p, "limit", 200)))));
+        bridge.register(
+            "world.blocks",
+            p -> WorldQueries.blocks(
+                world(p),
+                J.reqCoord(p, "x1"),
+                J.reqHeight(p, "y1"),
+                J.reqCoord(p, "z1"),
+                J.reqCoord(p, "x2"),
+                J.reqHeight(p, "y2"),
+                J.reqCoord(p, "z2")));
+        bridge.register("world.player", p -> {
+            EntityPlayerMP who = MinecraftServer.getServer()
+                .getConfigurationManager()
+                .func_152612_a(J.reqStr(p, "name"));
+            if (who == null) throw RpcException.notFound("no player named " + J.reqStr(p, "name") + " is online");
+            JsonObject o = PlayerView.describe(who);
+            o.addProperty("name", who.getCommandSenderName());
+            o.addProperty("isBot", bots.isBot(who));
+            return o;
         });
         bridge.register("world.entities", p -> {
             int[] c = centre(p);

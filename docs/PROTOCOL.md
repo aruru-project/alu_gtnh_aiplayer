@@ -59,13 +59,83 @@
 | 方法 | 参数 | 结果 |
 |---|---|---|
 | `server.info` | – | `{tick, tps, tickMs, worldTime, dayTime, isDay, raining, difficulty, players:[{name,uuid,dim,pos,isBot}], bots:[name]}` |
+| `world.player` | `{name}` | 一个在线玩家（真人或 bot）站在哪、朝哪看、指着什么：`{name, isBot}` 加上下面的 PlayerView。不在线返回 `not_found` |
 | `world.block` | `{dim?,x,y,z}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory}`；区块没加载时只有 `{loaded:false}` |
+| `world.blocks` | `{dim?,x1,y1,z1,x2,y2,z2}`，每边最多 64 格 | 一个范围里的全部方块，画图用，见下 |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
-| `world.containers` | `{radius?(≤32)}` + 中心 | `{containers:[{x,y,z,id,name,slots,usedSlots,items:[Item…],kind?}], total}`，由近到远最多 40 个；items 已按物品合并，每个箱子最多列 60 种。抽屉（Storage Drawers）带 `kind:"drawers"`，`count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数 |
+| `world.containers` | `{radius?(≤32), offset?=0, limit?=40(≤100)}` + 中心 | `{containers:[Container…], total, offset}`，由近到远。**`total` 是范围里的总数，`containers` 只是从 `offset` 起的一页**，要看全就翻页。Container 见下 |
+| `world.drawers` | `{dim?,x,y,z, below?, offset?=0, limit?=200(≤500)}` | 一个抽屉管理器管着的全部抽屉（给的位置是普通抽屉时只有它自己），逐格列出，见下 |
 | `world.entities` | `{radius?(≤64)}` + 中心 | `{entities:[{type:"player"\|"mob"\|"animal"\|"item"\|"other",name,pos,dist,item?}], total}` |
 
 “中心”是 `{x,y,z}`，或者 `{bot}`（用该 bot 站的位置）。
+
+Container：
+
+```jsonc
+{
+  "x":-509,"y":69,"z":90, "id":"IronChest:BlockIronChest", "name":"Compressed Chest",
+  "kind":"drawers",              // 没有：普通容器；"drawers"：抽屉；"drawer_controller"：抽屉管理器；"machine"：GregTech 机器
+  "slots":243, "usedSlots":28,
+  "items":[Item…],               // 按物品合并，最多列 60 种；还有没列的时带 "moreKinds":n
+  "attached":[                   // 紧挨着它、会自己往里送或往外抽东西的方块；没有就不带这个字段
+    {"x":-516,"y":71,"z":85,"name":"Brass Item Pipe","kind":"item pipe"}   // kind：hopper、item pipe、fluid pipe、pipe（其他 mod 的管道类）
+  ],
+  "controller":{"x":-511,"y":71,"z":86}   // 抽屉：管着它的抽屉管理器（在查询范围内才认得出）
+}
+```
+
+- 抽屉（Storage Drawers）的 `count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数。
+- 抽屉管理器自己不装东西：`items` 为空，`drawers` 是它管着几个抽屉方块，`slots`/`usedSlots` 是这些抽屉合计的格数。它管的东西用 `world.drawers` 看。
+- 带 `attached` 的箱子多半是自动化的一环（进货口、出货口），往里放的东西可能马上被抽走。
+
+`world.drawers` 结果：
+
+```jsonc
+{
+  "controller":{"x":-511,"y":71,"z":86},   // 给的是管理器时才有
+  "drawers":120,                            // 抽屉方块数
+  "slotsTotal":353, "slotsUsed":166,        // 全部格数、有货的格数（不受 below 和翻页影响）
+  "slots":[
+    {"x":-515,"y":70,"z":86,"slot":0,"id":"gregtech:gt.metaitem.01","meta":11054,"name":"Silver Ingot","count":4,"room":2044},
+    {"x":-516,"y":69,"z":91,"slot":0,"empty":true}        // 没指定物品的空格
+  ],
+  "total":54, "offset":0                    // 符合条件的格数；slots 是其中从 offset 起的一页
+}
+```
+
+`below` 给了就只列“有货而且数量少于它”的格。`x,y,z,slot` 就是 `withdraw` 从抽屉取货时要找的那一格所在的方块。
+
+`world.blocks` 结果：
+
+```jsonc
+{
+  "x":-600,"y":63,"z":80,            // 范围的最小角
+  "sx":32,"sy":27,"sz":32,           // 各边格数
+  "palette":[{"id":"minecraft:air","meta":0}, {"id":"chisel:nucrete","meta":7}, …],   // 0 号永远是空气
+  "runs":[0,1520, 1,64, 0,3, …],     // 调色板下标和连续个数交替；顺序是 x 最快，其次 z，最后 y（下标 = (y*sz + z)*sx + x）
+  "unloaded":0                        // 没加载的区块里的格数；这些格在调色板里是 {"id":"?"}
+}
+```
+
+PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `speaker`）：
+
+```jsonc
+{
+  "dim":0, "pos":{"x":-512.4,"y":69.0,"z":93.7}, "block":{"x":-513,"y":69,"z":93},
+  "yaw":-171.2, "pitch":12.5,        // 原版的角度：yaw 0 朝南（+z），90 朝西，±180 朝北，-90 朝东；pitch 正数是低头
+  "facing":"north",                  // north/south/east/west；抬头或低头超过 60 度时是 up/down
+  "lookingAt":{"x":-509,"y":69,"z":90,"id":"IronChest:BlockIronChest","meta":3,"name":"Compressed Chest",
+               "kind":"container","side":"west","dist":4.2},   // 准星指着的方块，48 格内；什么都没指着就没有这个字段
+  "ahead":[                          // 面前 12 格内、视野中央约 100 度里的容器，最正对、最近的在前，最多 6 个
+    {"x":-509,"y":69,"z":90,"id":"…","meta":3,"name":"Compressed Chest","kind":"container","dist":4.2},
+    {"x":-517,"y":71,"z":85,"id":"…","meta":3,"name":"Compressed Chest","kind":"container","dist":7.9,
+     "attached":[{"x":-516,"y":71,"z":85,"name":"Brass Item Pipe","kind":"item pipe"}]}
+  ]
+}
+```
+
+`kind` 是 `container`、`drawers`、`drawer_controller`、`machine`，都不是就不带。人说“这个”“我面前的”时，先看 `lookingAt`，再看 `ahead`。
 
 `world.scan` 结果：
 
@@ -146,7 +216,7 @@
 |---|---|---|
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
-| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 单方块加工机器，由近到远：`{machines:[{x,y,z,name,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
+| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 单方块加工机器，由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
@@ -376,8 +446,8 @@
 
 | event | data | 说明 |
 |---|---|---|
-| `chat` | `{player, uuid, message, isBot}` | 公共聊天里的每一句，含 bot 自己说的（`isBot:true`）。控制台 `/say` 不算 |
-| `whisper` | `{bot, from, message}` | 有人用 `/tell` `/msg` 私聊 bot |
+| `chat` | `{player, uuid, message, isBot, speaker?}` | 公共聊天里的每一句，含 bot 自己说的（`isBot:true`）。控制台 `/say` 不算。真人说的带 `speaker`：他说这句话时站在哪、朝哪看、指着什么（PlayerView，见“服务器与世界”） |
+| `whisper` | `{bot, from, message, speaker?}` | 有人用 `/tell` `/msg` 私聊 bot。说话的人在线时带 `speaker` |
 | `bot.message` | `{bot, text}` | 发给 bot 的其他系统消息（指令回显、死亡信息等） |
 | `task.update` | `{bot, task:TaskInfo}` | 任务开始、完成、失败、取消时各发一次；进度变化不推送 |
 | `bot.spawned` | `{bot}` | 上线，以及死亡后重生 |
