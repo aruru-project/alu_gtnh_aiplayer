@@ -1,0 +1,7 @@
+# full GTNH test instance, local only
+/testserver/
+# secrets and runtime state
+/brain/data/
+/brain/node_modules/
+*.log
+.DS_Store

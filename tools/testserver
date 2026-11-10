@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Manage the local full-GTNH test instance in testserver/. Never touches the live server:
+# setup only reads its files, and the test instance uses its own ports and a fresh world.
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+TS="$ROOT/testserver"
+SOURCE=${AIPLAYER_SOURCE_INSTANCE:-/extra_data/gtnh_manager/instances/new-server}
+GAME_PORT=10186
+RCON_PORT=25576
+BRIDGE_PORT=25591
+MEMORY=${AIPLAYER_TEST_MEMORY:-6G}
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+pid() { [[ -f $TS/.pid ]] && cat "$TS/.pid" || true; }
+running() { local p; p=$(pid); [[ -n $p ]] && kill -0 "$p" 2>/dev/null; }
+
+setup() {
+    [[ ! -e $TS ]] || die "testserver/ already exists"
+    [[ -d $SOURCE/mods ]] || die "source instance not found: $SOURCE"
+    mkdir "$TS"
+    # World data, logs and per-world caches stay behind; everything else is static pack content.
+    rsync -a \
+        --exclude '/World*' --exclude '/logs' --exclude '/backups' --exclude '/journeymap' \
+        --exclude '/visualprospecting' --exclude '/crash-reports' --exclude '/manager-jvm.conf' \
+        --exclude '/.gtnh-version' --exclude '/usercache.json' --exclude '/usernamecache.json' \
+        "$SOURCE/" "$TS/"
+    local props="$TS/server.properties" pass
+    pass=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+    sed -i -E \
+        -e "s/^server-port=.*/server-port=$GAME_PORT/" \
+        -e "s/^rcon\.port=.*/rcon.port=$RCON_PORT/" \
+        -e "s/^rcon\.password=.*/rcon.password=$pass/" \
+        -e "s/^enable-rcon=.*/enable-rcon=true/" \
+        -e "s/^motd=.*/motd=AI player test instance/" \
+        "$props"
+    grep -q '^enable-rcon=' "$props" || echo "enable-rcon=true" >>"$props"
+    grep -q '^rcon.port=' "$props" || echo "rcon.port=$RCON_PORT" >>"$props"
+    grep -q '^rcon.password=' "$props" || echo "rcon.password=$pass" >>"$props"
+    (umask 077; printf '%s\n' "$pass" >"$TS/.rcon-password")
+    mkdir -p "$TS/config/aiplayer"
+    printf '{\n  "bridgePort": %s\n}\n' "$BRIDGE_PORT" >"$TS/config/aiplayer/aiplayer.json"
+    printf 'test instance created: %s (game %s, rcon %s, bridge %s)\n' "$TS" "$GAME_PORT" "$RCON_PORT" "$BRIDGE_PORT"
+}
+
+install() {
+    [[ -d $TS/mods ]] || die "run setup first"
+    local jar
+    jar=$(ls -t "$ROOT"/mod/build/libs/*.jar 2>/dev/null | grep -vE -- '-(dev|sources|javadoc)\.jar$' | head -1 || true)
+    [[ -n $jar ]] || die "no built jar in mod/build/libs; run tools/gradle build"
+    rm -f "$TS"/mods/aiplayer-*.jar
+    cp "$jar" "$TS/mods/aiplayer-test.jar"
+    printf 'installed %s\n' "$(basename "$jar")"
+}
+
+start() {
+    [[ -d $TS/mods ]] || die "run setup first"
+    running && die "already running (pid $(pid))"
+    cd "$TS"
+    mkdir -p logs
+    : >console.log
+    setsid nohup java "-Xms$MEMORY" "-Xmx$MEMORY" -Dfml.readTimeout=180 -Dfml.queryResult=confirm \
+        @java9args.txt -jar lwjgl3ify-forgePatches.jar nogui >console.log 2>&1 </dev/null &
+    echo $! >.pid
+    local waited=0 limit=${1:-600}
+    while ((waited < limit)); do
+        if grep -qE 'Done \([0-9.]+s\)!' console.log; then
+            printf 'started in %ss (pid %s)\n' "$waited" "$(pid)"
+            return
+        fi
+        running || { tail -30 console.log; die "server exited during startup"; }
+        sleep 2; waited=$((waited + 2))
+    done
+    die "startup not finished after ${limit}s (still running, see testserver/console.log)"
+}
+
+stop() {
+    running || { echo "not running"; rm -f "$TS/.pid"; return; }
+    "$ROOT/tools/rcon.py" --port "$RCON_PORT" --password-file "$TS/.rcon-password" stop >/dev/null 2>&1 || kill "$(pid)" || true
+    local waited=0
+    while running && ((waited < 90)); do sleep 1; waited=$((waited + 1)); done
+    if running; then kill -9 "$(pid)"; echo "killed after timeout"; else echo "stopped"; fi
+    rm -f "$TS/.pid"
+}
+
+case ${1:-help} in
+    setup) setup ;;
+    install) install ;;
+    start) shift; start "$@" ;;
+    stop) stop ;;
+    restart) stop; shift; start "$@" ;;
+    status) if running; then echo "running (pid $(pid))"; else echo "stopped"; fi ;;
+    rcon) shift; exec "$ROOT/tools/rcon.py" --port "$RCON_PORT" --password-file "$TS/.rcon-password" "$@" ;;
+    log) exec tail -n "${2:-40}" "$TS/console.log" ;;
+    *) echo "usage: tools/testserver setup|install|start [timeout]|stop|restart|status|rcon <cmd...>|log [n]" ;;
+esac

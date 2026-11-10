@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run the mod's Gradle wrapper with JDK 25 and the proxy taken from the environment.
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+export JAVA_HOME=${AIPLAYER_GRADLE_JAVA_HOME:-/usr/lib/jvm/java-25-openjdk-amd64}
+args=()
+proxy=${https_proxy:-${HTTPS_PROXY:-}}
+if [[ $proxy =~ ^https?://([^:/]+):([0-9]+) ]]; then
+    host=${BASH_REMATCH[1]} port=${BASH_REMATCH[2]}
+    args+=("-Dhttp.proxyHost=$host" "-Dhttp.proxyPort=$port" "-Dhttps.proxyHost=$host" "-Dhttps.proxyPort=$port" "-Dhttp.nonProxyHosts=localhost|127.0.0.1")
+fi
+cd "$ROOT/mod"
+exec ./gradlew "${args[@]}" "$@"
