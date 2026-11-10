@@ -110,8 +110,9 @@ public abstract class Goal {
             public double heuristic(int x, int y, int z) {
                 int flat = Math.max(0, Math.abs(x - bx) + Math.abs(z - bz) - 4);
                 int dy = by - y;
-                int vert = dy > 0 ? dy : (dy < -3 ? -3 - dy : 0);
-                return flat * WALK + vert * 6.0;
+                // Every block of height still to gain costs a jump at the least; saying so keeps the search from
+                // wandering the ground when the only way is up.
+                return flat * WALK + (dy > 0 ? dy * 9.0 : (dy < -3 ? (-3 - dy) * 2.0 : 0.0));
             }
         };
     }

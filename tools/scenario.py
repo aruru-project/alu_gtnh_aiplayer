@@ -163,7 +163,8 @@ def scenario_build(s, pad):
                 block = s.block(x, yy, z)
                 if edge and block != "minecraft:cobblestone":
                     walls = False
-                if not edge and block != "minecraft:air":
+                # Snow settling inside while the walls go up is weather, not the bot's doing.
+                if not edge and block not in ("minecraft:air", "minecraft:snow_layer"):
                     hollow = False
     check("fill with shape walls places every wall block", r["state"] == "done" and walls, json.dumps(r.get("result")))
     check("the inside of the walls stays empty", hollow)

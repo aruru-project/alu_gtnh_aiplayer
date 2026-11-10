@@ -18,6 +18,8 @@ public final class Navigator {
 
     private static final long SEARCH_BUDGET_NANOS = 2_500_000L;
     private static final int MAX_NODES = 16000;
+    /** A search that may stack blocks to climb has far more to consider, and is only run when walking failed. */
+    private static final int MAX_NODES_CLIMBING = 48000;
     /** Replans in a row that got nowhere before giving up. */
     private static final int MAX_FRUITLESS = 6;
     private static final int MAX_PLANS = 200;
@@ -121,7 +123,7 @@ public final class Navigator {
                 bot.blockZ(),
                 goal,
                 !gentle && mayPillar && Rules.scaffold(p) != null,
-                MAX_NODES,
+                gentle ? MAX_NODES : MAX_NODES_CLIMBING,
                 bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP);
         }
 
