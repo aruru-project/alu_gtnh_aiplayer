@@ -1,5 +1,6 @@
 // “知识 → 基地的做法”：这个基地怎么做东西的记录（GET/PUT/DELETE /api/methods）。主人在这里教它：
-// 一类零件用哪种做法、一样东西用哪条配方、没有更具体的规矩时几种做法谁先谁后、哪台机器专门干什么。
+// 一类零件用哪种做法、什么当现成的不往下做、两种做法用料一样时用哪种、一样东西用哪条配方、
+// 没有更具体的规矩时几种做法谁先谁后、哪台机器专门干什么。
 // 它自己定过的也在这里，标着“它自己定的”。几种分开列；后端以后再加的种类，这里认不得也照样列出来（用后端给的那一行）。
 // 写错的（做法名认不出、配方做不出那样东西）后端会拒，原话照实显示在表单下面。
 
@@ -18,6 +19,8 @@ const prefixLabel = (prefix) => PREFIX_NAMES[prefix] ?? prefix
 /** 认得的几种：标题、说明、怎么画、怎么改。 */
 const KINDS = [
   { kind: 'part', title: '一类零件', hint: '按矿辞前缀：这一类零件用哪种做法、从哪种料来。只管某种材料的比管一整类的优先。' },
+  { kind: 'ready', title: '当现成的', hint: '这些东西拿现成的用，不往下做：算材料时到它就停，不再展开它的原料。可以是一类零件（矿辞前缀，比如 ingot 是所有的锭）、一个矿辞名（ingotSteel），或者一样物品。' },
+  { kind: 'same', title: '同料时用哪种', hint: '两种做法都做得出一样东西、用的料也一样（工具不算料）时，用哪一种。可以限定只在用的那种不需要工具时才这样。' },
   { kind: 'order', title: '总的先后', hint: '没有更具体的规矩时，几种做法谁先谁后。只有一条。' },
   { kind: 'thing', title: '具体的东西', hint: '一样东西用哪一条配方。配方册重新导出以后编号会变，它记的是配方的样子，用的时候再对回现在的编号；对不回来的标成失效。' },
   { kind: 'machine', title: '机器的用途', hint: '某台机器专门干什么、进料和收货的箱子在哪、别动它的什么。' },
@@ -42,12 +45,33 @@ async function load() {
   }
 }
 
-/** 具体的东西那一条，配方册里还对得回来没有：后端给了 recipeNow 就看它（null 是对不回来）；没给就看那一行里的英文说明。 */
+/**
+ * 这一条说的东西现在还找不找得到（配方册、物品表重新导出以后）：后端判断好了给 stale；
+ * 没有配方册时后端不判断，这时看那一行里的英文说明（具体东西写 NO LONGER IN THE RECIPE BOOK，别的写 [NOT FOUND ANY MORE …]）。
+ */
 function staleOf(m) {
-  if (m.kind !== 'thing') return false
-  if (m.recipeNow === null) return true
-  if (typeof m.recipeNow === 'number') return false
-  return /NO LONGER IN THE RECIPE BOOK/.test(m.line ?? '')
+  if (typeof m.stale === 'boolean') return m.stale
+  if (m.kind === 'thing' && m.recipeNow === null) return true
+  return /NO LONGER IN THE RECIPE BOOK|\[NOT FOUND ANY MORE/.test(m.line ?? '')
+}
+
+/** 失效的那一条，找不到的是什么。 */
+const STALE_WHAT = {
+  thing: '配方册里找不到这条配方了',
+  part: '这个做法现在的配方册里没有了',
+  same: '其中一种做法现在的配方册里没有了',
+  order: '有的做法现在的配方册里没有了',
+  ready: '物品表里找不到它了',
+}
+const staleBadge = (m) => badge(`失效：${STALE_WHAT[m.kind] ?? '现在的资料里找不到了'}`, 'bad')
+
+/** 矿辞名拆成前缀和材料：ingotSteel → [ingot, Steel]。 */
+function splitOre(ore) {
+  const m = /^([a-z][a-zA-Z]*?)([A-Z0-9].*)$/.exec(ore)
+  if (!m) return [ore, '']
+  // 前缀表里最长的那个（plateDense 不是 plate + DenseSteel）
+  const known = Object.keys(PREFIX_NAMES).filter((p) => ore.startsWith(p) && /[A-Z0-9]/.test(ore.charAt(p.length))).sort((a, b) => b.length - a.length)[0]
+  return known ? [known, ore.slice(known.length)] : [m[1], m[2]]
 }
 /** 现在对回的编号（不知道时用记下那时的）。 */
 const recipeRefOf = (m) => (typeof m.recipeNow === 'number' ? m.recipeNow : m.recipe?.ref)
@@ -89,8 +113,8 @@ function render() {
   const kinds = [...KINDS, ...[...new Set(all.map((m) => m.kind))].filter((k) => !KNOWN.has(k)).map((k) => ({ kind: k, title: k, hint: '这一种面板还不认得：照大脑给的那一行列出来，只能删。', unknown: true }))]
   put(
     el,
-    h('p', { class: 'muted', text: `这个基地怎么做东西的记录：你教它的，和它自己定过的，一共 ${all.length} 条。它算一样东西要多少材料时照这些走（板用什么做、钢杆用哪条配方、哪台机器专门干什么），查做法、看机器时也会看到相关的那一条。在这里加的、改过的都算你定的，下一次用就是新的。` }),
-    stale.length > 0 ? h('div', { class: 'notice warn', role: 'note' }, h('strong', { text: `有 ${stale.length} 条认不回来了` }), h('span', { text: '：配方册重新导出以后，它们记的那条配方在现在的配方册里找不到了。它用的时候会照实说这条失效了；你可以改成现在的编号，或者删掉。' })) : null,
+    h('p', { class: 'muted', text: `这个基地怎么做东西的记录：你教它的，和它自己定过的，一共 ${all.length} 条。它算一样东西要多少材料时照这些走（板用什么做、什么拿现成的不往下做、钢杆用哪条配方、哪台机器专门干什么），查做法、看机器时也会看到相关的那一条。在这里加的、改过的都算你定的，下一次用就是新的。` }),
+    stale.length > 0 ? h('div', { class: 'notice warn', role: 'note' }, h('strong', { text: `有 ${stale.length} 条对不上了` }), h('span', { text: '：它们说的配方、做法或者物品，在现在这份配方册、物品表里找不到了（多半是重新导出过）。它用的时候会照实说这条失效了；你可以改一改，或者删掉。下面标红的就是。' })) : null,
     h('div', { class: 'row filters' }, who.el, search),
     kinds.map((k) => section(k, shown.filter((m) => m.kind === k.kind), all.filter((m) => m.kind === k.kind).length)),
   )
@@ -98,7 +122,7 @@ function render() {
 
 /** 一条里能拿来搜的字。 */
 function textOf(m) {
-  return [m.line, m.why, m.prefix && prefixLabel(m.prefix), m.prefix, m.material, m.way, m.from && prefixLabel(m.from), m.name, m.thing, m.recipe?.wayName, m.recipe?.text, m.does, m.keep, ...(m.ways ?? []), m.x !== undefined ? `${m.x},${m.y},${m.z}` : ''].filter(Boolean).join(' ')
+  return [m.line, m.why, m.prefix && prefixLabel(m.prefix), m.prefix, m.material, m.way, m.from && prefixLabel(m.from), m.name, m.thing, m.text, m.use, m.over, m.kind === 'ready' && m.match !== 'item' ? prefixLabel(splitOre(m.text)[0]) : '', m.recipe?.wayName, m.recipe?.text, m.does, m.keep, ...(m.ways ?? []), m.x !== undefined ? `${m.x},${m.y},${m.z}` : ''].filter(Boolean).join(' ')
 }
 
 function section(k, list, total) {
@@ -136,16 +160,8 @@ async function edit(key) {
 }
 
 function entryView(m, k) {
-  const main =
-    m.kind === 'part'
-      ? partView(m)
-      : m.kind === 'order'
-        ? h('div', { class: 'm-main m-order' }, m.ways.map((w, n) => [n > 0 ? h('span', { class: 'faint', text: ' › ' }) : null, h('span', { class: 'm-way', text: w })]))
-        : m.kind === 'thing'
-          ? thingView(m)
-          : m.kind === 'machine'
-            ? machineView(m)
-            : h('div', { class: 'm-main mono', text: m.line ?? m.key })
+  const views = { part: partView, ready: readyView, same: sameView, order: orderView, thing: thingView, machine: machineView }
+  const main = views[m.kind]?.(m) ?? h('div', { class: 'm-main mono', text: m.line ?? m.key })
   const editBtn = k.unknown ? null : button('改', { class: 'small', disabled: view.editing !== null }, () => edit(m.key))
   const delBtn = button('删', { class: 'small danger', disabled: view.editing !== null }, async (btn) => {
     if (!confirm(`从基地的做法里删掉这一条？\n${summaryOf(m)}`)) return
@@ -175,6 +191,36 @@ function partView(m) {
     h('span', { class: 'arrow', text: ' ← ' }),
     h('span', { class: 'm-way', text: m.way }),
     m.from ? [h('span', { class: 'muted', text: '，从' }), h('strong', { text: prefixLabel(m.from) }), h('span', { class: 'mono faint', text: ` ${m.from}` }), h('span', { class: 'muted', text: ' 来' })] : null,
+    staleOf(m) ? [' ', staleBadge(m)] : null,
+  )
+}
+
+function orderView(m) {
+  return h('div', { class: 'm-main m-order' }, m.ways.map((w, n) => [n > 0 ? h('span', { class: 'faint', text: ' › ' }) : null, h('span', { class: 'm-way', text: w })]), staleOf(m) ? staleBadge(m) : null)
+}
+
+/** 当现成的：一类零件（前缀）、一个矿辞名、一样物品。 */
+function readyView(m) {
+  let what
+  if (m.match === 'prefix') what = [h('strong', { text: `${prefixLabel(m.text)}` }), h('span', { class: 'mono faint', text: ` ${m.text}` }), h('span', { class: 'muted', text: '（这一类全部）' })]
+  else if (m.match === 'ore') {
+    const [prefix, material] = splitOre(m.text)
+    what = [h('strong', { class: 'mono', text: m.text }), h('span', { class: 'muted', text: `（${prefixLabel(prefix)}${material ? `，材料 ${material}` : ''}；一个矿辞名）` })]
+  } else what = [h('strong', { text: m.name ?? m.text }), h('span', { class: 'mono faint', text: ` ${m.text}${m.meta !== undefined ? `/${m.meta}` : '（任何 meta）'}` })]
+  return h('div', { class: 'm-main' }, what, h('span', { class: 'arrow', text: ' → ' }), h('span', { class: 'm-ready', text: '当现成的，不往下做' }), staleOf(m) ? [' ', staleBadge(m)] : null)
+}
+
+/** 同料时用哪种：用 use，不用 over。 */
+function sameView(m) {
+  return h(
+    'div',
+    { class: 'm-main' },
+    h('span', { class: 'muted', text: '用料一样时用 ' }),
+    h('span', { class: 'm-way', text: m.use }),
+    h('span', { class: 'muted', text: '，不用 ' }),
+    h('span', { class: 'm-way over', text: m.over }),
+    m.noTools ? h('span', { class: 'chip', title: `${m.use}那条配方要用工具时（锤子、锉刀这类）不算，照别的规矩走`, text: `只在${m.use}不用工具时` }) : null,
+    staleOf(m) ? [' ', staleBadge(m)] : null,
   )
 }
 
@@ -188,7 +234,7 @@ function thingView(m) {
     h('span', { class: 'mono faint', title: '这样东西在记录里的写法', text: ` ${m.thing}` }),
     h('span', { class: 'arrow', text: ' ← ' }),
     h('span', { class: 'm-way', text: r.wayName ?? r.way }),
-    stale ? badge('失效：配方册里找不到这条了', 'bad') : h('span', { class: 'mono muted', title: typeof m.recipeNow === 'number' && m.recipeNow !== r.ref ? `记下时是 #${r.ref}` : '配方编号', text: ` #${recipeRefOf(m)}` }),
+    stale ? staleBadge(m) : h('span', { class: 'mono muted', title: typeof m.recipeNow === 'number' && m.recipeNow !== r.ref ? `记下时是 #${r.ref}` : '配方编号', text: ` #${recipeRefOf(m)}` }),
     h('div', { class: 'm-recipe' }, stale ? h('span', { class: 'muted', text: `记下时是 #${r.ref}：` }) : null, r.text),
   )
 }
@@ -212,6 +258,8 @@ function machineView(m) {
 /** 删之前问的那一句里写的。 */
 function summaryOf(m) {
   if (m.kind === 'part') return `${prefixLabel(m.prefix)}${m.material ? `（${m.material}）` : ''} ← ${m.way}`
+  if (m.kind === 'ready') return `${m.match === 'item' ? (m.name ?? m.text) : m.text} 当现成的`
+  if (m.kind === 'same') return `用料一样时用${m.use}，不用${m.over}${m.noTools ? `（只在${m.use}不用工具时）` : ''}`
   if (m.kind === 'order') return m.ways.join(' › ')
   if (m.kind === 'thing') return `${m.name} ← ${m.recipe?.wayName ?? ''} ${m.recipe?.text ?? ''}`
   if (m.kind === 'machine') return `${m.name ?? '机器'} ${posText(m)}：${m.does}`
@@ -252,6 +300,24 @@ function form(kind, m) {
       fieldOf('从哪种料来', from, '另一个矿辞前缀，比如 ingot。不填就用这种做法里列在最前的那条。'),
     ]
     body = () => ({ part: prefix.value.trim(), way: way.value.trim(), ...(material.value.trim() ? { material: material.value.trim() } : {}), ...(from.value.trim() ? { from: from.value.trim() } : {}) })
+  } else if (kind === 'ready') {
+    const text = input('mf-ready', m ? `${m.text}${m.meta !== undefined ? `/${m.meta}` : ''}` : '', { required: true, placeholder: 'ingot、ingotSteel 或 minecraft:stone/0' })
+    fields = [fieldOf('什么当现成的', text, '写一个矿辞前缀（ingot：所有的锭）、一个矿辞名（ingotSteel：钢锭）或者一样物品的 id（minecraft:stone/0；不写 /meta 是任何 meta）。物品栏里点一格能看到 id。', true)]
+    body = () => ({ ready: text.value.trim() })
+  } else if (kind === 'same') {
+    const use = input('mf-use', m?.use, { required: true, placeholder: '有序合成' })
+    const over = input('mf-over', m?.over, { required: true, placeholder: '组装机' })
+    const noTools = h('input', { id: 'mf-notools', type: 'checkbox', checked: m?.noTools === true })
+    const label = h('span')
+    const paint = () => (label.textContent = ` 只在${use.value.trim() || '用的那种'}的配方不用工具时才这样`)
+    use.addEventListener('input', paint)
+    paint()
+    fields = [
+      fieldOf('用这一种', use, '配方页的名字，和 NEI 里一样。'),
+      fieldOf('不用这一种', over, '另一种做法的名字。'),
+      h('div', { class: 'field-wide' }, h('label', { class: 'check' }, noTools, label), h('p', { class: 'hint', text: '工具指锤子、锉刀、扳手这类不会用掉的。勾上以后，用的那种要工具时这条不算。' })),
+    ]
+    body = () => ({ use: use.value.trim(), over: over.value.trim(), ...(noTools.checked ? { noTools: true } : {}) })
   } else if (kind === 'order') {
     const ways = h('textarea', { id: 'mf-ways', rows: 4, required: true, value: (m?.ways ?? []).join('\n'), placeholder: '卷板机\n车床\n有序合成' })
     fields = [fieldOf('做法，先用的在前', ways, '一行一个，写配方页的名字。', true)]

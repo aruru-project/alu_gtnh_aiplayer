@@ -6,8 +6,8 @@
 //   面板口令
 //   历史和提醒 它记得的对话历史（可以清空）、今日用量、定时提醒
 
-import { actions, agentLabel, envTone, presenceOf, refresh, state } from './data.js'
-import { act, api, badge, bus, button, dateTime, dimName, empty, field, h, kv, num, pos, put, subTabs, toast, when } from './ui.js'
+import { actions, agentLabel, envTone, presenceOf, refresh, serverNow, state } from './data.js'
+import { act, api, ApiError, badge, bus, button, clock, dateTime, dimName, duration, empty, field, h, kv, num, pos, put, subTabs, toast, when } from './ui.js'
 
 const TABS = [
   { id: 'models', label: '模型' },
@@ -761,6 +761,66 @@ function renderPassword() {
 // ════════ 历史和提醒 ════════
 
 let recordsKey = ''
+/**
+ * 每条线上一次“马上压缩 / 试写”：{ dryRun, startedAt, result?, error? }（还没回来时只有前两项）。
+ * 写一份要一两分钟，这段时间里页面照常重画，结果留在这里，回来了再画上。
+ */
+const compactRuns = new Map()
+
+async function compactNow(line, label, dryRun) {
+  if (!dryRun && !confirm(`现在就压缩${label}的历史？\n最近那一段以外的轮会换成一份交接记录（原文还在“对话”页的日志里），用${label}自己的模型，要一两分钟、花几万 token。`)) return
+  compactRuns.set(line, { dryRun, startedAt: serverNow() })
+  renderRecords(true)
+  try {
+    const result = await api('POST', '/history/compact', { line, ...(dryRun ? { dryRun: true } : {}) })
+    compactRuns.set(line, { dryRun, startedAt: compactRuns.get(line).startedAt, result })
+    if (!dryRun) refresh()
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) return
+    compactRuns.set(line, { dryRun, startedAt: compactRuns.get(line).startedAt, error: e.message })
+  }
+  renderRecords(true)
+}
+
+const COMPACT_ACTIONS = {
+  summarized: (dry) => (dry ? '写成了。这是试写：没存，历史没动。' : '写成了，已经换进历史。'),
+  nothing: () => '没有可换的：最近那一段以外没有更早的轮了。',
+  truncated: () => '没写成交接记录：最近那一段以外没有可换的轮，或者一段都没写成（只收拾了较早几轮里过长的工具结果）。',
+  dropped: (dry) => (dry ? '没写成；真压的话会把那些轮丢掉，记录里照实留一句。' : '没写成，那些轮丢掉了（记录里照实留了一句）。'),
+}
+
+/** 一条线上一次压缩 / 试写的结果：回来的是什么照实列出来，交接记录全文能展开看。 */
+function compactResultBox(line, label) {
+  const run = compactRuns.get(line)
+  if (!run) return null
+  const what = run.dryRun ? '试写' : '压缩'
+  if (!run.result && !run.error) {
+    return h('div', { class: 'compact-box running' }, h('strong', { text: `${label}：正在${what}交接记录` }), h('span', { class: 'muted', 'data-since': run.startedAt, 'data-label': '已经', text: `已经 ${duration(Math.max(0, serverNow() - run.startedAt))}` }), h('p', { class: 'hint', text: '要等模型写完才回来，一般一两分钟。可以先去别的页，结果会留在这里。' }))
+  }
+  if (run.error) return h('div', { class: 'compact-box bad' }, h('strong', { text: `${label}：${what}没做成` }), h('p', { class: 'error', text: run.error }))
+  const r = run.result
+  const close = button('收起', { class: 'small quiet' }, () => {
+    compactRuns.delete(line)
+    renderRecords(true)
+  })
+  return h(
+    'div',
+    { class: `compact-box${r.error ? ' warn' : ''}` },
+    h('div', { class: 'row' }, h('strong', { class: 'fill', text: `${label}：${what}的结果（${clock(run.startedAt)} 开始）` }), r.applied ? badge('历史改了', 'warn') : badge('历史没动'), close),
+    h('p', { text: (COMPACT_ACTIONS[r.action] ?? (() => r.action))(run.dryRun) }),
+    kv([
+      ['换成记录的', r.turns ? `${r.turns.count} 轮（第 ${r.turns.from}–${r.turns.to} 轮之间这条线的；轮次编号两条线共用）` : '没有'],
+      ['原样留着', `${num(r.kept)} 轮`],
+      ['上下文', `约 ${num(r.tokensBefore)} → ${num(r.tokensAfter)} token${run.dryRun ? '（试写：真压以后会是这样）' : ''}`],
+      ['写记录', `调了 ${num(r.calls)} 次模型，给它看了 ${num(r.inputChars)} 字符，接口报输入 ${num(r.usage?.inputTokens)}、输出 ${num(r.usage?.outputTokens)} token，等了 ${duration(r.ms ?? 0)}`],
+      ['记录多长', `${num(r.summaryChars)} 字符${r.capChars ? `（上限 ${num(r.capChars)}，只写在提示词里，写超了不截）` : ''}`],
+      r.tidied ? ['先收拾了', `截短 ${num(r.tidied.results)} 条工具结果、拿掉 ${num(r.tidied.states)} 段过时的状态，历史 ${num(r.tidied.charsBefore)} → ${num(r.tidied.charsAfter)} 字符`] : null,
+      r.error ? ['有一段没写成', h('span', { class: 'warn', text: r.error })] : null,
+    ].filter(Boolean)),
+    r.summary ? h('details', { class: 'fold', open: true }, h('summary', { text: `交接记录全文（${num(r.summary.length)} 字符）` }), h('pre', { class: 'manual-text', text: r.summary })) : null,
+    r.analysis ? h('details', { class: 'fold' }, h('summary', { text: '它写记录之前打的草稿' }), h('pre', { class: 'manual-text', text: r.analysis })) : null,
+  )
+}
 
 function renderRecords(force = false) {
   const el = root?.querySelector('[data-tab="records"]')
@@ -775,6 +835,17 @@ function renderRecords(force = false) {
       if (!confirm(`${label}？记忆不受影响。清空后它不记得之前聊过什么、做到哪一步。`)) return
       act(btn, () => api('POST', '/history/clear', line ? { line } : {}), '已清空').then(refresh)
     })
+  const busy = (line) => {
+    const run = compactRuns.get(line)
+    return run !== undefined && !run.result && !run.error
+  }
+  const compactButtons = (x) =>
+    x.line
+      ? [
+          button('试写一份', { class: 'small', disabled: busy(x.line), title: '只写不换：历史不动，看它会写成什么' }, () => compactNow(x.line, x.label, true)),
+          button('马上压缩', { class: 'small', disabled: busy(x.line), title: '现在就把最近那一段以外的轮换成交接记录' }, () => compactNow(x.line, x.label, false)),
+        ]
+      : null
   const historyCard = h(
     'div',
     { class: 'card' },
@@ -784,9 +855,11 @@ function renderRecords(force = false) {
       'ul',
       { class: 'plain' },
       histories.map((x) =>
-        h('li', null, h('span', { class: 'grow' }, x.label ? h('strong', { text: `${x.label}　` }) : null, `${x.turns} 轮，上下文约 ${num(x.estimatedTokens)} token${x.threshold ? `（到 ${num(x.threshold)} 就压缩）` : ''}${x.summaryOf ? `；第 ${x.summaryOf.from}–${x.summaryOf.to} 轮（${x.summaryOf.turns} 轮）已写成交接记录` : x.hasSummary ? '；更早的已写成交接记录' : ''}`), x.line ? clear(x.line, `清空${x.label}的`) : null),
+        h('li', null, h('span', { class: 'grow' }, x.label ? h('strong', { text: `${x.label}　` }) : null, `${x.turns} 轮，上下文约 ${num(x.estimatedTokens)} token${x.threshold ? `（到 ${num(x.threshold)} 就压缩）` : ''}${x.summaryOf ? `；更早的 ${x.summaryOf.turns} 轮（第 ${x.summaryOf.from}–${x.summaryOf.to} 轮之间的）已写成交接记录` : x.hasSummary ? '；更早的已写成交接记录' : ''}`), compactButtons(x), x.line ? clear(x.line, `清空${x.label}的`) : null),
       ),
     ),
+    histories.some((x) => x.line) ? h('p', { class: 'hint', text: '马上压缩：不等到阈值，现在就把这条线最近那一段（阈值的四分之一，至少 2 轮）以外的轮写成一份交接记录，那些轮从历史里换掉（原文还在“对话”页的日志里）。用这条线自己的模型，要一两分钟、花几万 token；这条线正在跑一轮时做不了。试写一份：同样写，但只给你看，不存，历史不动。' }) : null,
+    histories.map((x) => (x.line ? compactResultBox(x.line, x.label) : null)),
   )
   const u = o.usage.today
   const limit = o.usage.dailyTokenLimit

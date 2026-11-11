@@ -258,6 +258,8 @@ pre.code.bad { border-color: #5a2b28; color: #f3b1ac; }
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .login-card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; }
 .login-card h1 { margin-bottom: 14px; }
+.login-card .env-band { margin-bottom: 14px; padding: 8px 12px; font-size: 16px; }
+.login[data-env="prod"] .login-card { border-color: #e5484d; box-shadow: 0 0 0 1px #e5484d55; }
 .login-card button { margin-top: 14px; width: 100%; }
 
 /* ── 框架：左边常驻的状态区和导航，右边是页面 ── */
@@ -722,6 +724,13 @@ button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--
 .detail { min-width: 0; }
 .detail .manual-text { max-height: calc(100vh - 330px); }
 
+.compact-box { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raised); }
+.compact-box.running { border-color: #40377a; background: var(--model-bg); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.compact-box.running .hint { flex-basis: 100%; margin: 0; }
+.compact-box.bad { border-color: #66302c; background: var(--bad-bg); }
+.compact-box.warn { border-color: #5a4619; }
+.compact-box > p { margin: 4px 0 8px; }
+.compact-box .manual-text { max-height: 420px; }
 .faint { color: var(--faint); }
 .small { font-size: 12px; }
 .notice { padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--line-strong); margin: 0 0 12px; font-size: 13px; }
@@ -743,6 +752,9 @@ button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--
 .method > .method-form { grid-column: 1 / -1; }
 .method.stale { background: linear-gradient(90deg, var(--bad-bg), transparent 70%); padding-left: 8px; margin-left: -8px; border-left: 2px solid var(--bad); }
 .m-way { display: inline-block; padding: 0 7px; border-radius: 4px; background: var(--body-bg); color: var(--body); border: 1px solid #23445a; font-size: 13px; }
+.m-way.over { background: transparent; color: var(--muted); border-style: dashed; text-decoration: line-through; text-decoration-color: var(--faint); }
+.m-ready { color: var(--ok); }
+.m-main .chip { margin-left: 6px; }
 .m-order { display: flex; flex-wrap: wrap; gap: 4px 2px; align-items: center; }
 .m-recipe { font-size: 13px; color: var(--muted); margin-top: 1px; }
 .m-does { margin-top: 1px; }
