@@ -678,6 +678,8 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
   if (afterTool) {
     const result = typeof last.content === 'string' ? last.content : ''
     // 开了任务或者例程：这一轮到此为止，等它结束再被叫醒
+    // 开了任务：留一句“开始了”（任务还在跑，这句话只作背景送给对话线）；开了例程、提了问：这一轮到此为止
+    if (/Task \S+ \(flatten\) started/i.test(result)) return { text: '开始平了，等它平完再看。', usage, ...slow }
     if (/started|runs in the background|waiting for an answer|Sent to/i.test(result)) return { text: '', usage, ...slow }
     if (/You are at|Within \d+ blocks/.test(result)) return { text: '看过了，周围没有要紧的东西。', usage, ...slow }
     return { text: '', usage, ...slow }
@@ -992,6 +994,13 @@ b.save('三色旗')`
     const grid = gridFromDraft(hutDraft.draft)
     const png = renderView(grid, new BlockLooks(design.colors()), { view: 'iso', from: 'southeast' }, { maxSize: 480, title: 'Draft' }).png
     samplePicture = new PictureStore(DATA_DIR).save(png, blocksOfGrid(grid))
+  }
+  // 两条提醒：一条对话线定的，一条干活线定的（到点叫醒各自那条线）
+  const { ReminderStore } = await import('../src/store/reminders.ts')
+  const reminders = new ReminderStore(DATA_DIR)
+  if (reminders.list().length === 0) {
+    reminders.add(Date.now() + 6 * 3600_000, '问阿露明天要不要一起下矿', Date.now(), 'talk')
+    reminders.add(Date.now() + 40 * 60_000, '看一眼高炉的钢锭出完没有，出完了收进仓库', Date.now(), 'work')
   }
   const memory = new MemoryStore(DATA_DIR, () => 4000)
   if (memory.list().length === 0) {

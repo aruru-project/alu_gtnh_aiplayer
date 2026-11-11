@@ -625,8 +625,8 @@ function renderLimits() {
     ['maxSteps', field(two ? '干活线每轮最多调几次模型' : '每轮最多调几次模型', input('lf-steps', 'maxSteps', { min: 1, max: 500 }), '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要几十次；它干活时新到的话也接在这一轮里。默认 60，最多 500。')],
     two ? ['talkMaxSteps', field('对话线每轮最多调几次模型', input('lf-talk-steps', 'talkMaxSteps', { min: 1, max: 500 }), '对话线只说话和查资料，一轮本来就短。默认 20。')] : null,
     ['dailyTokenLimit', field('每日 token 上限', input('lf-daily', 'dailyTokenLimit', { min: 0 }), two ? '输入加输出，两条线合计。0 表示不限。' : '输入加输出。0 表示不限。')],
-    ['historyTokenThreshold', field(two ? '干活线的历史超过多少 token 就压缩' : '历史超过多少 token 就压缩', input('lf-history', 'historyTokenThreshold', { min: 2000 }), '比的是这条线下一次调模型时整份请求大概多少 token（“历史和提醒”里有现在的数）。每轮结束时看一次，超过了：先把较早几轮里过长的工具结果截短、过时的状态拿掉，不调模型；还超过七成，就调一次模型把较早的经历写成一份交接记录，最近的四分之一原样留着。写记录要一两分钟、花几万 token。默认 240000。')],
-    two ? ['talkHistoryTokenThreshold', field('对话线的历史超过多少 token 就压缩', input('lf-talk-history', 'talkHistoryTokenThreshold', { min: 2000 }), '和干活线的一样算。对话线的历史短，调低一些回话更快。默认 120000。')] : null,
+    ['historyTokenThreshold', field(two ? '干活线的历史超过多少 token 就压缩' : '历史超过多少 token 就压缩', input('lf-history', 'historyTokenThreshold', { min: 2000 }), '默认 240000。怎么算、怎么压见下面。')],
+    two ? ['talkHistoryTokenThreshold', field('对话线的历史超过多少 token 就压缩', input('lf-talk-history', 'talkHistoryTokenThreshold', { min: 2000 }), '默认 120000。对话线的历史本来就短，调低一些回话更快。')] : null,
     ['memoryMaxChars', field('记忆总长度上限（字符）', input('lf-memory', 'memoryMaxChars', { min: 200 }))],
     ['toolResultMaxChars', field('单个工具结果上限（字符）', input('lf-result', 'toolResultMaxChars', { min: 500 }), '它写的程序 return 的值也照这个数截。')],
     L.routineMinutes !== undefined ? ['routineMinutes', field('例程默认最多跑多久（分钟）', input('lf-routine', 'routineMinutes', { min: 1, max: 10080 }), '例程是它写的、在后台一步步调工具的程序。不限它调多少次工具，靠时长、连着出错就停、随时可以点停止来管。默认 120。')] : null,
@@ -646,7 +646,13 @@ function renderLimits() {
       refresh()
     }
   })
-  form.append(h('h2', { text: '上限' }), h('p', { class: 'muted', text: '防它跑飞、防花太多的几道闸。改了立刻生效，不用重启。' }), h('div', { class: 'fields' }, fieldsOf.map(([, node]) => node)), h('div', { class: 'row' }, save))
+  form.append(
+    h('h2', { text: '上限' }),
+    h('p', { class: 'muted', text: '防它跑飞、防花太多的几道闸。改了立刻生效，不用重启。' }),
+    h('div', { class: 'fields' }, fieldsOf.map(([, node]) => node)),
+    h('p', { class: 'hint', text: '历史压缩：比的是这条线下一次调模型时整份请求大概多少 token（现在的数在“历史和提醒”里）。每轮结束时看一次，超了先把较早几轮里过长的工具结果截短、过时的状态拿掉，这一步不调模型；还超过七成，就调一次模型把较早的经历写成一份交接记录，最近的四分之一原样留着。写记录要一两分钟、花几万 token，所以阈值别定得太低。' }),
+    h('div', { class: 'row' }, save),
+  )
   put(el, form)
 }
 
