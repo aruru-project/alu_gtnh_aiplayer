@@ -3,8 +3,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { appendLine, ensureDir, isRecord } from './files.ts'
-import { localDateKey } from './usage.ts'
+import { appendLine, ensureDir } from './files.ts'
+import { isRecord, localDateKey } from '../util.ts'
 
 export type ActivityKind =
   | 'chat' // 游戏里别人说的话

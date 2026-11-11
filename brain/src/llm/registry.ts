@@ -8,6 +8,7 @@ import { withRetry } from './retry.ts'
 import type { RetryOptions } from './retry.ts'
 import type { LlmErrorKind } from './errors.ts'
 import type { Adapter, AdapterOptionInfo, GenerateRequest, LlmClient, ProviderConfig, RemoteModel, UsageRecord } from './types.ts'
+import { errorText } from '../util.ts'
 
 export const ADAPTERS = {
   'openai-chat': openaiChat,
@@ -60,7 +61,7 @@ export async function listRemoteModels(config: ProviderConfig, opts: { fetch?: t
       if (e.status !== undefined) error.status = e.status
       return { ok: false, error }
     }
-    return { ok: false, error: { kind: 'unknown', message: e instanceof Error ? e.message : String(e) } }
+    return { ok: false, error: { kind: 'unknown', message: errorText(e) } }
   }
 }
 

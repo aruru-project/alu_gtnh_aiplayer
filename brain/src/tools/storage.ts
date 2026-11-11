@@ -7,7 +7,7 @@
 // 带 attached 的容器（旁边接着漏斗、管道）是主人自动化的一环，结果里标出来。
 
 import type { ContainerInfo, DrawerSlot } from '../bridge/protocol.ts'
-import { COVER_NOTE, attachedText, formatContainer, formatPos, holdsCoverItems, itemKey, mergeItems, nameOf } from './format.ts'
+import { COVER_NOTE, formatContainer, formatPos, holdsCoverItems, itemKey, mergeItems, nameOf } from './format.ts'
 import { BASE_RADIUS, eachPiece, pieces, piecesText, spotOf } from './reach.ts'
 import type { Pieces } from './reach.ts'
 import { int, obj, str } from './schema.ts'
@@ -15,9 +15,8 @@ import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At, LookFrom } from './where.ts'
+import { CONTAINERS_MAX_RADIUS } from './observe.ts'
 
-/** 身体一次看容器每个方向最多看这么远；工具给得更大时（一个基地，BASE_RADIUS）切成这么大的几块各看一次。 */
-export const CONTAINERS_MAX_RADIUS = 32
 export const CONTAINERS_PER_PAGE = 20
 export const DRAWER_SLOTS_PER_PAGE = 60
 export const STOCK_LINES_PER_PAGE = 40
@@ -281,7 +280,3 @@ export const listStock: Tool = {
   },
 }
 
-/** 容器这一行里“自动化的一环”的提醒，给别的工具（存取任务的失败说明）用。 */
-export function automationNote(c: Pick<ContainerInfo, 'attached'>): string {
-  return attachedText(c.attached)
-}

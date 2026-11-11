@@ -171,7 +171,7 @@ function findPage(guide: GuideBook, raw: string, book: string | undefined): { en
   return undefined
 }
 
-function readPage(ctx: ToolContext, guide: GuideBook, i: { path: string; book?: string; offset?: number; english?: boolean }, cap: number): ToolResult {
+function readPage(guide: GuideBook, i: { path: string; book?: string; offset?: number; english?: boolean }, cap: number): ToolResult {
   const found = findPage(guide, i.path, i.book)
   if (!found) {
     // 文件名一样的页（路径记岔了）列出来
@@ -266,7 +266,7 @@ export const readGuide: Tool = {
     if (!guide) return fail(NO_GUIDE)
     const cap = ctx.maxResultChars?.() ?? DEFAULT_RESULT_MAX_CHARS
     const book = i.book?.trim()
-    if (i.path !== undefined && i.path.trim().length > 0) return readPage(ctx, guide, { path: i.path.trim(), ...(book !== undefined ? { book } : {}), ...(i.offset !== undefined ? { offset: i.offset } : {}), ...(i.english !== undefined ? { english: i.english } : {}) }, cap)
+    if (i.path !== undefined && i.path.trim().length > 0) return readPage(guide, { path: i.path.trim(), ...(book !== undefined ? { book } : {}), ...(i.offset !== undefined ? { offset: i.offset } : {}), ...(i.english !== undefined ? { english: i.english } : {}) }, cap)
     if (i.query !== undefined && i.query.trim().length > 0) return searchPages(guide, i.query.trim(), book, i.page ?? 1)
     if (i.id !== undefined) return pagesAbout(ctx, guide, i.id.trim(), i.meta)
     if (book !== undefined && book.length > 0) return listPages(guide, book, i.under?.trim() || undefined, cap)

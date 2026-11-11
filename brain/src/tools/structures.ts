@@ -18,8 +18,7 @@ import type { ItemTable, Structure, StructurePart, StructureRow } from '../packd
 import { formatPos, itemKey, nameOf } from './format.ts'
 import { guideNote } from './guide.ts'
 import { spread, whereItStands } from './recipe-book.ts'
-import { int, obj, str } from './schema.ts'
-import { pos } from './tasks.ts'
+import { int, obj, pos, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
@@ -319,7 +318,7 @@ export async function compareStructure(ctx: ToolContext, at: At, machine: Struct
   return { machine, tier, row, facing: FACINGS[best.k]!, ...target, looksLike: { tiers: best.row.tiers, right: now.right, total: now.total }, unloaded: boxes[best.k]!.unloaded }
 }
 
-/** 这些方块身上有多少、周围的箱子和抽屉里有多少（和 plan_item 看库存一样，往四周错开几个点各查一次）。 */
+/** 这些方块身上有多少、周围的箱子和抽屉里有多少（往四周错开几个点各查一次）。 */
 async function onHand(ctx: ToolContext, parts: readonly StructurePart[]): Promise<Map<string, { carried: number; stored: number }>> {
   const out = new Map<string, { carried: number; stored: number }>(parts.map((p) => [itemKey(p), { carried: 0, stored: 0 }]))
   if (parts.length === 0) return out
@@ -340,7 +339,7 @@ async function onHand(ctx: ToolContext, parts: readonly StructurePart[]): Promis
   return out
 }
 
-/** check_structure / plan_item 要用的那台机器：给了 id 就是它；没给就问身体 at 那里是哪台多方块主机。 */
+/** check_structure 要用的那台机器：给了 id 就是它；没给就问身体 at 那里是哪台多方块主机。 */
 export async function structureAt(ctx: ToolContext, book: StructureBook, at: At, given: { id?: string; meta?: number }): Promise<Structure | ToolResult> {
   if (given.id !== undefined) {
     return book.get(given.id.trim(), given.meta ?? 0) ?? fail(`No multiblock structure is known for ${itemKey({ id: given.id.trim(), meta: given.meta ?? 0 })}. Find the machine with find_structure first.`)

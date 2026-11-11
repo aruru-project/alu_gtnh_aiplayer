@@ -3,6 +3,9 @@
 //
 // 程序跑在沙箱里，它交上来的东西不可信：parseDraft 把它当成任意 JSON 逐项检查，过了这一关的才是 Draft。
 
+import { isRecord } from '../util.ts'
+import { kindKey } from '../render/looks.ts'
+
 /** 一种方块。 */
 export interface DraftKind {
   id: string
@@ -68,14 +71,8 @@ export function parseKind(text: string): DraftKind | undefined {
   return meta <= 15 ? { id: m[1]!, meta } : undefined
 }
 
-/** { id, meta } → "minecraft:wool/14"；meta 0 不写。 */
-export function kindKey(kind: DraftKind): string {
-  return kind.meta ? `${kind.id}/${kind.meta}` : kind.id
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
+/** { id, meta } → "minecraft:wool/14"；meta 0 不写（和画图那边认方块用的是同一个）。 */
+export { kindKey }
 
 function side(v: unknown, axis: string, max: number): number {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new DraftError(`the ${axis} size must be a whole number of at least 1`)

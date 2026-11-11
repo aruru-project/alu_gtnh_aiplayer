@@ -7,7 +7,6 @@
 // 谁收哪些事件、两条线之间怎么往来由 agent/lines.ts 接上（deps.links）。
 
 import type { BridgeApi } from '../bridge/api.ts'
-import { BridgeError } from '../bridge/protocol.ts'
 import { LlmError, keepLatestImages, textOf } from '../llm/index.ts'
 import type { GenerateRequest, GenerateResult, LlmClient, Message, TextPart, ToolResultPart, UserPart } from '../llm/index.ts'
 import type { ActivityInput, ActivityLog, ActivityModelCall } from '../store/activity-log.ts'
@@ -20,7 +19,7 @@ import { speakInChat } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
-import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, bridgeHint, modelToolSpecs, runTool } from '../tools/index.ts'
+import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
 import type { CompactResult, ContextGauge } from './compaction.ts'
@@ -35,6 +34,7 @@ import { RunRecorder } from './run-log.ts'
 import type { RunLogStore } from './run-log.ts'
 import { DEFAULT_WAKE_TUNING, decideWake } from './wake.ts'
 import type { WakeDecision, WakePolicy } from './wake.ts'
+import { errorText, firstLine } from '../util.ts'
 
 export interface AgentSettings {
   botName: string
@@ -377,11 +377,6 @@ const NOT_RUN_HALTED = 'Not executed: you were stopped (stop_work) before this c
  */
 function taskEndKey(ev: Extract<AgentEvent, { type: 'task_ended' }>): string {
   return ev.task.id
-}
-
-function firstLine(text: string, max = 160): string {
-  const line = text.split('\n', 1)[0] ?? ''
-  return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
 export class Agent {
@@ -1269,7 +1264,7 @@ export class Agent {
         if (this.turnTrace.calls.length > TRACE_CALLS_KEPT) this.turnTrace.calls.shift()
         this.turnSteps.push({ step: steps, tool: call.name, input: compactJson(call.invalid ? call.invalid.raw : call.input, 200), result: res.content.slice(0, PEEK_RESULT_CHARS), ...(res.isError ? { isError: true } : {}) })
         if (this.turnSteps.length > PEEK_STEPS_KEPT) this.turnSteps.shift()
-        const entry: ActivityInput = { kind: 'tool_result', turn: turnId, step: steps, source: 'model', who: call.name, text: firstLine(res.content) }
+        const entry: ActivityInput = { kind: 'tool_result', turn: turnId, step: steps, source: 'model', who: call.name, text: firstLine(res.content, 160) }
         if (entry.text !== res.content) entry.detail = res.content
         if (res.isError) entry.isError = true
         const images = res.images ?? []
@@ -1280,7 +1275,7 @@ export class Agent {
             const scenes = entry.pictures.filter((_, n) => images[n]!.blocks !== undefined)
             if (scenes.length > 0) entry.scenes = scenes
           } catch (e) {
-            this.log.add({ kind: 'error', turn: turnId, text: `工具结果带的图没存下来（面板上看不到这张图）：${e instanceof Error ? e.message : String(e)}` })
+            this.log.add({ kind: 'error', turn: turnId, text: `工具结果带的图没存下来（面板上看不到这张图）：${errorText(e)}` })
           }
         }
         this.log.add(entry)
@@ -1426,14 +1421,14 @@ export class Agent {
       const kind = e instanceof LlmError ? e.kind : 'unknown'
       // 被叫停打断的（全部停下）不是出错：照实写成被叫停。大脑进程要停时中止的还是记成中止
       if (kind === 'aborted' && this.halting) settle({ state: 'halted', stop: 'halted' })
-      else settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? '大脑在停，这次调用被中止了' : e instanceof Error ? e.message : String(e) })
+      else settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? '大脑在停，这次调用被中止了' : errorText(e) })
       if (kind !== 'aborted') {
         this.lastCall = {
           time: this.now(),
           ok: false,
           durationMs: Math.round(performance.now() - started),
           errorKind: kind,
-          error: e instanceof Error ? e.message : String(e),
+          error: errorText(e),
         }
       }
       throw e

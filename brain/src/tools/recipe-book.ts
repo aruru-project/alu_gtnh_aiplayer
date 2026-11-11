@@ -31,7 +31,7 @@ const MACHINES_QUERY_STEP = 48
 export const TABLES_RADIUS = 48
 const TABLES_QUERY_STEP = 40
 export const MACHINES_REACH = MACHINES_QUERY_STEP + MACHINES_QUERY_RADIUS
-export const TABLES_REACH = TABLES_QUERY_STEP + TABLES_RADIUS
+const TABLES_REACH = TABLES_QUERY_STEP + TABLES_RADIUS
 /** 有 3×3 合成格、身体不给 table 时会自己去找的方块（和 mod 的 CraftTask.TABLES 是同一张表）。 */
 export const CRAFTING_TABLES = ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab', 'Natura:Natura.workbench']
 
@@ -103,16 +103,6 @@ export function namer(items: ItemTable | undefined): Namer {
 // GregTech 把登记在同一个“材料件”矿辞名下的物品当成同一种东西（玄钢锭有 EnderIO 的和 GregTech 的两个 id，
 // 机器配方写的是其中一个，放哪个都行；高炉出的也是其中一个）。只有这些前缀的矿辞名是这样。
 const UNIFIED_ORE = /^(ingot|ingotHot|plate|plateDouble|plateDense|dust|dustSmall|dustTiny|gem|nugget|block|stick|stickLong|bolt|screw|ring|gear|gearGt|gearGtSmall|foil|rotor|spring|springSmall|round|wireFine|lens)[A-Z]/
-const UNIFIED_PREFIXES = ['ingotHot', 'ingot', 'plateDouble', 'plateDense', 'plate', 'dustSmall', 'dustTiny', 'dust', 'gem', 'nugget', 'block', 'stickLong', 'stick', 'bolt', 'screw', 'ring', 'gearGtSmall', 'gearGt', 'gear', 'foil', 'rotor', 'springSmall', 'spring', 'round', 'wireFine', 'lens']
-
-/** 材料件矿辞名里的材料那一半（plateSteel → Steel）；不是材料件矿辞名时是 undefined。 */
-export function materialOfOre(ore: string): string | undefined {
-  const m = UNIFIED_ORE.exec(ore)
-  if (!m) return undefined
-  // 前缀取最长的那个（plateDoubleSteel 是 plateDouble + Steel，不是 plate + DoubleSteel）
-  const prefix = UNIFIED_PREFIXES.find((p) => ore.startsWith(p) && /[A-Z]/.test(ore.charAt(p.length))) ?? m[1]!
-  return ore.slice(prefix.length)
-}
 
 /** 这个物品的“材料件”矿辞名（有的话）：同名下的别的物品和它可以互换。 */
 export function unifiedOre(info: PackItemInfo | undefined): string | undefined {
@@ -142,7 +132,7 @@ export function slotName(slot: RecipeSlot, nm: Namer, ids: boolean): string {
   return `${ids && first ? nm.label(first[0], first[1]) : (example ?? 'one of several items')}${others > 0 ? ` or ${others} similar` : ''}`
 }
 
-export function slotKey(slot: RecipeSlot): string {
+function slotKey(slot: RecipeSlot): string {
   return slot.kind === 'item' ? `${slot.id}/${slot.meta}/${slot.name ?? ''}` : slot.kind === 'ore' ? `ore:${slot.ore}` : `any:${slot.any.map((a) => a.join('/')).join(',')}`
 }
 
@@ -409,7 +399,6 @@ const CONTAINERS_QUERY_STEP = 64
 const CONTAINERS_PAGE = 100
 /** 把周围的容器扫一遍时最多看这么多个。 */
 export const CONTAINERS_SCAN_MAX = 1200
-export const CONTAINERS_REACH = CONTAINERS_QUERY_STEP + CONTAINERS_QUERY_RADIUS
 
 /**
  * 把周围的容器扫一遍（world.containers 一次最多看 32 格：以 me 为中心 3×3 九个点各查一次，每个方向看得到 96 格）。
@@ -461,7 +450,7 @@ export function runsOnSteam(m: MachineInfo): boolean {
 }
 
 /** 这台机器的电力身体读不出来：蒸汽机器，或者没有能源仓却已经成型的多方块（蒸汽多方块）。 */
-export function powerUnread(m: MachineInfo): boolean {
+function powerUnread(m: MachineInfo): boolean {
   return runsOnSteam(m) || (m.kind === 'multiblock' && m.formed !== false && (m.inputVoltage ?? 0) === 0)
 }
 
@@ -475,7 +464,7 @@ export function machineText(m: MachineInfo): string {
 }
 
 /** 这台机器现在做不了这条配方的原因；空的就是做得了。 */
-export function machineProblems(m: MachineInfo, recipe: Recipe | undefined): string[] {
+function machineProblems(m: MachineInfo, recipe: Recipe | undefined): string[] {
   const problems: string[] = []
   if (m.unreadable === true) return ['its state cannot be read']
   if (m.kind === 'multiblock' && m.formed === false) problems.push(`its structure is not complete${m.idleReason ? ` (${m.idleReason})` : ''}`)
@@ -522,7 +511,7 @@ export function wayKind(h: RecipeHandler): 'machine' | 'device' | 'craft' | 'oth
 export const isMachineWay = (h: RecipeHandler): boolean => wayKind(h) === 'machine' || wayKind(h) === 'device'
 
 /** 身体读不懂状态的机器，开工前该知道的一句话。 */
-export const UNREAD_NOTE = 'its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"'
+const UNREAD_NOTE = 'its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"'
 
 interface Availability {
   /** 排序用：0 现在做得了，1 手工工具配方（有机器时不用），2 有机器但现在不行，3 附近没有，4 它操作不了。 */
@@ -530,7 +519,7 @@ interface Availability {
   text: string
 }
 
-export function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings, machineWayExists: boolean): Availability {
+export function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings): Availability {
   const kind = wayKind(h)
   if (kind === 'other') return { rank: 4, text: 'you cannot run this yourself (no machine or crafting grid does it: it is an information page, or something that happens in the world)' }
   if (kind === 'craft') {
@@ -1036,9 +1025,8 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   const around = await lookAround(ctx)
   // 有别的 mod 的机器、熔炉这类做法时，看看周围有没有这样的机器（身体不认识它们，要把容器扫一遍照配方册认）
   if (ways.some((w) => isMachineWay(w.handler))) await findOthers(ctx, around)
-  const machineWayExists = ways.some((w) => isMachineWay(w.handler))
   const judged = ways
-    .map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around, machineWayExists) }))
+    .map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around) }))
     // 不排“哪种更好”：照配方册里的先后
     .sort((a, b) => a.order - b.order)
   const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}${carve.length > 0 ? ', and with a chisel (last entry)' : ''}.${twinNote} Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:`]

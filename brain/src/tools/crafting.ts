@@ -8,14 +8,13 @@ import { BridgeError } from '../bridge/protocol.ts'
 import type { StockQuery, StockResult } from '../bridge/protocol.ts'
 import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey, nameOf, tankText } from './format.ts'
 import type { OtherMachineLine } from './format.ts'
-import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
 import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
 import { guideNote, itemOfBlock } from './guide.ts'
 import { thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
 import { methodNoteForMachine, methodNoteForThing } from './methods.ts'
-import { arr, bool, int, obj, str } from './schema.ts'
-import { pos, queue, startTask } from './tasks.ts'
+import { arr, bool, int, obj, pos, str } from './schema.ts'
+import { queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
 import { BASE_RADIUS, eachPiece, pieces, piecesText, spotOf } from './reach.ts'
 import { AT, lookFrom } from './where.ts'
@@ -121,23 +120,6 @@ export const findRecipes: Tool = {
       throw e
     }
   },
-}
-
-export const planItem: Tool = {
-  name: 'plan_item',
-  description:
-    'Work out how to make an item, all the way down to what is in storage: looks through the storage and machines of the whole base around you (about 100 blocks each way), picks for every part the way that wastes least, counts the amounts, and returns the steps to do in order (ready-made tool calls), what is missing, and what to ask your owner first. When asked to make something, call this first and follow its steps.',
-  inputSchema: obj(
-    {
-      id: str('Item id, e.g. "gregtech:gt.metaitem.01" (from find_item).'),
-      meta: int('Item meta (default 0).', { min: 0 }),
-      count: int('How many you want (default 1).', { min: 1, max: PLAN_MAX_COUNT }),
-      page: int('Page of the steps (default 1).', { min: 1 }),
-      borrow: bool('false: do not take molds or shapes out of machines (your owner said no); have them made instead.'),
-    },
-    ['id'],
-  ),
-  run: (ctx, i: { id: string; meta?: number; count?: number; page?: number; borrow?: boolean }) => planItemLocal(ctx, i),
 }
 
 /** 库函数（不在发给模型的清单里：程序里调，模型直接调也照常执行）。 */

@@ -58,6 +58,11 @@ export function arr(description: string | undefined, items: Schema, range: { min
   return s
 }
 
+/** 一个方块的位置 {x, y, z}（整数）。 */
+export function pos(description?: string): ObjectSchema {
+  return obj({ x: int(), y: int(), z: int() }, ['x', 'y', 'z'], description)
+}
+
 // ── 校验 ──
 
 export type ValidationResult = { ok: true; value: unknown } | { ok: false; errors: string[] }

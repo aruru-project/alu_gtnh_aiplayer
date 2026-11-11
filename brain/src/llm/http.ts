@@ -1,8 +1,11 @@
 // 两个适配器共用的 HTTP 部分：超时、打断、把各种失败归成 LlmError。
 
 import { LlmError, classifyHttpError, parseRetryAfter } from './errors.ts'
+import { errorText, isRecord } from '../util.ts'
 
 export const DEFAULT_TIMEOUT_MS = 120_000
+/** 拉模型列表不该等很久：这只是填表时的一个方便。 */
+export const LIST_MODELS_TIMEOUT_MS = 15_000
 
 /** 这次调用实际等多久：模型配置的超时（没配是默认的两分钟）；这次调用自己要求至少等更久的，用更久的那个。 */
 export function requestTimeoutMs(configured: number | undefined, atLeast: number | undefined): number {
@@ -108,7 +111,7 @@ async function sendJson(method: 'GET' | 'POST', opts: PostJsonOptions): Promise<
     headers = new Headers(opts.headers)
     payload = method === 'POST' ? JSON.stringify(opts.body) : undefined
   } catch (e) {
-    throw new LlmError('bad_request', `invalid request: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+    throw new LlmError('bad_request', `invalid request: ${errorText(e)}`, { cause: e })
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new LlmError('bad_request', `invalid request: unsupported URL scheme ${url.protocol}`)
@@ -170,7 +173,7 @@ export function joinUrl(base: string, path: string): string {
 }
 
 export function asRecord(v: unknown): Record<string, unknown> | undefined {
-  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
+  return isRecord(v) ? v : undefined
 }
 
 export function asNumber(v: unknown): number {

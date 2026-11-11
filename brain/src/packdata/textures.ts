@@ -2,6 +2,8 @@
 // （tools/make-packdata.py textures 生成，格式见 docs/PACKDATA.md）。面板的三维预览用它给方块贴上真的贴图。
 // 大脑自己不解这张图，只把文件原样交给面板，并告诉面板每种方块用第几格。
 
+import { isRecord } from '../util.ts'
+
 export interface TextureAtlas {
   /** atlas.png 在哪。 */
   file: string
@@ -14,10 +16,6 @@ export interface TextureAtlas {
   tiles: Map<string, number>
   /** 这份图集的版本（生成时间）。面板把它带在地址里，重新生成以后浏览器不会接着用旧的。 */
   version: string
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
 /** atlas.json 的内容 → 图集。对不上格式时抛 Error（消息给人看）。 */

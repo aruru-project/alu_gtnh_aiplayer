@@ -1,6 +1,7 @@
 import { num, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool } from './types.ts'
+import { errorText } from '../util.ts'
 
 export const remember: Tool = {
   name: 'remember',
@@ -17,7 +18,7 @@ export const remember: Tool = {
     try {
       ctx.memory.set(input.key, input.text)
     } catch (e) {
-      return fail(e instanceof Error ? e.message : String(e))
+      return fail(errorText(e))
     }
     return `Saved note "${input.key.trim()}".`
   },
@@ -48,7 +49,7 @@ export const setReminder: Tool = {
       const r = ctx.reminders.add(ctx.now() + Math.round(input.minutes * 60_000), input.note.trim(), ctx.line)
       return `Reminder ${r.id} set for ${input.minutes} minute(s) from now.`
     } catch (e) {
-      return fail(e instanceof Error ? e.message : String(e))
+      return fail(errorText(e))
     }
   },
 }

@@ -1,4 +1,4 @@
-// 做法规划用的小配方册和一个假基地：够得着规划要紧的情形——
+// 做东西那几样（total_materials、基地的做法、走树的内核……）的测试用的小配方册和一个假基地：够得着展开配方时要紧的情形——
 // 一条四五层深的链（直升机桨叶）、同一样东西机器和手工两种做法耗料不同、一轮出多个、不消耗的模头和工具、
 // 每种材质一条的工具配方、同一种东西两个 id、粉和锭互相变（循环）、回收配方、要流体和炉温的高炉配方、一条很长的链（上限）；
 // 一个矿辞名下既有普通工具又有电动的、“拿普通的升级”的（剪线钳）；同一样东西手工、压模机（要模头）、流体固化器（要流体）三种做法（钢销）；
@@ -249,11 +249,6 @@ export const BENDER = single(16, 'Basic Bending Machine', 221, 'Bending Machine'
 export const EXTRUDER = single(18, 'Advanced Extruder', 282, 'Extruder', 'gt.recipe.extruder', 'MV', 128)
 export const MIXER = single(20, 'Basic Mixer', 581, 'Mixer', 'gt.recipe.mixer', 'LV', 32, 6)
 export const MACERATOR = single(22, 'Basic Macerator', 301, 'Macerator', 'gt.recipe.macerator', 'LV', 32)
-/** 一个原版熔炉：身体不认识的机器，world.machines 里没有它，只在 world.containers 里是一个容器（烧着时方块 id 是 lit_furnace）。默认的基地里没有。 */
-export const FURNACE_BLOCK = { x: 14, y: 64, z: -2 }
-export const furnaceBlock = (items: Box['items'] = []): Box => ({ ...FURNACE_BLOCK, id: 'minecraft:lit_furnace', name: 'Furnace', items })
-/** 流体固化器：单方块，罐子里有什么它看不到。默认的基地里没有，要的测试自己加。 */
-export const SOLIDIFIER = single(24, 'Basic Fluid Solidifier', 521, 'Fluid Solidifier', 'gt.recipe.fluidsolidifier', 'LV', 32)
 /** 一台机器的格子里放着的东西（world.containers 里，机器也是一个容器，kind 是 machine）。 */
 export const inside = (m: { x: number; y: number; z: number; name: string }, items: Box['items'], extra: Partial<Box> = {}): Box => ({ x: m.x, y: m.y, z: m.z, id: MACHINE, name: m.name, kind: 'machine', items, ...extra })
 /** 工业高炉：炉温、输入总线接没接漏斗、输入仓里有多少氧，都可以调。 */

@@ -30,6 +30,7 @@ import type {
   Tank,
   TaskInfo,
 } from '../bridge/protocol.ts'
+import { isRecord } from '../util.ts'
 
 /** 超长截断，并说明截掉了多少。 */
 export function clip(text: string, max: number): string {
@@ -334,7 +335,7 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     if (result && Object.keys(result).length > 0) out.result = blueprintResultLines(result)
   } else if (task.type === 'craft') {
     if (detail && Array.isArray(detail.missing)) out.error = craftErrorLines(detail)
-    if (result && isObject(result.item)) out.result = craftResultLines(result)
+    if (result && isRecord(result.item)) out.result = craftResultLines(result)
   } else if (task.type === 'process') {
     // 机器没收原料、没开工时，detail 是那台机器的状态
     if (detail && (typeof detail.storedEU === 'number' || typeof detail.recipes === 'string')) out.error = processErrorLines(detail)
@@ -671,13 +672,9 @@ export const BLUEPRINT_LAYER_ROWS_SHOWN = 24
 /** 任务失败时的缺料清单身体不设上限，这里最多列这么多种。 */
 export const BLUEPRINT_MISSING_SHOWN = 12
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
-
 /** 任务结果、错误详情里的一张表：只留带 id 的对象。 */
 function kindList(v: unknown): Record<string, unknown>[] {
-  return Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => isObject(x) && typeof x.id === 'string') : []
+  return Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => isRecord(x) && typeof x.id === 'string') : []
 }
 
 function count(v: unknown): number {
@@ -864,9 +861,9 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
     if (typeof result[key] === 'number') head.push(`${key} ${result[key]}`)
   }
   if (head.length > 0) lines.push(head.join(', '))
-  if (isObject(result.skipped) && Object.keys(result.skipped).length > 0) {
+  if (isRecord(result.skipped) && Object.keys(result.skipped).length > 0) {
     let s = `skipped ${compactJson(result.skipped, 300)}`
-    const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isObject) : []
+    const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isRecord) : []
     if (examples.length > 0) {
       s += `, e.g. ${examples
         .slice(0, SKIPPED_EXAMPLES_SHOWN)
@@ -880,7 +877,7 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
     lines.push('needsClimbingBlocks: true (some spots were too high to reach and you carry no dirt or cobblestone to climb on)')
   }
   if (count(result.climbingBlocksLeftStanding) > 0) lines.push(`climbingBlocksLeftStanding ${count(result.climbingBlocksLeftStanding)}`)
-  if (isObject(result.now)) {
+  if (isRecord(result.now)) {
     const now = result.now
     const parts = BLUEPRINT_NOW_KEYS.filter((k) => typeof now[k] === 'number').map((k) => `${k} ${String(now[k])}`)
     lines.push(`now (the world compared with the blueprint): ${parts.join(', ')}`)
@@ -926,7 +923,7 @@ function idText(x: { id?: unknown; meta?: unknown }): string {
 
 /** 名字加引号（前面带一个空格）；没有名字就是空的。给的是带 id 的东西时用 nameOf（有中文名用中文名），只给了名字就用它。 */
 function quoted(x: unknown, opts: { block?: boolean } = {}): string {
-  const shown = typeof x === 'string' ? displayName(x) : isObject(x) ? nameOf(x, opts) : undefined
+  const shown = typeof x === 'string' ? displayName(x) : isRecord(x) ? nameOf(x, opts) : undefined
   return shown ? ` "${shown}"` : ''
 }
 
@@ -956,7 +953,7 @@ export function ingredientText(ing: RecipeIngredient | Record<string, unknown>):
     s = `${n}× ${idText(ing)}${quoted(ing)}`
   } else {
     // 矿辞（或一组可以互相替换的物品）：name 是 “Steel Screw (any screwSteel)” 这样的，去掉后缀就是 example 的名字
-    const example = isObject(ing.example) ? ing.example : undefined
+    const example = isRecord(ing.example) ? ing.example : undefined
     const exampleName = typeof ing.name === 'string' ? ing.name.replace(/ \((any [^()]*)\)$| or similar$/, '') : undefined
     const eg = example ? `${idText(example)}${quoted(exampleName)}` : quoted(exampleName).trim()
     const kinds = count(ing.alternatives) > 1 ? `${count(ing.alternatives)} kinds fit` : ''
@@ -1081,7 +1078,7 @@ export function formatStock(res: StockResult, radius: number, from: { of: string
 export function craftErrorLines(detail: Record<string, unknown>): string[] {
   const lines: string[] = []
   const { missing, ...rest } = detail
-  const list = Array.isArray(missing) ? missing.filter(isObject) : []
+  const list = Array.isArray(missing) ? missing.filter(isRecord) : []
   if (list.length > 0) lines.push(`missing (not in your inventory, per ingredient): ${list.map(ingredientText).join('; ')}`)
   else if (missing !== undefined) rest.missing = missing
   if (Object.keys(rest).length > 0) lines.push(`detail: ${compactJson(rest, 300)}`)
@@ -1091,7 +1088,7 @@ export function craftErrorLines(detail: Record<string, unknown>): string[] {
 /** craft 任务的结果：多出来几个什么、背包还剩几格。 */
 export function craftResultLines(result: Record<string, unknown>): string[] {
   const { crafted, item, freeSlots, ...rest } = result
-  let line = `crafted ${isObject(item) ? kindText(crafted, item) : String(crafted)}`
+  let line = `crafted ${isRecord(item) ? kindText(crafted, item) : String(crafted)}`
   if (typeof freeSlots === 'number') line += `, freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `, other: ${compactJson(rest, 200)}`
   return [line]
@@ -1103,7 +1100,7 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
   const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, ...rest } = result
-  const item = isObject(params?.item) ? params.item : undefined
+  const item = isRecord(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
   const got = kindList(gained)
@@ -1129,7 +1126,7 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   // 点的那个方块自己存的数据（朝向、覆盖板、设置）哪些值变了；点之前就在自己变的（进度、电量）身体已经去掉了
   const dataMoved = Array.isArray(dataChanged) && dataChanged.length > 0
   if (Array.isArray(dataChanged)) {
-    const changes = dataChanged.filter(isObject).map((c) => `${String(c.key)} ${c.was === undefined ? '(none)' : String(c.was)} → ${c.now === undefined ? '(gone)' : String(c.now)}`)
+    const changes = dataChanged.filter(isRecord).map((c) => `${String(c.key)} ${c.was === undefined ? '(none)' : String(c.was)} → ${c.now === undefined ? '(gone)' : String(c.now)}`)
     const more = typeof dataChangedMore === 'number' && dataChangedMore > 0 ? `, and ${dataChangedMore} more` : ''
     const moving = typeof dataMovingLeftOut === 'number' && dataMovingLeftOut > 0 ? ` (${dataMovingLeftOut} value(s) that were already changing by themselves are left out)` : ''
     parts.push(changes.length > 0 ? `its saved data changed: ${changes.join(', ')}${more}${moving}` : `its saved data did not change${moving}`)
@@ -1401,11 +1398,11 @@ function ticksText(ticks: number): string {
  */
 export function processLeftLines(result: Record<string, unknown>, params: Record<string, unknown> | undefined): string[] {
   const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, ...rest } = result
-  const batch = isObject(params?.recipe) ? params.recipe : {}
+  const batch = isRecord(params?.recipe) ? params.recipe : {}
   const rounds = typeof batch.rounds === 'number' && batch.rounds >= 1 ? batch.rounds : undefined
-  const at = isObject(params?.machine) && typeof params.machine.x === 'number' ? formatPos(params.machine as { x: number; y: number; z: number }) : undefined
+  const at = isRecord(params?.machine) && typeof params.machine.x === 'number' ? formatPos(params.machine as { x: number; y: number; z: number }) : undefined
   let line = `put ${count(put)} item(s) into the machine${count(cellsPoured) > 0 ? `, poured ${count(cellsPoured)} cell(s) into it` : ''}`
-  if (isObject(machine)) {
+  if (isRecord(machine)) {
     line += '; it started, and the task ended there without waiting for it'
     const max = count(machine.maxProgress)
     const done = Math.min(max, count(machine.progress))
@@ -1419,7 +1416,7 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
     if (typeof batch.ticks === 'number' && batch.ticks > 0) line += `. By the recipe book a round takes ${ticksText(batch.ticks)}${rounds !== undefined && rounds > 1 ? `, ${rounds} rounds ${ticksText(rounds * batch.ticks)}` : ''}`
   }
   line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
-  if (isObject(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
+  if (isRecord(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
   return [line]
@@ -1431,9 +1428,9 @@ export function processResultLines(result: Record<string, unknown>): string[] {
   let line = `put ${count(put)} item(s) into the machine; took out: ${got.length > 0 ? got.map((o) => kindText(o.count, o)).join(', ') : 'nothing'}`
   if (Array.isArray(fluids)) {
     // 多方块给的是输出仓（带坐标），单方块给的是它自己的罐
-    const hatches = fluids.some((f) => isObject(f) && typeof f.x === 'number')
+    const hatches = fluids.some((f) => isRecord(f) && typeof f.x === 'number')
     const holds = (fluids as unknown[])
-      .filter(isObject)
+      .filter(isRecord)
       .map((f) => {
         const tank = tankText({ fluid: typeof f.fluid === 'string' ? f.fluid : undefined, name: typeof f.fluidName === 'string' ? f.fluidName : typeof f.name === 'string' && !hatches ? f.name : undefined, amount: count(f.amount), capacity: typeof f.capacity === 'number' ? f.capacity : undefined } as Tank)
         return hatches ? `${typeof f.kind === 'string' ? f.kind : 'hatch'} ${formatPos(f as { x: number; y: number; z: number })}: ${tank}` : tank

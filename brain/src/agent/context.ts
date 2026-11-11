@@ -11,6 +11,7 @@ import { formatServerInfo, formatStatus } from '../tools/format.ts'
 import { todoStateText } from '../tools/todo.ts'
 import { eventLine } from './events.ts'
 import type { AgentEvent } from './events.ts'
+import { errorText } from '../util.ts'
 
 export interface Snapshot {
   text: string
@@ -57,7 +58,7 @@ export async function buildSnapshot(
       online = false
       lines.push(`${botName}: OFFLINE (not in the game world; nothing can be done until it is brought online)`)
     } else {
-      lines.push(`拿不到自己的状态：${e instanceof Error ? e.message : String(e)}`)
+      lines.push(`拿不到自己的状态：${errorText(e)}`)
     }
   }
 

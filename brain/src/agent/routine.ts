@@ -19,6 +19,7 @@ import { RunRecorder } from './run-log.ts'
 import type { RunLogStore } from './run-log.ts'
 import { DEFAULT_RESULT_MAX_CHARS, runTool } from '../tools/index.ts'
 import type { Tool, ToolContext, ToolResult } from '../tools/index.ts'
+import { errorText } from '../util.ts'
 
 export interface RoutineLimits {
   /** 没说跑多久时，从开始到结束最多多久（等任务的时间算在内）。 */
@@ -255,7 +256,7 @@ export class RoutineRunner {
       })
       .then(
         (result) => this.programEnded(run, result),
-        (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${e instanceof Error ? e.message : String(e)}`, `程序没能跑起来：${e instanceof Error ? e.message : String(e)}`),
+        (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${errorText(e)}`, `程序没能跑起来：${errorText(e)}`),
       )
     const minutes = Math.round(limits.wallMs / 60_000)
     return { view: this.view()!, minutes, ...(opts.minutes !== undefined && opts.minutes > minutes ? { asked: opts.minutes } : {}) }
@@ -424,7 +425,7 @@ export class RoutineRunner {
     // 停下来时它开的任务还在游戏里跑：取消掉（程序自己跑完的不会走到这里还带着任务）
     if (task !== undefined && status !== 'done') {
       this.canceling = this.deps.cancelTask(task).catch((e: unknown) => {
-        if (!(e instanceof BridgeError)) this.deps.log.add({ kind: 'error', text: `例程 ${view.id} 停下时没能取消它的任务 ${task}：${e instanceof Error ? e.message : String(e)}` })
+        if (!(e instanceof BridgeError)) this.deps.log.add({ kind: 'error', text: `例程 ${view.id} 停下时没能取消它的任务 ${task}：${errorText(e)}` })
       })
     }
     this.deps.ended({ ...view, recent: [...view.recent], logs: [...view.logs] })

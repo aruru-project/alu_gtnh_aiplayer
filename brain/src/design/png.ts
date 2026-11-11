@@ -3,6 +3,7 @@
 // 支持：灰度、RGB、调色板、灰度+透明、RGBA；位深 1/2/4/8/16（16 位取高 8 位）。不支持隔行扫描（Adam7）。
 
 import zlib from 'node:zlib'
+import { PNG_SIGNATURE } from '../render/png.ts'
 
 export interface DecodedImage {
   width: number
@@ -18,8 +19,6 @@ export class PngError extends Error {
     this.name = 'PngError'
   }
 }
-
-const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 /** 每种颜色类型一个像素有几个采样，和允许的位深。 */
 const COLOR_TYPES: Record<number, { samples: number; depths: number[] }> = {
@@ -42,8 +41,8 @@ function paeth(a: number, b: number, c: number): number {
  * 解码。maxPixels 是宽×高的上限：超过就拒绝，不去解压（免得一个小文件解出一大片内存）。
  */
 export function decodePng(bytes: Buffer, limits: { maxPixels: number } = { maxPixels: 4_000_000 }): DecodedImage {
-  if (bytes.length < SIGNATURE.length || !bytes.subarray(0, SIGNATURE.length).equals(SIGNATURE)) throw new PngError('这不是 PNG 文件')
-  let at = SIGNATURE.length
+  if (bytes.length < PNG_SIGNATURE.length || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) throw new PngError('这不是 PNG 文件')
+  let at = PNG_SIGNATURE.length
   let header: { width: number; height: number; depth: number; colorType: number } | undefined
   let palette: Buffer | undefined
   let transparency: Buffer | undefined

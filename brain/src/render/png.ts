@@ -2,7 +2,8 @@
 
 import zlib from 'node:zlib'
 
-const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+/** 每个 PNG 文件开头的那 8 个字节（解码那边也认它）。 */
+export const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 function chunk(type: string, body: Buffer): Buffer {
   const out = Buffer.alloc(body.length + 12)
@@ -29,5 +30,5 @@ export function encodePng(image: { width: number; height: number; data: Uint8Arr
   header.writeUInt32BE(height, 4)
   header[8] = 8 // 位深
   header[9] = 2 // 颜色类型：RGB
-  return Buffer.concat([SIGNATURE, chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(raw, { level: 6 })), chunk('IEND', Buffer.alloc(0))])
+  return Buffer.concat([PNG_SIGNATURE, chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(raw, { level: 6 })), chunk('IEND', Buffer.alloc(0))])
 }

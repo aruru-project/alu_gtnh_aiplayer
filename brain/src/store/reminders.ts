@@ -1,7 +1,8 @@
 // 提醒的落盘。到点触发由 agent/reminders.ts 负责。
 
 import path from 'node:path'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord } from '../util.ts'
 
 export interface Reminder {
   id: string

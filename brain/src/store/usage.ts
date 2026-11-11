@@ -2,7 +2,8 @@
 
 import path from 'node:path'
 import type { Usage } from '../llm/index.ts'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord, localDateKey } from '../util.ts'
 
 export interface DayUsage {
   calls: number
@@ -13,12 +14,6 @@ export interface DayUsage {
 }
 
 const KEEP_DAYS = 90
-
-export function localDateKey(now: number): string {
-  const d = new Date(now)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 
 function emptyDay(): DayUsage {
   return { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }

@@ -3,6 +3,7 @@
 import net from 'node:net'
 import { BridgeError, MAX_LINE_BYTES, PROTOCOL_VERSION } from './protocol.ts'
 import type { BridgeEvent, HelloResult } from './protocol.ts'
+import { errorText } from '../util.ts'
 
 /** unconfigured：没有配置口令，所以根本不去连，也不重试；配置改了以后由上层调 restart()。 */
 export type BridgeConnState = 'stopped' | 'unconfigured' | 'connecting' | 'connected' | 'waiting'
@@ -173,7 +174,7 @@ export class BridgeClient {
       try {
         fn(status)
       } catch (e) {
-        this.log(`status listener failed: ${e instanceof Error ? e.message : String(e)}`)
+        this.log(`status listener failed: ${errorText(e)}`)
       }
     }
   }
@@ -187,7 +188,7 @@ export class BridgeClient {
       this.addressText = `${address.host}:${address.port}`
       token = this.opts.token()
     } catch (e) {
-      this.lastError = e instanceof Error ? e.message : String(e)
+      this.lastError = errorText(e)
       this.scheduleReconnect(false)
       return
     }
@@ -292,7 +293,7 @@ export class BridgeClient {
         try {
           fn({ hello, epochChanged, firstContact: !resume })
         } catch (e) {
-          this.log(`ready listener failed: ${e instanceof Error ? e.message : String(e)}`)
+          this.log(`ready listener failed: ${errorText(e)}`)
         }
       }
     } catch (e) {
@@ -431,7 +432,7 @@ export class BridgeClient {
         try {
           fn(event)
         } catch (e) {
-          this.log(`event listener failed on ${event.event}: ${e instanceof Error ? e.message : String(e)}`)
+          this.log(`event listener failed on ${event.event}: ${errorText(e)}`)
         }
       }
     }
@@ -442,7 +443,7 @@ export class BridgeClient {
     try {
       this.opts.resume?.save(state)
     } catch (e) {
-      this.log(`failed to save resume state: ${e instanceof Error ? e.message : String(e)}`)
+      this.log(`failed to save resume state: ${errorText(e)}`)
     }
   }
 }

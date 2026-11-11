@@ -3,6 +3,7 @@
 import type { Draft } from '../design/draft.ts'
 import { MARKER_PREFIX, UNLOADED_ID, isAir } from './looks.ts'
 import type { BlockKind } from './looks.ts'
+import { isRecord } from '../util.ts'
 
 export interface VoxelGrid {
   /** x 是东西向（东为正），y 是高，z 是南北向（南为正）。 */
@@ -31,10 +32,6 @@ const AIR: BlockKind = { id: 'minecraft:air', meta: 0 }
 export function gridFromDraft(draft: Draft): VoxelGrid {
   // 草稿的格子里 n 指 kinds[n - 1]，0 是空：前面垫一个空气，下标就对上了
   return { size: { ...draft.size }, origin: { x: 0, y: 0, z: 0 }, kinds: [AIR, ...draft.kinds], cells: draft.cells }
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
 /**

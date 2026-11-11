@@ -6,7 +6,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { appendLine, isRecord } from './files.ts'
+import { appendLine } from './files.ts'
+import { isRecord } from '../util.ts'
 
 export const FEEDBACK_CATEGORIES = ['missing_tool', 'tool_problem', 'data_or_manual', 'cannot_do', 'other'] as const
 /** 缺工具 / 工具有问题 / 资料或手册有问题 / 做不到 / 其他。 */

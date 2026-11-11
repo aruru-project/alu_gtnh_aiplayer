@@ -45,9 +45,8 @@ const FONT = Uint8Array.from([
   0x00,0x00,0x7f,0x00,0x00, 0x00,0x41,0x36,0x08,0x00, 0x02,0x01,0x02,0x04,0x02,
 ])
 
-/** 一个字占的宽（含字间距）和一行的高，放大 1 倍时的像素数。 */
+/** 一个字占的宽（含字间距），放大 1 倍时的像素数。 */
 export const GLYPH_ADVANCE = 6
-export const LINE_HEIGHT = 10
 
 /** 这段字画出来有多宽。 */
 export function textWidth(text: string, scale = 1): number {

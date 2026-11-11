@@ -72,6 +72,7 @@ import { clickSlot, closeScreen, openScreen, useControl } from './screen.ts'
 import { checkStructure, findStructure, readBlocks } from './structures.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure } from './types.ts'
 import type { LineName, Tool, ToolContext, ToolResult } from './types.ts'
+import { errorText } from '../util.ts'
 
 export type { ChatLogAccess, FeedbackAccess, LineName, TalkAccess, WorkerAccess, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, RoutineAccess, Tool, ToolContext, ToolHooks, ToolImage, ToolResult } from './types.ts'
 export { DEFAULT_RESULT_MAX_CHARS } from './types.ts'
@@ -262,10 +263,6 @@ export const QUERY_TOOLS: readonly string[] = [
   'list_homes',
 ]
 
-export function toToolSpecs(tools: readonly Tool[]): ToolSpec[] {
-  return tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))
-}
-
 /** 发给模型的清单随什么变：当前模型能不能看图；是哪条线（对话线的库函数索引里只有只查不动的）。 */
 export interface ModelView {
   canSee: boolean
@@ -344,7 +341,7 @@ export function schemaForModel(schema: Schema): Record<string, unknown> {
 }
 
 /**
- * 发给模型的工具清单。和 toToolSpecs 的差别：
+ * 发给模型的工具清单（每个工具的名字、说明、参数 schema），和工具自己的定义不完全一样：
  *   - 看图的工具（view_area、view_image）只给能看图的模型；view_draft 的文字那一半谁都用得上，不能看图时换成不提图的说明；
  *   - run_program 的说明后面带上库函数的索引；
  *   - 参数 schema 是瘦过的那份（schemaForModel）。
@@ -436,6 +433,6 @@ export async function runTool(
       const hint = bridgeHint(e.code, e.message)
       return { content: `${e.code}: ${e.message}${hint ? ` (${hint})` : ''}`, isError: true }
     }
-    return { content: `${name} crashed: ${e instanceof Error ? e.message : String(e)}`, isError: true }
+    return { content: `${name} crashed: ${errorText(e)}`, isError: true }
   }
 }

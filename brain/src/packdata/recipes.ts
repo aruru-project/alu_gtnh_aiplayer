@@ -11,6 +11,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { errorText, isRecord } from '../util.ts'
 
 export interface RecipeHandler {
   /** 配方页的编号，recipes.jsonl 用它指回来。 */
@@ -71,10 +72,6 @@ export const CIRCUIT_ID = 'gregtech:gt.integrated_circuit'
 
 const READ_CHUNK = 8 << 20
 const EMPTY: readonly number[] = []
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
 
 function count(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 1
@@ -190,7 +187,7 @@ export class RecipeBook {
       }
     } catch (e) {
       // 没有配方页的说明也能用：页名就用它的编号，只是不知道哪些机器能做
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`handlers.json: ${e instanceof Error ? e.message : String(e)}`)
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`handlers.json: ${errorText(e)}`)
     }
     const offsets: number[] = []
     const lengths: number[] = []

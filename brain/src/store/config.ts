@@ -5,7 +5,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ADAPTERS, isProviderKind } from '../llm/index.ts'
 import type { Adapter, ProviderConfig, ProviderKind } from '../llm/index.ts'
-import { FILE_MODE, isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { FILE_MODE, readJson, writeJsonAtomic } from './files.ts'
+import { errorText, isRecord } from '../util.ts'
 
 export interface PanelConfig {
   host: string
@@ -339,7 +340,7 @@ export function sanitizeProvider(raw: unknown, opts: { lenient?: boolean } = {})
       models.push(model)
     } catch (e) {
       if (!opts.lenient) throw e
-      console.error(`[config] 忽略服务商 ${id} 下面一个不合法的模型：${e instanceof Error ? e.message : String(e)}`)
+      console.error(`[config] 忽略服务商 ${id} 下面一个不合法的模型：${errorText(e)}`)
     }
   }
   if (Array.isArray(raw.models)) {
@@ -401,7 +402,7 @@ export function normalizeConfig(raw: unknown): BrainConfig {
         const clean = sanitizeProvider(p, { lenient: true })
         if (!providers.some((x) => x.id === clean.id)) providers.push(clean)
       } catch (e) {
-        console.error(`[config] 忽略一条不合法的服务商配置：${e instanceof Error ? e.message : String(e)}`)
+        console.error(`[config] 忽略一条不合法的服务商配置：${errorText(e)}`)
       }
     }
   }
@@ -537,7 +538,7 @@ export class ConfigStore {
             : `[config] 配置是只有一条线时的格式，已补上对话线的模型和上限（和原来选的一样）；原文件留在 ${backup}`,
         )
       } catch (e) {
-        console.error(`[config] 没能给旧配置留底：${e instanceof Error ? e.message : String(e)}`)
+        console.error(`[config] 没能给旧配置留底：${errorText(e)}`)
       }
       // 主人改过的旧人设是整段核心提示词（里面写着“用 say 说话”“干活靠任务”）：现在这个字段只是对话线的说话风格，
       // 照旧用会让对话线读到一堆不再成立的话。清空、改用默认风格；原文在备份里（没留成底就不动它）。

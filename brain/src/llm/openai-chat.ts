@@ -9,7 +9,7 @@
 // 每张图前面有一句“这是上面哪个工具结果的图”；tool 消息里留一句“图在下一条消息里”。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
+import { LIST_MODELS_TIMEOUT_MS, asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -24,10 +24,9 @@ import type {
   StopReason,
   Usage,
 } from './types.ts'
+import { errorText } from '../util.ts'
 
 export const OPENAI_CHAT_KIND = 'openai-chat'
-/** 拉模型列表不该等很久：这只是填表时的一个方便。 */
-const LIST_MODELS_TIMEOUT_MS = 15_000
 
 /** 各家兼容接口放“思考过程”的字段名。原样存进 OpaquePart。 */
 const REASONING_FIELDS = ['reasoning_content', 'reasoning', 'reasoning_details'] as const
@@ -211,7 +210,7 @@ export function parseOpenAiResponse(json: unknown, config: ProviderConfig): Gene
         id,
         name: fn.name,
         input: {},
-        invalid: { reason: e instanceof Error ? e.message : String(e), raw: rawArgs },
+        invalid: { reason: errorText(e), raw: rawArgs },
       })
     }
   })

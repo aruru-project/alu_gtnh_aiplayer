@@ -4,8 +4,8 @@
 
 import path from 'node:path'
 import type { PlayerView } from '../bridge/protocol.ts'
-import { isRecord } from './files.ts'
 import { JsonFile } from './json-file.ts'
+import { isRecord } from '../util.ts'
 
 export interface ChatLine {
   time: number

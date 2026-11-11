@@ -32,6 +32,7 @@ import type { AgentEvent, SaidEvent, WorkerNote } from './events.ts'
 import { describeRoutine } from './routine.ts'
 import type { RoutineLimits } from './routine.ts'
 import type { RunLogStore } from './run-log.ts'
+import { errorText, firstLine } from '../util.ts'
 
 /** 一条线用的模型。 */
 export interface LineModel {
@@ -148,11 +149,6 @@ export function lineOf(ev: AgentEvent): LineName | 'both' {
     case 'todo':
       return 'work'
   }
-}
-
-function firstLine(text: string, max = 120): string {
-  const line = text.split('\n', 1)[0] ?? ''
-  return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
 function ago(now: number, then: number): string {
@@ -487,7 +483,7 @@ export class Lines {
       kind: 'relay',
       agent: 'talk',
       ...at,
-      text: `对话线 → 干活线${spinning ? '（只作背景，没有叫醒它）' : ''}：${firstLine(text)}`,
+      text: `对话线 → 干活线${spinning ? '（只作背景，没有叫醒它）' : ''}：${firstLine(text, 120)}`,
       detail: describeEvent(ev),
       relay: { type: 'tell', from: 'talk', to: 'work', quotes: said.length },
     })
@@ -538,7 +534,7 @@ export class Lines {
       await cancelAll()
       if (halt.routineTask !== undefined && !tasks.includes(halt.routineTask)) tasks.unshift(halt.routineTask)
     } catch (e) {
-      error = e instanceof BridgeError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)
+      error = e instanceof BridgeError ? `${e.code}: ${e.message}` : errorText(e)
     }
     // 被叫停的那一刻它正有一个工具在执行（比如“开始任务”的请求已经发出去了）：等它回来，再取消一遍，免得漏下刚开出来的任务
     if (halt.toolRunning && error === undefined) {
@@ -591,7 +587,7 @@ export class Lines {
    */
   private toTalk(kind: WorkerNote, text: string, at: TurnAt, waiting?: string): string {
     const now = this.now()
-    const line = firstLine(text)
+    const line = firstLine(text, 120)
     const progress = kind === 'progress'
     // 普通汇报和中途留的话一样只作背景：它们不等谁回话，对话线为它醒一次只会回一句“好，继续”
     const quiet = progress || kind === 'report'
@@ -730,7 +726,7 @@ export class Lines {
       out.push(list.active ? `Body: on task ${formatTask(list.active, { params: detail })}.` : 'Body: no task running.')
       if (queue.length > 0) out.push(`Queued: ${queue.map((t) => `${t.id} ${t.type}`).join(', ')}.`)
     } catch (e) {
-      out.push(`Body: the task list could not be read (${e instanceof BridgeError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)}).`)
+      out.push(`Body: the task list could not be read (${e instanceof BridgeError ? `${e.code}: ${e.message}` : errorText(e)}).`)
     }
     const routine = peek.routine
     if (routine) {

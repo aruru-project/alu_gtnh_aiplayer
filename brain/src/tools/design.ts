@@ -12,6 +12,7 @@ import { VIEW_PARAMS, looksForTable, pictureResult, toImage, viewSpec, viewWords
 import { bool, int, obj, str } from './schema.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
+import { errorText } from '../util.ts'
 
 export const PROGRAM_MAX_CHARS = 20_000
 /** start_routine 的 minutes 参数在 schema 里最多写到多少（七天）；真正的上限是主人在面板上设的那个。 */
@@ -137,7 +138,7 @@ export const runProgramTool: Tool = {
       })
       ctx.hooks.programEnded?.({ ok: run.outcome.status === 'ok', note: run.outcome.status })
     } catch (e) {
-      ctx.hooks.programEnded?.({ ok: false, note: e instanceof Error ? e.message : String(e) })
+      ctx.hooks.programEnded?.({ ok: false, note: errorText(e) })
       if (e instanceof DesignBusyError) return fail('Another program of yours is still running. Wait for it to finish.')
       throw e
     }

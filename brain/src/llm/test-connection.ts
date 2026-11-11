@@ -3,6 +3,7 @@ import type { LlmErrorKind } from './errors.ts'
 import { textOf } from './messages.ts'
 import { createClient } from './registry.ts'
 import type { ProviderConfig, UsageRecord, UserPart } from './types.ts'
+import { errorText } from '../util.ts'
 
 /** 一张 32×32 的小图（白底，中间一个红方块，PNG）：测“这个模型收不收图”用。 */
 const TEST_PICTURE = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAMUlEQVR4nGP4T2PAMGrBqAVD2II7cnIkoVELRi0YtWDUglELhqcF1AKjFoxaMAQsAABNEQ+XVFsaWwAAAABJRU5ErkJggg=='
@@ -61,7 +62,7 @@ export async function testConnection(
     return {
       ok: false,
       durationMs: elapsed(),
-      error: { kind: 'unknown', message: e instanceof Error ? e.message : String(e) },
+      error: { kind: 'unknown', message: errorText(e) },
       ...picture,
     }
   }

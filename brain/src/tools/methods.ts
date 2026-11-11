@@ -10,13 +10,14 @@ import type { FluidTable, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '
 import type { ItemTable } from '../packdata/items.ts'
 import { ANY_META } from '../packdata/index.ts'
 import { METHOD_TEXT_MAX_CHARS, METHOD_WHY_MAX_CHARS, ORDER_KEY, machineKey, partKey, readyKey, sameKey, thingKey } from '../store/methods.ts'
-import type { MachineMethod, Method, MethodBy, MethodPos, OrderMethod, PartMethod, ReadyMethod, RecipeMark, SameMethod, ThingMethod } from '../store/methods.ts'
+import type { MachineMethod, Method, MethodBy, MethodPos, OrderMethod, PartMethod, ReadyMethod, RecipeMark, ThingMethod } from '../store/methods.ts'
 import { serves, thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
 import { circuitOf, fluidLabel, isTool, lookAround, mergedSlots, namer, quantity, slotName } from './recipe-book.ts'
 import type { Namer } from './recipe-book.ts'
-import { arr, bool, int, obj, str } from './schema.ts'
+import { arr, bool, int, obj, pos, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext } from './types.ts'
+import { errorText, localDateKey, trimmedText } from '../util.ts'
 
 /** 存取“基地的做法”：MethodStore 满足。 */
 export interface MethodAccess {
@@ -32,17 +33,10 @@ export interface MethodAccess {
 /** 这些前缀各是一种零件：plateDouble 不是 plate 的一种（“板怎么做”的记录管不到双层板）。 */
 const OWN_PREFIXES = ['ingotHot', 'plateDouble', 'plateDense', 'plateTriple', 'plateQuadruple', 'plateQuintuple', 'dustSmall', 'dustTiny', 'dustImpure', 'dustPure', 'stickLong', 'gearGtSmall', 'springSmall', 'wireFine', 'gemFlawless', 'gemExquisite', 'gemFlawed', 'gemChipped']
 const ORDER_MAX = 40
-/** 一个位置的参数写法（和 tasks.ts 的 pos 一样；那边引过来会绕成圈）。 */
-const pos = (description: string) => obj({ x: int(), y: int(), z: int() }, ['x', 'y', 'z'], description)
 
 const formatPos = (p: MethodPos): string => `(${p.x},${p.y},${p.z})`
-const dateText = (at: number): string => {
-  const d = new Date(at)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 /** 谁定的、什么时候、理由：每条记录后面都带。 */
-export const methodSource = (m: Method): string => `${m.by === 'owner' ? 'your owner' : 'you'}, ${dateText(m.at)}${m.why ? `: ${m.why}` : ''}`
+export const methodSource = (m: Method): string => `${m.by === 'owner' ? 'your owner' : 'you'}, ${localDateKey(m.at)}${m.why ? `: ${m.why}` : ''}`
 
 // ── 做法的名字 ──
 
@@ -304,7 +298,6 @@ export interface MethodEnv {
   machineName?: string
 }
 
-const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 const isPos = (v: unknown): v is MethodPos => typeof v === 'object' && v !== null && ['x', 'y', 'z'].every((k) => Number.isInteger((v as Record<string, unknown>)[k]))
 const PREFIX_RE = /^[a-z][A-Za-z0-9]{1,30}$/
 
@@ -316,7 +309,7 @@ export function buildMethod(input: MethodInput, env: MethodEnv): { entry: Method
   const kinds = [input.part !== undefined, input.ready !== undefined, input.use !== undefined || input.over !== undefined, input.id !== undefined || input.fluid !== undefined, input.order !== undefined, input.machine !== undefined].filter(Boolean).length
   if (kinds !== 1) return { error: 'Give exactly one of: "part" (a kind of part and the way that makes it), "ready" (what is taken ready-made), "use" with "over" (which of two ways, when they take the same ingredients), "id" or "fluid" with "recipe" (one particular thing), "order" (ways, the first to use first), "machine" (what a machine is for).' }
   if (input.by !== 'owner' && input.by !== 'self') return { error: 'Say who decided it: by "owner" (your owner said so) or "self" (you decided).' }
-  const common = { by: input.by, at: env.now, why: text(input.why, METHOD_WHY_MAX_CHARS) }
+  const common = { by: input.by, at: env.now, why: trimmedText(input.why, METHOD_WHY_MAX_CHARS) }
   const book = env.book
 
   if (input.part !== undefined) {
@@ -326,8 +319,8 @@ export function buildMethod(input: MethodInput, env: MethodEnv): { entry: Method
     if (input.way === undefined) return { error: 'A kind of part needs "way": the way that makes it, named as find_recipes lists the ways.' }
     const way = waysNamed(book, input.way)
     if ('error' in way) return way
-    const material = text(input.material, 60)
-    const from = text(input.from, 40)
+    const material = trimmedText(input.material, 60)
+    const from = trimmedText(input.from, 40)
     if (from.length > 0 && !PREFIX_RE.test(from)) return { error: `"from" is an ore-dictionary prefix too (the form it is made from, e.g. "ingot"), not "${from}".` }
     if (material.length > 0 && env.items && env.items.withOre(`${prefix}${material}`).length === 0) return { error: `No item is registered under the ore name ${prefix}${material}: "material" is the rest of the ore name after the prefix, e.g. "Steel" in plateSteel.` }
     return { entry: { ...common, kind: 'part', key: partKey(prefix, material || undefined), prefix, way: way.name, ...(material ? { material } : {}), ...(from ? { from } : {}) } }
@@ -376,11 +369,11 @@ export function buildMethod(input: MethodInput, env: MethodEnv): { entry: Method
 
   if (input.machine !== undefined) {
     if (!isPos(input.machine)) return { error: '"machine" is the position of the machine: {x, y, z}.' }
-    const does = text(input.does, METHOD_TEXT_MAX_CHARS)
+    const does = trimmedText(input.does, METHOD_TEXT_MAX_CHARS)
     if (does.length === 0) return { error: 'A machine needs "does": what it is for, in a sentence.' }
     for (const key of ['feed', 'collect'] as const) if (input[key] !== undefined && !isPos(input[key])) return { error: `"${key}" is the position of a container: {x, y, z}.` }
     const at = { x: input.machine.x, y: input.machine.y, z: input.machine.z }
-    const keep = text(input.keep, METHOD_TEXT_MAX_CHARS)
+    const keep = trimmedText(input.keep, METHOD_TEXT_MAX_CHARS)
     return {
       entry: {
         ...common,
@@ -541,7 +534,7 @@ export const setBaseMethod: Tool = {
     try {
       methods.set(built.entry)
     } catch (e) {
-      return fail(e instanceof Error ? e.message : String(e))
+      return fail(errorText(e))
     }
     return `${before ? 'Changed in' : 'Recorded in'} the base's methods: ${methodLine(built.entry, env)}${before ? `\nIt replaces: ${methodLine(before, env)}` : ''}`
   },

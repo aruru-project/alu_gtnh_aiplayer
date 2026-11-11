@@ -24,6 +24,7 @@ import { BlockLooks, stableColor } from '../render/index.ts'
 import type { RGB } from '../render/index.ts'
 import type { ConfigStore } from '../store/config.ts'
 import { fluidName, nameOf } from '../tools/format.ts'
+import { errorText } from '../util.ts'
 
 export type ItemLook = { icon: number } | { tex: number; tint?: RGB } | { color: RGB; known: boolean }
 
@@ -388,7 +389,7 @@ export class PanelLive {
         this.deps.bridge.serverInfo().catch(() => undefined),
       ])
     } catch (e) {
-      return none(e instanceof Error ? e.message : String(e))
+      return none(errorText(e))
     }
     const width = scan.x2 - scan.x1 + 1
     const depth = scan.z2 - scan.z1 + 1

@@ -2,6 +2,7 @@
 // 给物品配中文名（任务书、背包、箱子、配方里的东西都靠它），按中文名、英文名、id、矿辞名找物品。
 
 import { editDistance } from './fluids.ts'
+import { ANY_META } from './recipes.ts'
 
 export interface PackItemInfo {
   id: string
@@ -21,9 +22,6 @@ export interface ItemSearchResult {
   /** 一共有多少个对得上。 */
   total: number
 }
-
-/** “任何 meta 都行”：只出现在配方里引用到的条目上，找物品时不要它。 */
-const ANY_META = 32767
 
 export class ItemTable {
   private readonly byKey = new Map<string, PackItemInfo>()

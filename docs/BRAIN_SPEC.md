@@ -33,6 +33,7 @@ brain/
   aiplayer-brain.service        # systemd 用户服务模板（不要安装）
   src/
     main.ts                     # 组装并启动
+    util.ts                     # 到处要用的几个小函数（isRecord、errorText、firstLine……），不依赖别的模块
     llm/                        # 模型调用层
     agent/                      # agent 循环
     tools/                      # 模型可用的工具

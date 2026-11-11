@@ -26,11 +26,12 @@ import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At } from './where.ts'
+import { errorText } from '../util.ts'
 
 // 协议里各方法的上限
 export const SCAN_MAX_SIDE = 64
 export const FIND_MAX_RADIUS = 48
-export const FIND_MAX_LIMIT = 64
+/** 身体一次看容器每个方向最多看这么远；list_containers、list_stock 给得更大时（一个基地，BASE_RADIUS）切成这么大的几块各看一次。 */
 export const CONTAINERS_MAX_RADIUS = 32
 export const ENTITIES_MAX_RADIUS = 64
 /** look_around 里每个容器列几种东西（只是概要）。 */
@@ -45,10 +46,6 @@ export async function botBlock(ctx: ToolContext): Promise<BlockPos & { dim?: num
   const out: BlockPos & { dim?: number } = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }
   if (status.dim !== undefined) out.dim = status.dim
   return out
-}
-
-function reason(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
 }
 
 /** world.block / bot.probe 共用的一行描述。 */
@@ -105,7 +102,7 @@ export const lookAround: Tool = {
       const list = (entities.value.entities ?? []).filter((e) => !(e.type === 'player' && e.name === ctx.botName))
       lines.push(`Entities: ${formatEntities(list)}`)
     } else {
-      lines.push(`Entities: unavailable (${reason(entities.reason)})`)
+      lines.push(`Entities: unavailable (${errorText(entities.reason)})`)
     }
 
     if (containers.status === 'fulfilled') {
@@ -123,13 +120,13 @@ export const lookAround: Tool = {
         if (shown.some(holdsCoverItems)) lines.push(COVER_NOTE)
       }
     } else {
-      lines.push(`Containers: unavailable (${reason(containers.reason)})`)
+      lines.push(`Containers: unavailable (${errorText(containers.reason)})`)
     }
 
     if (scan.status === 'fulfilled') {
       lines.push(`Terrain within ${terrainR} blocks: ${formatTerrainSummary(scan.value)}`)
     } else {
-      lines.push(`Terrain: unavailable (${reason(scan.reason)})`)
+      lines.push(`Terrain: unavailable (${errorText(scan.reason)})`)
     }
     return lines.join('\n')
   },

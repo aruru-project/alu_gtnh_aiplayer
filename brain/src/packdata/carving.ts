@@ -4,6 +4,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { isRecord } from '../util.ts'
 
 export interface CarvingVariant {
   id: string
@@ -22,10 +23,6 @@ export interface CarvingGroup {
 export interface CarvingMatch {
   group: CarvingGroup
   member: boolean
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
 function parseGroup(raw: unknown): CarvingGroup | undefined {

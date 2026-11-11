@@ -31,7 +31,7 @@ import { MethodStore } from './store/methods.ts'
 import { TodoStore } from './store/todo.ts'
 import { PictureStore } from './store/pictures.ts'
 import type { BrainConfig } from './store/config.ts'
-import { ensureDir, isRecord } from './store/files.ts'
+import { ensureDir } from './store/files.ts'
 import { HistoryStore, TurnIds } from './store/history.ts'
 import { JsonFile } from './store/json-file.ts'
 import { ManualStore } from './store/manuals.ts'
@@ -39,6 +39,7 @@ import { MemoryStore } from './store/memory.ts'
 import { ReminderStore } from './store/reminders.ts'
 import { UsageStore } from './store/usage.ts'
 import type { LineName } from './tools/index.ts'
+import { errorText, isRecord, stringsOf } from './util.ts'
 
 const VERSION = '0.1.0'
 /** 隔多久看一次该不该自动下线。 */
@@ -77,14 +78,13 @@ function parseResume(raw: unknown): ResumeState | undefined {
 }
 
 function parseAgentState(raw: unknown): PersistedAgentState {
-  const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
   if (!isRecord(raw)) return { tracked: [], endedSeen: [], queue: [] }
   const queue = Array.isArray(raw.queue)
     ? raw.queue.filter((e): e is AgentEvent => isRecord(e) && typeof e.type === 'string' && typeof e.time === 'number')
     : []
   return {
-    tracked: strings(raw.tracked),
-    endedSeen: strings(raw.endedSeen),
+    tracked: stringsOf(raw.tracked),
+    endedSeen: stringsOf(raw.endedSeen),
     queue,
     // 对话线：从什么时候起写的字不再说进游戏，这件事告诉过它没有
     ...(typeof raw.textNotSaidSince === 'number' ? { textNotSaidSince: raw.textNotSaidSince } : {}),
@@ -200,7 +200,7 @@ async function main(): Promise<void> {
       llms[line].client = provider ? createClient(provider, { onUsage: (record) => usage.add(record.usage) }) : undefined
     } catch (e) {
       llms[line].client = undefined
-      info(`[llm] ${line === 'talk' ? '对话线' : '干活线'}选的服务商配置用不了：${e instanceof Error ? e.message : String(e)}`)
+      info(`[llm] ${line === 'talk' ? '对话线' : '干活线'}选的服务商配置用不了：${errorText(e)}`)
     }
     return true
   }
@@ -283,7 +283,7 @@ async function main(): Promise<void> {
       await bridge.botSpawn({ name })
       log.add({ kind: 'info', text: `连上游戏后发现 ${name} 不在线，已经让它上线。` })
     } catch (e) {
-      log.add({ kind: 'error', text: `想让 ${name} 上线但没成功：${e instanceof Error ? e.message : String(e)}` })
+      log.add({ kind: 'error', text: `想让 ${name} 上线但没成功：${errorText(e)}` })
     }
   }
 

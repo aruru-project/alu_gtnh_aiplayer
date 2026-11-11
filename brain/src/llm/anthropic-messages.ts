@@ -9,7 +9,7 @@
 // 图片：工具结果里的图直接放在 tool_result 的内容里（文字块后面跟图片块）；user 消息里的图是普通的图片块。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
+import { LIST_MODELS_TIMEOUT_MS, asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -26,8 +26,6 @@ import type {
 } from './types.ts'
 
 export const ANTHROPIC_KIND = 'anthropic-messages'
-/** 拉模型列表不该等很久：这只是填表时的一个方便。 */
-const LIST_MODELS_TIMEOUT_MS = 15_000
 export const ANTHROPIC_VERSION = '2023-06-01'
 /** 接口要求必须给 max_tokens；配置和请求都没给时用这个。 */
 export const ANTHROPIC_DEFAULT_MAX_TOKENS = 4096

@@ -16,9 +16,8 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-
-/** 物品表里“任何 meta 都行”的那种行；它的图标画的是 meta 0 的样子。 */
-const ANY_META = 32767
+import { errorText, isRecord } from '../util.ts'
+import { ANY_META } from './recipes.ts'
 
 export interface ItemIcons {
   /** icons/ 目录。 */
@@ -54,10 +53,6 @@ export interface ItemLines {
   count: number
   /** 每行 "<id>/<meta>\n" 依次拼起来的 SHA-1。 */
   sha1: string
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
 export function itemLines(itemsJsonl: string): ItemLines {
@@ -166,7 +161,7 @@ export function loadItemIcons(packdataDir: string, log: (message: string) => voi
     log(`物品图标：${icons.count} 个（每个 ${icons.cell} 像素，${icons.files.length} 张图）。`)
     return icons
   } catch (e) {
-    log(`物品图标用不了（${e instanceof Error ? e.message : String(e)}），${fallback}。`)
+    log(`物品图标用不了（${errorText(e)}），${fallback}。`)
     return undefined
   }
 }

@@ -7,6 +7,7 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { BridgeEvent, ServerInfo, TaskList } from '../bridge/protocol.ts'
+import { errorText } from '../util.ts'
 
 export interface PresenceSettings {
   botName: string
@@ -41,7 +42,6 @@ export interface PresenceDeps {
   now?(): number
 }
 
-const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 /** 身体明确说了不行（不是断线、超时那种“不知道它做没做”）。 */
 const refused = (e: unknown): boolean => e instanceof BridgeError && e.code !== 'disconnected' && e.code !== 'timeout'
 
@@ -155,7 +155,7 @@ export class Presence {
     } catch (e) {
       // 没上成（多半是和游戏断着）：还算自动下线中，下一次有事再试
       this.deps.setAway(true)
-      this.deps.log({ kind: 'error', text: `想让 ${s.botName} 自动上线（${reason}）但没成功：${message(e)}` })
+      this.deps.log({ kind: 'error', text: `想让 ${s.botName} 自动上线（${reason}）但没成功：${errorText(e)}` })
     }
   }
 
@@ -182,7 +182,7 @@ export class Presence {
     } catch (e) {
       // 身体说不行：没下成。断线、超时：不知道它下没下——先当它下了（记着的不动），它其实还在线的话下一次检查会改回来
       if (refused(e)) this.deps.setAway(false)
-      this.deps.log({ kind: 'error', text: `想让 ${s.botName} 自动下线但没成功：${message(e)}` })
+      this.deps.log({ kind: 'error', text: `想让 ${s.botName} 自动下线但没成功：${errorText(e)}` })
     }
   }
 }

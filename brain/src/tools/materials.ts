@@ -194,7 +194,8 @@ interface Storage {
 }
 
 const posKey = (p: { x: number; y: number; z: number }): string => `${p.x},${p.y},${p.z}`
-const attachedText = (attached: readonly AttachedBlock[]): string => attached.map((a) => a.name ?? a.kind ?? 'a pipe').join(', ')
+/** 接在一个容器上的漏斗、管道叫什么（只要名字；format.ts 的 attachedText 是带坐标的一整句）。 */
+const attachedNames = (attached: readonly AttachedBlock[]): string => attached.map((a) => a.name ?? a.kind ?? 'a pipe').join(', ')
 
 /** 一样东西怎么问身体：矿辞名、id/meta、不分 meta；“几种里任一种”的一种一种问（最多 ANY_QUERIES_MAX 种）。流体不问。 */
 function queriesOf(thing: TreeThing<Note>): StockQuery[] {
@@ -251,10 +252,10 @@ async function lookIntoStorage(ctx: ToolContext, things: readonly TreeThing<Note
           const at: Place = { x: place.x, y: place.y, z: place.z, count: place.count, ...(place.container ? { container: place.container } : {}) }
           if (flag?.attached && !countAutomated) {
             h.automated += place.count
-            h.automatedPlaces.push({ ...at, by: attachedText(flag.attached) })
+            h.automatedPlaces.push({ ...at, by: attachedNames(flag.attached) })
           } else {
             h.free += place.count
-            h.places.push(flag?.attached ? { ...at, by: attachedText(flag.attached) } : at)
+            h.places.push(flag?.attached ? { ...at, by: attachedNames(flag.attached) } : at)
           }
         }
       })
@@ -424,7 +425,7 @@ export const totalMaterials: Tool = {
     const stateOf = (handler: RecipeHandler, things: readonly TreeThing<Note>[]): { text: string; refs: number[]; rank: number }[] => {
       const groups = new Map<string, { text: string; refs: number[]; rank: number }>()
       for (const t of things) {
-        const a = availability(handler, [t.recipe!], around, true)
+        const a = availability(handler, [t.recipe!], around)
         const g = groups.get(a.text) ?? { text: a.text, refs: [], rank: a.rank }
         g.refs.push(t.recipe!.ref)
         groups.set(a.text, g)
@@ -482,7 +483,7 @@ export const totalMaterials: Tool = {
       for (const [way, n] of counts) {
         if (isRecycling(way)) continue
         const recipe = options.first((w) => w === way)
-        if (recipe) out.push({ way, recipe, more: n - 1, state: availability(way, [recipe], around, true).text })
+        if (recipe) out.push({ way, recipe, more: n - 1, state: availability(way, [recipe], around).text })
       }
       return out
     }

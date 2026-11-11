@@ -1,5 +1,5 @@
 // 走完整棵配方树并算数的内核（src/tools/material-tree.ts）。
-// 它现在只有一个用的人：total_materials（“只用点了名的那几条”，那条路从工具入口测，见 planner / chisel / fluids-covers 三个测试）。
+// 它现在只有一个用的人：total_materials（“只用点了名的那几条”，那条路从工具入口测，见 total-materials / chisel / fluids-covers 三个测试）。
 // 这里测的是工具还够不着的那部分：换一个选择函数（取列在最前的、查一张记好的表……）时，树照样走完、数照样对。
 // 所以入口只能是内核自己：给它一本配方册和一个选择函数，看它交回来的“要做的、原料、不消耗的、流体”。
 // 配方册是 fixture-plan.ts 那本小样本，后面接了几条这里才用得到的（编号从 53 起）。

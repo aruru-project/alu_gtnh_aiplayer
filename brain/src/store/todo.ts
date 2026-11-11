@@ -7,7 +7,8 @@
 // 一次改动里的几处要么全做、要么一处都不做：有一处不对（编号不在清单上、标成在等人却没写等什么……）整次拒绝，说清哪几处。
 
 import path from 'node:path'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord } from '../util.ts'
 
 export type TodoState = 'open' | 'waiting' | 'done'
 /** 谁写的：对话线、干活线、主人（面板）。 */

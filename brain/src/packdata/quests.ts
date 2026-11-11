@@ -2,6 +2,8 @@
 // 这里只有静态内容和纯计算：按 id 取任务、按词/章节/状态找任务、由“已完成的任务 id”算出每个任务是做完了、能做还是没解锁。
 // 谁完成了哪些要问服务器（quest.progress），那不归这一层管。
 
+import { isRecord } from '../util.ts'
+
 /** 任务要的或奖励的一样物品。meta 缺省是任何变体都行；ore 是可以用登记在这个矿辞名下的任何物品代替。 */
 export interface PackItem {
   id?: string
@@ -285,10 +287,6 @@ export class QuestBook {
 }
 
 // ── 读文件 ──
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
 
 function text(v: unknown): string {
   return typeof v === 'string' ? v : ''

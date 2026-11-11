@@ -4,6 +4,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { isRecord, isWhole, stringsOf } from '../util.ts'
 
 export interface StructurePart {
   id: string
@@ -38,17 +39,11 @@ export interface Structure {
   structureInfo: string[]
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
-
-const whole = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
-const triple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(whole)
-const texts = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+const triple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(isWhole)
 
 function part(v: unknown): StructurePart | undefined {
   if (!isRecord(v) || typeof v.id !== 'string') return undefined
-  return { id: v.id, meta: whole(v.meta) ? v.meta : 0, ...(typeof v.name === 'string' ? { name: v.name } : {}) }
+  return { id: v.id, meta: isWhole(v.meta) ? v.meta : 0, ...(typeof v.name === 'string' ? { name: v.name } : {}) }
 }
 
 /** 把一行的 runs 展开成每格一个调色板下标。 */
@@ -88,12 +83,12 @@ export class StructureBook {
         bad++
         continue
       }
-      if (!isRecord(raw) || typeof raw.id !== 'string' || !whole(raw.meta) || !triple(raw.size) || !triple(raw.controller) || !Array.isArray(raw.palette) || !Array.isArray(raw.runs) || !raw.runs.every(whole)) {
+      if (!isRecord(raw) || typeof raw.id !== 'string' || !isWhole(raw.meta) || !triple(raw.size) || !triple(raw.controller) || !Array.isArray(raw.palette) || !Array.isArray(raw.runs) || !raw.runs.every(isWhole)) {
         bad++
         continue
       }
       const palette = raw.palette.map(part)
-      const tiers = Array.isArray(raw.tiers) ? raw.tiers.filter(whole) : []
+      const tiers = Array.isArray(raw.tiers) ? raw.tiers.filter(isWhole) : []
       if (palette.some((p) => p === undefined) || tiers.length === 0) {
         bad++
         continue
@@ -105,12 +100,12 @@ export class StructureBook {
         machines.set(key, machine)
       }
       // 说明文字只在这台机器的第一行带
-      if (machine.info.length === 0) machine.info = texts(raw.info)
-      if (machine.structureInfo.length === 0) machine.structureInfo = texts(raw.structureInfo)
-      machine.maxTier = Math.max(machine.maxTier, whole(raw.maxTier) ? raw.maxTier : 0, ...tiers)
+      if (machine.info.length === 0) machine.info = stringsOf(raw.info)
+      if (machine.structureInfo.length === 0) machine.structureInfo = stringsOf(raw.structureInfo)
+      machine.maxTier = Math.max(machine.maxTier, isWhole(raw.maxTier) ? raw.maxTier : 0, ...tiers)
       const blocks = (Array.isArray(raw.blocks) ? raw.blocks : []).flatMap((b) => {
         const p = part(b)
-        return p && isRecord(b) && whole(b.n) ? [{ ...p, n: b.n }] : []
+        return p && isRecord(b) && isWhole(b.n) ? [{ ...p, n: b.n }] : []
       })
       machine.rows.push({ tiers, size: raw.size, controller: raw.controller, blocks, palette: palette as StructurePart[], runs: Int32Array.from(raw.runs as number[]) })
       rows++

@@ -7,8 +7,8 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { Item, ScreenControl, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
 import { compactJson, fluidName, itemKey, nameOf } from './format.ts'
-import { bool, int, num, obj, str } from './schema.ts'
-import { USE_SIDES, pos } from './tasks.ts'
+import { bool, int, num, obj, pos, str } from './schema.ts'
+import { USE_SIDES } from './tasks.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 

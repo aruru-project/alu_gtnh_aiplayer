@@ -62,7 +62,3 @@ export function appendLine(file: string, line: string): void {
   fs.appendFileSync(file, `${line}\n`, { mode: FILE_MODE })
   if (!existed) fs.chmodSync(file, FILE_MODE)
 }
-
-export function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}

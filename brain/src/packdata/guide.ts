@@ -13,6 +13,7 @@ import type { FluidTable } from './fluids.ts'
 import type { ItemTable } from './items.ts'
 import { normalizeQuestId } from './quests.ts'
 import type { QuestBook } from './quests.ts'
+import { isRecord, isWhole, stringsOf } from '../util.ts'
 
 /** 一页讲的是哪件物品：{id, meta}、{id}（任何损害值）或 {id, metas: [516, [520, 536]]}（一串损害值和范围）。 */
 export interface GuideItemRef {
@@ -90,22 +91,15 @@ export interface GuideNames {
   quests?: QuestBook | undefined
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
-
-const whole = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
-const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
-
 function parseItemRef(v: unknown): GuideItemRef | undefined {
   if (!isRecord(v) || typeof v.id !== 'string') return undefined
   const ref: GuideItemRef = { id: v.id }
-  if (whole(v.meta)) ref.meta = v.meta
+  if (isWhole(v.meta)) ref.meta = v.meta
   if (Array.isArray(v.metas)) {
     const metas: (number | [number, number])[] = []
     for (const m of v.metas) {
-      if (whole(m)) metas.push(m)
-      else if (Array.isArray(m) && m.length === 2 && whole(m[0]) && whole(m[1])) metas.push([m[0], m[1]])
+      if (isWhole(m)) metas.push(m)
+      else if (Array.isArray(m) && m.length === 2 && isWhole(m[0]) && isWhole(m[1])) metas.push([m[0], m[1]])
     }
     if (metas.length > 0) ref.metas = metas
   }
@@ -120,8 +114,8 @@ export function parseGuidePage(raw: unknown): GuidePage | undefined {
     path: raw.path,
     title: typeof raw.title === 'string' && raw.title.trim().length > 0 ? raw.title.trim() : raw.path,
     items: (Array.isArray(raw.items) ? raw.items : []).map(parseItemRef).filter((r): r is GuideItemRef => r !== undefined),
-    quests: strings(raw.quests),
-    categories: strings(raw.categories),
+    quests: stringsOf(raw.quests),
+    categories: stringsOf(raw.categories),
     text: raw.text,
   }
   if (typeof raw.parent === 'string' && raw.parent.length > 0) page.parent = raw.parent

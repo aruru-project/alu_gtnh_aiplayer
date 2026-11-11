@@ -677,7 +677,7 @@ tools/make-packdata.py textures \
 
 **同一种东西两个 id。** GregTech 把登记在同一个“材料件”矿辞名下的物品当成一种（`ingotDarkSteel` 下有 EnderIO 的和 GregTech 的两个玄钢锭；机器配方点名的、高炉产出的常常是 EnderIO 那个）。只对 `ingot`、`plate`、`dust`、`gem`、`stick`、`bolt`、`screw`、`ring`、`gear`、`foil`、`rotor`、`spring`、`round`、`wireFine`、`lens`、`nugget`、`block` 这些前缀的矿辞名这样办（`UNIFIED_ORE`）：查其中一个的做法时把做另一个的配方也算上并说明；机器配方里点名的那格标 `(or any 矿辞名)`；`process_items` 身上是哪种就放哪种。手工合成里点名某个 id 的格子不这样办。
 
-**做法规划**（`brain/src/tools/planner.ts`）曾经拿这本配方册替模型把整棵树走完、挑好每一步；它已经不是给模型的工具了（原因见 `brain/README.md` 的“做一样东西”），代码留着。现在模型自己一层层查，要算总原料时用库函数 `total_materials`（只做乘法，路线由模型给）。
+**做法规划**（原来的 `brain/src/tools/planner.ts`）曾经拿这本配方册替模型把整棵树走完、挑好每一步；它已经不是给模型的工具了（原因见 `brain/README.md` 的“做一样东西”），代码和测试也删了。现在模型自己一层层查，要算总原料时用库函数 `total_materials`（只做乘法，路线由模型给）。
 
 **走树和算数**在 `brain/src/tools/material-tree.ts`：每样东西用哪条配方（或者不做、要现成的）由调用的人给的选择函数定，它只管把树走完、把数算对——材料件按矿辞名算同一样东西（每样东西有个稳定的键：`ore:plateSteel`、`id/meta`、`fluid:molten.steel`……）、选定的配方要用到树上在它上面的东西时这样东西当原料并记下是哪条配方绕回去的、不消耗的模具和工具整棵树只算一个、流体按 mB、一轮出几个按轮数往上取整、有概率才出的产物不算。现在用它的是 `total_materials`：选择函数照“基地的做法”（`brain/src/store/methods.ts`）定配方——点名的 → 记给这样东西的 → 它这一类零件的 → 总的先后 → 只有一条配方；都不是的不展开。库存在算数量时扣（`count(have)`）。
 

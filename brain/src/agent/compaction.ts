@@ -11,6 +11,7 @@ import type { GenerateResult, LlmClient, Message } from '../llm/index.ts'
 import { LOG_KEEP_DAYS } from '../store/activity-log.ts'
 import type { SummaryRange, Turn } from '../store/history.ts'
 import { manualInText } from '../store/manuals.ts'
+import { errorText } from '../util.ts'
 
 /** 估算 token：字符数 / 3。 */
 export function estimateTokens(value: unknown): number {
@@ -271,11 +272,6 @@ export function transcriptSegments(turns: readonly Turn[], maxChars: number = SE
   return segments
 }
 
-/** 若干轮排成一整段文字（不分段）。 */
-export function renderTranscript(turns: readonly Turn[], talk = false, textSaidBefore?: number): string {
-  return transcriptSegments(turns, Number.MAX_SAFE_INTEGER, talk, textSaidBefore).map((seg) => seg.text).join('\n\n')
-}
-
 /** 交接记录最多写多少字符：干活线要留坐标、容器、查到的配方、没还原的东西；对话线留的是话和约定。 */
 export const SUMMARY_MAX_CHARS = { work: 20_000, talk: 10_000 } as const
 /** 同时不超过“阈值折合成字符”的这么大一份（阈值调小了的配置，记录自动跟着小）。 */
@@ -523,7 +519,7 @@ export async function summarize(llm: LlmClient, previousSummary: string, turns: 
         roomy = false
         continue
       }
-      return result(e instanceof Error ? e.message : String(e))
+      return result(errorText(e))
     }
     summary = out.summary
     if (out.analysis !== undefined) analysis.push(out.analysis)

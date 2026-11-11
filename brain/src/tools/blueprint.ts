@@ -4,8 +4,8 @@
 import type { BlueprintEntry, BlueprintKind, BlueprintPlacement } from '../bridge/protocol.ts'
 import { blockCount, materialsOf } from '../design/index.ts'
 import { compactJson, formatBlueprintCheck, formatBlueprintList, itemKey, nameOf } from './format.ts'
-import { arr, bool, int, obj, str } from './schema.ts'
-import { dropoff, overflow, pos, queue, startTask, supply } from './tasks.ts'
+import { arr, bool, int, obj, pos, str } from './schema.ts'
+import { dropoff, overflow, queue, startTask, supply } from './tasks.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 

@@ -6,6 +6,7 @@ import type { TodoApplied, TodoBy, TodoEdit, TodoItem } from '../store/todo.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool } from './types.ts'
+import { errorText } from '../util.ts'
 
 export interface TodoAccess {
   list(): TodoItem[]
@@ -117,7 +118,7 @@ export const todo: Tool = {
       res = ctx.todo.apply(input, ctx.line ?? 'work', ctx.now())
     } catch (e) {
       if (e instanceof TodoRefused) return fail(`Nothing was changed: ${e.problems.join(' ')}`)
-      return fail(e instanceof Error ? e.message : String(e))
+      return fail(errorText(e))
     }
     const head = changedText(res, before)
     return { content: [head, todoListText(res.items, ctx.now())].filter(Boolean).join('\n'), data: res }

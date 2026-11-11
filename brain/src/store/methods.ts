@@ -15,7 +15,8 @@
 // 这里只管存和按键查；一条记录写得对不对（做法认不认得、配方做不做得出那样东西）由写它的人先查好（tools/methods.ts）。
 
 import path from 'node:path'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord, trimmedText } from '../util.ts'
 
 export type MethodBy = 'owner' | 'self'
 export const METHODS_MAX = 600
@@ -128,14 +129,13 @@ export const sameKey = (use: string, over: string): string => `same:${use}>${ove
 
 const KIND_ORDER: Record<Method['kind'], number> = { part: 0, ready: 1, same: 2, order: 3, thing: 4, machine: 5 }
 
-const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 const pos = (v: unknown): MethodPos | undefined => (isRecord(v) && typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number' ? { x: v.x, y: v.y, z: v.z } : undefined)
 const pairs = (v: unknown): [string, number][] => (Array.isArray(v) ? v.filter((p): p is [string, number] => Array.isArray(p) && typeof p[0] === 'string' && typeof p[1] === 'number').map((p) => [p[0], p[1]]) : [])
 
 /** 文件里的一条读回来；认不出来的丢掉（手改坏的文件不让进程起不来）。 */
 function parse(raw: unknown): Method | undefined {
   if (!isRecord(raw) || typeof raw.key !== 'string') return undefined
-  const common: Common = { key: raw.key, by: raw.by === 'owner' ? 'owner' : 'self', at: typeof raw.at === 'number' ? raw.at : 0, why: str(raw.why, METHOD_WHY_MAX_CHARS) }
+  const common: Common = { key: raw.key, by: raw.by === 'owner' ? 'owner' : 'self', at: typeof raw.at === 'number' ? raw.at : 0, why: trimmedText(raw.why, METHOD_WHY_MAX_CHARS) }
   if (raw.kind === 'part' && typeof raw.prefix === 'string' && typeof raw.way === 'string') {
     return { ...common, kind: 'part', prefix: raw.prefix, way: raw.way, ...(typeof raw.material === 'string' && raw.material ? { material: raw.material } : {}), ...(typeof raw.from === 'string' && raw.from ? { from: raw.from } : {}) }
   }
@@ -145,12 +145,12 @@ function parse(raw: unknown): Method | undefined {
       ...common,
       kind: 'thing',
       thing: raw.thing,
-      name: str(raw.name, 200),
-      recipe: { ref: r.ref as number, way: r.way as string, wayName: str(r.wayName, 200), in: pairs(r.in), out: pairs(r.out), fin: pairs(r.fin), fout: pairs(r.fout), text: str(r.text, 2000) },
+      name: trimmedText(raw.name, 200),
+      recipe: { ref: r.ref as number, way: r.way as string, wayName: trimmedText(r.wayName, 200), in: pairs(r.in), out: pairs(r.out), fin: pairs(r.fin), fout: pairs(r.fout), text: trimmedText(r.text, 2000) },
     }
   }
   if (raw.kind === 'ready' && typeof raw.text === 'string' && (raw.match === 'prefix' || raw.match === 'ore' || raw.match === 'item')) {
-    return { ...common, kind: 'ready', match: raw.match, text: raw.text, ...(typeof raw.meta === 'number' ? { meta: raw.meta } : {}), ...(typeof raw.name === 'string' && raw.name ? { name: str(raw.name, 200) } : {}) }
+    return { ...common, kind: 'ready', match: raw.match, text: raw.text, ...(typeof raw.meta === 'number' ? { meta: raw.meta } : {}), ...(typeof raw.name === 'string' && raw.name ? { name: trimmedText(raw.name, 200) } : {}) }
   }
   if (raw.kind === 'same' && typeof raw.use === 'string' && typeof raw.over === 'string') return { ...common, kind: 'same', use: raw.use, over: raw.over, ...(raw.noTools === true ? { noTools: true as const } : {}) }
   if (raw.kind === 'order' && Array.isArray(raw.ways)) return { ...common, kind: 'order', key: ORDER_KEY, ways: raw.ways.filter((w): w is string => typeof w === 'string' && w.trim().length > 0) }
@@ -162,12 +162,12 @@ function parse(raw: unknown): Method | undefined {
       ...common,
       kind: 'machine',
       ...at,
-      does: str(raw.does, METHOD_TEXT_MAX_CHARS),
+      does: trimmedText(raw.does, METHOD_TEXT_MAX_CHARS),
       ...(typeof raw.dim === 'number' ? { dim: raw.dim } : {}),
-      ...(typeof raw.name === 'string' && raw.name ? { name: str(raw.name, 200) } : {}),
+      ...(typeof raw.name === 'string' && raw.name ? { name: trimmedText(raw.name, 200) } : {}),
       ...(feed ? { feed } : {}),
       ...(collect ? { collect } : {}),
-      ...(str(raw.keep, METHOD_TEXT_MAX_CHARS) ? { keep: str(raw.keep, METHOD_TEXT_MAX_CHARS) } : {}),
+      ...(trimmedText(raw.keep, METHOD_TEXT_MAX_CHARS) ? { keep: trimmedText(raw.keep, METHOD_TEXT_MAX_CHARS) } : {}),
     }
   }
   return undefined

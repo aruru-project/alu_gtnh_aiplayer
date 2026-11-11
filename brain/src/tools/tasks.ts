@@ -7,10 +7,11 @@ import type { TaskSpec } from '../bridge/protocol.ts'
 import { COMMANDS, COMMAND_MAX_CHARS, COMMAND_REPLY_WAIT_MS, DEFAULT_ALLOWED_COMMANDS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE, WHISPER_COMMAND_RE, WHISPER_FAILED_RE } from './commands.ts'
 import { formatPos, formatTask } from './format.ts'
 import { botBlock } from './observe.ts'
-import { arr, bool, int, num, obj, str } from './schema.ts'
+import { arr, bool, int, num, obj, pos, str } from './schema.ts'
 import type { Schema } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
+import { errorText } from '../util.ts'
 
 // 协议里的上限
 export const BLOCK_LIST_MAX = 256
@@ -23,8 +24,6 @@ export const FLATTEN_MAX_SIDE = 64
 /** 任务排不排队。“默认顶掉当前任务和整个队列”核心提示词里也讲。 */
 export const queue = bool('true: queue it after your other tasks. Default: start now, replacing them.')
 
-/** 一个方块的位置。 */
-export const pos = (description?: string): Schema => obj({ x: int(), y: int(), z: int() }, ['x', 'y', 'z'], description)
 
 /** 方块的六个面（use_item 的 side、存取和开界面时点哪个面）。 */
 export const USE_SIDES = ['down', 'up', 'north', 'south', 'west', 'east']
@@ -240,7 +239,7 @@ export const setHome: Tool = {
       ctx.memory.set(`home:${i.name}`, `${formatPos(me)} dim ${me.dim ?? '?'}${i.note ? ` — ${i.note}` : ''}`)
       remembered = ` Recorded in memory as "home:${i.name}".`
     } catch (e) {
-      remembered = ` Could not record it in memory: ${e instanceof Error ? e.message : String(e)}.`
+      remembered = ` Could not record it in memory: ${errorText(e)}.`
     }
     // 指令成没成只有服务器的回显知道，原样给模型判断
     return `Ran /sethome ${i.name} at ${formatPos(me)}. Server replied: ${output || '(nothing yet; a late reply would show up as a system message)'}.${remembered}`

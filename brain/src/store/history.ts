@@ -4,7 +4,8 @@
 import path from 'node:path'
 import { withoutImages } from '../llm/index.ts'
 import type { Message } from '../llm/index.ts'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord } from '../util.ts'
 
 export interface Turn {
   id: number

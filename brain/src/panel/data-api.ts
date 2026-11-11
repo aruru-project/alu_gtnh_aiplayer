@@ -19,6 +19,7 @@ import { TodoRefused } from '../store/todo.ts'
 import type { TodoApplied, TodoBy, TodoEdit, TodoItem } from '../store/todo.ts'
 import { todoLine } from '../tools/todo.ts'
 import type { LineName } from '../tools/index.ts'
+import { errorText } from '../util.ts'
 
 /** 出错时怎么回（server.ts 给的是抛它自己的 HttpError）。 */
 export type Reject = (status: number, code: string, message: string) => never
@@ -183,7 +184,7 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
       body.task = tasks.active ? taskState(tasks.active) : null
       body.queue = (tasks.queue ?? []).map(taskState)
     } catch (e) {
-      body.error = e instanceof Error ? e.message : String(e)
+      body.error = errorText(e)
     }
   }
   const line = (name: LineName, state: AgentState): Record<string, unknown> => {
@@ -363,7 +364,7 @@ export function methodsPut(methods: MethodAccess | undefined, body: Record<strin
   try {
     methods.set(built.entry)
   } catch (e) {
-    return reject(400, 'bad_request', e instanceof Error ? e.message : String(e))
+    return reject(400, 'bad_request', errorText(e))
   }
   return { entry: { ...built.entry, ...methodState(built.entry, env), line: methodLine(built.entry, env) }, replaced: replaced !== undefined }
 }
@@ -429,7 +430,7 @@ export function todoEdit(todo: TodoPanelAccess | undefined, body: Record<string,
     const res = todo.apply({ add: add as TodoEdit['add'], change: change as TodoEdit['change'] }, 'owner', now)
     return { ...res, counts: todoCounts(res.items), items: todoView(res.items, now) }
   } catch (e) {
-    return reject(400, 'bad_request', e instanceof TodoRefused ? e.problems.join(' ') : e instanceof Error ? e.message : String(e))
+    return reject(400, 'bad_request', e instanceof TodoRefused ? e.problems.join(' ') : errorText(e))
   }
 }
 

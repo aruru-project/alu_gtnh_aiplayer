@@ -29,7 +29,6 @@ import { isValidPlayerName, maskSecret, modelDisplayName, resolveModel, sanitize
 import type { ConfigStore, ModelConfig, StoredProvider } from '../store/config.ts'
 import { FEEDBACK_CATEGORIES } from '../store/feedback.ts'
 import type { FeedbackCategory, FeedbackReport, FeedbackStatus, FeedbackStore } from '../store/feedback.ts'
-import { isRecord } from '../store/files.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { MANUAL_BODY_MAX_CHARS, MANUAL_NAME_MAX_CHARS, MANUAL_SUMMARY_MAX_CHARS, ManualError, USER_MANUALS_MAX } from '../store/manuals.ts'
 import type { ManualStore } from '../store/manuals.ts'
@@ -52,6 +51,7 @@ import type { MethodsEnv, TodoPanelAccess } from './data-api.ts'
 import type { MethodAccess } from '../tools/methods.ts'
 import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords, todoDelete, todoEdit, todoList } from './data-api.ts'
 import type { HistorySize } from './data-api.ts'
+import { errorText, isRecord } from '../util.ts'
 
 export interface PanelDeps {
   config: ConfigStore
@@ -223,7 +223,7 @@ export function mergeProvider(input: unknown, existing: StoredProvider | undefin
   try {
     clean = sanitizeProvider(raw)
   } catch (e) {
-    throw new HttpError(400, 'bad_request', e instanceof Error ? e.message : String(e))
+    throw new HttpError(400, 'bad_request', errorText(e))
   }
   if (existing && (keepsSecret || keepsHeaderSecret) && !sameHost(existing.baseUrl, clean.baseUrl)) {
     throw new HttpError(400, 'key_required', '服务地址换了主机，请重新填写 API key（和打了码的请求头）')
@@ -877,7 +877,7 @@ export class PanelServer {
       // 模型名可以叫 name，也可以叫 model（和测试连接、旧接口的写法一致）
       return sanitizeModel({ ...body, id, name: body.name ?? body.model }, provider.kind)
     } catch (e) {
-      throw new HttpError(400, 'bad_request', e instanceof Error ? e.message : String(e))
+      throw new HttpError(400, 'bad_request', errorText(e))
     }
   }
 
@@ -1499,7 +1499,7 @@ export class PanelServer {
     try {
       this.deps.memory.set(body.key, body.text, this.now())
     } catch (e) {
-      throw new HttpError(400, 'bad_request', `没存上：${e instanceof Error ? e.message : String(e)}`)
+      throw new HttpError(400, 'bad_request', `没存上：${errorText(e)}`)
     }
     // 改名：新键存好后删掉旧键
     if (typeof body.previousKey === 'string' && body.previousKey.trim() !== body.key.trim()) {

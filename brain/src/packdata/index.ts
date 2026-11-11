@@ -22,6 +22,7 @@ import { ItemTable, parseItem } from './items.ts'
 import type { PackItemInfo } from './items.ts'
 import { QuestBook, parseQuest, parseQuestLine } from './quests.ts'
 import type { PackQuest, PackQuestLine } from './quests.ts'
+import { errorText, isRecord } from '../util.ts'
 
 export { BUILTIN_BLOCK_COLORS } from './blocks.ts'
 export type { BlockColor } from './blocks.ts'
@@ -75,14 +76,6 @@ export function blockColors(data: PackData | undefined): readonly BlockColor[] {
 
 /** 这个大脑读得懂的 quests.jsonl / questlines.json 的格式版本（meta.json 的 quests.format）。 */
 export const QUESTS_FORMAT = 1
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-}
-
-function reason(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
 
 /** 文件不存在时返回 undefined；别的读取错误照抛。 */
 function readText(file: string): string | undefined {
@@ -139,7 +132,7 @@ function loadQuests(dir: string, meta: Record<string, unknown>, log: (message: s
     log(`任务书：${book.size} 个任务、${book.lines.length} 章${from.length > 0 ? `（${from.join('，')}）` : ''}${bad > 0 ? `；quests.jsonl 里有 ${bad} 行认不出来，跳过了` : ''}。`)
     return book
   } catch (e) {
-    log(`任务书资料读不了（${reason(e)}），${fallback}。`)
+    log(`任务书资料读不了（${errorText(e)}），${fallback}。`)
     return undefined
   }
 }
@@ -160,7 +153,7 @@ function loadItems(dir: string, log: (message: string) => void): ItemTable | und
     log(`物品表：${table.size} 种物品${bad > 0 ? `；items.jsonl 里有 ${bad} 行认不出来，跳过了` : ''}。`)
     return table
   } catch (e) {
-    log(`物品表读不了（${reason(e)}）：找物品改问服务器（只认英文名），物品的名字都是服务器给的英文名。`)
+    log(`物品表读不了（${errorText(e)}）：找物品改问服务器（只认英文名），物品的名字都是服务器给的英文名。`)
     return undefined
   }
 }
@@ -181,7 +174,7 @@ function loadBlocks(dir: string, log: (message: string) => void): BlockColor[] |
     log(`方块颜色表：${rows.length} 种方块${bad > 0 ? `；blocks.jsonl 里有 ${bad} 行认不出来，跳过了` : ''}。`)
     return rows
   } catch (e) {
-    log(`方块颜色表读不了（${reason(e)}），${builtin}。`)
+    log(`方块颜色表读不了（${errorText(e)}），${builtin}。`)
     return undefined
   }
 }
@@ -203,7 +196,7 @@ function loadRecipes(dir: string, log: (message: string) => void): RecipeBook | 
     log(`配方册：${book.size - bad} 条配方、${book.handlers.length} 个配方页，做得出 ${book.counts.products} 种物品（读了 ${ms} 毫秒${book.fake > 0 ? `；其中 ${book.fake} 条游戏标成了“NEI 里显示用的”，照常查得到` : ''}${bad > 0 ? `；${bad} 行认不出来，跳过了` : ''}）。`)
     return book
   } catch (e) {
-    log(`配方册读不了（${reason(e)}），${fallback}。`)
+    log(`配方册读不了（${errorText(e)}），${fallback}。`)
     return undefined
   }
 }
@@ -221,7 +214,7 @@ function loadTextures(dir: string, log: (message: string) => void): TextureAtlas
     log(`方块贴图：${atlas.tiles.size} 张（每张 ${atlas.tile} 像素）。`)
     return atlas
   } catch (e) {
-    log(`方块贴图读不了（${reason(e)}），${flat}。`)
+    log(`方块贴图读不了（${errorText(e)}），${flat}。`)
     return undefined
   }
 }
@@ -238,7 +231,7 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
     const raw: unknown = JSON.parse(readText(path.join(dir, 'meta.json')) ?? '{}')
     if (isRecord(raw)) meta = raw
   } catch (e) {
-    log(`meta.json 读不了（${reason(e)}），当它没有。`)
+    log(`meta.json 读不了（${errorText(e)}），当它没有。`)
   }
   const quests = loadQuests(dir, meta, log)
   if (quests) data.quests = quests
@@ -266,7 +259,7 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
       log(`多方块结构：${loaded.book.machines.length} 台机器、${loaded.rows} 种等级的结构${loaded.bad > 0 ? `（${loaded.bad} 行认不出来，跳过了）` : ''}。`)
     }
   } catch (e) {
-    log(`多方块结构（structures.jsonl）读不了（${reason(e)}），当它没有。`)
+    log(`多方块结构（structures.jsonl）读不了（${errorText(e)}），当它没有。`)
   }
   try {
     const loaded = CarvingBook.load(dir)
@@ -276,7 +269,7 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
       log(`凿子的组：${loaded.book.groups.length} 组、${loaded.book.variants} 种方块${loaded.bad > 0 ? `（${loaded.bad} 行认不出来，跳过了）` : ''}。`)
     }
   } catch (e) {
-    log(`凿子的组（carving.jsonl）读不了（${reason(e)}），当它没有。`)
+    log(`凿子的组（carving.jsonl）读不了（${errorText(e)}），当它没有。`)
   }
   try {
     const loaded = GuideBook.load(dir)
@@ -290,7 +283,7 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
       log(`游戏内指南：${books.length} 本书、${loaded.guide.size} 页（${english > 0 ? `其中 ${english} 页只有英文；` : ''}文件里两种语言一共 ${loaded.rows} 行${loaded.bad > 0 ? `，${loaded.bad} 行认不出来，跳过了` : ''}）。`)
     }
   } catch (e) {
-    log(`游戏内指南（guide.jsonl）读不了（${reason(e)}），当它没有。`)
+    log(`游戏内指南（guide.jsonl）读不了（${errorText(e)}），当它没有。`)
   }
   try {
     const loaded = TooltipTable.load(dir)
@@ -307,7 +300,7 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
       )
     }
   } catch (e) {
-    log(`物品的提示文字（tooltips.jsonl）读不了（${reason(e)}），当它没有。`)
+    log(`物品的提示文字（tooltips.jsonl）读不了（${errorText(e)}），当它没有。`)
   }
   return data
 }

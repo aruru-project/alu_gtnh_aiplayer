@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { BlockColor } from '../packdata/index.ts'
+import { errorText } from '../util.ts'
 
 export interface SandboxLimits {
   /** 程序最多跑多久。 */
@@ -252,7 +253,7 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
         if (waitingCalls++ === 0) pauseClock()
         const run = hooks.onCall ? hooks.onCall(call) : Promise.resolve<ProgramCallResult>({ ok: false, text: 'this program cannot call tools' })
         run
-          .catch((e: unknown): ProgramCallResult => ({ ok: false, text: `the tool could not be run: ${e instanceof Error ? e.message : String(e)}` }))
+          .catch((e: unknown): ProgramCallResult => ({ ok: false, text: `the tool could not be run: ${errorText(e)}` }))
           .then((result) => {
             if (--waitingCalls === 0) resumeClock()
             if (settled || child.stdin.destroyed) return

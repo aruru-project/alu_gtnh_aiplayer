@@ -1,7 +1,8 @@
 // 记忆：模型通过工具读写的持久笔记（键 → 文本）。地点（home 名字和用途）也记在这里。
 
 import path from 'node:path'
-import { isRecord, readJson, writeJsonAtomic } from './files.ts'
+import { readJson, writeJsonAtomic } from './files.ts'
+import { isRecord } from '../util.ts'
 
 export interface MemoryNote {
   key: string
