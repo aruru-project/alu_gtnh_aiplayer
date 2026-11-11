@@ -25,7 +25,7 @@
 | `items.jsonl` | 物品表，见“物品” | `tools/export-packdata` |
 | `blocks.jsonl` | 方块颜色表，见“方块颜色” | `tools/export-packdata` |
 | `textures/atlas.png` `textures/atlas.json` | 方块贴图的图集，见“方块贴图” | `make-packdata.py textures` |
-| `recipes.jsonl` `handlers.json` `structures.jsonl` | 配方册和多方块结构，见“配方” | `tools/export-packdata` |
+| `recipes.jsonl` `handlers.json` `structures.jsonl` `carving.jsonl` | 配方册、多方块结构、凿子的组，见“配方” | `tools/export-packdata` |
 
 `meta.json` 是一个对象，键是子命令的名字。子命令重新生成时只替换自己那一节，别的键原样保留：
 
@@ -395,6 +395,19 @@ tools/make-packdata.py textures \
 - 这份数据是让游戏在一个临时世界里把结构真的搭一遍再读出来的（和 NEI 预览同一段代码），不是抄的说明文字。
 
 **大脑怎么用。** 启动时整个读进来（334 台机器、1426 行，四五十毫秒，多占 30 MB 左右；文件不在就当没有）。它不是模型的工具，是模型写的程序里的数据：`data.structure(名字或 id, meta)`，加上三个库函数（`find_structure`、`check_structure`、`read_blocks`：不在发给模型的工具清单里，程序里调），见 `docs/SCRIPTS.md` 的“库函数”；面板“图纸”页最下面可以按名字搜一台机器，看它每一级的材料和三维预览。对着世界里的机器比的时候要知道：主机、各种仓和总线在世界里是同一个方块（`gregtech:gt.blockmachines`），`world.blocks` 给的 meta 分不出是哪一种，所以“预览是机器零件、世界里也是机器零件”就算对。
+
+### carving.jsonl：凿子能把什么变成什么
+
+一行是 Chisel（凿子）的一个“组”：组里的任何一种方块都能用凿子变成同组的另一种，不耗别的材料。配方页里没有这些（凿子不是配方），而图纸要的常常是某个具体花纹。
+
+```jsonc
+{ "group":"cobblestone",           // 组名
+  "ore":"cobblestone",             // 有的组还认矿辞：这个矿辞名下的东西也能凿成这一组
+  "variants":[ {"id":"minecraft:cobblestone","meta":0,"name":"圆石"}, {"id":"chisel:cobblestone","meta":14,"name":"圆石"}, … ] }
+```
+
+- 怎么凿：拿着凿子右键打开它的界面，把方块放进去，点想要的那个花纹，整组一起变（它用通用的界面动作就能做，见 `screens` 手册）。
+- 只有一种方块的组不导。
 
 ### 怎么导出
 
