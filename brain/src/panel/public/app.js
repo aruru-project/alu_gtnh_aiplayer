@@ -57,6 +57,7 @@ function showLogin() {
   if (current) PAGES[current].module.leave?.()
   current = null
   $('#app').hidden = true
+  $('#toast').hidden = true
   $('#login').hidden = false
   $('#login-password').focus()
 }
@@ -119,10 +120,13 @@ function paintSide() {
     o ? [o.bridge?.state, o.bridge?.lastError, o.bot?.name, o.bot?.status?.online, o.provider, o.models, o.usage, o.server?.tps] : null,
     live ? [live.online, live.dim, live.block, live.health, live.food, live.settings] : null,
     state.error,
+    state.lostAt,
   ])
   if (key !== sideKey) {
     sideKey = key
     renderSide($('#side-status'), $('#side-foot'))
+    // 问不到大脑时，页面上留着的旧样子调暗
+    $('#app').classList.toggle('stale', state.lostAt !== null)
   }
   const unread = o?.feedback?.unread ?? 0
   const count = $('#nav-feedback-count')

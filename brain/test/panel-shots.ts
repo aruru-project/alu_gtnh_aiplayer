@@ -38,9 +38,10 @@ const planText = arg('plan') ?? (arg('plan-file') ? fs.readFileSync(arg('plan-fi
 const plan = JSON.parse(planText) as Json[]
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'panel-shots-'))
+// --password-store=basic：不去问系统的钥匙串（那个服务不应答时，每次起 Chrome 都要白等 25 秒）
 const chrome = spawn(
   arg('chrome') ?? 'google-chrome',
-  ['--headless=new', '--remote-debugging-pipe', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--force-color-profile=srgb', '--enable-unsafe-swiftshader', '--window-size=1360,900', 'about:blank'],
+  ['--headless=new', '--remote-debugging-pipe', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--password-store=basic', '--hide-scrollbars', '--force-color-profile=srgb', '--enable-unsafe-swiftshader', '--window-size=1360,900', 'about:blank'],
   { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] },
 )
 const toChrome = chrome.stdio[3] as NodeJS.WritableStream

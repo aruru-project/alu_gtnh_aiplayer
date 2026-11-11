@@ -277,13 +277,26 @@ function foot() {
   )
 }
 
+/** 问不到大脑了：下面留着的是断开前的样子，要说清楚，不能让人以为它还在干。 */
+function lostBanner() {
+  return h(
+    'div',
+    { class: 'lost', role: 'alert' },
+    h('strong', { text: '连不上大脑进程' }),
+    h('span', { 'data-since': state.lostAt, 'data-label': '已经', text: `已经 ${duration(Math.max(0, serverNow() - state.lostAt))}` }),
+    h('p', { text: '它可能没在运行，或者这台电脑到它的网络断了。下面是断开前最后看到的样子；连上以后会自己恢复。' }),
+  )
+}
+
 /** 重画状态区。root 是放玩家卡和各条线的那个容器；footRoot 是侧栏最下面那块。 */
 export function renderSide(root, footRoot) {
   const agents = state.status?.agents ?? []
   const owner = bodyAgent(state.status)
   // 正在挑模型的时候不重画，免得下拉被换掉
   if (root.contains(document.activeElement) && document.activeElement?.tagName === 'SELECT') return
-  put(root, 
+  put(
+    root,
+    state.lostAt !== null ? lostBanner() : null,
     playerCard(),
     h('div', { class: 'lines-head' }, h('span', { class: 'side-label', text: agents.length > 1 ? '两条线' : '它在干什么' }), stopAll()),
     ...(agents.length === 0 ? [h('p', { class: 'muted pad', text: state.error ? `连不上大脑进程：${state.error}` : '正在问大脑…' })] : agents.map((a) => lineCard(a, a === owner, agents.length === 1))),

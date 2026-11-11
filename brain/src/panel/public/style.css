@@ -289,6 +289,10 @@ pre.code.bad { border-color: #5a2b28; color: #f3b1ac; }
 .pcard-vitals span { margin-right: 8px; }
 .pips { image-rendering: pixelated; display: block; flex: none; }
 
+.lost { padding: 8px 10px; border: 1px solid #7a2e2a; border-radius: var(--radius); background: var(--bad-bg); color: #ffd0cc; font-size: 13px; }
+.lost strong { margin-right: 8px; color: #fff; }
+.lost p { margin: 4px 0 0; font-size: 12px; color: #f0b3ae; }
+.app.stale .line-card, .app.stale .lines-head, .app.stale .pcard, .app.stale .now-card, .app.stale .now-game, .app.stale .now-quiet, .app.stale .side-foot { opacity: 0.5; }
 .lines-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
 .stop-all { padding: 3px 12px; font-size: 12.5px; }
 .stop-all.armed { background: #c2413a; border-color: #c2413a; color: #fff; font-weight: 700; }
@@ -700,7 +704,7 @@ button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--
 .toast.bad { background: #4a1b19; border-color: #7a2e2a; }
 
 /* ── 窄一些的窗口（游戏开在旁边）：状态区挪到上面，各页一列 ── */
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .page-now { grid-template-columns: minmax(0, 1fr); }
   .now-game { order: -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: start; }
 }

@@ -1,7 +1,7 @@
 // 看面板用的一整套假环境（不连真的游戏，不用真的模型）：
 //   模拟身体（mock-bridge，身上带一背包真实物品 id 的东西）← 真的大脑（子进程，src/main.ts）← 一层代理 ← 浏览器
 //
-//   node test/panel-dev.ts [--shape fake|real] [--lines 1|2] [--scene idle|thinking|tools|routine|outage] [--sample <活动日志.jsonl>]
+//   node test/panel-dev.ts [--shape fake|real] [--lines 1|2] [--scene idle|thinking|tools|routine|outage|picture|waiting] [--sample <活动日志.jsonl>]
 //
 // 代理（127.0.0.1:28771）把请求原样转给大脑的面板（127.0.0.1:28772），只有“它在干什么”这几个接口可以由这里顶替：
 //   --shape real    什么都不顶替：看到的就是大脑真实给的（模型是模拟的，只认得“平”“跟”“停”“看看”几个字）。
@@ -486,6 +486,20 @@ function setScene(name: string): void {
     // 干活线提了问，还没人回答（那段戏的结尾就是一个问题）
     w.waitingAnswer = { text: '桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？', since: now - 95_000 }
     w.lastReport = { type: 'question', text: '桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？', time: now - 95_000 }
+  } else if (name === 'picture' && samplePicture) {
+    // 它看了一张草稿：工具结果带着图，图还存着方块数据
+    add({ kind: 'command', who: '面板', time: now - 20_000, text: '看一下小木屋那张草稿，告诉我门朝哪边。' })
+    add({ kind: 'turn', turn, ...tag, time: now - 19_000, text: `第 ${turn} 轮开始（模拟接口 / mock-deep）：主人通过控制面板对你说：看一下小木屋那张草稿…` })
+    const c = { state: 'done', purpose: 'turn', step: 1, startedAt: now - 19_000, ms: 4200, model: 'mock-deep', inputTokens: 52000, outputTokens: 80, cacheReadTokens: 50000, stop: 'tool_calls', toolCalls: 1 }
+    add({ kind: 'model_call', turn, step: 1, ...tag, time: now - 19_000, text: callText(c), call: c })
+    add({ kind: 'tool_call', turn, step: 1, ...tag, source: 'model', who: 'view_draft', time: now - 14_500, text: '{"name":"小木屋"}' })
+    add({ kind: 'tool_result', turn, step: 1, ...tag, source: 'model', who: 'view_draft', time: now - 14_300, text: 'Draft "小木屋": 9×7×7, 292 blocks of 5 kinds. A picture of it is attached.', detail: 'Draft "小木屋": 9×7×7, 292 blocks of 5 kinds. A picture of it is attached.\n- 橡木木板 × 96\n- 圆石 × 63\n…', pictures: [samplePicture], scenes: [samplePicture] })
+    const c2 = { state: 'done', purpose: 'turn', step: 2, startedAt: now - 14_200, ms: 3100, model: 'mock-deep', inputTokens: 53100, outputTokens: 40, cacheReadTokens: 52000, stop: 'tool_calls', toolCalls: 1 }
+    add({ kind: 'model_call', turn, step: 2, ...tag, time: now - 14_200, text: callText(c2), call: c2 })
+    add({ kind: 'tool_call', turn, step: 2, ...tag, source: 'model', who: 'say', time: now - 11_000, text: '{"message":"门在南面正中间，两格高。"}' })
+    add({ kind: 'say', who: BOT, time: now - 10_950, text: '门在南面正中间，两格高。' })
+    add({ kind: 'tool_result', turn, step: 2, ...tag, source: 'model', who: 'say', time: now - 10_900, text: 'Said in public chat.' })
+    add({ kind: 'turn', turn, ...tag, time: now - 10_000, text: `第 ${turn} 轮结束（调了 2 次模型，模拟接口 / mock-deep）` })
   } else if (name === 'outage') {
     add({ kind: 'error', ...tag, text: '模型调用失败：HTTP 529 overloaded_error: Overloaded。60 秒后再试，改了模型配置会立刻再试。' })
     w.model = { state: 'outage', ...MODELS[worker as keyof typeof MODELS], outage: { failures: 4, since: now - 240_000, nextRetryAt: now + 42_000, lastError: 'HTTP 529 overloaded_error: Overloaded' }, lastCall: { time: now - 18_000, ok: false, errorKind: 'overloaded', error: 'HTTP 529 overloaded_error: Overloaded' } }
@@ -817,6 +831,9 @@ async function seedBrain(): Promise<void> {
   }
 }
 
+/** 样本里那张简图的编号（没做成是空的）。 */
+let samplePicture = ''
+
 /** 数据目录里是空的时候放几样东西进去，各页才有的看：两张草稿、几条记忆、两条意见。 */
 async function seedData(): Promise<void> {
   const { DesignWorkspace } = await import('../src/design/index.ts')
@@ -842,6 +859,15 @@ b.save('三色旗')`
       const made = await design.run(code)
       if (made.outcome.status !== 'ok') console.log(`[dev] 草稿没做成：${JSON.stringify(made.outcome).slice(0, 200)}`)
     }
+  }
+  // 一张它看过的简图（对话页的工具结果下面显示），带着画它用的方块（可以开三维预览）
+  const hutDraft = design.drafts.get('小木屋')
+  if (hutDraft) {
+    const { BlockLooks, blocksOfGrid, gridFromDraft, renderView } = await import('../src/render/index.ts')
+    const { PictureStore } = await import('../src/store/pictures.ts')
+    const grid = gridFromDraft(hutDraft.draft)
+    const png = renderView(grid, new BlockLooks(design.colors()), { view: 'iso', from: 'southeast' }, { maxSize: 480, title: 'Draft' }).png
+    samplePicture = new PictureStore(DATA_DIR).save(png, blocksOfGrid(grid))
   }
   const memory = new MemoryStore(DATA_DIR, () => 4000)
   if (memory.list().length === 0) {

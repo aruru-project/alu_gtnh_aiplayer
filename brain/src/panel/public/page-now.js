@@ -2,7 +2,7 @@
 //   左边：一句话的现状；每条线的细节（模型想到第几步、例程调到哪了、身体的任务和排队的）；最近几步；最近说的话，可以直接回它一句。
 //   右边：游戏里的样子——血量和饥饿、位置朝向、物品栏（和游戏里一样的格子）、开着的界面、附近的人、脚下的俯视图。
 
-import { actions, agentLabel, bodyAgent, refresh, serverNow, state } from './data.js'
+import { actions, agentLabel, bodyAgent, refresh, serverNow, state, watchLiveClosely } from './data.js'
 import { foodBar, hearts, inventoryPanel, screenPanel, slotDetail } from './items.js'
 import { describeArgs, recentActivity } from './logmodel.js'
 import { itemName } from './names.js'
@@ -28,7 +28,8 @@ const RUN_STATES = { running: '在跑', done: '跑完了', failed: '出错停了
 /** 一句话的现状。最要紧的在前：故障 > 等回答 > 在想 > 在执行工具 > 例程 > 身体 > 空闲。 */
 function headline() {
   const agents = state.status?.agents ?? []
-  if (agents.length === 0) return { tone: 'idle', text: state.error ? '连不上大脑进程' : '正在问大脑…', sub: state.error ?? '' }
+  if (state.lostAt !== null) return { tone: 'bad', text: '连不上大脑进程', since: state.lostAt, sub: '它可能没在运行。下面是断开前最后看到的样子；连上以后这里会自己恢复。' }
+  if (agents.length === 0) return { tone: 'idle', text: '正在问大脑…', sub: '' }
   const owner = bodyAgent(state.status)
   const many = agents.length > 1
   const name = (a) => (many ? agentLabel(a) : '')
@@ -536,7 +537,7 @@ function paint(force = false) {
   const slow = (s?.agents ?? []).some((a) => modelState(a).slow)
   const timeline = getTimeline()
   const turnOfNow = (s?.agents ?? []).map((a) => timeline.turns.get(a.turn?.id)?.rev ?? '')
-  const nextWork = JSON.stringify([s?.agents, state.overview?.tasks?.recent, state.overview?.provider, state.error, stale, slow, turnOfNow])
+  const nextWork = JSON.stringify([s?.agents, state.overview?.tasks?.recent, state.overview?.provider, state.error, state.lostAt, stale, slow, turnOfNow])
   if (force || nextWork !== workKey) {
     workKey = nextWork
     renderWork(root.querySelector('.now-work'))
@@ -586,13 +587,15 @@ export function enter(el) {
       paint(true)
     }),
   ]
+  watchLiveClosely(true)
   pollMap()
   clearInterval(mapTimer)
-  mapTimer = setInterval(pollMap, 5000)
+  mapTimer = setInterval(pollMap, 6000)
 }
 
 export function leave() {
   for (const off of unsubscribe) off()
   unsubscribe = []
   clearInterval(mapTimer)
+  watchLiveClosely(false)
 }

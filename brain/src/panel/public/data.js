@@ -1,7 +1,7 @@
 // 面板的实时数据：定时去问大脑，整理成各页直接用的样子，变了就通知。
 //   status   它现在在干什么：每条线（对话 / 干活；现在后端只有一条）各自的模型状态、例程、身体的任务。一秒一问。
-//   overview 连接、服务商和模型的清单、今日用量、意见簿没看的条数、提醒、历史。三秒一问。
-//   live     游戏里的它：血量位置、身上的东西、开着的界面、附近的人。两秒一问（页面在后台时不问）。
+//   overview 连接、服务商和模型的清单、今日用量、意见簿没看的条数、提醒、历史。四秒一问。
+//   live     游戏里的它：血量位置、身上的东西、开着的界面、附近的人。“现在”页开着时两秒一问，别的页五秒；页面在后台时都不问。
 // 后端的 /api/status 还没有时（404），从 /api/overview 里凑一个出来：只分得出“忙 / 闲 / 故障”，不知道第几步。
 
 import { api, bus } from './ui.js'
@@ -13,6 +13,8 @@ export const state = {
   live: null,
   /** 最近一次没问到的原因（连不上大脑进程）；问到了就清掉。 */
   error: null,
+  /** 从什么时候起问不到了（大脑那边的钟）；问得到时是 null。问不到的时候页面上留着的都是断开前的样子。 */
+  lostAt: null,
   /** 浏览器和大脑的钟差多少（毫秒）：算“已经几秒”时用大脑的钟。 */
   skew: 0,
 }
@@ -100,6 +102,20 @@ function normalizeStatus(raw) {
   }
 }
 
+function reached() {
+  const was = state.lostAt
+  state.error = null
+  state.lostAt = null
+  if (was !== null) bus.emit('status-error', null)
+}
+
+function failed(e) {
+  if (e.status === 401) return
+  state.error = e.message
+  if (state.lostAt === null) state.lostAt = serverNow()
+  bus.emit('status-error', e.message)
+}
+
 let statusSupported = true
 let timers = []
 let running = false
@@ -112,7 +128,7 @@ async function pollStatus() {
         const raw = await api('GET', '/status')
         state.skew = typeof raw.time === 'number' ? raw.time - Date.now() : state.skew
         state.status = normalizeStatus(raw)
-        state.error = null
+        reached()
         bus.emit('status', state.status)
         return
       } catch (e) {
@@ -126,9 +142,7 @@ async function pollStatus() {
       bus.emit('status', state.status)
     }
   } catch (e) {
-    if (e.status === 401) return
-    state.error = e.message
-    bus.emit('status-error', e.message)
+    failed(e)
   }
 }
 
@@ -140,21 +154,20 @@ async function pollOverview() {
     if (!statusSupported || state.status === null) {
       state.skew = typeof o.time === 'number' ? o.time - Date.now() : state.skew
     }
-    state.error = null
+    reached()
     bus.emit('overview', o)
     if (!statusSupported) {
       state.status = statusFromOverview(o)
       bus.emit('status', state.status)
     }
   } catch (e) {
-    if (e.status === 401) return
-    state.error = e.message
-    bus.emit('status-error', e.message)
+    failed(e)
   }
 }
 
 async function pollLive() {
   if (!running || document.hidden) return
+  lastLiveAt = Date.now()
   try {
     state.live = await api('GET', '/live')
     bus.emit('live', state.live)
@@ -170,14 +183,23 @@ export async function refresh() {
   await pollStatus()
 }
 
+/** “现在”页开着时游戏里的样子两秒问一次；别的页只有状态区的血量位置要用，五秒一次就够（每问一次都要去问身体）。 */
+let liveEveryMs = 5000
+let lastLiveAt = 0
+
+export function watchLiveClosely(on) {
+  liveEveryMs = on ? 2000 : 5000
+  if (on && running) pollLive()
+}
+
 export function startPolling() {
   if (running) return
   running = true
   refresh()
   timers = [
     setInterval(() => !document.hidden && pollStatus(), 1000),
-    setInterval(() => !document.hidden && pollOverview(), 3000),
-    setInterval(pollLive, 2000),
+    setInterval(() => !document.hidden && pollOverview(), 4000),
+    setInterval(() => Date.now() - lastLiveAt >= liveEveryMs - 100 && pollLive(), 1000),
   ]
 }
 
