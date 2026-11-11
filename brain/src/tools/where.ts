@@ -13,11 +13,12 @@ export interface At {
   z: number
 }
 
-// 六个工具都带着它，每轮都发给模型：说明尽量短，x、y、z 不另写说明
+// 好几个工具都带着它，每轮都发给模型：说明尽量短，x、y、z 不另写说明。
+// 以自己为中心什么都没找到时，结果里另有一句提醒（ELSEWHERE_HINT），所以这里不用多说。
 export const AT = obj(
   { x: { type: 'integer' }, y: { type: 'integer', minimum: 0, maximum: 255 }, z: { type: 'integer' } },
   ['x', 'y', 'z'],
-  'Centre to look around instead of yourself: the place your owner means (their chest, a drawer controller, where they stand).',
+  'Look around this place instead of yourself: where your owner stands, a chest or machine they mean.',
 )
 
 export interface LookFrom {

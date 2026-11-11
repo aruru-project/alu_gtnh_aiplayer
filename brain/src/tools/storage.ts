@@ -2,10 +2,12 @@
 // 一片仓库合成一张存货总表（list_stock）。都只读。
 // list_drawers 和 list_stock 是库函数（tools/index.ts 的 LIBRARY_TOOLS）：不在发给模型的清单里，程序里调；模型直接调也照常执行。
 // 身体一次只给一页（world.containers 的 total / offset），所以每个结果都写明“这是 N 个里的第几到第几个”，不悄悄截断。
+// 每个容器里的东西向身体要全（kinds 给到上限）：程序拿到的 data 是全的，存货总表也是全的；给模型看的文字一个容器只列前
+// KINDS_PER_LINE 种，并写明怎么把一个容器看全（radius 0）。
 // 带 attached 的容器（旁边接着漏斗、管道）是主人自动化的一环，结果里标出来。
 
 import type { ContainerInfo, DrawerSlot } from '../bridge/protocol.ts'
-import { attachedText, formatContainer, formatPos, itemKey, nameOf } from './format.ts'
+import { attachedText, formatContainer, formatPos, itemKey, mergeItems, nameOf } from './format.ts'
 import { int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -18,7 +20,15 @@ export const DRAWER_SLOTS_PER_PAGE = 60
 export const STOCK_LINES_PER_PAGE = 40
 /** list_stock 一次最多看这么多个容器（身体一页最多给 100 个）。 */
 export const STOCK_MAX_CONTAINERS = 400
-const SERVER_PAGE = 100
+/** 存货总表一次向身体要多少个容器：每个容器的东西都要全，所以一页要得少一些（协议一行最多 4 MiB）。 */
+const SERVER_PAGE = 50
+/** 一个容器里的东西向身体要全：这是协议允许的最大种数。 */
+export const CONTAINER_KINDS_ALL = 2000
+/** 一页列好几个容器时，每个容器在文字里最多列这么多种（data 里是全的）。 */
+export const KINDS_PER_LINE = 30
+
+/** 身体没列全的容器（老的身体不认 kinds，一个容器最多给 60 种）。 */
+const cutByServer = (c: ContainerInfo): boolean => (c.moreKinds ?? 0) > 0
 
 function pages(total: number, size: number): number {
   return Math.max(1, Math.ceil(total / size))
@@ -26,28 +36,40 @@ function pages(total: number, size: number): number {
 
 export const listContainers: Tool = {
   name: 'list_containers',
-  description: `Containers around you, or around a place you give ("at"), nearest first, a page at a time: position, name, kind (chest, [drawers], [drawer controller], [machine]), slots used and contents merged per item. Drawer counts are what is really stored. "AUTOMATED" marks a container with a hopper or pipe attached: it is part of your owner's automation, so ask before putting things in or taking them out.`,
+  description: `Containers around you or around "at", nearest first, a page at a time: position, name, kind (chest, [drawers], [drawer controller], [machine]), slots used and contents merged per item (the first ${KINDS_PER_LINE} kinds of each; radius 0 lists one container whole). Drawer counts are what is really stored. "AUTOMATED" marks a container with a hopper or pipe attached: part of your owner's automation.`,
   inputSchema: obj({
-    radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }),
+    radius: int('Search radius in blocks (default 16). 0: only the container at "at", with everything in it.', { min: 0, max: CONTAINERS_MAX_RADIUS }),
     page: int(`Page (${CONTAINERS_PER_PAGE} containers per page, default 1).`, { min: 1 }),
     at: AT,
   }),
   async run(ctx, input: { radius?: number; page?: number; at?: At }): Promise<ToolResult | string> {
     const radius = input.radius ?? 16
+    // radius 0 是“就看这一个容器”：得说是哪一个
+    if (radius === 0 && !input.at) return fail('radius 0 looks at one container: give its position as "at".')
     const page = input.page ?? 1
     const offset = (page - 1) * CONTAINERS_PER_PAGE
     const from = await lookFrom(ctx, input.at)
-    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: CONTAINERS_PER_PAGE })
+    // 每个容器里的东西都要全：data 给程序的是全的；文字里一个容器列多少种在下面定
+    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: CONTAINERS_PER_PAGE, kinds: CONTAINER_KINDS_ALL })
     // 老的身体不认 offset / limit，一次全给：自己切一页
     const all = res.containers ?? []
     const paged = res.offset === undefined && all.length > CONTAINERS_PER_PAGE ? all.slice(offset, offset + CONTAINERS_PER_PAGE) : all
     // 一共多少个以身体说的为准（它没说时就是给回来的这些）
     const total = res.total ?? (res.offset === undefined ? all.length : offset + all.length)
-    if (total === 0) return `No containers within ${radius} blocks of ${from.of}.${from.hint}`
+    if (total === 0) return radius === 0 ? `There is no container at ${from.of}.` : `No containers within ${radius} blocks of ${from.of}.${from.hint}`
     if (paged.length === 0) return fail(`There is no page ${page}: ${total} container(s) within ${radius} blocks, ${pages(total, CONTAINERS_PER_PAGE)} page(s).`)
-    const lines = paged.map((c) => `- ${formatContainer(c, 30)}`)
+    // 只有一个容器（radius 0，或者范围里就它一个）：里面的东西全列出来。好几个时每个只列前几种
+    const whole = total === 1
+    const lines = paged.map((c) => `- ${formatContainer(c, whole ? Number.POSITIVE_INFINITY : KINDS_PER_LINE)}`)
     const range = total > paged.length ? `containers ${offset + 1}–${offset + paged.length} of ${total} (page ${page} of ${pages(total, CONTAINERS_PER_PAGE)}), nearest first` : `${total} container(s)`
-    return { content: `Within ${radius} blocks of ${from.of}: ${range}.\n${lines.join('\n')}`, data: { total, offset, containers: paged }, keepWhole: true }
+    // 有没列全的：写明怎么看全，不让“还有 N 种”成了看不到
+    const notes: string[] = []
+    if (!whole && paged.some((c) => mergeItems(c.items ?? []).length > KINDS_PER_LINE || cutByServer(c))) {
+      notes.push('Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).')
+    }
+    const old = paged.filter(cutByServer).length
+    if (whole && old > 0) notes.push('The game server did not list all of it (its mod is too old to list more than 60 kinds of a container). find_in_storage still finds a particular item in it.')
+    return { content: [`Within ${radius} blocks of ${from.of}: ${range}.`, ...lines, ...notes].join('\n'), data: { total, offset, containers: paged }, keepWhole: true }
   },
 }
 
@@ -58,7 +80,7 @@ function drawerSlotLine(s: DrawerSlot): string {
 
 export const listDrawers: Tool = {
   name: 'list_drawers',
-  brief: '{x, y, z, below?, page?}: slots of a drawer controller -> slots[{x, y, z, id, meta, count}]',
+  brief: '{x, y, z, below?, page?}: slots of a drawer controller -> slots[{x, y, z, id, meta, count}], total',
   description:
     'Every drawer slot a Storage Drawers controller manages, with the real count in each (or the slots of one drawer block). "below" lists only slots holding fewer than that many. Each line gives the drawer block to withdraw from.',
   inputSchema: obj(
@@ -106,7 +128,7 @@ async function allContainers(ctx: ToolContext, from: LookFrom, radius: number): 
   const containers: ContainerInfo[] = []
   let total = 0
   for (let offset = 0; offset < STOCK_MAX_CONTAINERS; ) {
-    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: SERVER_PAGE })
+    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: SERVER_PAGE, kinds: CONTAINER_KINDS_ALL })
     const got = res.containers ?? []
     total = res.total ?? offset + got.length
     containers.push(...got)
@@ -137,7 +159,7 @@ export const listStock: Tool = {
     const merged = new Map<string, StockLine>()
     let truncated = 0
     for (const c of storage) {
-      if ((c.moreKinds ?? 0) > 0) truncated++
+      if (cutByServer(c)) truncated++
       const automated = (c.attached?.length ?? 0) > 0
       for (const it of c.items ?? []) {
         if (!it || typeof it.id !== 'string') continue
@@ -159,7 +181,8 @@ export const listStock: Tool = {
     const notes = [
       `Looked into ${storage.length} chest(s) and drawer(s) within ${radius} blocks of ${from.of}${skipped > 0 ? ` (${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
       ...(total > containers.length ? [`Only the nearest ${containers.length} of ${total} containers were read: the totals are not complete. Use a smaller radius.`] : []),
-      ...(truncated > 0 ? [`${truncated} container(s) hold more kinds than the server lists (60 each): their rarer items are missing here. Use find_in_storage for a particular item.`] : []),
+      // 向身体要的是每个容器的全部；还有没列全的，只会是老的身体（不认 kinds，一个容器最多给 60 种）
+      ...(truncated > 0 ? [`The game server did not list everything in ${truncated} container(s) (its mod is too old to list more than 60 kinds of a container): what it left out is missing from these totals. find_in_storage still finds a particular item.`] : []),
     ]
     const filter = [word ? `containing "${i.contains!.trim()}"` : '', i.below !== undefined ? `with fewer than ${i.below}` : ''].filter(Boolean).join(' and ')
     if (list.length === 0) return { content: `${notes.join(' ')} None ${filter || 'at all'}.`, data: { items: [] } }

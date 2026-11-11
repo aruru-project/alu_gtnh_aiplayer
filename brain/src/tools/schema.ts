@@ -17,6 +17,8 @@ export interface ObjectSchema {
 }
 
 // ── 写 schema 的小帮手 ──
+// 说明每一轮都发给模型：参数名自己说得清的（x、y、z、id、meta……）可以不写说明（不给或给空串），
+// 怎么写交给上一层那个参数的说明去讲（“each {id, meta?, count?}”）。
 
 export function obj(properties: Record<string, Schema>, required: string[] = [], description?: string): ObjectSchema {
   const s: ObjectSchema = { type: 'object', properties, required, additionalProperties: false }
@@ -24,8 +26,8 @@ export function obj(properties: Record<string, Schema>, required: string[] = [],
   return s
 }
 
-export function int(description: string, range: { min?: number; max?: number } = {}): Schema {
-  const s: Schema = { type: 'integer', description }
+export function int(description?: string, range: { min?: number; max?: number } = {}): Schema {
+  const s: Schema = description ? { type: 'integer', description } : { type: 'integer' }
   if (range.min !== undefined) s.minimum = range.min
   if (range.max !== undefined) s.maximum = range.max
   return s
@@ -38,8 +40,8 @@ export function num(description: string, range: { min?: number; max?: number } =
   return s
 }
 
-export function str(description: string, opts: { enum?: string[]; maxLength?: number } = {}): Schema {
-  const s: Schema = { type: 'string', description, minLength: 1 }
+export function str(description?: string, opts: { enum?: string[]; maxLength?: number } = {}): Schema {
+  const s: Schema = description ? { type: 'string', description, minLength: 1 } : { type: 'string', minLength: 1 }
   if (opts.enum) s.enum = opts.enum
   if (opts.maxLength !== undefined) s.maxLength = opts.maxLength
   return s
@@ -49,8 +51,8 @@ export function bool(description: string): Schema {
   return { type: 'boolean', description }
 }
 
-export function arr(description: string, items: Schema, range: { min?: number; max?: number } = {}): Schema {
-  const s: Schema = { type: 'array', description, items }
+export function arr(description: string | undefined, items: Schema, range: { min?: number; max?: number } = {}): Schema {
+  const s: Schema = description ? { type: 'array', description, items } : { type: 'array', items }
   if (range.min !== undefined) s.minItems = range.min
   if (range.max !== undefined) s.maxItems = range.max
   return s

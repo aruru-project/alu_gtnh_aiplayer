@@ -4,31 +4,27 @@
 import type { BlueprintEntry, BlueprintPlacement } from '../bridge/protocol.ts'
 import { compactJson, formatBlueprintCheck, formatBlueprintList } from './format.ts'
 import { arr, int, obj, str } from './schema.ts'
-import { containerList, overflow, queue, startTask } from './tasks.ts'
+import { dropoff, overflow, queue, startTask, supply } from './tasks.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 /** blueprint.check 和 blueprint 任务共用的参数：图纸放在哪、只处理哪一部分、哪些方块管不管、允许挖什么。 */
 const placementProps = {
-  name: str('Blueprint name as list_designs shows it (the file name without ".schematic").', { maxLength: 80 }),
-  x: int('World x where the lowest corner of the blueprint (its smallest x, y and z) goes.'),
-  y: int('World y of that corner.', { min: 0, max: 255 }),
-  z: int('World z of that corner.'),
-  x1: int('Handle only world x from x1 to x2. Give both or neither.'),
-  x2: int('See x1.'),
-  y1: int('Handle only world y (layers) from y1 to y2. Give both or neither.', { min: 0, max: 255 }),
-  y2: int('See y1.', { min: 0, max: 255 }),
-  z1: int('Handle only world z from z1 to z2. Give both or neither.'),
-  z2: int('See z1.'),
-  only: arr(
-    'Handle only these kinds of blueprint block (block ids). Spots the blueprint leaves empty are then ignored.',
-    str('block id'),
-    { max: 64 },
-  ),
-  skip: arr('Leave out these kinds of blueprint block (block ids).', str('block id'), { max: 64 }),
+  name: str('Blueprint name, as list_designs shows it.', { maxLength: 80 }),
+  x: int('World x, y, z where the lowest corner of the blueprint (its smallest x, y and z) goes.'),
+  y: int(undefined, { min: 0, max: 255 }),
+  z: int(),
+  x1: int('x1..x2, y1..y2 (layers), z1..z2: handle only this part, in world coordinates. Give both ends of a pair.'),
+  x2: int(),
+  y1: int(undefined, { min: 0, max: 255 }),
+  y2: int(undefined, { min: 0, max: 255 }),
+  z1: int(),
+  z2: int(),
+  only: arr('Handle only these blueprint blocks (block ids); spots the blueprint leaves empty are then ignored.', str(), { max: 64 }),
+  skip: arr('Leave out these blueprint blocks (block ids).', str(), { max: 64 }),
   clear: arr(
-    'What may be dug out when it is in the way: block ids, and two words that stand for groups: "natural" (plain terrain: dirt, grass, sand, gravel, snow, leaves) and "plants" (everything that grows: flowers, bushes, leaves, crops). Omit to dig nothing at all. Blocks that hold data (chests, machines), liquids and bedrock are never dug.',
-    str('block id, "natural" or "plants"'),
+    'What may be dug out when in the way: block ids, "natural" (plain terrain: dirt, grass, sand, gravel, snow, leaves), "plants" (whatever grows). Default: nothing is dug. Chests, machines, liquids and bedrock are never dug.',
+    str(),
     { max: 64 },
   ),
 }
@@ -36,9 +32,11 @@ const placementRequired = ['name', 'x', 'y', 'z']
 
 /**
  * 模型把“不限制”写成空列表时，当作没给：身体那边 only: [] 的意思是“哪种方块都不管”，不是模型想要的。
+ * 名字后面带着 ".schematic" 的（照文件名写的）去掉后缀：图纸的名字是不带后缀的。
  */
 function withoutEmptyLists<T extends BlueprintPlacement>(input: T): T {
   const out = { ...input }
+  if (typeof out.name === 'string') out.name = out.name.trim().replace(/\.schematic$/i, '')
   for (const key of ['only', 'skip', 'clear'] as const) {
     if (out[key]?.length === 0) delete out[key]
   }
@@ -66,7 +64,7 @@ export const listBlueprints: Tool = {
 
 export const checkBlueprint: Tool = {
   name: 'check_blueprint',
-  brief: '{name, x, y, z, ...}: the world against a blueprint -> done, toPlace, byHand, materials[]',
+  brief: '{name, x, y, z, ...as build_blueprint}: the world against a blueprint, nothing changed -> done, toPlace, byHand, blocked, materials[]',
   description:
     'Compare the world with a blueprint set down at x, y, z, changing nothing: what is already in place, the materials needed and how many you carry, what a player must place by hand, and what is in the way. Run it before build_blueprint with the same arguments.',
   inputSchema: obj(placementProps, placementRequired),
@@ -83,12 +81,12 @@ export const checkBlueprint: Tool = {
 export const buildBlueprint: Tool = {
   name: 'build_blueprint',
   description:
-    'Build what a blueprint draws (task): digs out what "clear" allows, then places the blueprint blocks from the bottom up, fetching material from "supply". Only plain building blocks are placed; blocks with contents or a facing are left for a player. At most 64×64 columns per task: split a bigger one with x1..z2 and queue the parts. What it would place, dig and leave is shown beforehand by check_blueprint with the same arguments (a library function: see run_program); details in the blueprint manual.',
+    'Build what a blueprint draws (task): digs out what "clear" allows, then places the blueprint blocks from the bottom up, taking them from your inventory and "supply". At most 64×64 columns per task (x1..z2 take a part). check_blueprint, a library function, takes the same arguments and shows beforehand what would be placed, dug and left. Details: blueprint manual.',
   inputSchema: obj(
     {
       ...placementProps,
-      supply: containerList('Containers (chests or drawers) to fetch building blocks from when you run out.'),
-      dropoff: containerList('Containers to unload what you dug out into when the inventory fills up. Building blocks stay with you.'),
+      supply: supply('building blocks'),
+      dropoff,
       overflow,
       queue,
     },

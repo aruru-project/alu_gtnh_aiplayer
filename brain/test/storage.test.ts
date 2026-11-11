@@ -61,18 +61,34 @@ function paged(all: ContainerInfo[]) {
   }
 }
 
+/**
+ * 像身体那样回答 world.containers：只有中心周围 radius 格（每个方向）以内的才算，radius 0 就是中心那一格上的容器；
+ * 每个容器最多列 kinds 种（默认 60），没列的记在 moreKinds 里。中心是 {bot} 时就是它站的地方 (10,64,-4)。
+ */
+function body(all: ContainerInfo[]) {
+  return (p: Record<string, unknown>) => {
+    const at = typeof p.bot === 'string' ? { x: 10, y: 64, z: -4 } : { x: Number(p.x), y: Number(p.y), z: Number(p.z) }
+    const radius = Number(p.radius ?? 12)
+    const kinds = Number(p.kinds ?? 60)
+    const near = all.filter((c) => Math.max(Math.abs(c.x - at.x), Math.abs(c.y - at.y), Math.abs(c.z - at.z)) <= radius)
+    const offset = Number(p.offset ?? 0)
+    const listed = near.slice(offset, offset + Number(p.limit ?? 40)).map((c) => ((c.items ?? []).length > kinds ? { ...c, items: c.items!.slice(0, kinds), moreKinds: c.items!.length - kinds } : c))
+    return { containers: listed, total: near.length, offset }
+  }
+}
+
 describe('list_containers：容器一页一页列', () => {
   it('写明这是多少个里的第几到第几个；翻到下一页；没有那一页时说有几页', async (t) => {
     const s = setup(t)
     s.game.handlers['world.containers'] = paged(Array.from({ length: 45 }, (_, n) => chest(n, [{ ...COAL, count: n + 1 }])))
     const first = await s.run('list_containers', { radius: 24 })
-    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 24, offset: 0, limit: 20 })
+    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 24, offset: 0, limit: 20, kinds: 2000 })
     const lines = first.content.split('\n')
     assert.equal(lines[0], 'Within 24 blocks of you: containers 1–20 of 45 (page 1 of 3), nearest first.')
     assert.equal(lines.length, 21)
     assert.equal(lines[1], '- (0,64,0) Chest [minecraft:chest] 1/27 slots used: 1× minecraft:coal "Coal"')
     const third = await s.run('list_containers', { radius: 24, page: 3 })
-    assert.deepEqual(s.game.callsOf('world.containers')[1], { bot: 'Alu', radius: 24, offset: 40, limit: 20 })
+    assert.deepEqual(s.game.callsOf('world.containers')[1], { bot: 'Alu', radius: 24, offset: 40, limit: 20, kinds: 2000 })
     assert.equal(third.content.split('\n')[0], 'Within 24 blocks of you: containers 41–45 of 45 (page 3 of 3), nearest first.')
     assert.equal(third.content.split('\n').length, 6)
     const beyond = await s.run('list_containers', { radius: 24, page: 4 })
@@ -82,7 +98,40 @@ describe('list_containers：容器一页一页列', () => {
     assert.equal((await s.run('list_containers')).content, 'No containers within 16 blocks of you. If it is at some other place (where your owner is, or a position they named), look around that place: give "at".')
   })
 
-  it('接着漏斗、管道的容器标成 AUTOMATED；抽屉写明归哪个管理器管；抽屉管理器自己不装东西，指到库函数 list_drawers；服务器没列全的种类如实说', async (t) => {
+  it('一个 102 种东西的大箱子：一页列好几个容器时每个只列前 30 种，并写明怎么看全；以它为中心、radius 0 就把 102 种全列出来；程序拿到的 data 一直是全的', async (t) => {
+    const s = setup(t)
+    const BIG = { x: 12, y: 64, z: -4 }
+    const things = Array.from({ length: 102 }, (_, n) => ({ id: 'demo:thing', meta: n, name: `Thing ${n}`, count: 200 - n }))
+    s.game.handlers['world.containers'] = body([{ ...BIG, id: 'IronChest:BlockIronChest', name: 'Compressed Chest', slots: 243, usedSlots: 102, items: things }, chest(14, [{ ...COAL, count: 5 }], { z: -4 })])
+
+    // 附近两个容器：大箱子那一行只列前 30 种，末尾写明还有多少、怎么看全
+    const around = await s.run('list_containers')
+    const lines = around.content.split('\n')
+    assert.equal(lines.length, 4)
+    assert.match(lines[1]!, /^- \(12,64,-4\) Compressed Chest \[IronChest:BlockIronChest\] 102\/243 slots used: 200× demo:thing "Thing 0", .*, 171× demo:thing\/29 "Thing 29", … and 72 more kinds$/)
+    assert.equal(lines[3], 'Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).')
+    // 向身体要的是每个容器的全部，所以程序拿到的是全的
+    assert.equal((around.data as { containers: ContainerInfo[] }).containers[0]!.items!.length, 102)
+
+    // 就看这一个：102 种一样不少
+    const whole = await s.run('list_containers', { at: BIG, radius: 0 })
+    assert.deepEqual(s.game.callsOf('world.containers').at(-1), { ...BIG, dim: 0, radius: 0, offset: 0, limit: 20, kinds: 2000 })
+    const text = whole.content.split('\n')
+    assert.equal(text.length, 2)
+    assert.equal(text[0], 'Within 0 blocks of (12,64,-4): 1 container(s).')
+    assert.equal(text[1]!.split(': ')[1]!.split(', ').length, 102)
+    assert.match(text[1]!, /, 99× demo:thing\/101 "Thing 101"$/)
+    assert.doesNotMatch(whole.content, /more kinds/)
+
+    // 看周围的概要里每个容器只列三种：也写明怎么把一个容器看全
+    assert.match((await s.run('look_around')).content, /\nContainers \(2\), the 3 main kinds of each \(everything in one: list_containers with "at" it and radius 0\):\n- \(12,64,-4\) Compressed Chest [^\n]*, … and 99 more kinds\n/)
+
+    // radius 0 要说是哪个容器；那里没有容器时如实说
+    assert.deepEqual(await s.run('list_containers', { radius: 0 }), { content: 'radius 0 looks at one container: give its position as "at".', isError: true })
+    assert.equal((await s.run('list_containers', { at: { x: 40, y: 64, z: 40 }, radius: 0 })).content, 'There is no container at (40,64,40).')
+  })
+
+  it('接着漏斗、管道的容器标成 AUTOMATED；抽屉写明归哪个管理器管；抽屉管理器自己不装东西，指到库函数 list_drawers；老的身体没列全的种类如实说', async (t) => {
     const s = setup(t)
     s.game.handlers['world.containers'] = paged([
       chest(1, [{ ...COAL, count: 5 }], { attached: [{ x: 1, y: 65, z: 0, name: 'Hopper', kind: 'hopper' }, { x: 2, y: 64, z: 0, name: 'Brass Item Pipe', kind: 'item pipe' }] }),
@@ -95,7 +144,14 @@ describe('list_containers：容器一页一页列', () => {
       '- (1,64,0) Chest [minecraft:chest] 1/27 slots used (AUTOMATED: Hopper at (1,65,0), Brass Item Pipe at (2,64,0) feeds or drains it): 5× minecraft:coal "Coal"',
       '- (5,64,0) Oak Drawers 1x2 [StorageDrawers:fullDrawers2] [drawers] 1/2 drawer slots used (managed by the drawer controller at (9,64,0)): 12800× minecraft:coal "Coal"',
       '- (9,64,0) Drawer Controller [StorageDrawers:controller] [drawer controller] 166/353 drawer slots used (manages 120 drawer block(s); the library function list_drawers lists what they hold, given this position)',
-      '- (3,64,0) Chest [minecraft:chest] 1/27 slots used: 1× minecraft:coal "Coal", … and 7 more kinds the server did not list',
+      '- (3,64,0) Chest [minecraft:chest] 1/27 slots used: 1× minecraft:coal "Coal", … and 7 more kinds',
+      'Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).',
+    ])
+    // 老的身体不认“每个容器列多少种”：就看这一个也只拿得到它给的那些，照实说
+    s.game.handlers['world.containers'] = paged([chest(3, [{ ...COAL, count: 1 }], { moreKinds: 7 })])
+    assert.deepEqual((await s.run('list_containers', { at: { x: 3, y: 64, z: 0 }, radius: 0 })).content.split('\n').slice(1), [
+      '- (3,64,0) Chest [minecraft:chest] 1/27 slots used: 1× minecraft:coal "Coal", … and 7 more kinds',
+      'The game server did not list all of it (its mod is too old to list more than 60 kinds of a container). find_in_storage still finds a particular item in it.',
     ])
   })
 })
@@ -139,7 +195,7 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
   it('把范围里的箱子和抽屉一页页读全，按物品合计，多的在前，写明主要在哪；机器和抽屉管理器不算；自动化容器里的标出来', async (t) => {
     const s = setup(t)
     const all: ContainerInfo[] = [
-      // 130 个箱子：身体一页最多给 100 个，要翻两页才读得全
+      // 130 个箱子：一页要 50 个（每个箱子里的东西都要全，一页不要太大），翻三页才读得全
       ...Array.from({ length: 130 }, (_, n) => chest(n, [{ ...COAL, count: 2 }])),
       { x: 200, y: 64, z: 0, id: 'StorageDrawers:fullDrawers2', name: 'Oak Drawers', kind: 'drawers', slots: 2, usedSlots: 2, items: [{ ...COAL, count: 5000 }, { ...STEEL, count: 40 }] },
       chest(201, [{ ...STEEL, count: 24 }], { attached: [{ x: 201, y: 65, z: 0, name: 'Hopper', kind: 'hopper' }] }),
@@ -149,8 +205,9 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
     s.game.handlers['world.containers'] = paged(all)
     const res = await s.run('list_stock', { radius: 32 })
     assert.deepEqual(s.game.callsOf('world.containers'), [
-      { bot: 'Alu', radius: 32, offset: 0, limit: 100 },
-      { bot: 'Alu', radius: 32, offset: 100, limit: 100 },
+      { bot: 'Alu', radius: 32, offset: 0, limit: 50, kinds: 2000 },
+      { bot: 'Alu', radius: 32, offset: 50, limit: 50, kinds: 2000 },
+      { bot: 'Alu', radius: 32, offset: 100, limit: 50, kinds: 2000 },
     ])
     assert.deepEqual(res.content.split('\n'), [
       'Looked into 132 chest(s) and drawer(s) within 32 blocks of you (2 machine(s) and drawer controller(s) not counted): 2 kind(s) of item. 2 item(s), most first:',
@@ -161,12 +218,21 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
     assert.deepEqual((res.data as { items: { id: string; count: number }[] }).items.map((i) => [i.id, i.count]), [['minecraft:coal', 5260], ['gregtech:gt.metaitem.01', 64]])
   })
 
-  it('按名字筛、只看少于某个数的、翻页；容器太多或者有容器种类没列全时说明总数不全', async (t) => {
+  it('大箱子里的东西一样不落：一个箱子 102 种，存货总表里 102 种都在，没有“没列全”的话', async (t) => {
+    const s = setup(t)
+    const things = Array.from({ length: 102 }, (_, n) => ({ id: 'demo:thing', meta: n, name: `Thing ${n}`, count: 200 - n }))
+    s.game.handlers['world.containers'] = body([{ x: 12, y: 64, z: -4, id: 'IronChest:BlockIronChest', name: 'Compressed Chest', slots: 243, usedSlots: 102, items: things }])
+    const res = await s.run('list_stock', { page: 3 })
+    assert.deepEqual(res.content.split('\n').slice(0, 2), ['Looked into 1 chest(s) and drawer(s) within 16 blocks of you: 102 kind(s) of item. Items 81–102 of 102 (page 3 of 3), most first:', '- 120× Thing 80 [demo:thing/80]: (12,64,-4) 120'])
+    assert.equal((res.data as { items: unknown[] }).items.length, 102)
+  })
+
+  it('按名字筛、只看少于某个数的、翻页；容器太多、或者老的身体没把容器列全时说明总数不全', async (t) => {
     const s = setup(t)
     // 50 种东西各放一个箱子，数量 1 到 50
     s.game.handlers['world.containers'] = paged(Array.from({ length: 50 }, (_, n) => chest(n, [{ id: 'demo:thing', meta: n, name: `Thing ${n}`, count: n + 1 }], n === 0 ? { moreKinds: 3 } : {})))
     const few = (await s.run('list_stock', { below: 4 })).content.split('\n')
-    assert.match(few[0]!, /: 50 kind\(s\) of item\. 1 container\(s\) hold more kinds than the server lists \(60 each\): their rarer items are missing here\. Use find_in_storage for a particular item\. 3 item\(s\) with fewer than 4, most first:$/)
+    assert.match(few[0]!, /: 50 kind\(s\) of item\. The game server did not list everything in 1 container\(s\) \(its mod is too old to list more than 60 kinds of a container\): what it left out is missing from these totals\. find_in_storage still finds a particular item\. 3 item\(s\) with fewer than 4, most first:$/)
     assert.deepEqual(few.slice(1), ['- 3× Thing 2 [demo:thing/2]: (2,64,0) 3', '- 2× Thing 1 [demo:thing/1]: (1,64,0) 2', '- 1× Thing 0 [demo:thing]: (0,64,0) 1'])
     // 按名字、按 id 都筛得出
     assert.match((await s.run('list_stock', { contains: 'thing/49' })).content, /1 item\(s\) containing "thing\/49", most first:\n- 50× Thing 49 \[demo:thing\/49\]: \(49,64,0\) 50$/)

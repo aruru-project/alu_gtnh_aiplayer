@@ -14,7 +14,7 @@ import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 export const QUEST_SEARCH_MAX_LIMIT = 60
 
-const player = str('Whose progress to show. Omit for your owner (or whoever just talked to you).', { maxLength: 40 })
+const player = str('Whose progress (default: your owner, or whoever just talked to you).', { maxLength: 40 })
 
 /**
  * 带着“看谁的进度”去问服务器。模型没说看谁的，就用默认的那个玩家（主人名单里的第一个，或者刚才跟它说话的人）；
@@ -102,16 +102,14 @@ export const listQuestLines: Tool = {
 export const findQuests: Tool = {
   name: 'find_quests',
   description:
-    'Find quests in the quest book by words (Chinese or English, in the title or description), by chapter and by state, in any mix: for example state "available" alone lists what the player can do right now. Returns id, title, chapter and state, one page at a time.',
+    'Find quests in the quest book by words, by chapter and by state, in any mix (state "available" alone: what the player can do right now). Returns id, title, chapter and state, a page at a time.',
   inputSchema: obj({
-    query: str('Words that must all appear in the title or description, Chinese or English, e.g. "马达" or "electric motor".', { maxLength: 80 }),
-    line: str('Part of a chapter name, Chinese or English, e.g. "蒸汽" or "Steam".', { maxLength: 80 }),
-    state: str('available (unlocked and not complete), complete, locked, or unclaimed (complete, with a reward not collected yet).', {
-      enum: ['available', 'complete', 'locked', 'unclaimed'],
-    }),
+    query: str('Words that must all be in the title or description (Chinese or English).', { maxLength: 80 }),
+    line: str('Part of a chapter name (Chinese or English).', { maxLength: 80 }),
+    state: str('available: unlocked and not complete. unclaimed: complete, reward not collected yet.', { enum: ['available', 'complete', 'locked', 'unclaimed'] }),
     player,
-    limit: int('How many per page (default 20).', { min: 1, max: QUEST_SEARCH_MAX_LIMIT }),
-    page: int('Which page of the results (default 1).', { min: 1 }),
+    limit: int('Per page (default 20).', { min: 1, max: QUEST_SEARCH_MAX_LIMIT }),
+    page: int('Page (default 1).', { min: 1 }),
   }),
   async run(ctx, i: FindQuestsInput) {
     const book = ctx.packdata?.quests

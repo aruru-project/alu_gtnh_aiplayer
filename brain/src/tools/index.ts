@@ -35,6 +35,7 @@ import {
 import { viewArea, viewImage } from './pictures.ts'
 import { findQuests, getQuest, listQuestLines } from './quests.ts'
 import { validate } from './schema.ts'
+import type { Schema } from './schema.ts'
 import { listContainers, listDrawers, listStock } from './storage.ts'
 import {
   cancelTask,
@@ -221,17 +222,43 @@ export const LIBRARY_INDEX_HEAD =
 
 /**
  * 库函数的索引：run_program 的说明后面带着它，模型靠它知道这些函数存在（start_routine 的说明指到这里，不重复）。
- * 每个一行（Tool.brief）。整份不超过 1500 字符（test/tool-list.test.ts 看着）：它每一轮都发，写长了就把挪走工具省下的
- * 又花回去了；各自的参数和 data 的细节在 routines 手册的“库函数”一节。
+ * 每个一行（Tool.brief）。整份不超过 2000 字符（test/tool-list.test.ts 看着；真正的闸是清单总大小那条测试）：它每一轮都发，
+ * 写长了就把挪走工具省下的又花回去了；各自的参数和 data 的细节在 routines 手册的“库函数”一节。
  */
 export function libraryIndex(tools: readonly Tool[], view: ModelView): string {
   return [LIBRARY_INDEX_HEAD, ...libraryFor(tools, view).map((t) => `- ${t.name} ${t.brief ?? ''}`.trimEnd())].join('\n')
 }
 
 /**
+ * 发给模型的那份参数 schema：去掉对“调对这个工具”没有用的键——additionalProperties:false（多给的字段本来就被忽略）、
+ * 字符串的 minLength:1（空串照样被校验拦下并说明）、空的 required。这三样在整份清单里有三千多字符，每一轮都发。
+ * 校验用的还是工具自己那份完整的 schema（runTool），行为不变。
+ */
+export function schemaForModel(schema: Schema): Record<string, unknown> {
+  switch (schema.type) {
+    case 'object': {
+      const out: Record<string, unknown> = { type: 'object' }
+      if (schema.description) out.description = schema.description
+      out.properties = Object.fromEntries(Object.entries(schema.properties).map(([key, sub]) => [key, schemaForModel(sub)]))
+      if (schema.required && schema.required.length > 0) out.required = schema.required
+      return out
+    }
+    case 'array':
+      return { ...schema, items: schemaForModel(schema.items) }
+    case 'string': {
+      const { minLength, ...rest } = schema
+      return minLength === 1 ? rest : { ...schema }
+    }
+    default:
+      return { ...schema }
+  }
+}
+
+/**
  * 发给模型的工具清单。和 toToolSpecs 的差别：
  *   - 看图的工具（view_area、view_image）只给能看图的模型；view_draft 的文字那一半谁都用得上，不能看图时换成不提图的说明；
- *   - run_program 的说明后面带上库函数的索引。
+ *   - run_program 的说明后面带上库函数的索引；
+ *   - 参数 schema 是瘦过的那份（schemaForModel）。
  */
 export function modelToolSpecs(tools: readonly Tool[], view: ModelView): ToolSpec[] {
   const specs: ToolSpec[] = []
@@ -239,7 +266,7 @@ export function modelToolSpecs(tools: readonly Tool[], view: ModelView): ToolSpe
     if (!listedFor(t, view)) continue
     const shown = !view.canSee && t.picture === true && t.textOnly ? t.textOnly : t
     const description = t.name === runProgramTool.name ? `${shown.description}\n${libraryIndex(tools, view)}` : shown.description
-    specs.push({ name: t.name, description, inputSchema: shown.inputSchema })
+    specs.push({ name: t.name, description, inputSchema: schemaForModel(shown.inputSchema) })
   }
   return specs
 }
@@ -268,6 +295,10 @@ export function bridgeHint(code: string, message: string): string | undefined {
   }
   if (code === 'denied' && /allow list/i.test(message)) {
     return 'Bots are not allowed to use this command on this server. Retrying will not help; ask a player to do it.'
+  }
+  // 身体的原话里说的是协议方法名（blueprint.list），模型认得的是工具名
+  if (code === 'not_found' && /no blueprint named/i.test(message)) {
+    return 'list_designs shows the blueprints on the server; a name is the file name without ".schematic".'
   }
   if (code === 'too_large' && /queue/i.test(message)) {
     return 'Your task queue is full. Wait for queued tasks to finish, or cancel some, before adding more.'

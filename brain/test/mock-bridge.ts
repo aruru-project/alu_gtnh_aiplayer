@@ -875,9 +875,15 @@ export class MockBridge {
         const machines = this.machines.filter((m) => m.inputs !== undefined).map((m) => ({ x: m.x, y: m.y, z: m.z, id: m.id ?? 'gregtech:gt.blockmachines', name: m.name, kind: 'machine', slots: m.inputSlots + 1, usedSlots: m.inputs!.length, items: m.inputs! }))
         const merge = (slots: MockDevice['slots']): { id: string; meta: number; count: number; name: string }[] => slots.filter((x) => x.item && x.kind !== 'ghost').map((x) => ({ ...x.item! }))
         const devices = this.devices.map((d) => ({ x: d.x, y: d.y, z: d.z, id: d.id, name: d.name, slots: d.slots.length, usedSlots: merge(d.slots).length, items: merge(d.slots) }))
-        const all = [...containers, ...machines, ...devices]
+        // 和真的身体一样：以中心为心、每个方向 radius 格的立方体里的才算（radius 0 就是中心那一格上的那个容器）
+        const radius = Math.max(0, typeof p.radius === 'number' ? p.radius : 12)
+        if (radius > 32) throw new RpcError('too_large', 'radius is limited to 32')
+        const all = [...containers, ...machines, ...devices].filter((box) => Math.max(Math.abs(box.x - c.x), Math.abs(box.y - c.y), Math.abs(box.z - c.z)) <= radius)
+        // 每个容器最多列 kinds 种（默认 60），没列的记在 moreKinds 里
+        const kinds = Math.max(1, Math.min(2000, typeof p.kinds === 'number' ? p.kinds : 60))
+        const listed = all.slice(offset, offset + limit).map((box) => (box.items.length > kinds ? { ...box, items: box.items.slice(0, kinds), moreKinds: box.items.length - kinds } : box))
         // total 是范围里的总数，containers 只是从 offset 起的一页
-        return { containers: all.slice(offset, offset + limit), total: all.length, offset }
+        return { containers: listed, total: all.length, offset }
       }
       case 'world.drawers': {
         // 一个抽屉管理器管着的全部抽屉，逐格列出；给的位置是普通抽屉时只有它自己

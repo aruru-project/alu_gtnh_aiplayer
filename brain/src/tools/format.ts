@@ -321,8 +321,11 @@ export function formatContainer(c: ContainerInfo, itemLimit: number): string {
   if (auto) notes.push(auto)
   const note = notes.length > 0 ? ` (${notes.join('; ')})` : ''
   if (c.kind === 'drawer_controller') return `${head}${note}`
-  const more = count(c.moreKinds) > 0 ? `, … and ${c.moreKinds} more kinds the server did not list` : ''
-  return `${head}${note}: ${formatItems(c.items ?? [], itemLimit)}${more}`
+  // 没列出来的种数算在一起：这里只列前 itemLimit 种的，加上身体自己没给的（moreKinds）。怎么看全由调用的工具在结果里说
+  const merged = mergeItems(c.items ?? [])
+  const hidden = Math.max(0, merged.length - itemLimit) + count(c.moreKinds)
+  const listed = merged.slice(0, itemLimit).map(formatItem).join(', ')
+  return `${head}${note}: ${merged.length === 0 && hidden === 0 ? 'empty' : `${listed}${hidden > 0 ? `${listed ? ', ' : ''}… and ${hidden} more kinds` : ''}`}`
 }
 
 const SEEN_KINDS: Record<string, string> = { container: 'container', drawers: 'drawers', drawer_controller: 'drawer controller', machine: 'machine' }

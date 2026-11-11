@@ -317,20 +317,20 @@ interface ViewInput {
   layer?: number
 }
 
-const coordinate = (axis: string, end: string) => int(`Show only from/to this ${axis} (${end} end of the range; cells count from 0).`, { min: 0 })
+const coordinate = int(undefined, { min: 0 })
 
-const VIEW_DRAFT_TEXT = 'Look at a blueprint draft: size, materials, and its cells drawn in characters, slice by slice ("along": y for layers from above, z or x for upright slices). Give x1..z2 to see a part.'
+const VIEW_DRAFT_TEXT = 'Look at a blueprint draft: size, materials, and its cells drawn in characters, slice by slice. x1..x2, y1..y2, z1..z2 show only that part (cells count from 0).'
 /** view_draft 不管模型能不能看图都有的参数（文字那一半）。 */
 const viewDraftTextParams = {
-  name: str('Draft name as list_designs shows it.', { maxLength: 60 }),
-  along: str('Which way to slice: y (layers from the bottom up), z (upright slices seen from the south) or x (upright slices seen from the west).', { enum: ['x', 'y', 'z'] }),
-  x1: coordinate('x', 'low'),
-  x2: coordinate('x', 'high'),
-  y1: coordinate('y', 'low'),
-  y2: coordinate('y', 'high'),
-  z1: coordinate('z', 'low'),
-  z2: coordinate('z', 'high'),
-  program: bool('Also show the program that made the draft (to change it and run it again).'),
+  name: str('Draft name, as list_designs shows it.', { maxLength: 60 }),
+  along: str('Slice along y (layers, bottom up), z (upright slices seen from the south) or x (upright, seen from the west). Default: the thinnest way.', { enum: ['x', 'y', 'z'] }),
+  x1: coordinate,
+  x2: coordinate,
+  y1: coordinate,
+  y2: coordinate,
+  z1: coordinate,
+  z2: coordinate,
+  program: bool('true: also show the program that made it.'),
 }
 
 /**
@@ -345,9 +345,9 @@ export const viewDraft: Tool = {
   inputSchema: obj(
     {
       ...viewDraftTextParams,
-      picture: { ...VIEW_PARAMS.view, description: `Get a picture instead of characters. ${VIEW_PARAMS.view.description}`.replace('(default; best', '(best') },
+      picture: { ...VIEW_PARAMS.view, description: `Get a picture instead of characters. ${VIEW_PARAMS.view.description}`.replace(' (default)', '') },
       from: VIEW_PARAMS.from,
-      layer: int('For picture "layer": which layer (y, counting from 0).', { min: 0 }),
+      layer: int('For picture "layer": which layer (y, from 0).', { min: 0 }),
     },
     ['name'],
   ),

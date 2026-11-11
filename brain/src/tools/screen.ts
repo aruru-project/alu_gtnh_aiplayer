@@ -87,10 +87,10 @@ async function act(run: () => Promise<ScreenState>): Promise<ToolResult | string
 export const openScreen: Tool = {
   name: 'open_screen',
   description:
-    'Open the screen of a block next to you (any block with a screen, of any mod: a machine you have not seen before, a furnace, a workbench) or of an item you carry, and see its slots. Without arguments: the screen you already have open, as it is now. For screens the ready-made tools do not cover: try deposit_items / withdraw_items / process_items first. Only while you have no task running; walk there first. Details: screens manual.',
+    'Open the screen of a block within your reach (any block with a screen, of any mod) or of an item you carry, and see its slots. Without arguments: the screen you already have open, as it is now. Works only while you have no task running, and does not walk. Details: screens manual.',
   inputSchema: obj({
-    at: pos('The block to open (you must stand within reach of it).'),
-    item: obj({ id: str('Item id.'), meta: int('Item meta. Omit to match any.', { min: 0 }) }, ['id'], 'Instead of "at": an item you carry whose screen to open (a bag, a portable tool).'),
+    at: pos('The block to open.'),
+    item: obj({ id: str(), meta: int(undefined, { min: 0 }) }, ['id'], 'Instead of "at": an item you carry whose screen to open, as {id, meta?}.'),
   }),
   async run(ctx: ToolContext, i: { at?: { x: number; y: number; z: number }; item?: { id: string; meta?: number } }) {
     if (i.at !== undefined && i.item !== undefined) return fail('Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.')

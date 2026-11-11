@@ -77,8 +77,11 @@ export class BridgeApi {
   worldDrawers(p: Dim & BlockPos & { below?: number; offset?: number; limit?: number }): Promise<DrawersResult> {
     return this.call('world.drawers', p)
   }
-  /** 由近到远。total 是范围里的总数，containers 只是从 offset 起的一页。 */
-  worldContainers(center: Center, p: { radius?: number; offset?: number; limit?: number } = {}): Promise<{ containers?: ContainerInfo[]; total?: number; offset?: number }> {
+  /**
+   * 由近到远。total 是范围里的总数，containers 只是从 offset 起的一页。
+   * kinds：每个容器最多列多少种物品（默认 60，最多 2000），没列的记在 moreKinds 里。把一个容器看全：以它为中心、radius 0、kinds 给大。
+   */
+  worldContainers(center: Center, p: { radius?: number; offset?: number; limit?: number; kinds?: number } = {}): Promise<{ containers?: ContainerInfo[]; total?: number; offset?: number }> {
     return this.call('world.containers', { ...center, ...p })
   }
   worldEntities(center: Center, p: { radius?: number } = {}): Promise<{ entities?: EntityInfo[]; total?: number }> {

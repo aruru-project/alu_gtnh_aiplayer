@@ -29,6 +29,7 @@ import {
 } from '../render/index.ts'
 import type { BlockKind, Corner, Marker, NameOf, Picture, RGB, Side, ViewSpec, VoxelGrid } from '../render/index.ts'
 import { int, obj, str } from './schema.ts'
+import { boxProps } from './tasks.ts'
 import { ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolImage, ToolResult } from './types.ts'
 
@@ -113,11 +114,8 @@ export function viewWords(spec: ViewSpec, grid: VoxelGrid): string {
 }
 
 export const VIEW_PARAMS = {
-  view: str(
-    'How to look: "iso" from above one corner, showing three faces of everything (default; best for overall shape); "top" straight down (a map; north is up); "side" level from one side (an elevation); "layer" one horizontal layer from above.',
-    { enum: [...VIEWS] },
-  ),
-  from: str(`Where you look from. iso: a corner (${CORNERS.join(', ')}; default southeast). side: the side you stand on (${SIDES.join(', ')}; default south).`, { enum: FROM }),
+  view: str('"iso": from above one corner, three faces of everything (default); "top": straight down, north up; "side": level, from one side; "layer": one horizontal layer from above.', { enum: [...VIEWS] }),
+  from: str('Where you look from. iso: a corner (default southeast). side: the side you stand on (default south).', { enum: FROM }),
 }
 
 /** 一张简图，连同画它用的那个盒子（面板的三维预览用）。 */
@@ -158,14 +156,9 @@ export const viewArea: Tool = {
   picture: true,
   brief: '{x1..z2 | radius?}: a box of the world in words, layer by layer -> kinds[]',
   description:
-    `Get a picture of a box of the world, drawn from block colours: the shape of a building, the lay of the land, whether what you built looks right. Give two opposite corners (each side at most ${AREA_MAX_SIDE} blocks), or none to look around yourself. It is a schematic drawing, not a screenshot, and costs a lot of context: use it for shape and layout, not for what the query tools answer exactly. If your model cannot see pictures you get a description in words. Details: pictures manual.`,
+    `Get a picture of a box of the world, drawn from block colours: a schematic drawing for shape and layout, not a screenshot. Give two opposite corners (x1, y1, z1) and (x2, y2, z2), each side at most ${AREA_MAX_SIDE} blocks, or none to look around yourself. Details: pictures manual.`,
   inputSchema: obj({
-    x1: int('x of one corner'),
-    y1: int('y of one corner', { min: 0, max: 255 }),
-    z1: int('z of one corner'),
-    x2: int('x of the opposite corner'),
-    y2: int('y of the opposite corner', { min: 0, max: 255 }),
-    z2: int('z of the opposite corner'),
+    ...boxProps,
     radius: int(`Without corners: how far to look around yourself, in blocks each way (default ${AREA_DEFAULT_RADIUS}).`, { min: 2, max: AREA_MAX_RADIUS }),
     ...VIEW_PARAMS,
     layer: int('For view "layer": the y of the layer.', { min: 0, max: 255 }),
@@ -287,8 +280,8 @@ export const viewImage: Tool = {
   picture: true,
   brief: '{name}: an uploaded image in words -> width, height, colors[]',
   description:
-    'Look at an image your owner uploaded on the panel (list_designs shows which there are): to see what it shows before making pixel art of it, or to use it as a reference for a design. Small images are enlarged so you can see them. If your model cannot see pictures you get its size and main colours instead; a program can still read its pixels with image(name).',
-  inputSchema: obj({ name: str('Image name as list_designs shows it.', { maxLength: 60 }) }, ['name']),
+    'Look at an image your owner uploaded on the panel (list_designs shows which there are). Small images are enlarged so you can see them. A program reads its pixels with image(name).',
+  inputSchema: obj({ name: str('Image name, as list_designs shows it.', { maxLength: 60 }) }, ['name']),
   async run(ctx, i: { name: string }): Promise<ToolResult | string> {
     if (!ctx.design) return fail('Images are not set up on this brain.')
     const name = i.name.trim()

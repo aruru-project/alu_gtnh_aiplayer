@@ -14,7 +14,7 @@ import { BridgeError } from '../src/bridge/protocol.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData } from '../src/packdata/index.ts'
 import { ALL_TOOLS, modelToolSpecs } from '../src/tools/index.ts'
-import { DEFAULT_MANUALS_DIR, chat, makeAgent, modelCalls, taskEnded } from './agent-harness.ts'
+import { DEFAULT_MANUALS_DIR, chat, makeAgent, modelCalls, reply, taskEnded } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { writeRecipeFixture } from './fixture-recipes.ts'
 import { encodePng, tmpDir, waitFor, worldBlocksAnswer } from './helpers.ts'
@@ -107,14 +107,14 @@ describe('模型拿到的工具清单', () => {
     assert.doesNotMatch(draft.description, /picture/i)
   })
 
-  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 1500 字符；start_routine 的说明指过去', async (t) => {
+  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2000 字符；start_routine 的说明指过去', async (t) => {
     for (const vision of [true, false]) {
       const tools = await offered(setup(t, { vision }))
       const names = tools.map((tool) => tool.name)
       for (const name of [...LIBRARY, ...OLD_NAMES]) assert.equal(names.includes(name), false, name)
       const run = tools.find((tool) => tool.name === 'run_program')!.description
       const index = run.slice(run.indexOf('\nLibrary functions') + 1)
-      assert.ok(index.length <= 1500, `the index is ${index.length} characters`)
+      assert.ok(index.length <= 2000, `the index is ${index.length} characters`)
       const lines = index.split('\n')
       assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
       // 不能看图时，没进清单的 view_area、view_image 也列在索引里：它们给的文字照样拿得到
@@ -122,6 +122,21 @@ describe('模型拿到的工具清单', () => {
       assert.deepEqual(lines.slice(1).map((line) => /^- (\w+) \{[^}]*\}: .+ -> .+$/.exec(line)?.[1]), listed)
       assert.match(tools.find((tool) => tool.name === 'start_routine')!.description, /The library functions listed under run_program can be called here too\./)
     }
+  })
+
+  it('发给它的参数 schema 里没有对调对没用的键（additionalProperties、minLength:1、空的 required），校验照旧：空字符串、缺必填的一样被拦下并说明', async (t) => {
+    const h = setup(t)
+    const sent = JSON.stringify(await offered(h))
+    for (const key of ['"additionalProperties"', '"minLength"', '"required":[]']) assert.equal(sent.includes(key), false, key)
+    // 范围、必填、枚举这些“调对所必需的”还在
+    const fill = (await offered(h)).find((tool) => tool.name === 'fill_area')!.inputSchema as unknown as { required: string[]; properties: Record<string, Record<string, unknown>> }
+    assert.deepEqual(fill.required, ['x1', 'y1', 'z1', 'x2', 'y2', 'z2', 'item'])
+    assert.deepEqual([fill.properties.y1, fill.properties.shape!.enum], [{ type: 'integer', minimum: 0, maximum: 255 }, ['solid', 'hollow', 'walls']])
+    const empty = await modelCalls(h, 'fill_area', { x1: 0, y1: 64, z1: 0, x2: 1, y2: 64, z2: 1, item: '' })
+    assert.deepEqual([empty.isError, empty.content], [true, 'Invalid arguments for fill_area: item must not be empty'])
+    const missing = await modelCalls(h, 'withdraw_items', { container: { x: 1, y: 64 }, items: [{ count: 3 }] })
+    assert.deepEqual([missing.isError, missing.content], [true, 'Invalid arguments for withdraw_items: container.z is required; items[0].id is required'])
+    assert.equal(h.game.callsOf('task.start').length, 0)
   })
 
   it('手册里教它在程序里调的每一个名字都真的调得到', () => {
@@ -134,9 +149,10 @@ describe('模型拿到的工具清单', () => {
 
   // 每个工具的说明和参数 schema 每一轮都发给模型。加一个工具之前先想：通用能力（走、挖放、用物品、开界面点格子、
   // 存取、写程序）加上模型自己的脑子做得到的事，不做成专用工具；“查一查、算一算”的做成库函数（索引里只占一行）。
-  // 确实要加，再有意识地把这个上限调高。上限是 2026-11 瘦身第一步做完时的实际值（52,579）往上留约 5%。
-  it('防回涨：不能看图的模型每一轮收到的工具清单不超过 55,200 字符', () => {
-    const CEILING = 55_200
+  // 确实要加，再有意识地把这个上限调高。上限是 2026-11 瘦身两步做完时的实际值（42,576）往上留约 5%。
+  // 量的是发给模型的那份（modelToolSpecs）：说明加上瘦过的参数 schema。
+  it('防回涨：不能看图的模型每一轮收到的工具清单不超过 44,700 字符', () => {
+    const CEILING = 44_700
     const sizes = modelToolSpecs(ALL_TOOLS, { canSee: false })
       .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
       .sort((a, b) => b.chars - a.chars)
@@ -145,7 +161,7 @@ describe('模型拿到的工具清单', () => {
       total <= CEILING,
       `发给模型的工具清单现在是 ${total} 字符（${sizes.length} 个工具），超过了上限 ${CEILING}。\n` +
         '这些字符每一轮都发。先看新加的东西能不能做成库函数（src/tools/index.ts 的 LIBRARY_TOOLS，只在索引里占一行）、' +
-        '能不能并进现有的工具、说明能不能写短；确实要加，再把这条测试里的上限调高。\n' +
+        '能不能并进现有的工具、说明能不能只留“调对它所必需的”（怎么用好写进手册，调错了才要知道的写进出错的结果）；确实要加，再把这条测试里的上限调高。\n' +
         `各工具的大小（大的在前）：\n${sizes.map((s) => `  ${String(s.chars).padStart(5)}  ${s.name}`).join('\n')}`,
     )
   })
@@ -308,6 +324,27 @@ describe('合并后的工具', () => {
     assert.equal(h.agent.status().routine!.value, `[true,true,"Ran /team join steves_base. The server replied: You joined team 'steves_base'"]`)
     assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['home list', 'sethome mine', 'team join steves_base'])
     assert.equal(h.memory.get('home:mine')?.text, '(10,64,-4) dim 0 — 矿洞口')
+  })
+})
+
+describe('用 run_command 发悄悄话', () => {
+  it('tell / msg / w 送到了就算已经对人说过话：它这一轮最后留的那段文字不会再被替它公开说一遍；对方不在线没送到的不算', async (t) => {
+    const h = setup(t)
+    h.game.handlers['bot.command'] = (p) => ({ output: String(p.command).includes('Herobrine') ? ['That player cannot be found'] : [`You whisper to Steve: ${String(p.command).slice('tell Steve '.length)}`] })
+    h.llm.enqueue(reply('', [{ name: 'run_command', input: { command: 'tell Steve 东西放你箱子里了' } }]), reply('已经私聊告诉他了。'))
+    h.agent.handleEvent(chat('Steve', 'Alu 弄好了悄悄告诉我'))
+    await waitFor('the turn ended', () => h.llm.requests.length === 2)
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['tell Steve 东西放你箱子里了'])
+    assert.deepEqual(h.game.said, [])
+    // 面板的对话日志里这句话记成它说的
+    assert.ok(h.log.recent(0, 50).some((e) => e.kind === 'say' && e.text === '（私聊 Steve）东西放你箱子里了'))
+
+    h.llm.enqueue(reply('', [{ name: 'run_command', input: { command: 'msg Herobrine 在吗' } }]), reply('他不在线。'))
+    h.agent.handleEvent(chat('Steve', 'Alu 问问 Herobrine'))
+    await waitFor('the second turn ended', () => h.llm.requests.length === 4)
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.said, ['他不在线。'])
   })
 })
 

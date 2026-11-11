@@ -209,7 +209,7 @@ export interface ContainerInfo {
   name?: string
   slots?: number
   usedSlots?: number
-  /** 按物品合并，最多列 60 种；还有没列的时带 moreKinds。 */
+  /** 按物品合并，最多列 world.containers 的 kinds 种（默认 60）；还有没列的时带 moreKinds。 */
   items?: Item[]
   moreKinds?: number
   /**

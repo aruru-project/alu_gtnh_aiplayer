@@ -31,7 +31,7 @@
   - 你的模型不能看图时还有 view_area { x1…z2 或 radius }（世界里一个盒子的文字说明，r.data.kinds 是 [{ id, meta, name, count }]）和 view_image { name }（一张图片的尺寸和主要颜色，r.data 是 { width, height, transparent, colors }）。
 
 # 常用的 data
-- list_containers：r.data.containers 是 [{ x, y, z, id, name, kind, slots, usedSlots, items: [{ id, meta, count, name }], attached }]，r.data.total 是总数。
+- list_containers：r.data.containers 是 [{ x, y, z, id, name, kind, slots, usedSlots, items: [{ id, meta, count, name }], attached }]，r.data.total 是总数。每个容器的 items 是全的（文字里一个容器只列前 30 种）。
 - get_player_position：r.data 里有 block、facing、lookingAt、ahead。
 - get_status：r.data 是你的原样状态（block、inventory: [{ slot, id, meta, count, name }]、freeSlots……）。
 - find_in_storage：r.data.items 和你问的一一对应，每项有 total 和 places: [{ x, y, z, count }]。

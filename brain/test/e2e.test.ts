@@ -1243,6 +1243,60 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
   assert.equal(await brain.exited, 0, diag())
 })
 
+it('端到端：主人指着一个装了 102 种东西的压缩箱问“里面都有什么” → 它看附近的容器，那一行只列了前 30 种并写明怎么看全 → 它以那个箱子为中心、radius 0 再看一次，102 种一样不少', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  // 身体一个容器默认只列 60 种；要全得带 kinds（协议里 world.containers 的可选参数）
+  const BIG = { x: 14, y: 64, z: -6 }
+  const things = Array.from({ length: 102 }, (_, n) => ({ id: 'demo:thing', meta: n, count: 200 - n, name: `Thing ${n}` }))
+  bridge.containers = [
+    { x: 12, y: 64, z: -4, id: 'minecraft:chest', name: 'Chest', slots: 27, items: [{ id: 'minecraft:coal', meta: 0, count: 5, name: 'Coal' }] },
+    { ...BIG, id: 'IronChest:BlockIronChest', name: 'Compressed Chest', slots: 243, items: things },
+  ]
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+
+  llm.enqueue(
+    { toolCalls: [{ name: 'list_containers', input: {} }] },
+    { toolCalls: [{ name: 'list_containers', input: { at: BIG, radius: 0 } }] },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '一共 102 种，最多的是 Thing 0（200 个）。' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '那个压缩箱里都有什么')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('一共 102 种')), 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 第一次看附近：大箱子那一行列到第 30 种为止，写明还有 72 种，结果末尾写着怎么看全
+  const around = seen(1).split('\n')
+  assert.match(around.find((line) => line.includes('Compressed Chest'))!, /102\/243 slots used: 200× demo:thing "Thing 0", .*, 171× demo:thing\/29 "Thing 29", … and 72 more kinds$/)
+  assert.equal(around.at(-1), 'Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).')
+  // 第二次只看这一个：102 种都在，没有“还有没列的”
+  const whole = seen(2).split('\n')
+  assert.deepEqual([whole.length, whole[0]], [2, 'Within 0 blocks of (14,64,-6): 1 container(s).'])
+  assert.equal(whole[1]!.split(': ')[1]!.split(', ').length, 102)
+  assert.match(whole[1]!, /, 99× demo:thing\/101 "Thing 101"$/)
+  assert.doesNotMatch(seen(2), /more kinds/)
+  // 向身体要的：两次都要每个容器的全部（kinds），第二次以那个箱子为中心、radius 0
+  assert.deepEqual(bridge.requestsOf('world.containers').map((p) => [p.radius, p.kinds, p.x ?? p.bot]), [[16, 2000, 'Alu'], [0, 2000, 14]])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
 it('端到端：主人说“做一个小背包，做好后把圆石放进去” → 它照本地配方册手工合成 → 右键试了一下新做的包 → 把圆石放进身上的包里（不用走到哪个箱子）→ 告诉主人', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })

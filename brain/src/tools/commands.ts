@@ -36,6 +36,9 @@ export const TEAM_ID_RE = /^[A-Za-z0-9_-]{1,35}$/
 /** /tell 成功时服务器回给发送者的那句话（服务器语言是英文）。 */
 export const WHISPER_ECHO_RE = /^You whisper to /
 
+/** 悄悄话的几种指令写法（都在身体默认的允许列表里）：tell 玩家 内容。用 run_command 发它们也算对人说过话。 */
+export const WHISPER_COMMAND_RE = /^(?:tell|msg|w)\s+(\S+)\s+(\S.*)$/i
+
 /** /tell 没送到时的回显。 */
 export const WHISPER_FAILED_RE = /cannot be found|not found|not online/i
 

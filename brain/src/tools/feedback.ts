@@ -10,14 +10,11 @@ import type { Tool } from './types.ts'
 export const reportProblem: Tool = {
   name: 'report_problem',
   description:
-    'Write a note in the feedback book for the people who maintain you, when something about your tools gets in the way: no tool fits what you want to do, a tool result is wrong or cannot be understood, the same thing keeps failing, a manual does not match what happens, or your owner asks for something you cannot do. What you were just doing is attached automatically. It only records the note: nobody answers it, so afterwards carry on, or tell the player what you could not do. One note per problem is enough.',
+    'Write a note in the feedback book for the people who maintain you: no tool fits what you want to do, a tool result is wrong or unclear, the same thing keeps failing, a manual does not match what happens, or you are asked for something you cannot do. What you were just doing is attached automatically. It only records the note; nobody answers it.',
   inputSchema: obj(
     {
       title: str('The problem in one sentence.', { maxLength: FEEDBACK_LIMITS.title }),
-      category: str(
-        'missing_tool (no tool for it), tool_problem (a tool misbehaves or its result is wrong or unclear), data_or_manual (pack data or a manual is wrong or missing), cannot_do (asked for something you cannot do), or other.',
-        { enum: [...FEEDBACK_CATEGORIES] },
-      ),
+      category: str('tool_problem: a tool misbehaves, or its result is wrong or unclear. data_or_manual: pack data or a manual is wrong or missing.', { enum: [...FEEDBACK_CATEGORIES] }),
       goal: str('What you were trying to do.', { maxLength: FEEDBACK_LIMITS.goal }),
       problem: str('What happened instead: which tool, what it said, what you expected.', { maxLength: FEEDBACK_LIMITS.problem }),
       wish: str('What would have helped: a tool, a parameter, a clearer result, a manual entry.', { maxLength: FEEDBACK_LIMITS.wish }),

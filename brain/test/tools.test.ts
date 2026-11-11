@@ -310,8 +310,8 @@ describe('观察', () => {
     assert.deepEqual(s.game.callsOf('world.find')[0], { bot: 'Alu', blocks: ['minecraft:chest'], radius: 48, limit: 32 })
     const boxes = await s.run('list_containers')
     assert.match(boxes.content, /\(-47,99,-83\) Chest \[minecraft:chest\] 2\/27 slots used: 27× minecraft:dirt "Dirt"/)
-    // 一页一页要：从头起的 20 个
-    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16, offset: 0, limit: 20 })
+    // 一页一页要：从头起的 20 个，每个容器里的东西要全
+    assert.deepEqual(s.game.callsOf('world.containers')[0], { bot: 'Alu', radius: 16, offset: 0, limit: 20, kinds: 2000 })
     // 一次 bot.status 都没多查
     assert.equal(s.game.callsOf('bot.status').length, 0)
   })
@@ -733,6 +733,20 @@ describe('图纸', () => {
 
     s.game.handlers['blueprint.list'] = () => ({ blueprints: [], folder: 'config/aiplayer/schematics' })
     assert.match((await s.run('list_blueprints')).content, /no blueprints on the server yet.*upload/)
+  })
+
+  it('图纸名照文件名写成了 "cabin.schematic"：去掉后缀照常用；没有这张图纸时指到 list_designs', async (t) => {
+    const s = setup(t)
+    // 真实 mod 的原话
+    s.game.handlers['blueprint.check'] = (p) => {
+      if (p.name !== 'cabin') throw new BridgeError('not_found', `there is no blueprint named "${String(p.name)}"; blueprint.list shows the ones there are`)
+      return WORKSHOP_CHECK
+    }
+    assert.equal((await s.run('check_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })).isError, undefined)
+    await s.run('build_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'cabin', x: 0, y: 64, z: 0 })
+    const missing = await s.run('check_blueprint', { name: 'castle', x: 0, y: 64, z: 0 })
+    assert.deepEqual([missing.isError, missing.content], [true, 'not_found: there is no blueprint named "castle"; blueprint.list shows the ones there are (list_designs shows the blueprints on the server; a name is the file name without ".schematic".)'])
   })
 
   it('check_blueprint 带着 bot 去对比，把结果排成短文本：计数、材料（要多少、身上有多少）、得由人放的、挡路的', async (t) => {

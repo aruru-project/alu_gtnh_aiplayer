@@ -107,7 +107,7 @@ export const planItem: Tool = {
 /** 库函数（不在发给模型的清单里：程序里调，模型直接调也照常执行）。 */
 export const findUses: Tool = {
   name: 'find_uses',
-  brief: '{id, meta?, way?, contains?, page?}: recipes that use an item -> ways[], or recipes[] of a way',
+  brief: '{id, meta?, way?, contains?, page?}: recipes that use an item -> ways[{way, recipes}]; with way/contains/page: recipes[{recipe, in, out}]',
   description:
     'What an item is used for (NEI\'s "U"): the ways that take it as an ingredient and how many recipes each has. With "way", "contains" or "page": the exact recipes.',
   inputSchema: obj({ ...recipeQuery, contains: str('Only recipes with a product or another ingredient whose name, id or ore name contains this, e.g. "钢".', { maxLength: 60 }) }, ['id']),
@@ -119,19 +119,15 @@ export const findUses: Tool = {
 
 export const findInStorage: Tool = {
   name: 'find_in_storage',
-  description: `Where things are kept around you, or around a place you give ("at"): for each item (id, with or without meta) or ore-dictionary name, the total and the containers holding the most, with the exact items found there. Looks into every chest, drawer and other inventory within the radius (loaded chunks only). Ask for all the ingredients of a recipe in one call.`,
+  description: `Where things are kept around you or around "at": for each item or ore-dictionary name, the total and the containers holding the most, with the exact items found there. Looks into every chest, drawer and other inventory within the radius (loaded chunks only).`,
   inputSchema: obj(
     {
       items: arr(
-        'What to look for.',
-        obj({
-          id: str('Item id. Give either this or "ore".'),
-          meta: int('Item meta. Omit to match every meta of that id.', { min: 0 }),
-          ore: str('Ore-dictionary name, e.g. "screwSteel": for an ingredient written as "any <ore name>".'),
-        }),
+        'What to look for, each {id, meta?} (no meta: every meta of that id) or {ore}: an ore-dictionary name such as "screwSteel", for an ingredient written "any <ore name>".',
+        obj({ id: str(), meta: int(undefined, { min: 0 }), ore: str() }),
         { min: 1, max: STOCK_MAX_ITEMS },
       ),
-      radius: int('Search radius in blocks. Without it (and without "at") the whole base is searched, about 110 blocks each way.', { min: 1, max: STOCK_MAX_RADIUS }),
+      radius: int('Search radius in blocks. Without it and without "at": the whole base, about 110 blocks each way.', { min: 1, max: STOCK_MAX_RADIUS }),
       at: AT,
     },
     ['items'],
@@ -196,13 +192,13 @@ async function carriedOrNone(ctx: ToolContext): Promise<Carried | undefined> {
 export const craftItem: Tool = {
   name: 'craft_item',
   description:
-    'Craft by hand from what you carry (task): give the # number of a hand-crafting recipe from find_recipes. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the one nearest to you; leave "table" out unless your owner names one.',
+    'Craft by hand from what you carry (task), by the # number of a hand-crafting recipe from find_recipes. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the one nearest to you.',
   inputSchema: obj({
-    recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
-    count: int('How many of the product you want (default: one round of the recipe).', { min: 1, max: CRAFT_MAX_COUNT }),
-    table: pos('Only when your owner names a crafting table: its position. Omit for the nearest.'),
-    id: str('Only without a recipe book: id of the item to make (then "recipe" is the number find_recipes gave).'),
-    meta: int('Only without a recipe book: its meta.', { min: 0 }),
+    recipe: int('Recipe # from find_recipes.', { min: 0 }),
+    count: int('How many of the product (default: one round of the recipe).', { min: 1, max: CRAFT_MAX_COUNT }),
+    table: pos('A particular crafting table to use instead of the nearest.'),
+    id: str('Only on a brain without a recipe book: id of the item to make.'),
+    meta: int('With "id": its meta.', { min: 0 }),
     queue,
   }),
   async run(ctx, i: { recipe?: number; count?: number; table?: unknown; id?: string; meta?: number; queue?: boolean }) {
@@ -234,7 +230,7 @@ export const craftItem: Tool = {
 
 export const findMachines: Tool = {
   name: 'find_machines',
-  description: `The machines around you, or around a place you give ("at"), nearest first. GregTech machines (single-block ones and the controllers of multiblocks, steam ones included) with what recipes each runs, its tier, power, and whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Then the machines of other mods and furnaces, recognised from the recipe book: their state cannot be read, but process_items works on them too.`,
+  description: `The machines around you or around "at", nearest first. GregTech machines and multiblock controllers: what recipes each runs, its tier, power, whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Then other mods' machines and furnaces, whose state cannot be read.`,
   inputSchema: obj({
     name: str('Only machines whose name or recipe type contains this (English), e.g. "Lathe".', { maxLength: 60 }),
     radius: int('Search radius in blocks (default 32).', { min: 1, max: MACHINES_MAX_RADIUS }),
@@ -270,19 +266,8 @@ export const findMachines: Tool = {
   },
 }
 
-const stackList = (description: string, max: number) =>
-  arr(
-    description,
-    obj(
-      {
-        id: str('Item id.'),
-        meta: int('Item meta. Omit to match any.', { min: 0 }),
-        count: int('How many.', { min: 1 }),
-      },
-      ['id', 'count'],
-    ),
-    { min: 1, max },
-  )
+/** 一组“什么东西、几个”。每一项怎么写由那个参数的说明讲（“each {id, meta?, count}”），不在每一格里重复。 */
+const stackList = (description: string, max: number) => arr(description, obj({ id: str(), meta: int(undefined, { min: 0 }), count: int(undefined, { min: 1 }) }, ['id', 'count']), { min: 1, max })
 
 interface ProcessInput {
   machine: unknown
@@ -301,19 +286,19 @@ interface ProcessInput {
 export const processItems: Tool = {
   name: 'process_items',
   description:
-    'Run one batch through a machine (task): walks to it, puts the inputs in, waits, and takes the products out. Any block with a screen that takes items works: GregTech machines (for a multiblock give its controller), other mods\' machines, a furnace. Give the machine and the # number of a recipe from find_recipes with "rounds": the inputs, the programmed circuit and the expected products are worked out from it; or give "inputs" yourself (a furnace also needs its fuel there). Everything it consumes, and molds or shapes, must be in your inventory; the programmed circuit is set on the machine, not carried. Details, multiblocks and machines you have not seen before: crafting manual.',
+    'Run one batch through a machine (task): walks to it, puts the inputs in, waits, and takes the products out. Any block with a screen that takes items works (a multiblock: give its controller). Give "recipe" and "rounds", or "inputs" yourself. Everything it consumes, and a mold or shape, must be in your inventory; the programmed circuit is set on the machine, not carried. Details: crafting manual.',
   inputSchema: obj(
     {
-      machine: pos('Position of the machine (a multiblock: its controller), as find_machines, find_recipes or your owner gives it.'),
-      recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
-      rounds: int('How many times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
-      inputs: stackList('Instead of "recipe": exactly what to put in (things not used up, like a mold, with count 1).', PROCESS_MAX_INPUTS),
-      moldInside: bool('true: the mold or shape this recipe needs already sits in the machine, so none is carried or put in.'),
-      circuit: int('Programmed circuit number to set (0 clears it). Taken from the recipe when you give one.', { min: 0, max: 24 }),
-      fluids: stackList('Multiblock only: cells full of fluid that you carry, to pour into its input hatch. Not needed when the fluid is piped in.', 6),
-      expect: stackList('Multiblock only: the products to fetch from the chest its output bus pushes into. Taken from the recipe when you give one.', 9),
-      bus: pos('Multiblock only: which input bus to use. Omit to let it pick the emptiest.'),
-      wait: int('At most how many seconds to wait for it to finish (default 180). Give more for a big batch.', { min: PROCESS_WAIT_MIN_SEC, max: PROCESS_WAIT_MAX_SEC }),
+      machine: pos('Position of the machine (a multiblock: its controller).'),
+      recipe: int('Recipe # from find_recipes: the inputs, the circuit and the products to expect are taken from it.', { min: 0 }),
+      rounds: int('Times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
+      inputs: stackList('Instead of "recipe": exactly what to put in, each {id, meta?, count}; what is not used up (a mold) with count 1.', PROCESS_MAX_INPUTS),
+      moldInside: bool('true: the mold or shape the recipe needs already sits in the machine; none is put in.'),
+      circuit: int('Programmed circuit number to set (0 clears it). Default: the recipe\'s.', { min: 0, max: 24 }),
+      fluids: stackList('Multiblock only: full fluid cells you carry, each {id, meta?, count}, to pour into its input hatch.', 6),
+      expect: stackList('Multiblock only: products to fetch from the chest its output bus pushes into, each {id, meta?, count}. Default: the recipe\'s.', 9),
+      bus: pos('Multiblock only: the input bus to use. Default: the emptiest.'),
+      wait: int('Seconds to wait for it to finish, at most (default 180).', { min: PROCESS_WAIT_MIN_SEC, max: PROCESS_WAIT_MAX_SEC }),
       queue,
     },
     ['machine'],

@@ -206,19 +206,27 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 模型能用的东西分三层（`tools/index.ts`，细节见 `docs/SCRIPTS.md` 的“库函数”）：
 
-- **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。现在能看图的模型拿到 55 个、五万五千八百字符左右；不能看图的模型拿到 53 个、五万两千六百字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。瘦身之前是 66 个、六万两千五百字符。
-- **库函数**（11 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 1500 字符），模型靠它知道这些函数存在。
+- **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。现在能看图的模型拿到 55 个、四万五千字符左右；不能看图的模型拿到 53 个、四万两千六百字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。瘦身之前是 66 个、六万两千五百字符。
+- **库函数**（11 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 2000 字符），模型靠它知道这些函数存在。
 - **旧名字**（6 个）：合并掉的工具原来的名字，不发、不提，只为已经存着的例程、笔记和它自己写的手册还能用。
 
-不在清单里不等于调不到：模型直接调了一个库函数或旧名字，和调工具一样照常执行。说明只讲这个工具给什么、要什么，怎么用好写在手册里。`test/tool-list.test.ts` 有一条防回涨的测试：发给模型的清单总字符数超过上限就失败，并列出各工具的大小。
+不在清单里不等于调不到：模型直接调了一个库函数或旧名字，和调工具一样照常执行。`test/tool-list.test.ts` 有一条防回涨的测试：发给模型的清单总字符数超过上限就失败，并列出各工具的大小。
+
+**工具说明怎么写**（每个字每一轮都发，所以只留“调对它所必需的”）：
+
+- 工具一句话说清做什么、返回什么、是不是任务；参数写它是什么、范围、默认值、不给会怎样。只陈述，不下命令。
+- “什么时候该用、玩家一般怎么做、注意事项、长例子”写进对应的手册（`brain/manuals/`），说明里最多留一句“Details: xx manual”。
+- “调错了才需要知道”的写进出错时的结果（哪里不对、正确的写法是什么），在出错的那一刻教。
+- 好几个工具共用的参数只有一套措辞（`tools/tasks.ts` 开头：`queue`、位置 `pos`、盒子的两个对角 `boxProps` / `BOX_WORDS`、物品清单 `EACH_ITEM`、`supply` / `dropoff` / `overflow`；`tools/where.ts` 的 `at`）。参数名自己说得清的（x、y、z、id、meta、count）不再各写一句，怎么写由上一层那个参数的说明讲。
+- 发给模型的参数 schema 是瘦过的（`tools/index.ts` 的 `schemaForModel`）：去掉 `additionalProperties:false`、字符串的 `minLength:1`、空的 `required`——这三样对调对没有用，整份清单里有三千多字符。校验用的还是完整的那份，空字符串、缺必填照样被拦下并说明。
 
 | 一类 | 工具 | 库函数（程序里调） |
 |---|---|---|
 | 说话 | `say` `whisper` | |
 | 看 | `get_status` `look_around` `scan_area` `inspect_block` `find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
-| 仓库 | `list_containers`（一页页列，标出接着管道的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
+| 仓库 | `list_containers`（一页页列，标出接着管道的；一页里每个容器只列前 30 种，给 `at` 和 `radius: 0` 把一个容器看全，程序拿到的 `data` 一直是全的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
 | 走动 | `go_to` `go_to_player` `follow_player` `go_home` | |
-| 服务器指令 | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明） | |
+| 服务器指令 | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明；用它发 `tell` / `msg` / `w` 送到了也算“对人说过话”，兜底不会把它最后的文字再公开说一遍） | |
 | 地形 | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` | |
 | 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）`build_blueprint` | `check_blueprint`（动手前对比） |
 | 写程序 | `run_program`（当场跑完，只能调查询类的）`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`view_draft` `publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |

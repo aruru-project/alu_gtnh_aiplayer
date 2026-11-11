@@ -11,6 +11,7 @@ import {
   formatScan,
   formatStatus,
   formatTerrainSummary,
+  mergeItems,
 } from './format.ts'
 import { arr, int, obj, str } from './schema.ts'
 import { ToolFailure, fail } from './types.ts'
@@ -24,6 +25,8 @@ export const FIND_MAX_RADIUS = 48
 export const FIND_MAX_LIMIT = 64
 export const CONTAINERS_MAX_RADIUS = 32
 export const ENTITIES_MAX_RADIUS = 64
+/** look_around 里每个容器列几种东西（只是概要）。 */
+const LOOK_KINDS = 3
 
 /** bot 脚下的方块坐标。不在线时以 ToolFailure 结束。 */
 export async function botBlock(ctx: ToolContext): Promise<BlockPos & { dim?: number }> {
@@ -69,7 +72,7 @@ export const getStatus: Tool = {
 export const lookAround: Tool = {
   name: 'look_around',
   description:
-    'Summary of what is near you, or near a place you give ("at"): players, mobs and dropped items, containers (chests, Storage Drawers and the like; drawers are marked [drawers]) with their main contents, and the lay of the land. Use scan_area for exact terrain heights and list_containers for full contents.',
+    'Summary of what is near you, or near a place you give ("at"): players, mobs and dropped items, containers (chests, Storage Drawers and the like; drawers are marked [drawers]) with their main contents, and the lay of the land. scan_area gives exact terrain heights, list_containers the full contents.',
   inputSchema: obj({ radius: int('Search radius in blocks (default 16).', { min: 1, max: ENTITIES_MAX_RADIUS }), at: AT }),
   async run(ctx, input: { radius?: number; at?: At }) {
     const radius = input.radius ?? 16
@@ -98,8 +101,11 @@ export const lookAround: Tool = {
       if (list.length === 0) {
         lines.push(`Containers: none${input.at ? '' : ' near you (to look around another place, give "at")'}`)
       } else {
-        lines.push(`Containers (${total}):`)
-        for (const c of list.slice(0, 12)) lines.push(`- ${formatContainer(c, 3)}`)
+        // 这里每个容器只列主要的几种：有没列的就写明怎么看全
+        const shown = list.slice(0, 12)
+        const cut = shown.some((c) => mergeItems(c.items ?? []).length > LOOK_KINDS || (c.moreKinds ?? 0) > 0)
+        lines.push(`Containers (${total})${cut ? `, the ${LOOK_KINDS} main kinds of each (everything in one: list_containers with "at" it and radius 0)` : ''}:`)
+        for (const c of shown) lines.push(`- ${formatContainer(c, LOOK_KINDS)}`)
         if (total > 12) lines.push(`- … ${total - 12} more (use list_containers with a smaller radius)`)
       }
     } else {
@@ -117,16 +123,8 @@ export const lookAround: Tool = {
 
 export const scanArea: Tool = {
   name: 'scan_area',
-  description: `Surface heights of a rectangle (any two opposite corners, at most ${SCAN_MAX_SIDE}×${SCAN_MAX_SIDE} columns). Up to 24×24 you get the exact height of every column; larger areas give a histogram and a downsampled grid. Use this before flattening or building to pick the right y level.`,
-  inputSchema: obj(
-    {
-      x1: int('x of one corner'),
-      z1: int('z of one corner'),
-      x2: int('x of the opposite corner'),
-      z2: int('z of the opposite corner'),
-    },
-    ['x1', 'z1', 'x2', 'z2'],
-  ),
+  description: `Surface heights of a rectangle (any two opposite corners, at most ${SCAN_MAX_SIDE}×${SCAN_MAX_SIDE} columns). Up to 24×24 you get the exact height of every column; larger areas give a histogram and a downsampled grid. It shows which y level to flatten or build at.`,
+  inputSchema: obj({ x1: int(), z1: int(), x2: int(), z2: int() }, ['x1', 'z1', 'x2', 'z2']),
   async run(ctx, input: { x1: number; z1: number; x2: number; z2: number }) {
     const width = Math.abs(input.x2 - input.x1) + 1
     const depth = Math.abs(input.z2 - input.z1) + 1

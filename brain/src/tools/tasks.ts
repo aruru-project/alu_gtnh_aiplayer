@@ -4,7 +4,7 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { TaskSpec } from '../bridge/protocol.ts'
-import { COMMANDS, COMMAND_MAX_CHARS, COMMAND_REPLY_WAIT_MS, DEFAULT_ALLOWED_COMMANDS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE } from './commands.ts'
+import { COMMANDS, COMMAND_MAX_CHARS, COMMAND_REPLY_WAIT_MS, DEFAULT_ALLOWED_COMMANDS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE, WHISPER_COMMAND_RE, WHISPER_FAILED_RE } from './commands.ts'
 import { formatPos, formatTask } from './format.ts'
 import { botBlock } from './observe.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
@@ -17,25 +17,26 @@ export const BLOCK_LIST_MAX = 256
 export const BOX_MAX_VOLUME = 32768
 export const FLATTEN_MAX_SIDE = 64
 
-export const queue = bool('true: add it to the end of your task queue. Default: start it now, replacing what you are doing.')
+// ── 好几个工具共用的参数：同一种参数只有一套措辞，写短（这些说明每一轮都发给模型）──
+// 参数名自己说得清的（x、y、z、id、meta、count）不再各写一句，怎么写由上一层那个参数的说明讲。
 
-export const pos = (description: string): Schema => obj({ x: int('x'), y: int('y'), z: int('z') }, ['x', 'y', 'z'], description)
+/** 任务排不排队。“默认顶掉当前任务和整个队列”核心提示词里也讲。 */
+export const queue = bool('true: queue it after your other tasks. Default: start now, replacing them.')
 
-const itemFilter = obj(
-  {
-    id: str('Item id, e.g. "minecraft:cobblestone".'),
-    meta: int('Item meta/damage value. Omit to match any.', { min: 0 }),
-    count: int('How many. Omit for all of them.', { min: 1 }),
-  },
-  ['id'],
-)
+/** 一个方块的位置。 */
+export const pos = (description?: string): Schema => obj({ x: int(), y: int(), z: int() }, ['x', 'y', 'z'], description)
+
+/** 一个盒子的两个对角。说明写在工具自己的说明里（BOX_WORDS），六个坐标不各写一句。 */
+export const boxProps = { x1: int(), y1: int(undefined, { min: 0, max: 255 }), z1: int(), x2: int(), y2: int(undefined, { min: 0, max: 255 }), z2: int() }
+export const boxRequired = ['x1', 'y1', 'z1', 'x2', 'y2', 'z2']
+export const BOX_WORDS = 'The box: any two opposite corners (x1, y1, z1) and (x2, y2, z2).'
+
+/** 物品清单里的一项。怎么写由清单那个参数的说明讲（EACH_ITEM）。 */
+const itemFilter = obj({ id: str(), meta: int(undefined, { min: 0 }), count: int(undefined, { min: 1 }) }, ['id'])
+export const EACH_ITEM = 'each {id, meta?, count?}; no meta: any meta, no count: all of it'
 
 /** 随身的包当容器（协议里 deposit / withdraw 的 container 写成 {item:{id,meta?}}）：身上这件东西右键打开的那个界面。 */
-const bag = obj(
-  { id: str('Item id of the bag.'), meta: int('Its meta. Omit to match any.', { min: 0 }) },
-  ['id'],
-  'Instead of "container": a bag you carry (a backpack and the like). It is opened in your hand, without walking.',
-)
+const bag = obj({ id: str(), meta: int(undefined, { min: 0 }) }, ['id'], 'Instead of "container": a bag you carry, as {id, meta?} of the bag item.')
 
 /** container 和 bag 只能给一个；返回任务参数里的 container，或者给模型的一句错误。 */
 function containerOrBag(i: { container?: unknown; bag?: { id: string; meta?: number } }): { container: unknown } | { error: string } {
@@ -44,10 +45,13 @@ function containerOrBag(i: { container?: unknown; bag?: { id: string; meta?: num
 }
 
 /** supply / dropoff：容器坐标的列表。箱子这类有界面的储物方块和抽屉（Storage Drawers）都行。 */
-export const containerList = (description: string): Schema =>
-  arr(description, pos('A chest or drawers.'), { min: 1, max: 8 })
+export const containerList = (description: string): Schema => arr(description, pos(), { min: 1, max: 8 })
+/** 材料用完时去哪取。what：取的是什么（“fill material”“the block”）。 */
+export const supply = (what: string): Schema => containerList(`Containers (chests, drawers) to fetch ${what} from when you run out.`)
+/** 背包满了往哪卸。 */
+export const dropoff = containerList('Containers (chests, drawers) to unload into when your inventory fills up.')
 
-export const overflow = str('When your inventory is full and there is no dropoff: "fail" (default) stops with inventory_full; "leave" keeps digging and leaves the drops on the ground.', { enum: ['fail', 'leave'] })
+export const overflow = str('Inventory full and no dropoff: "fail" (default) ends the task with inventory_full; "leave" digs on and leaves the drops on the ground.', { enum: ['fail', 'leave'] })
 
 /**
  * 以 bot 身份执行一条指令并拿到服务器的回显。
@@ -105,27 +109,18 @@ function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: numb
   return (Math.abs(b.x2 - b.x1) + 1) * (Math.abs(b.y2 - b.y1) + 1) * (Math.abs(b.z2 - b.z1) + 1)
 }
 
-const boxProps = {
-  x1: int('x of one corner'),
-  y1: int('y of one corner', { min: 0, max: 255 }),
-  z1: int('z of one corner'),
-  x2: int('x of the opposite corner'),
-  y2: int('y of the opposite corner', { min: 0, max: 255 }),
-  z2: int('z of the opposite corner'),
-}
-const boxRequired = ['x1', 'y1', 'z1', 'x2', 'y2', 'z2']
 
 // ── 移动 ──
 
 export const goTo: Tool = {
   name: 'go_to',
   description:
-    'Walk to a position (task). Give only x and z for the ground at that spot; give y too when the height matters. You walk at most about 256 blocks: for anything farther, go_home near it first.',
+    'Walk to a position (task). x and z alone: the ground at that spot; y too when the height matters. A walk covers at most about 256 blocks; farther places are reached by teleporting near first (go_home).',
   inputSchema: obj(
     {
-      x: int('x'),
-      y: int('y. Omit to use the ground level at x, z.', { min: 0, max: 255 }),
-      z: int('z'),
+      x: int(),
+      y: int(undefined, { min: 0, max: 255 }),
+      z: int(),
       range: int('Stop when within this many blocks horizontally (default 1).', { min: 0, max: 32 }),
       queue,
     },
@@ -200,6 +195,10 @@ export const runCommand: Tool = {
       }
       throw e
     }
+    // 用它发的悄悄话（tell / msg / w）也算“已经对人说过话”：不然它这一轮最后留的那段文字会被兜底再公开说一遍。
+    // 对方不在线、没送到的不算（和 whisper 一样看回显）。
+    const told = WHISPER_COMMAND_RE.exec(command)
+    if (told && !WHISPER_FAILED_RE.test(output.join(' | '))) ctx.hooks.spoke?.({ kind: 'whisper', to: told[1]!, text: told[2]! })
     return {
       content: output.length > 0 ? `Ran /${command}. The server replied: ${output.join(' | ')}` : `Ran /${command}. The server printed nothing (a late reply would show up as a system message).`,
       data: { command, output },
@@ -267,22 +266,19 @@ export const listHomes: Tool = {
 
 export const flattenArea: Tool = {
   name: 'flatten_area',
-  description: `Level a rectangle so the ground surface is at height y (task, at most ${FLATTEN_MAX_SIDE}×${FLATTEN_MAX_SIDE}): digs away what is above y, then fills the holes at y and below. Scan the area first to choose y.`,
+  description: `Level a rectangle so the ground surface is at height y (task, at most ${FLATTEN_MAX_SIDE}×${FLATTEN_MAX_SIDE}): digs away what is above y, then fills the holes at y and below. The rectangle: any two opposite corners (x1, z1) and (x2, z2).`,
   inputSchema: obj(
     {
-      x1: int('x of one corner'),
-      z1: int('z of one corner'),
-      x2: int('x of the opposite corner'),
-      z2: int('z of the opposite corner'),
-      y: int('y of the top ground layer after flattening.', { min: 0, max: 255 }),
+      x1: int(),
+      z1: int(),
+      x2: int(),
+      z2: int(),
+      y: int('y of the top ground layer afterwards.', { min: 0, max: 255 }),
       fill: bool('Fill holes at y and below (default true).'),
-      fillItems: arr('Block ids allowed as fill material, e.g. ["minecraft:dirt"]. Omit to use the usual filler blocks (dirt, cobblestone and the like).', str('block id'), {
-        min: 1,
-        max: 16,
-      }),
-      maxFillDepth: int('Deepest hole to fill, in layers (default 3). Deeper holes are skipped and reported.', { min: 1, max: 64 }),
-      dropoff: containerList('Containers (chests or drawers) to unload into when the inventory fills up.'),
-      supply: containerList('Containers (chests or drawers) to fetch fill material from when it runs out.'),
+      fillItems: arr('Block ids to fill with. Default: the usual fillers (dirt, cobblestone and the like).', str(), { min: 1, max: 16 }),
+      maxFillDepth: int('Deepest hole to fill, in layers (default 3); deeper ones are skipped and reported.', { min: 1, max: 64 }),
+      dropoff,
+      supply: supply('fill material'),
       overflow,
       queue,
     },
@@ -301,11 +297,8 @@ export const flattenArea: Tool = {
 
 export const clearArea: Tool = {
   name: 'clear_area',
-  description: `Dig out every block in a box, from the top down (task, volume at most ${BOX_MAX_VOLUME}). Chests, drawers, machines, liquids and bedrock are left alone.`,
-  inputSchema: obj(
-    { ...boxProps, dropoff: containerList('Containers (chests or drawers) to unload into when the inventory fills up.'), overflow, queue },
-    boxRequired,
-  ),
+  description: `Dig out every block in a box, from the top down (task, volume at most ${BOX_MAX_VOLUME}). Chests, drawers, machines, liquids and bedrock are left alone. ${BOX_WORDS}`,
+  inputSchema: obj({ ...boxProps, dropoff, overflow, queue }, boxRequired),
   async run(ctx, i) {
     const volume = boxVolume(i)
     if (volume > BOX_MAX_VOLUME) return fail(`box volume is ${volume}; at most ${BOX_MAX_VOLUME} per task. Split it and queue the pieces.`)
@@ -316,14 +309,14 @@ export const clearArea: Tool = {
 
 export const fillArea: Tool = {
   name: 'fill_area',
-  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). shape "hollow" builds only the six faces, "walls" only the four sides. Blocks come from your inventory and the supply containers.`,
+  description: `Place a block in every empty spot of a box, bottom up (task, volume at most ${BOX_MAX_VOLUME}). The blocks come from your inventory and "supply". ${BOX_WORDS}`,
   inputSchema: obj(
     {
       ...boxProps,
-      item: str('Block item id to place, e.g. "minecraft:cobblestone".'),
-      meta: int('Item meta (default 0).', { min: 0 }),
-      shape: str('solid (default), hollow or walls.', { enum: ['solid', 'hollow', 'walls'] }),
-      supply: containerList('Containers (chests or drawers) to fetch more of the block from when you run out.'),
+      item: str('Item id of the block to place.'),
+      meta: int('Its meta (default 0).', { min: 0 }),
+      shape: str('solid (default), hollow (only the six faces) or walls (only the four sides).', { enum: ['solid', 'hollow', 'walls'] }),
+      supply: supply('the block'),
       queue,
     },
     [...boxRequired, 'item'],
@@ -338,25 +331,22 @@ export const fillArea: Tool = {
 
 export const digBlocks: Tool = {
   name: 'dig_blocks',
-  description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). Use clear_area for whole boxes.`,
-  inputSchema: obj({ blocks: arr('Positions to dig.', pos('A block position.'), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
+  description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). clear_area does whole boxes.`,
+  inputSchema: obj({ blocks: arr('Positions to dig.', pos(), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
   run: (ctx, i: { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks }, i.queue),
 }
 
 export const placeBlocks: Tool = {
   name: 'place_blocks',
-  description: `Place specific blocks, lowest first (task, at most ${BLOCK_LIST_MAX}). Each needs an existing block next to it to attach to. Use fill_area for whole boxes.`,
+  description: `Place specific blocks, lowest first (task, at most ${BLOCK_LIST_MAX}). Each needs an existing block next to it to attach to. fill_area does whole boxes.`,
   inputSchema: obj(
     {
       blocks: arr(
-        'Blocks to place.',
-        obj(
-          { x: int('x'), y: int('y', { min: 0, max: 255 }), z: int('z'), item: str('Block item id.'), meta: int('Item meta (default 0).', { min: 0 }) },
-          ['x', 'y', 'z', 'item'],
-        ),
+        'Each {x, y, z, item, meta?}: item is the block\'s item id, meta defaults to 0.',
+        obj({ x: int(), y: int(undefined, { min: 0, max: 255 }), z: int(), item: str(), meta: int(undefined, { min: 0 }) }, ['x', 'y', 'z', 'item']),
         { min: 1, max: BLOCK_LIST_MAX },
       ),
-      supply: containerList('Containers (chests or drawers) to fetch more blocks from when you run out.'),
+      supply: supply('blocks'),
       queue,
     },
     ['blocks'],
@@ -370,12 +360,12 @@ export const placeBlocks: Tool = {
 export const depositItems: Tool = {
   name: 'deposit_items',
   description:
-    'Walk to a container (a chest or similar, or Storage Drawers) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit. With "bag" instead of "container" the items go into a bag you carry.',
+    'Walk to a container (a chest or similar, Storage Drawers, a machine) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit. Give "container" or "bag".',
   inputSchema: obj({
-    container: pos('Position of the chest or drawers.'),
+    container: pos('Position of the container.'),
     bag,
-    items: arr('What to deposit. Omit for everything except tools and food (a bag needs the list).', itemFilter, { min: 1, max: 36 }),
-    keep: arr('Item ids to keep in your inventory.', str('item id'), { min: 1, max: 36 }),
+    items: arr(`What to put in, ${EACH_ITEM}. A bag needs this list.`, itemFilter, { min: 1, max: 36 }),
+    keep: arr('Item ids to keep in your inventory.', str(), { min: 1, max: 36 }),
     queue,
   }),
   async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items?: unknown[]; keep?: string[]; queue?: boolean }) {
@@ -390,13 +380,13 @@ export const depositItems: Tool = {
 export const withdrawItems: Tool = {
   name: 'withdraw_items',
   description:
-    'Walk to a container (a chest or similar, or Storage Drawers) and take items out (task); counts are exact. It ends as done even when there was not enough: check "missing" in the result. With "bag" instead of "container" they come out of a bag you carry.',
+    'Walk to a container (a chest or similar, Storage Drawers, a machine) and take items out (task); counts are exact. It ends as done even when there was not enough: "missing" in the result says what. Give "container" or "bag".',
   inputSchema: obj(
     {
-      container: pos('Position of the chest or drawers.'),
+      container: pos('Position of the container.'),
       bag,
-      items: arr('What to take.', itemFilter, { min: 1, max: 36 }),
-      fromInputs: bool('The container is a machine (any mod\'s: its screen has output slots): true takes from its other slots (a mold or shape kept there, unused inputs, fuel) instead of its products. They are your owner\'s: ask first, and put them back.'),
+      items: arr(`What to take, ${EACH_ITEM}.`, itemFilter, { min: 1, max: 36 }),
+      fromInputs: bool('For a machine: true takes from its other slots (a mold or shape left there, unused inputs, fuel) instead of its products.'),
       queue,
     },
     ['items'],
@@ -411,14 +401,14 @@ export const withdrawItems: Tool = {
 
 export const haulItems: Tool = {
   name: 'haul_items',
-  brief: '{from, to, items?}: task, routines only: carry between two containers -> task, state, result',
+  brief: '{from, to, items?}: a task, so in routines only: carry items between two containers -> task, state, result',
   description:
     'Carry items from one container to another (chests or similar, or Storage Drawers), in as many trips as it takes (task). Without "items": everything in the source. Your own inventory is not touched.',
   inputSchema: obj(
     {
       from: pos('Source container (chest or drawers).'),
       to: pos('Destination container (chest or drawers).'),
-      items: arr('What to move (with optional counts). Omit for everything.', itemFilter, { min: 1, max: 36 }),
+      items: arr(`What to move, ${EACH_ITEM}. Omit for everything.`, itemFilter, { min: 1, max: 36 }),
       queue,
     },
     ['from', 'to'],
@@ -458,7 +448,7 @@ export const giveItems: Tool = {
   inputSchema: obj(
     {
       player: str('Player name.'),
-      items: arr('What to give (with optional counts).', itemFilter, { min: 1, max: 36 }),
+      items: arr(`What to give, ${EACH_ITEM}.`, itemFilter, { min: 1, max: 36 }),
       queue,
     },
     ['player', 'items'],
