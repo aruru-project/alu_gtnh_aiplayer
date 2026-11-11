@@ -1,12 +1,12 @@
 // “设置”页：偶尔才来的地方。分几块：
 //   模型       每条线用哪个模型；模型服务商（接口类型、地址、key）和它下面的模型的增删改测
-//   玩家       游戏里的它（上线下线、无敌、会饿）；名字、别名、主人名单、什么时候回应；人设提示词
+//   玩家       这个服务器（名字、这里的规矩）；游戏里的它（上线下线、无敌、会饿）；自动上下线；名字、别名、主人名单、什么时候回应；人设提示词
 //   上限       每轮步数、每日 token、历史压缩、记忆、工具结果、例程时长
 //   游戏连接   bridge 的端口和口令文件
 //   面板口令
 //   历史和提醒 它记得的对话历史（可以清空）、今日用量、定时提醒
 
-import { actions, agentLabel, refresh, state } from './data.js'
+import { actions, agentLabel, envTone, presenceOf, refresh, state } from './data.js'
 import { act, api, badge, bus, button, dateTime, dimName, empty, field, h, kv, num, pos, put, subTabs, toast, when } from './ui.js'
 
 const TABS = [
@@ -457,15 +457,87 @@ function liveCard() {
     })
     return h('label', { class: 'check' }, input, ` ${text}`)
   }
+  const why = presenceOf().why
+  const offline = why === 'idle' ? '不在线：没人在，它自己下线了（“自动上下线”开着）。有人进服、你发指令、提醒到点时它会回来。' : why === 'owner' ? '不在线：你点的下线。有人进服它也不会自己上来。' : '不在线'
   return h(
     'div',
     { class: 'card', 'data-live': '' },
     h('h2', { text: `游戏里的 ${bot.name}` }),
-    h('p', { class: connected ? '' : 'error', text: !connected ? '没连上游戏，下面的按钮暂时用不了。' : st?.online ? `在线，位置 ${pos(st.block ?? st.pos)}（${dimName(st.dim)}）` : '不在线' }),
+    h('p', { class: connected ? '' : 'error', text: !connected ? '没连上游戏，下面的按钮暂时用不了。' : st?.online ? `在线，位置 ${pos(st.block ?? st.pos)}（${dimName(st.dim)}）` : offline }),
     h('div', { class: 'row' }, spawnBtn, despawnBtn, toggle('invulnerable', '无敌'), toggle('hunger', '会饿')),
     h('p', { class: 'error', text: '“会饿”打开后要小心：它能吃身上的食物了，但只在被叫醒、看到饱食度低的时候才会去吃；没人叫它、身上又没有食物时，饱食度掉光还是会饿死。没有特别的理由就关着。' }),
-    h('p', { class: 'hint', text: '上线、下线会被记住：大脑重连游戏时，会按最后一次的选择把它叫出来或不叫。它被踢下线也算“下线”，要回来得在这里点“上线”。默认无敌、不掉饱食度；关掉无敌后它会受伤、会死，按服务器规则掉落物品并自动重生。' }),
+    h('p', { class: 'hint', text: '你点的上线、下线会被记住：大脑重连游戏时，会按最后一次的选择把它叫出来或不叫。它被踢下线也要在这里点“上线”才回来。下面“自动上下线”的下线不一样，有人来它会自己回来。默认无敌、不掉饱食度；关掉无敌后它会受伤、会死，按服务器规则掉落物品并自动重生。' }),
   )
+}
+
+/** 这个服务器：名字（状态区最上面那条、浏览器标签页上都显示）和主人给这里写的规矩（每一轮都给两条线看）。 */
+function environmentForm(dirty) {
+  const env = botData.bot.environment ?? { name: '', rules: '' }
+  const name = h('input', { id: 'bf-env-name', type: 'text', value: env.name, maxLength: 40, placeholder: '例如：测试服、正式服' })
+  const rules = h('textarea', { id: 'bf-env-rules', rows: 4, value: env.rules, maxLength: 4000, placeholder: '例如：这是测试服，材料随便用，可以拆东西试。' })
+  const preview = h('span', { class: 'env-preview' })
+  const paint = () => {
+    const tone = envTone(name.value.trim())
+    preview.className = `env-band ${tone}`
+    preview.textContent = tone === 'none' ? '还没起名字' : name.value.trim()
+  }
+  name.addEventListener('input', paint)
+  paint()
+  const save = h('button', { type: 'submit', class: 'primary', text: '保存' })
+  const form = h('form', { class: 'card' })
+  form.addEventListener('input', dirty)
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const saved = await act(save, () => api('PUT', '/bot', { environment: { name: name.value, rules: rules.value } }), '已保存，下一轮起它看到的就是新的')
+    if (saved) {
+      playerDirty = false
+      botData = saved
+      await refresh()
+      renderPlayer()
+    }
+  })
+  form.append(
+    h('h2', { text: '这个服务器' }),
+    h('p', { class: 'muted', text: '这个大脑接的是哪个服务器。同时开着两个面板（比如测试服一个、正式服一个）时靠它认：名字在左上角和浏览器标签页上；名字里有“正式”的是红色，有“测试”的是绿色。' }),
+    h(
+      'div',
+      { class: 'fields' },
+      h('div', { class: 'field' }, h('label', { for: 'bf-env-name', text: '名字' }), name, h('p', { class: 'hint' }, '左上角会是这样：', preview)),
+      h('div', { class: 'field-wide' }, h('label', { for: 'bf-env-rules', text: '这里的规矩' }), rules, h('p', { class: 'hint', text: '写给它看的，原话放进两条线每一轮的提示词（在“你的记忆”前面），标明是你给这个服务器写的设置、不是它记下来的。它是这个服务器的设置，不跟着记忆走：换到别的服务器不带过去。最多 4000 字。' })),
+    ),
+    h('div', { class: 'row' }, save),
+  )
+  return form
+}
+
+/** 自动上下线：没人在、它手上没事，过一阵自己下线；有人来再上来。 */
+function presenceForm(dirty) {
+  const p = botData.bot.presence ?? { idleOffline: false, idleMinutes: 5 }
+  const on = h('input', { id: 'bf-idle-on', type: 'checkbox', checked: p.idleOffline === true })
+  const minutes = h('input', { id: 'bf-idle-minutes', class: 'narrow', type: 'number', min: 0.05, max: 1440, step: 'any', value: p.idleMinutes, disabled: p.idleOffline !== true, 'aria-label': '过多久下线（分钟）', title: '可以写小数，0.05 到 1440' })
+  on.addEventListener('change', () => (minutes.disabled = !on.checked))
+  const save = h('button', { type: 'submit', class: 'primary', text: '保存' })
+  const form = h('form', { class: 'card' })
+  form.addEventListener('input', dirty)
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    const saved = await act(save, () => api('PUT', '/bot', { presence: { idleOffline: on.checked, idleMinutes: Number(minutes.value) } }), '已保存，立刻生效')
+    if (saved) {
+      playerDirty = false
+      botData = saved
+      await refresh()
+      renderPlayer()
+    }
+  })
+  const away = presenceOf().why === 'idle'
+  form.append(
+    h('h2', { text: '自动上下线' }),
+    h('div', { class: 'row' }, h('label', { class: 'check' }, on, ' 没人在、它也没事时，自己下线'), h('span', { class: 'muted', text: '过' }), minutes, h('span', { class: 'muted', text: '分钟（可以写小数）' })),
+    h('p', { class: 'hint', text: '开着时：服务器上没有真人（别的 bot 不算）、它手上也没事（两条线都没在想、没有排着的事、没有任务和例程），满这么多分钟它自己下线。有真人进服、你在面板上发指令、它定的提醒到点时，它自己上来，那件事照常处理。你手动点的“下线”不一样：有人来它也不上来，要你点“上线”。' }),
+    ...(away ? [h('p', { class: 'ok', text: '现在：没人在，它自己下线了。' })] : []),
+    h('div', { class: 'row' }, save),
+  )
+  return form
 }
 
 function renderPlayer() {
@@ -540,7 +612,7 @@ function renderPlayer() {
     h('div', { class: 'row' }, savePersona),
   )
 
-  put(el, h('div', { class: 'stack' }, liveCard(), idForm, personaForm))
+  put(el, h('div', { class: 'stack' }, environmentForm(dirty), liveCard(), presenceForm(dirty), idForm, personaForm))
 }
 
 function renderLimits() {
@@ -553,8 +625,8 @@ function renderLimits() {
     ['maxSteps', field(two ? '干活线每轮最多调几次模型' : '每轮最多调几次模型', input('lf-steps', 'maxSteps', { min: 1, max: 500 }), '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要几十次；它干活时新到的话也接在这一轮里。默认 60，最多 500。')],
     two ? ['talkMaxSteps', field('对话线每轮最多调几次模型', input('lf-talk-steps', 'talkMaxSteps', { min: 1, max: 500 }), '对话线只说话和查资料，一轮本来就短。默认 20。')] : null,
     ['dailyTokenLimit', field('每日 token 上限', input('lf-daily', 'dailyTokenLimit', { min: 0 }), two ? '输入加输出，两条线合计。0 表示不限。' : '输入加输出。0 表示不限。')],
-    ['historyTokenThreshold', field(two ? '干活线的历史超过多少 token 就压缩' : '历史超过多少 token 就压缩', input('lf-history', 'historyTokenThreshold', { min: 2000 }), '这条线每次调用带的上下文超过这个数，就先把旧的工具结果和过时的状态收一收；还不够，再把较早的经历写成一份交接记录（一两万字，最近的一段原样留着）。默认 240000。')],
-    two ? ['talkHistoryTokenThreshold', field('对话线的历史超过多少 token 就压缩', input('lf-talk-history', 'talkHistoryTokenThreshold', { min: 2000 }), '同上。默认 120000。')] : null,
+    ['historyTokenThreshold', field(two ? '干活线的历史超过多少 token 就压缩' : '历史超过多少 token 就压缩', input('lf-history', 'historyTokenThreshold', { min: 2000 }), '比的是这条线下一次调模型时整份请求大概多少 token（“历史和提醒”里有现在的数）。每轮结束时看一次，超过了：先把较早几轮里过长的工具结果截短、过时的状态拿掉，不调模型；还超过七成，就调一次模型把较早的经历写成一份交接记录，最近的四分之一原样留着。写记录要一两分钟、花几万 token。默认 240000。')],
+    two ? ['talkHistoryTokenThreshold', field('对话线的历史超过多少 token 就压缩', input('lf-talk-history', 'talkHistoryTokenThreshold', { min: 2000 }), '和干活线的一样算。对话线的历史短，调低一些回话更快。默认 120000。')] : null,
     ['memoryMaxChars', field('记忆总长度上限（字符）', input('lf-memory', 'memoryMaxChars', { min: 200 }))],
     ['toolResultMaxChars', field('单个工具结果上限（字符）', input('lf-result', 'toolResultMaxChars', { min: 500 }), '它写的程序 return 的值也照这个数截。')],
     L.routineMinutes !== undefined ? ['routineMinutes', field('例程默认最多跑多久（分钟）', input('lf-routine', 'routineMinutes', { min: 1, max: 10080 }), '例程是它写的、在后台一步步调工具的程序。不限它调多少次工具，靠时长、连着出错就停、随时可以点停止来管。默认 120。')] : null,
@@ -701,12 +773,12 @@ function renderRecords(force = false) {
     'div',
     { class: 'card' },
     h('div', { class: 'card-head' }, h('h2', { text: '它记得的对话历史' }), clear(undefined, histories.length > 1 ? '两条线都清空' : '清空对话历史')),
-    h('p', { class: 'muted', text: '每一轮给模型看的、它调了什么工具、结果是什么，都记在历史里，下一轮接着用。太长了会自动把较早的压成摘要。换了服务商以后接口一直报错，可以清空试试。' }),
+    h('p', { class: 'muted', text: '每一轮给模型看的、它调了什么工具、结果是什么，都记在历史里，下一轮接着用。太长了会自动把较早的写成一份交接记录（原始记录还在“对话”页的日志里）。换了服务商以后接口一直报错，可以清空试试。' }),
     h(
       'ul',
       { class: 'plain' },
       histories.map((x) =>
-        h('li', null, h('span', { class: 'grow' }, x.label ? h('strong', { text: `${x.label}　` }) : null, `${x.turns} 轮，约 ${num(x.estimatedTokens)} token${x.threshold ? `（到 ${num(x.threshold)} 就压缩）` : ''}${x.hasSummary ? '，更早的已压成摘要' : ''}`), x.line ? clear(x.line, `清空${x.label}的`) : null),
+        h('li', null, h('span', { class: 'grow' }, x.label ? h('strong', { text: `${x.label}　` }) : null, `${x.turns} 轮，上下文约 ${num(x.estimatedTokens)} token${x.threshold ? `（到 ${num(x.threshold)} 就压缩）` : ''}${x.summaryOf ? `；第 ${x.summaryOf.from}–${x.summaryOf.to} 轮（${x.summaryOf.turns} 轮）已写成交接记录` : x.hasSummary ? '；更早的已写成交接记录' : ''}`), x.line ? clear(x.line, `清空${x.label}的`) : null),
       ),
     ),
   )
@@ -724,11 +796,12 @@ function renderRecords(force = false) {
     ]),
   )
   const reminders = o.reminders ?? []
+  const two = (state.status?.agents?.length ?? 0) > 1
   const remindersCard = h(
     'div',
     { class: 'card' },
     h('h2', { text: `定时提醒（${reminders.length}）` }),
-    h('p', { class: 'muted', text: '它自己定的闹钟：到点会叫醒它，带着当时记下的那句话。大脑重启不丢。' }),
+    h('p', { class: 'muted', text: two ? '它自己定的闹钟：到点叫醒定它的那条线，带着当时记下的那句话。大脑重启不丢。' : '它自己定的闹钟：到点会叫醒它，带着当时记下的那句话。大脑重启不丢。' }),
     reminders.length === 0
       ? h('p', { class: 'muted', text: '现在没有提醒。' })
       : h(
@@ -739,6 +812,7 @@ function renderRecords(force = false) {
               'li',
               null,
               h('span', { class: 'muted', text: dateTime(r.dueAt) }),
+              two ? h('span', { class: 'badge', title: r.line === 'work' ? '到点叫醒干活线' : '到点叫醒对话线', text: r.line === 'work' ? '干活线定的' : '对话线定的' }) : null,
               h('span', { class: 'grow', text: r.note }),
               button('删掉', { class: 'small danger' }, (btn) => {
                 if (!confirm(`删掉这条提醒？\n${r.note}`)) return

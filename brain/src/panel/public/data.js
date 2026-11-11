@@ -31,6 +31,38 @@ const AGENT_HINTS = {
 /** 一条线给人看的名字：后端给了 title（“对话线”“干活线”）就用它的。 */
 export const agentLabel = (a) => (typeof a === 'object' && a?.title) || AGENT_LABELS[a?.agent ?? a] || a?.name || String(a?.agent ?? a)
 export const agentHint = (a) => AGENT_HINTS[a?.agent ?? a] ?? ''
+/**
+ * 这个面板接的是哪个服务器：{ name, rules, tone }。主人可能同时开着两个面板（测试服、正式服），不能认错，
+ * 所以名字在状态区最上面、浏览器标签页的标题和小图标上都有；正式服用醒目的红色。
+ * tone：prod 正式服（名字里有“正式”“生产”“主服”、prod、live 这些）、test 测试服（“测试”“开发”、test、dev）、other 别的、none 还没起名字。
+ */
+export function environmentOf(status = state.status) {
+  const env = status?.environment
+  const name = typeof env?.name === 'string' ? env.name.trim() : ''
+  return { name, rules: typeof env?.rules === 'string' ? env.rules : '', tone: envTone(name) }
+}
+
+export function envTone(name) {
+  if (!name) return 'none'
+  if (/正式|生产|主服|线上|prod|live|main/i.test(name)) return 'prod'
+  if (/测试|开发|试验|实验|本地|test|dev|staging|local/i.test(name)) return 'test'
+  return 'other'
+}
+
+/**
+ * 它在不在游戏里、为什么不在：{ online, why }。why：'idle' 没人在、它自己下的（有人来会回来）；'owner' 主人点了下线；
+ * 'gone' 主人要它在线，可它不在（被踢、掉线、刚连上还没叫出来）；在线时是 null。
+ */
+export function presenceOf() {
+  const o = state.overview
+  const live = state.live
+  const online = live?.online === true || o?.bot?.status?.online === true
+  if (online) return { online, why: null }
+  if (bodyAgent(state.status)?.body?.awayIdle === true) return { online, why: 'idle' }
+  if (o?.bot?.wantOnline === false) return { online, why: 'owner' }
+  return { online, why: 'gone' }
+}
+
 /** 哪条线管着身体（例程和任务挂在它下面）：带 body 的那条；都没带就是最后一条。 */
 export function bodyAgent(status) {
   const agents = status?.agents ?? []
@@ -94,6 +126,8 @@ function normalizeStatus(raw) {
   return {
     time: raw.time,
     source: 'status',
+    // 这个大脑接的是哪个服务器（主人起的名字和写的规矩）
+    environment: raw.environment ?? null,
     agents: (raw.agents ?? []).map((a) => ({
       ...a,
       model: a.model ?? { state: 'idle' },

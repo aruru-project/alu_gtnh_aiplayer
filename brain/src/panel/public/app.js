@@ -1,7 +1,7 @@
 // 面板前端的入口：登录、整体框架（左边常驻的状态区和导航，右边是各页）、页面切换。
 // 手写的原生 JS，没有框架和构建步骤；各页在各自的文件里（page-*.js）。
 
-import { bodyAgent, startPolling, state, stopPolling } from './data.js'
+import { bodyAgent, environmentOf, startPolling, state, stopPolling } from './data.js'
 import { clearLog, startLog } from './logstore.js'
 import { tickClocks } from './logview.js'
 import { SLOW_STEP_MS, STALE_TASK_MS, renderSide, taskStaleMs } from './side.js'
@@ -44,9 +44,28 @@ function show() {
   if (current && current !== page) PAGES[current].module.leave?.()
   for (const key of Object.keys(PAGES)) $(`#page-${key}`).hidden = key !== page
   for (const b of document.querySelectorAll('#nav button')) b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false')
-  document.title = `${PAGES[page].title} · ${state.overview?.bot?.name ?? 'AI 玩家'}`
   current = page
+  setTitle()
   PAGES[page].module.enter($(`#page-${page}`), sub)
+}
+
+// ── 浏览器标签页：服务器的名字在最前面，小图标也按服务器上色（同时开着测试服、正式服两个面板时一眼分得开） ──
+
+const ENV_COLORS = { prod: '#e5484d', test: '#2fa38a', other: '#6aa5ff', none: '#626b73' }
+let iconKey = ''
+
+function setTitle() {
+  const env = environmentOf()
+  const page = current ? PAGES[current].title : ''
+  document.title = [env.name, page, state.overview?.bot?.name ?? 'AI 玩家'].filter(Boolean).join(' · ')
+  $('#app').dataset.env = env.tone
+  const key = `${env.tone}|${env.name}`
+  if (key === iconKey || !state.status) return
+  iconKey = key
+  // 一个色块，上面是名字的头一个字；用 SVG 拼，不加载任何东西
+  const letter = [...(env.name || '?')][0].replace(/[<>&"']/g, '')
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="${ENV_COLORS[env.tone]}"/><text x="16" y="23" font-size="20" font-family="sans-serif" font-weight="700" text-anchor="middle" fill="#fff">${letter}</text></svg>`
+  document.querySelector('link[rel="icon"]')?.setAttribute('href', `data:image/svg+xml,${encodeURIComponent(svg)}`)
 }
 
 // ── 登录 ──
@@ -114,13 +133,15 @@ function paintSide() {
   const owner = bodyAgent(s)
   // 只在看得见的东西变了的时候重画（会跳的秒数由 tickClocks 改），免得正要点的按钮被换掉
   const key = JSON.stringify([
-    s?.agents?.map((a) => [a.agent, a.model?.state, a.model?.step, a.model?.since, a.model?.provider, a.model?.model, a.model?.outage, a.turn, a.pending, a.routine, a.lastRoutine?.id, a.lastRoutine?.status, a.body, a.waitingAnswer, a.title, a.model?.providerId, a.model?.modelId]),
+    s?.agents?.map((a) => [a.agent, a.model?.state, a.model?.step, a.model?.since, a.model?.provider, a.model?.model, a.model?.outage, a.turn, a.pending, a.routine, a.lastRoutine?.id, a.lastRoutine?.status, a.body, a.waitingAnswer, a.ownTasks, a.title, a.model?.providerId, a.model?.modelId]),
     s?.agents?.some((a) => a.model?.state === 'thinking' && typeof a.model.since === 'number' && Date.now() + state.skew - a.model.since > SLOW_STEP_MS),
     taskStaleMs(owner?.body?.task) > STALE_TASK_MS,
     o ? [o.bridge?.state, o.bridge?.lastError, o.bot?.name, o.bot?.status?.online, o.provider, o.models, o.usage, o.server?.tps] : null,
     live ? [live.online, live.dim, live.block, live.health, live.food, live.settings] : null,
     state.error,
     state.lostAt,
+    s?.environment,
+    o?.bot?.wantOnline,
   ])
   if (key !== sideKey) {
     sideKey = key
@@ -135,6 +156,8 @@ function paintSide() {
 }
 
 bus.on('status', paintSide)
+bus.on('status', setTitle)
+bus.on('overview', setTitle)
 bus.on('overview', paintSide)
 bus.on('live', paintSide)
 bus.on('status-error', paintSide)

@@ -2,7 +2,7 @@
 //   左边：一句话的现状；每条线的细节（模型想到第几步、例程调到哪了、身体的任务和排队的）；最近几步；最近说的话，可以直接回它一句。
 //   右边：游戏里的样子——血量和饥饿、位置朝向、物品栏（和游戏里一样的格子）、开着的界面、附近的人、脚下的俯视图。
 
-import { actions, agentLabel, bodyAgent, refresh, serverNow, state, watchLiveClosely } from './data.js'
+import { actions, agentLabel, bodyAgent, presenceOf, refresh, serverNow, state, watchLiveClosely } from './data.js'
 import { foodBar, hearts, inventoryPanel, screenPanel, slotDetail } from './items.js'
 import { describeArgs, recentActivity } from './logmodel.js'
 import { itemName } from './names.js'
@@ -60,6 +60,9 @@ function headline() {
   if (queued > 0) return { tone: 'think', text: '马上开始下一轮', sub: `有 ${queued} 件事排着等它。` }
   return { tone: 'idle', text: '空闲', sub: last ? `上一次调模型是 ${when(last)}。` : '还没调用过模型。' }
 }
+
+/** 干活线送给对话线的几种话。 */
+const REPORT_TYPES = { report: '汇报', question: '提问', result: '停下来时留的话', progress: '还在干、中途留的话', trouble: '出了状况' }
 
 function lastCallText(lc) {
   if (!lc) return '还没调用过'
@@ -237,7 +240,7 @@ function detailsFold(agents, owner) {
           ['上一次调用', lastCallText(m.lastCall)],
           m.state === 'outage' && m.outage ? ['故障', h('span', { class: 'bad', text: `从 ${when(m.outage.since)} 起连着失败 ${m.outage.failures} 次，${clock(m.outage.nextRetryAt)} 再试。${m.outage.lastError}` })] : null,
           hist ? ['它记得的', `${hist.turns} 轮，约 ${compact(hist.estimatedTokens)} token${hist.threshold ? `（到 ${compact(hist.threshold)} 就压缩）` : ''}${hist.hasSummary ? '，更早的已压成摘要' : ''}`] : null,
-          a.lastReport ? ['上一次汇报', `${when(a.lastReport.time)}：${a.lastReport.text}`] : null,
+          a.lastReport ? ['上一次送给对话线的', `${when(a.lastReport.time)}，${REPORT_TYPES[a.lastReport.type] ?? a.lastReport.type}：${a.lastReport.text}`] : null,
         ]),
       ]
     }),
@@ -516,7 +519,9 @@ function renderLive(el) {
       h(
         'div',
         { class: 'card' },
-        empty(connected ? `${live.name} 不在线` : '没连上游戏', connected ? '它不在游戏里，所以看不到血量、位置和背包。点左上角的“上线”让它进入游戏。' : `${live.reason ?? ''}。连接在“设置 → 游戏连接”里配。`),
+        connected && presenceOf().why === 'idle'
+          ? empty('没人在，它自己下线了', '“自动上下线”开着：服务器上没有真人、它手上也没事，它就下线了。有真人进服、你在这里发指令、它定的提醒到点时会自己回来；也可以现在点“上线”。')
+          : empty(connected ? `${live.name} 不在线` : '没连上游戏', connected ? '它不在游戏里，所以看不到血量、位置和背包。点左上角的“上线”让它进入游戏。' : `${live.reason ?? ''}。连接在“设置 → 游戏连接”里配。`),
         connected ? h('div', { class: 'row center' }, button('上线', { class: 'primary' }, (btn) => act(btn, actions.spawn, '已让它上线').then(refresh))) : h('div', { class: 'row center' }, h('a', { class: 'button', href: '#settings/game', text: '去设置' })),
       ),
       connected && (live.players ?? []).length > 0 ? playersBlock(live) : null,
@@ -564,7 +569,7 @@ function paint(force = false) {
     renderWork(root.querySelector('.now-work'))
   }
   const live = state.live
-  const nextLive = JSON.stringify(live ? { ...live, time: 0 } : null)
+  const nextLive = JSON.stringify([live ? { ...live, time: 0 } : null, live?.online ? null : presenceOf().why])
   if (force || nextLive !== liveKey) {
     liveKey = nextLive
     renderLive(root.querySelector('.now-game'))

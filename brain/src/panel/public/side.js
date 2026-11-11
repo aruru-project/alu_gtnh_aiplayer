@@ -2,7 +2,7 @@
 // 现在后端只有一条线（main）；设计上是“对话”“干活”两条，各用各的模型、各有各的状态。例程和身体的任务挂在管身体的那条线下面。
 // 三种“在干活”分开写：模型（空闲 / 正在想第几步 / 在执行工具 / 接口故障）、例程（它写的后台脚本）、身体（游戏里的任务）。
 
-import { actions, agentHint, agentLabel, bodyAgent, refresh, serverNow, state } from './data.js'
+import { actions, agentHint, agentLabel, bodyAgent, environmentOf, presenceOf, refresh, serverNow, state } from './data.js'
 import { foodIcon, heartIcon, playerHead } from './items.js'
 import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, put, taskName, toast } from './ui.js'
 
@@ -46,6 +46,9 @@ export function modelState(agent) {
   }
   if (m.state === 'tools') return { tone: 'tools', text: m.step !== undefined ? `在执行第 ${m.step} 步的工具` : '在执行工具' }
   if (!m.provider && !m.model && state.overview && !state.overview.provider) return { tone: 'bad', text: '没配模型' }
+  // 干活线这会儿没在想，可它开的任务、例程还在跑：一结束它自己会被叫醒接着做
+  if (agent.routine) return { tone: 'routine', text: '等例程跑完', hint: '这会儿没在想；例程一结束它自己会被叫醒接着做。' }
+  if ((agent.ownTasks ?? []).length > 0) return { tone: 'body', text: '等任务做完', hint: `这会儿没在想；它开的任务（${agent.ownTasks.join('、')}）一结束，它自己会被叫醒接着做。` }
   return { tone: 'idle', text: '空闲' }
 }
 
@@ -60,12 +63,28 @@ function stateChip(s) {
 
 // ── 玩家卡 ──
 
+/** 这个面板接的是哪个服务器：最上面一条，正式服是红的。还没起名字时淡淡地提一句去哪里起。 */
+function envBand() {
+  const env = environmentOf()
+  if (!state.status) return null
+  if (env.tone === 'none') {
+    return h('a', { class: 'env-band none', href: '#settings/player', title: '到“设置 → 玩家”给这个服务器起个名字（比如“测试服”“正式服”），同时开着两个面板时不会认错' }, '这个服务器还没起名字')
+  }
+  return h(
+    'div',
+    { class: `env-band ${env.tone}`, role: 'note', 'aria-label': `这个面板接的是：${env.name}`, title: env.rules ? `这里的规矩：${env.rules}` : '这个面板接的服务器（名字在“设置 → 玩家”里改）' },
+    h('span', { class: 'env-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'env-name', text: env.name }),
+    env.rules ? h('a', { class: 'env-rules', href: '#settings/player', text: '规矩' }) : null,
+  )
+}
+
 function playerCard() {
   const o = state.overview
   const live = state.live
   const name = o?.bot?.name ?? live?.name ?? '…'
   const connected = o?.bridge?.state === 'connected'
-  const online = live?.online === true || o?.bot?.status?.online === true
+  const { online, why } = presenceOf()
   const st = o?.bot?.status
   const where = online ? `${dimName(live?.dim ?? st?.dim)} · ${pos(live?.block ?? st?.block ?? st?.pos)}` : ''
   const toggle = !connected
@@ -93,8 +112,13 @@ function playerCard() {
             ? h('span', { class: 'state bad', text: o.bridge?.state === 'unconfigured' ? '游戏还没配置' : o.bridge?.state === 'connecting' ? '正在连游戏' : '游戏没连上' })
             : online
               ? [h('span', { class: 'state ok', text: '在线' }), h('span', { class: 'muted', text: where })]
-              : h('span', { class: 'state warn', text: '不在线' }),
+              : why === 'idle'
+                ? h('span', { class: 'state idle', title: '“自动上下线”开着：服务器上没有真人、它手上也没事，到时间就自己下线了。有真人进服、你在面板上发指令、它定的提醒到点时会自己回来。', text: '没人在，自己下线了' })
+                : why === 'owner'
+                  ? h('span', { class: 'state idle', title: '你在面板上点了“下线”。有人进服它也不会自己上来，要点“上线”。', text: '下线了（你点的）' })
+                  : h('span', { class: 'state warn', title: '你要它在线，可它不在游戏里：可能被踢了、掉线了。点“上线”叫它回来。', text: '不在线' }),
       ),
+      !online && why === 'idle' ? h('div', { class: 'pcard-note', text: '有人来会回来' }) : null,
       online && live?.online
         ? h(
             'div',
@@ -296,6 +320,7 @@ export function renderSide(root, footRoot) {
   if (root.contains(document.activeElement) && document.activeElement?.tagName === 'SELECT') return
   put(
     root,
+    envBand(),
     state.lostAt !== null ? lostBanner() : null,
     playerCard(),
     h('div', { class: 'lines-head' }, h('span', { class: 'side-label', text: agents.length > 1 ? '两条线' : '它在干什么' }), stopAll()),
