@@ -620,6 +620,26 @@ describe('任务类工具', () => {
     ])
   })
 
+  it('use_item 点方块以后，结果里写着方块自己存的数据哪些值变了（主人那次：扳手点总线上表面中间，朝向从下变成了上）；没变的写明没变；自己在变的身体已经去掉，说一声去掉了几个', async (t) => {
+    const s = setup(t)
+    const done = (id: string, finishedAt: number, extra: Record<string, unknown>) => ({ id, type: 'use', state: 'done', finishedAt, params: { type: 'use', item: { id: 'gregtech:gt.metatool.01', meta: 16 }, on: { x: 1, y: 64, z: 1 }, side: 'up' }, result: { used: 'Wrench', clicks: 1, side: 'up', blockBefore: 'gregtech:gt.blockmachines/0', blockNow: 'gregtech:gt.blockmachines/0', gained: [], lost: [], health: 20, food: 20, freeSlots: 30, ...extra } })
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        done('t3', 300, { dataChanged: [{ key: 'gt.covers[0].d', was: '0', now: '1' }, { key: 'gt.covers[1].id', now: '2138447175' }], dataChangedMore: 2, dataMovingLeftOut: 3 }),
+        done('t2', 200, { dataChanged: [] }),
+        done('t1', 100, { dataChanged: [{ key: 'mFacing', was: '0', now: '1' }] }),
+      ],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    assert.deepEqual(lines.slice(-3), [
+      '- t3 use [done]; result: used "Wrench"; 1 click(s) on the up face; the block there is still [gregtech:gt.blockmachines/0]; its saved data changed: gt.covers[0].d 0 → 1, gt.covers[1].id (none) → 2138447175, and 2 more (3 value(s) that were already changing by themselves are left out); gained: nothing; lost: nothing; nothing changed in your inventory; health 20; food 20; freeSlots 30',
+      '- t2 use [done]; result: used "Wrench"; 1 click(s) on the up face; the block there is still [gregtech:gt.blockmachines/0]; its saved data did not change; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30',
+      '- t1 use [done]; result: used "Wrench"; 1 click(s) on the up face; the block there is still [gregtech:gt.blockmachines/0]; its saved data changed: mFacing 0 → 1; gained: nothing; lost: nothing; nothing changed in your inventory; health 20; food 20; freeSlots 30',
+    ])
+  })
+
   it('挖东西的区域任务可以指定背包满了怎么办（overflow）；别的取值被拒绝', async (t) => {
     const s = setup(t)
     await s.run('clear_area', { x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave' })

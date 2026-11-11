@@ -57,6 +57,15 @@ public final class UseTask extends Task {
     private boolean wasSneaking;
     /** The clicked block before the first click: id/meta. */
     private String blockBefore;
+    /** Whether the walk is over (the checks after it are made once). */
+    private boolean arrived;
+    /**
+     * The clicked block's saved data, flattened, twice before the first click (a couple of ticks apart, to tell the
+     * values that change by themselves) and once after. Null when the block keeps no data.
+     */
+    private Map<String, String> dataEarly, dataBefore;
+    private boolean dataTaken;
+    private int dataWait;
 
     public UseTask(JsonObject params) {
         super("use", params);
@@ -186,7 +195,7 @@ public final class UseTask extends Task {
         EntityPlayerMP p = bot.player();
         switch (stage) {
             case 0: {
-                if (nav != null) {
+                if (nav != null && !arrived) {
                     Navigator.Status st = nav.tick();
                     if (st == Navigator.Status.WORKING) return;
                     if (st == Navigator.Status.FAILED) {
@@ -201,6 +210,13 @@ public final class UseTask extends Task {
                         fail("out_of_reach", "the bot could not get to where the " + SIDES[side] + " face of that block can be clicked");
                         return;
                     }
+                }
+                arrived = true;
+                if (on != null && !dataTaken) {
+                    if (dataWait == 0) dataEarly = data(p);
+                    if (++dataWait <= 2) return;
+                    dataBefore = data(p);
+                    dataTaken = true;
                 }
                 if (p.openContainer != p.inventoryContainer) bot.conn()
                     .closeWindow();
@@ -254,6 +270,52 @@ public final class UseTask extends Task {
         }
     }
 
+    private Map<String, String> data(EntityPlayerMP p) {
+        net.minecraft.world.World w = p.worldObj;
+        if (!w.blockExists(on[0], on[1], on[2])) return null;
+        net.minecraft.tileentity.TileEntity te = w.getTileEntity(on[0], on[1], on[2]);
+        if (te == null) return null;
+        try {
+            net.minecraft.nbt.NBTTagCompound tag = new net.minecraft.nbt.NBTTagCompound();
+            te.writeToNBT(tag);
+            return alu.aiplayer.util.Nbt.flatten(tag);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** What changed in the clicked block's saved data, leaving out what was already changing by itself. */
+    private void dataChanges(EntityPlayerMP p, JsonObject o) {
+        if (dataBefore == null) return;
+        Map<String, String> now = data(p);
+        if (now == null) return;
+        java.util.Set<String> keys = new java.util.TreeSet<>(dataBefore.keySet());
+        keys.addAll(now.keySet());
+        JsonArray changed = new JsonArray();
+        int more = 0, moving = 0;
+        for (String k : keys) {
+            String was = dataBefore.get(k), is = now.get(k);
+            if (was == null ? is == null : was.equals(is)) continue;
+            String early = dataEarly == null ? null : dataEarly.get(k);
+            if (dataEarly != null && !(early == null ? was == null : early.equals(was))) {
+                moving++;
+                continue;
+            }
+            if (changed.size() >= 30) {
+                more++;
+                continue;
+            }
+            JsonObject c = new JsonObject();
+            c.addProperty("key", k);
+            if (was != null) c.addProperty("was", was);
+            if (is != null) c.addProperty("now", is);
+            changed.add(c);
+        }
+        o.add("dataChanged", changed);
+        if (more > 0) o.addProperty("dataChangedMore", more);
+        if (moving > 0) o.addProperty("dataMovingLeftOut", moving);
+    }
+
     private static String blockAt(EntityPlayerMP p, int[] at) {
         net.minecraft.world.World w = p.worldObj;
         if (!w.blockExists(at[0], at[1], at[2])) return "?";
@@ -296,6 +358,7 @@ public final class UseTask extends Task {
                 o.addProperty("blockBefore", blockBefore);
                 o.addProperty("blockNow", blockAt(p, on));
             }
+            dataChanges(p, o);
         }
         o.add("gained", gained);
         o.add("lost", lost);

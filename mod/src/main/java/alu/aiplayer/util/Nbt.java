@@ -173,6 +173,61 @@ public final class Nbt {
         return new JsonPrimitive(tag.toString());
     }
 
+    /**
+     * Every value of a tree under its path ({@code mFacing}, {@code gt.covers[2].data}), as text: to tell what changed
+     * between two moments. Arrays too long to write out are written as their length and a hash, so that a change shows.
+     */
+    public static java.util.Map<String, String> flatten(NBTBase root) {
+        java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+        flatten(root, "", out, 0);
+        return out;
+    }
+
+    private static void flatten(NBTBase tag, String path, java.util.Map<String, String> out, int depth) {
+        if (tag == null || out.size() >= 4000) return;
+        if (tag instanceof NBTTagCompound) {
+            NBTTagCompound c = (NBTTagCompound) tag;
+            if (depth >= 10) {
+                out.put(path, "(" + c.func_150296_c().size() + " keys, " + c.hashCode() + ")");
+                return;
+            }
+            for (Object k : new java.util.TreeSet<Object>(c.func_150296_c())) {
+                String key = (String) k;
+                flatten(c.getTag(key), path.isEmpty() ? key : path + "." + key, out, depth + 1);
+            }
+            return;
+        }
+        if (tag instanceof NBTTagList) {
+            NBTTagList list = (NBTTagList) ((NBTTagList) tag).copy();
+            int i = 0;
+            if (list.tagCount() == 0) out.put(path, "[]");
+            while (list.tagCount() > 0) flatten(list.removeTag(0), path + "[" + i++ + "]", out, depth + 1);
+            return;
+        }
+        if (tag instanceof NBTTagString) {
+            String v = ((NBTTagString) tag).func_150285_a_();
+            out.put(path, v.length() > 200 ? v.substring(0, 200) + "… (" + v.length() + " characters, " + v.hashCode() + ")" : v);
+            return;
+        }
+        if (tag instanceof NBTTagByteArray) {
+            byte[] v = ((NBTTagByteArray) tag).func_150292_c();
+            out.put(path, v.length <= 16 ? java.util.Arrays.toString(v) : "(" + v.length + " bytes, " + java.util.Arrays.hashCode(v) + ")");
+            return;
+        }
+        if (tag instanceof NBTTagIntArray) {
+            int[] v = ((NBTTagIntArray) tag).func_150302_c();
+            out.put(path, v.length <= 16 ? java.util.Arrays.toString(v) : "(" + v.length + " numbers, " + java.util.Arrays.hashCode(v) + ")");
+            return;
+        }
+        if (tag instanceof NBTBase.NBTPrimitive) {
+            NBTBase.NBTPrimitive v = (NBTBase.NBTPrimitive) tag;
+            byte id = tag.getId();
+            out.put(path, id == 5 || id == 6 ? String.valueOf(v.func_150286_g()) : String.valueOf(v.func_150291_c()));
+            return;
+        }
+        out.put(path, tag.toString());
+    }
+
     /** The stack a compound holds, if it is one saved in the game's usual form. */
     private static ItemStack asStack(NBTTagCompound c) {
         if (!c.hasKey("id") || !c.hasKey("Count") || !c.hasKey("Damage")) return null;

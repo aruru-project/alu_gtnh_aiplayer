@@ -1091,7 +1091,7 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, ...rest } = result
+  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, ...rest } = result
   const item = isObject(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
@@ -1115,9 +1115,17 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   if (typeof blockBefore === 'string' && typeof blockNow === 'string') {
     parts.push(blockChanged ? `the block there was ${block(blockBefore)}, now ${block(blockNow)}` : `the block there is still ${block(blockNow)}`)
   }
+  // 点的那个方块自己存的数据（朝向、覆盖板、设置）哪些值变了；点之前就在自己变的（进度、电量）身体已经去掉了
+  const dataMoved = Array.isArray(dataChanged) && dataChanged.length > 0
+  if (Array.isArray(dataChanged)) {
+    const changes = dataChanged.filter(isObject).map((c) => `${String(c.key)} ${c.was === undefined ? '(none)' : String(c.was)} → ${c.now === undefined ? '(gone)' : String(c.now)}`)
+    const more = typeof dataChangedMore === 'number' && dataChangedMore > 0 ? `, and ${dataChangedMore} more` : ''
+    const moving = typeof dataMovingLeftOut === 'number' && dataMovingLeftOut > 0 ? ` (${dataMovingLeftOut} value(s) that were already changing by themselves are left out)` : ''
+    parts.push(changes.length > 0 ? `its saved data changed: ${changes.join(', ')}${more}${moving}` : `its saved data did not change${moving}`)
+  }
   parts.push(`gained: ${list(got)}`, `lost: ${list(gone)}`)
   if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
-  else if (got.length === 0 && gone.length === 0) parts.push(blockChanged ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
+  else if (got.length === 0 && gone.length === 0) parts.push(blockChanged || dataMoved ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)
   if (typeof food === 'number') parts.push(`food ${food}`)
   if (typeof freeSlots === 'number') parts.push(`freeSlots ${freeSlots}`)

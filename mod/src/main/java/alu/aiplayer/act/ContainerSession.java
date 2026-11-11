@@ -836,6 +836,7 @@ public final class ContainerSession {
                     break;
                 }
                 int take = Math.min(room, Math.min(stack.stackSize, withdrawLeft[f]));
+                ItemStack type = stack.copy();
                 ItemStack out = inv.decrStackSize(slot, take);
                 if (out == null) continue;
                 int got = out.stackSize;
@@ -849,6 +850,10 @@ public final class ContainerSession {
                 if (got > 0) {
                     moved += got;
                     if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] -= got;
+                    // Deep storage (barrels and the like) shows one stack at a time in its output slot and fills it
+                    // again from what it holds: keep taking from the same slot while it does.
+                    ItemStack again = inv.getStackInSlot(slot);
+                    if (withdrawLeft[f] > 0 && again != null && again.stackSize > 0 && sameItem(again, type)) return true;
                 }
                 cursor++;
                 return true;
