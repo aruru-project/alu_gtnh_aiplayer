@@ -1221,6 +1221,8 @@ export class Agent {
       // 写的字不进游戏：对话线的只给主人在面板上看（主人从面板说话，这就是回他的话；在游戏里说话用 say、whisper），
       // 干活线的只进日志（一轮结束时留下的那段另外送给对话线）
       if (text.length > 0) this.log.add(talk ? { kind: 'reply', turn: turnId, step: steps, who: settings.botName, text } : { kind: 'model_text', turn: turnId, step: steps, text })
+      // 对话线写的字也进聊天记录（recent_chat）：干活线翻得到主人在面板上说了什么、她怎么回的
+      if (talk && text.length > 0) this.deps.chatLog?.add({ time: this.now(), kind: 'replied', who: settings.botName, text })
       if (calls.length === 0) {
         finalText = text
         break
@@ -1489,6 +1491,7 @@ export class Agent {
     const botName = this.deps.settings().botName
     if (!inGame) {
       this.log.add({ kind: 'reply', who: botName, text: inChat, detail: '这句话是程序替它说的，不是模型说的。这一轮不是游戏里的人叫醒的，所以只写在面板上、没在游戏里说' })
+      this.deps.chatLog?.add({ time: now, kind: 'replied', who: botName, text: inChat })
       return
     }
     try {

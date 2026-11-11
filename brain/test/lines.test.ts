@@ -59,8 +59,22 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     assert.equal(closing(h.talk.lastUserText(0)), '[谁在跟你说话] 这是主人在面板上说的，你写的字他看得到。')
     // 写了字又调工具的那一步，工具结果后面没有别的话（不再有“已经说出去了”）
     assert.deepEqual(h.talk.requests[1]!.messages.at(-1)!.content.map((p) => p.type), ['tool_result'])
-    // 聊天记录里只有主人在面板上那句：它写的字不是在游戏里说的
-    assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.text]), [['panel', '你身上有什么']])
+    // 聊天记录里：主人在面板上那句，和它在面板上回的（不是在游戏里说的）。干活线翻得到
+    assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.who, l.text]), [
+      ['panel', 'owner (panel)', '你身上有什么'],
+      ['replied', 'Alu', '我看一下'],
+      ['replied', 'Alu', '身上有 64 个泥土'],
+    ])
+    assert.match(
+      (await lineCalls(h, 'work', 'recent_chat', {})).content,
+      /^3 chat line\(s\), oldest first:\n\[[\d:]+\] your owner \(control panel\): 你身上有什么\n\[[\d:]+\] you replied on the panel: 我看一下\n\[[\d:]+\] you replied on the panel: 身上有 64 个泥土$/,
+    )
+    // 存在 chat-log.json 里，重启以后还在
+    h.chatLog.flush()
+    await h.agent.stop()
+    const again = h.restart()
+    t.after(() => again.agent.stop())
+    assert.deepEqual(again.chatLog.recent().lines.map((l) => l.kind), ['panel', 'replied', 'replied'])
   })
 
   it('被游戏聊天叫醒、用 say 回：在公共聊天里说了（先说，再调同一步的别的工具），日志里是 say、channel public，进了聊天记录；最后一句写着要用 say 或 whisper 回', async (t) => {
@@ -91,7 +105,8 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     await h.agent.whenIdle()
     assert.deepEqual(h.game.said, [])
     assert.deepEqual(h.log.recent(0, 200).filter((e) => e.kind === 'reply' || e.kind === 'say').map((e) => [e.kind, e.text]), [['reply', '身上有 64 个泥土']])
-    assert.deepEqual(h.chatLog.recent().lines.map((l) => l.kind), ['chat'])
+    // 聊天记录里那句是“在面板上回的”，不是“说的”
+    assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.text]), [['chat', 'Alu 你身上有什么'], ['replied', '身上有 64 个泥土']])
   })
 
   it('几个人一起叫醒它：游戏里说的、悄悄说的、面板上说的各写一句；没有人说话的一轮（干活线停下来了）写着游戏里的人看不到它写的字', async (t) => {
@@ -214,6 +229,7 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     assert.deepEqual(h.game.said, [])
     const written = h.log.recent(0, 200).find((e) => e.kind === 'reply')!
     assert.deepEqual([written.agent, written.text, written.detail], ['talk', '我这边模型接口连不上了，先歇一会儿，好了再继续。', '这句话是程序替它说的，不是模型说的。这一轮不是游戏里的人叫醒的，所以只写在面板上、没在游戏里说'])
+    assert.deepEqual(h.chatLog.recent().lines.filter((l) => l.kind === 'replied').map((l) => l.text), ['我这边模型接口连不上了，先歇一会儿，好了再继续。'])
     // 接口好了一会儿又坏了，这回是游戏里的人叫醒的：面板上那句不挡着它在游戏里说（限频各算各的）
     h.talk.enqueue(llmDown())
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))

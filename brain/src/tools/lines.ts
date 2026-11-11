@@ -74,6 +74,7 @@ const SAID_HOW: Record<ChatLine['kind'], (l: ChatLine) => string> = {
   panel: () => 'your owner (control panel):',
   said: () => 'you said:',
   whispered: (l) => `you whispered to ${l.to ?? '?'}:`,
+  replied: () => 'you replied on the panel:',
 }
 
 /** 聊天记录里的一句写成一两行：时间、谁、原话；别人说的带着他当时站在哪、指着什么。 */
@@ -89,7 +90,7 @@ export function chatLineText(l: ChatLine): string {
 export const recentChat: Tool = {
   name: 'recent_chat',
   description:
-    'The latest chat lines, oldest first: public chat, whispers to you, what your owner typed on the control panel, and what you said. Each line of another player carries where they stood and what they pointed at when they said it.',
+    'The latest chat lines, oldest first: public chat, whispers to you, what your owner typed on the control panel, what you said in the game, and what the talk line wrote back on the panel (seen only by your owner). Each line of another player carries where they stood and what they pointed at when they said it.',
   brief: '{minutes?, limit?, player?}: chat as said, where each speaker stood and pointed -> lines[{time, kind, who, text, speaker}]',
   inputSchema: obj({
     minutes: num('Only lines from the last so many minutes (default: any age the log still holds).', { min: 0.1, max: 100_000 }),
