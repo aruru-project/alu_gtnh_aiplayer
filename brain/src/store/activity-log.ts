@@ -20,6 +20,27 @@ export type ActivityKind =
   | 'info'
   | 'run' // 它写的程序（例程、run_program）的一次运行：一条滚动更新的汇总，明细在 logs/runs/ 里
   | 'model_call' // 一次模型调用：第几步、用时、token、怎么结束的。开始想时就出现，结束时原地更新
+  | 'relay' // 两条线之间的一次往来：对话线交事或带话、干活线汇报或提问或做完留下的话、叫停。发的那一刻记一条
+
+/** 两条线之间的一次往来（docs/TALK_WORK.md）。 */
+export interface ActivityRelay {
+  /**
+   * tell：对话线交事或带话；report：干活线中途汇报；question：干活线提问、在等回答；result：干活线一轮结束留下的文字；
+   * trouble：干活线出了状况（模型接口故障、到步数上限……程序替它报的）；stop：叫停。
+   */
+  type: 'tell' | 'report' | 'question' | 'result' | 'trouble' | 'stop'
+  from: 'talk' | 'work' | 'panel'
+  to: 'talk' | 'work'
+  /** tell、stop：程序原样附了几句原话。 */
+  quotes?: number
+}
+
+/** 对话线说一段话时身体回的发送结果（有不寻常的才记）。 */
+export interface ActivitySent {
+  lines?: number
+  cutChars?: number
+  droppedLines?: number
+}
 
 /** 一次程序运行（后台的例程，或者 run_program 当场跑的程序）现在的样子。 */
 export interface ActivityRun {
@@ -81,8 +102,12 @@ export interface ActivityEntry {
   pictures?: string[]
   /** pictures 里哪几张还存着画它用的盒子：面板给这几张加一个“三维预览”。 */
   scenes?: string[]
-  /** 哪个代理的；不带就是主代理（以后它开的帮手各有各的名字）。 */
+  /** 哪条线的：talk（对话线）、work（干活线）。不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目。 */
   agent?: string
+  /** kind 是 relay 时：这次往来是什么、从谁到谁。 */
+  relay?: ActivityRelay
+  /** kind 是 say 时：身体回的发送结果里有不寻常的（分了几行、截掉多少字、丢了几行）才带。 */
+  sent?: ActivitySent
   /** 这一轮的第几次模型调用（从 1 起）：model_call、model_text 和模型直接调的工具都带，面板把工具挂在那一步下面。 */
   step?: number
   /** 工具调用和结果是谁发起的：模型自己、run_program 的程序、后台的例程。 */

@@ -107,7 +107,7 @@ export interface RoutineDeps {
   tools: readonly Tool[]
   /** 调工具用的上下文：和模型调工具用的是同一个，只是开了任务时多告诉这边一声。 */
   context(onTaskStarted: (task: TaskInfo) => void): ToolContext
-  log: ActivityLog
+  log: Pick<ActivityLog, 'add' | 'update'>
   now(): number
   /** 例程结束了。 */
   ended(view: RoutineView): void

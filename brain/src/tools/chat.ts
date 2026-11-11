@@ -1,4 +1,5 @@
 import { COMMANDS, COMMAND_MAX_CHARS, PLAYER_NAME_RE, SAY_LINE_CHARS, SAY_MAX_CHARS, WHISPER_ECHO_RE, WHISPER_FAILED_RE, WHISPER_MAX_CHARS } from './commands.ts'
+import type { BridgeApi } from '../bridge/api.ts'
 import { obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool } from './types.ts'
@@ -36,27 +37,57 @@ function chatLine(text: string): string {
   return cleanChatText(text, Number.POSITIVE_INFINITY)
 }
 
-export const say: Tool = {
-  name: 'say',
-  description: `Say something in public chat: the only way players hear you, besides whisper (your plain text replies are shown to nobody). A chat line holds at most ${SAY_LINE_CHARS} characters: longer text goes out as several lines, about one a second, at most ${SAY_MAX_CHARS} characters at a time.`,
-  inputSchema: obj({ message: str('What to say.') }, ['message']),
-  async run(ctx, input: { message: string }) {
-    const text = chatLine(input.message)
-    if (text.length === 0) return fail('message is empty')
-    // 怎么分行、截没截由身体定，它的回话里有；这里照实告诉模型发出去是什么样
-    const sent = await ctx.bridge.botChat(ctx.botName, text)
-    ctx.hooks.spoke?.({ kind: 'say', text })
-    const lines = typeof sent.lines === 'number' ? sent.lines : undefined
-    const cut = typeof sent.cutChars === 'number' && sent.cutChars > 0 ? sent.cutChars : 0
-    const dropped = typeof sent.droppedLines === 'number' && sent.droppedLines > 0 ? sent.droppedLines : 0
-    if (lines === 0 && dropped > 0) return fail(`Nothing was said: ${dropped} line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.`)
-    const notes = [
-      lines !== undefined && lines > 1 ? `Said in public chat, as ${lines} lines of at most ${SAY_LINE_CHARS} characters, going out about one a second.` : 'Said in public chat.',
-      ...(cut > 0 ? [`The last ${cut} characters were cut off: one say holds at most ${SAY_MAX_CHARS}.`] : []),
-      ...(dropped > 0 ? [`The last ${dropped} line(s) were not sent: too many chat lines of yours were still waiting to go out.`] : []),
-    ]
-    return notes.join(' ')
-  },
+/**
+ * 聊天里显示不了 markdown：粗体、斜体、行内代码、代码块的围栏、标题、引用、列表符号这些记号去掉，字留下；链接留下文字和地址。
+ * 只去成对的强调记号，算式里的星号（2*3*4）和物品 id 里的下划线不动。
+ */
+export function plainChat(text: string): string {
+  return text
+    .replace(/```[^\n]*\n?/g, '')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]*>[ \t]?/gm, '')
+    .replace(/^[ \t]*[-*+•][ \t]+/gm, '')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/(?<![*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '$1 $2')
+}
+
+/** 一次在公共聊天里说话的结果：发出去的是什么、身体说发成了几行、截没截、丢没丢。 */
+export interface Spoken {
+  /** 清理过、真正交给身体的那段文字。 */
+  text: string
+  /** empty：清理完什么都不剩，没有发；sent：发了（可能截了尾、丢了后面几行）；unsent：一行都没排进去。 */
+  outcome: 'empty' | 'sent' | 'unsent'
+  /** 身体说发成了几行（老的身体不说）。 */
+  lines?: number
+  cutChars: number
+  droppedLines: number
+}
+
+/**
+ * 在公共聊天里说一段话（对话线写的文字、程序替它说的话都走这里）：去掉 markdown 记号，压成一行，交给身体。
+ * 怎么分行、截没截由身体定，它的回话里有，照实带回去。身体不在线、bridge 断了时抛 BridgeError。
+ */
+export async function speakInChat(bridge: BridgeApi, botName: string, text: string): Promise<Spoken> {
+  const line = chatLine(plainChat(text))
+  if (line.length === 0) return { text: '', outcome: 'empty', cutChars: 0, droppedLines: 0 }
+  const sent = await bridge.botChat(botName, line)
+  const lines = typeof sent.lines === 'number' ? sent.lines : undefined
+  const cutChars = typeof sent.cutChars === 'number' && sent.cutChars > 0 ? sent.cutChars : 0
+  const droppedLines = typeof sent.droppedLines === 'number' && sent.droppedLines > 0 ? sent.droppedLines : 0
+  return { text: line, outcome: lines === 0 && droppedLines > 0 ? 'unsent' : 'sent', ...(lines !== undefined ? { lines } : {}), cutChars, droppedLines }
+}
+
+/** 这次说话有什么不寻常（没发出去、截了尾、丢了几行），写成一句话（给模型看，也记进日志）；一切正常是 undefined。 */
+export function spokenTrouble(s: Spoken): string | undefined {
+  if (s.outcome === 'unsent') return `这段话一行都没说出去：你还有太多行聊天排着没发完，这 ${s.droppedLines} 行排不进去。过几秒再说。`
+  const notes = [
+    ...(s.cutChars > 0 ? [`最后 ${s.cutChars} 个字被截掉了（一次最多说 ${SAY_MAX_CHARS} 字，每 ${SAY_LINE_CHARS} 字一行${s.lines !== undefined ? `，这次发成了 ${s.lines} 行` : ''}）`] : []),
+    ...(s.droppedLines > 0 ? [`最后 ${s.droppedLines} 行没发出去（你还有太多行聊天排着没发完）`] : []),
+  ]
+  return notes.length > 0 ? `这段话没有全部说出去：${notes.join('；')}。没说出去的可以之后再说。` : undefined
 }
 
 export const whisper: Tool = {

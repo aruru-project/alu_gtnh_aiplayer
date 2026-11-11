@@ -160,7 +160,8 @@ export function runSummaryText(run: RunInfo, now: number): string {
 }
 
 export interface RunRecorderDeps {
-  log: ActivityLog
+  /** 活动日志（哪条线的程序，由调用的人给的这个口子带上 agent 字段）。 */
+  log: Pick<ActivityLog, 'add' | 'update'>
   /** 不给就不落盘（测试、没有数据目录时）：汇总和出错的那几条照样记在活动日志里。 */
   store?: RunLogStore
   now(): number

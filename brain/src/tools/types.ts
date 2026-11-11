@@ -3,6 +3,7 @@ import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
 import type { FeedbackInput } from '../store/feedback.ts'
+import type { ChatLine } from '../store/chat-log.ts'
 import type { Manual } from '../store/manuals.ts'
 import type { QuestProgressCache } from './quest-progress.ts'
 import type { SurroundingsCache } from './recipe-book.ts'
@@ -79,6 +80,29 @@ export interface ProgramToolResult {
   data?: unknown
 }
 
+/** 哪条线：对话的（talk）还是干活的（work）。见 docs/TALK_WORK.md。 */
+export type LineName = 'talk' | 'work'
+
+/** 对话线管干活线的口子（tell_worker、worker_status、stop_work）。文字都是现成的英文，事情由 agent/lines.ts 办。 */
+export interface WorkerAccess {
+  /** 把一件事交给干活线或带一句话；当时的人的原话由上层原样附上。马上返回。 */
+  tell(text: string): string
+  /** 干活线现在在干什么。 */
+  status(detail: boolean): Promise<string>
+  /** 让一切停下：身体的任务、例程、干活线正在想的那一步。 */
+  stop(reason: string): Promise<string>
+}
+
+/** 干活线找对话线的口子（report）。 */
+export interface TalkAccess {
+  report(text: string, question: boolean): string
+}
+
+/** 最近的聊天记录（store/chat-log.ts 的 ChatLog 满足），只读。 */
+export interface ChatLogAccess {
+  recent(opts: { since?: number; limit?: number; player?: string }): { lines: ChatLine[]; matched: number; kept: number }
+}
+
 export interface ReminderAccess {
   /** 登记一个提醒，返回到点时间（epoch ms）。 */
   add(dueAt: number, note: string): { id: string; dueAt: number }
@@ -107,6 +131,19 @@ export interface ToolHooks {
 
 export interface ToolContext {
   botName: string
+  /**
+   * 哪条线在调。给了的话，另一条线的事按名字调到时不执行、如实说明归谁（对话线调会动身体的工具、干活线调 say）。
+   * 上层没提供时不分线：按名字找得到的都执行。
+   */
+  line?: LineName
+  /** 对话线才有：交事、看干活线、叫停。 */
+  worker?: WorkerAccess
+  /** 干活线才有：向对话线汇报、提问。 */
+  talk?: TalkAccess
+  /** 最近的聊天记录。上层没提供时 recent_chat 用不了。 */
+  chatLog?: ChatLogAccess
+  /** run_program 占哪个位子：两条线各跑各的程序，互不挡着。 */
+  programSlot?: string
   bridge: BridgeApi
   memory: MemoryAccess
   reminders: ReminderAccess

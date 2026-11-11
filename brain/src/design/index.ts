@@ -58,7 +58,8 @@ export class DesignWorkspace {
   private readonly packdata: PackData | undefined
   private readonly limits: SandboxLimits
   private readonly now: () => number
-  private running = false
+  /** 正在跑程序的位子（一个位子同时只跑一个；两条线各占一个）。 */
+  private readonly running = new Set<string>()
 
   constructor(opts: DesignOptions) {
     this.drafts = new DraftStore(path.join(opts.dataDir, 'drafts'))
@@ -104,10 +105,12 @@ export class DesignWorkspace {
    * hooks：程序调工具时怎么办、中途怎么停（见 script/sandbox.ts）。background：这是后台的例程，不占“同时只跑一个程序”的位子
    * （例程要跑很久，不能让它挡着模型临时算点东西；例程自己同时只有一个，由 agent/routine.ts 管）。
    * valueChars：程序 return 的值最多交回来多少字符。调用的人给的是“单个工具结果上限”那个设置现在的值，不另设一个数。
+   * slot：占哪个位子。对话线和干活线各有一个，谁也不挡谁；同一个位子里上一个还没跑完才抛 DesignBusyError。
    */
-  async run(code: string, opts: { timeoutMs?: number; hooks?: SandboxHooks; background?: boolean; valueChars?: number } = {}): Promise<ProgramRun> {
-    if (!opts.background && this.running) throw new DesignBusyError()
-    if (!opts.background) this.running = true
+  async run(code: string, opts: { timeoutMs?: number; hooks?: SandboxHooks; background?: boolean; valueChars?: number; slot?: string } = {}): Promise<ProgramRun> {
+    const slot = opts.slot ?? 'main'
+    if (!opts.background && this.running.has(slot)) throw new DesignBusyError()
+    if (!opts.background) this.running.add(slot)
     try {
       const timeoutMs = Math.min(PROGRAM_TIMEOUT_MAX_MS, Math.max(100, opts.timeoutMs ?? this.limits.timeoutMs))
       const outcome = await runProgram(
@@ -148,7 +151,7 @@ export class DesignWorkspace {
       }
       return { outcome, saved, rejected }
     } finally {
-      if (!opts.background) this.running = false
+      if (!opts.background) this.running.delete(slot)
     }
   }
 }

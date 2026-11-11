@@ -34,12 +34,16 @@ export interface WakeConfig {
 }
 
 export interface LimitsConfig {
-  /** 每轮决策最多调几次模型。 */
+  /** 干活线每轮决策最多调几次模型。 */
   maxSteps: number
-  /** 每日 token 上限（输入+输出），0 为不限。 */
+  /** 对话线每轮最多调几次模型。 */
+  talkMaxSteps: number
+  /** 每日 token 上限（输入+输出，两条线合计），0 为不限。 */
   dailyTokenLimit: number
-  /** 历史估算 token 超过这个值就压缩。 */
+  /** 干活线的历史估算 token 超过这个值就压缩。 */
   historyTokenThreshold: number
+  /** 对话线的历史估算 token 超过这个值就压缩。它的上下文里只有对话、它查的东西和干活线的汇报，压得勤一点回话才快。 */
+  talkHistoryTokenThreshold: number
   /** 记忆总长度上限（字符）。 */
   memoryMaxChars: number
   /** 单个工具结果的长度上限（字符）。 */
@@ -55,7 +59,7 @@ export interface BotConfig {
   aliases: string[]
   /** 主人名单。非空时只有名单里的玩家能指挥。 */
   owners: string[]
-  /** 人设提示词；空字符串表示用默认的。 */
+  /** 对话线的说话风格（主人在面板上改的那一段）；空字符串表示用默认的。字段名是分成两条线之前留下的。 */
   systemPrompt: string
   wake: WakeConfig
   limits: LimitsConfig
@@ -96,16 +100,22 @@ export interface StoredProvider {
 }
 
 export interface BrainConfig {
-  /** 2：一个服务商下面可以有多个模型。1 是一个服务商只有一个模型的旧格式，读到时自动转成 2。 */
-  version: 2
+  /**
+   * 3：对话线和干活线各选一个模型（docs/TALK_WORK.md）。2 是只有一条线、只选一个模型的格式；1 是一个服务商只有一个模型的旧格式。
+   * 读到旧的自动转成 3，原文件留一份底。
+   */
+  version: 3
   panel: PanelConfig
   bridge: BridgeConfig
   bot: BotConfig
   providers: StoredProvider[]
-  /** 当前使用的服务商 id；空字符串表示还没选。 */
+  /** 干活线用的服务商 id；空字符串表示还没选。（字段名是只有一条线时留下的。） */
   activeProviderId: string
-  /** 当前使用的是这个服务商下面的哪个模型；空字符串表示它下面还没有模型。 */
+  /** 干活线用的是这个服务商下面的哪个模型；空字符串表示它下面还没有模型。 */
   activeModelId: string
+  /** 对话线用的服务商和模型。旧配置里没有：和干活线用同一个。 */
+  talkProviderId: string
+  talkModelId: string
   /** 本地资料（任务书、物品表）的目录；相对路径相对 brain/ 目录，空字符串表示用默认的 packdata。 */
   packdataDir: string
 }
@@ -122,8 +132,11 @@ export const MAX_STEPS_LIMIT = 500
 export const DEFAULT_LIMITS: LimitsConfig = {
   // “给一个目标它自己去办”这类活要查物品、查配方、找库存、取料、合成，一轮里几十步是常事
   maxSteps: 60,
+  // 对话线一轮就是回一句话、查几样东西、把事交出去
+  talkMaxSteps: 20,
   dailyTokenLimit: 0,
   historyTokenThreshold: 24_000,
+  talkHistoryTokenThreshold: 60_000,
   memoryMaxChars: 4000,
   toolResultMaxChars: 6000,
   // 例程不限调用次数（一口气搬一万多个东西的活要几千次调用），靠时长、连续失败和随时可停来管：默认两小时，最长十二小时
@@ -137,9 +150,12 @@ export const ROUTINE_MINUTES_LIMIT = 7 * 24 * 60
 /** 对话窗口默认 5 分钟：实测 60 秒太短，隔一分钟多、话里没带名字的句子它就不理了。 */
 export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec: 300 }
 
+/** 配置文件现在的版本号。 */
+export const CONFIG_VERSION = 3
+
 export function defaultConfig(): BrainConfig {
   return {
-    version: 2,
+    version: CONFIG_VERSION,
     panel: { host: '127.0.0.1', port: 28765, password: '', sessionSecret: '' },
     bridge: { host: '127.0.0.1', port: DEFAULT_BRIDGE_PORT, token: '', tokenFile: '', requestTimeoutMs: 10_000 },
     bot: {
@@ -154,6 +170,8 @@ export function defaultConfig(): BrainConfig {
     providers: [],
     activeProviderId: '',
     activeModelId: '',
+    talkProviderId: '',
+    talkModelId: '',
     packdataDir: '',
   }
 }
@@ -347,10 +365,14 @@ export function normalizeConfig(raw: unknown): BrainConfig {
   // 当前用的服务商不在了就用第一个；当前用的模型不在它下面了就用它的第一个模型（它下面没有模型就是空）。不会自己跳到别的服务商去。
   const activeProvider = providers.find((p) => p.id === str(raw.activeProviderId, '')) ?? providers[0]
   const activeModel = activeProvider?.models.find((m) => m.id === str(raw.activeModelId, '')) ?? activeProvider?.models[0]
+  // 对话线的：没选过（旧配置）、或者选的那家不在了，就和干活线用同一个
+  const talkPicked = providers.find((p) => p.id === str(raw.talkProviderId, ''))
+  const talkProvider = talkPicked ?? activeProvider
+  const talkModel = talkProvider?.models.find((m) => m.id === str(raw.talkModelId, '')) ?? (talkPicked ? talkPicked.models[0] : activeModel)
   const name = str(bot.name, d.bot.name).trim()
 
   return {
-    version: 2,
+    version: CONFIG_VERSION,
     panel: {
       host: str(panel.host, d.panel.host).trim() || d.panel.host,
       port: int(panel.port, d.panel.port, 0, 65535),
@@ -375,8 +397,10 @@ export function normalizeConfig(raw: unknown): BrainConfig {
       },
       limits: {
         maxSteps: int(limits.maxSteps, DEFAULT_LIMITS.maxSteps, 1, MAX_STEPS_LIMIT),
+        talkMaxSteps: int(limits.talkMaxSteps, DEFAULT_LIMITS.talkMaxSteps, 1, MAX_STEPS_LIMIT),
         dailyTokenLimit: int(limits.dailyTokenLimit, DEFAULT_LIMITS.dailyTokenLimit, 0, 1_000_000_000),
         historyTokenThreshold: int(limits.historyTokenThreshold, DEFAULT_LIMITS.historyTokenThreshold, 2000, 2_000_000),
+        talkHistoryTokenThreshold: int(limits.talkHistoryTokenThreshold, DEFAULT_LIMITS.talkHistoryTokenThreshold, 2000, 2_000_000),
         memoryMaxChars: int(limits.memoryMaxChars, DEFAULT_LIMITS.memoryMaxChars, 200, 100_000),
         toolResultMaxChars: int(limits.toolResultMaxChars, DEFAULT_LIMITS.toolResultMaxChars, 500, 100_000),
         routineMinutes: int(limits.routineMinutes, DEFAULT_LIMITS.routineMinutes, 1, ROUTINE_MINUTES_LIMIT),
@@ -388,6 +412,8 @@ export function normalizeConfig(raw: unknown): BrainConfig {
     providers,
     activeProviderId: activeProvider?.id ?? '',
     activeModelId: activeModel?.id ?? '',
+    talkProviderId: talkProvider?.id ?? '',
+    talkModelId: talkModel?.id ?? '',
     packdataDir: str(raw.packdataDir, '').trim().slice(0, 1000),
   }
 }
@@ -426,6 +452,11 @@ export class ConfigStore {
   readonly file: string
   /** 这次启动是不是刚生成了面板口令（用来决定要不要打印）。 */
   readonly passwordGenerated: boolean
+  /**
+   * 这次启动把旧配置升成了现在的格式时做了什么，要让主人知道的（main 记进活动日志）。
+   * 目前只有一件：主人改过的旧人设被清空了（它是分成两条线之前的整段核心提示词，不能当“说话风格”用），原文在哪份备份里。
+   */
+  readonly upgradeNotes: string[] = []
   private config: BrainConfig
   private readonly overrides: ConfigOverrides
   private readonly listeners = new Set<(config: BrainConfig) => void>()
@@ -436,18 +467,33 @@ export class ConfigStore {
     const raw = readJson(this.file)
     this.config = normalizeConfig(raw)
     let dirty = raw === undefined
-    // 旧格式（一个服务商只有一个模型）：转成新的写回去。原文件先留一份底，万一要退回旧版本的大脑还用得上。
-    if (isRecord(raw) && raw.version !== 2) {
+    // 旧格式：转成新的写回去。原文件先留一份底，万一要退回旧版本的大脑还用得上。
+    // 1（一个服务商只有一个模型）留成 .v1.bak；2（只有一条线、只选一个模型）留成 .v2.bak。
+    if (isRecord(raw) && raw.version !== CONFIG_VERSION) {
       dirty = true
-      if (Array.isArray(raw.providers) && raw.providers.some(isLegacyProvider)) {
-        const backup = `${this.file}.v1.bak`
-        try {
-          fs.copyFileSync(this.file, backup)
-          fs.chmodSync(backup, FILE_MODE)
-          console.log(`[config] 配置里的服务商是旧格式（一个服务商一个模型），已转成新格式；原文件留在 ${backup}`)
-        } catch (e) {
-          console.error(`[config] 没能给旧配置留底：${e instanceof Error ? e.message : String(e)}`)
-        }
+      const legacy = Array.isArray(raw.providers) && raw.providers.some(isLegacyProvider)
+      const backup = `${this.file}.${legacy ? 'v1' : 'v2'}.bak`
+      let kept = false
+      try {
+        fs.copyFileSync(this.file, backup)
+        fs.chmodSync(backup, FILE_MODE)
+        kept = true
+        console.log(
+          legacy
+            ? `[config] 配置里的服务商是旧格式（一个服务商一个模型），已转成新格式；原文件留在 ${backup}`
+            : `[config] 配置是只有一条线时的格式，已补上对话线的模型和上限（和原来选的一样）；原文件留在 ${backup}`,
+        )
+      } catch (e) {
+        console.error(`[config] 没能给旧配置留底：${e instanceof Error ? e.message : String(e)}`)
+      }
+      // 主人改过的旧人设是整段核心提示词（里面写着“用 say 说话”“干活靠任务”）：现在这个字段只是对话线的说话风格，
+      // 照旧用会让对话线读到一堆不再成立的话。清空、改用默认风格；原文在备份里（没留成底就不动它）。
+      const oldPersona = isRecord(raw.bot) && typeof raw.bot.systemPrompt === 'string' ? raw.bot.systemPrompt.trim() : ''
+      if (oldPersona.length > 0 && kept) {
+        this.config.bot.systemPrompt = ''
+        this.upgradeNotes.push(
+          `配置升级：原来面板上改过的人设提示词是分成对话线、干活线之前的整段核心提示词，不能当对话线的“说话风格”用，已经清空、改用默认风格。原文（${oldPersona.length} 字）留在 ${backup} 的 bot.systemPrompt 里，要用的部分可以在面板上重新填进说话风格。`,
+        )
       }
     }
     this.passwordGenerated = this.config.panel.password.length === 0
@@ -492,17 +538,28 @@ export class ConfigStore {
     return () => this.listeners.delete(fn)
   }
 
-  /** 现在用的是哪个服务商的哪个模型；还没配、或者当前服务商下面没有模型时是 undefined。 */
-  activeSelection(): { provider: StoredProvider; model: ModelConfig } | undefined {
-    const provider = this.config.providers.find((p) => p.id === this.config.activeProviderId)
-    const model = provider?.models.find((m) => m.id === this.config.activeModelId)
+  /** 这条线现在用的是哪个服务商的哪个模型；还没配、或者选的服务商下面没有模型时是 undefined。 */
+  lineSelection(line: 'talk' | 'work'): { provider: StoredProvider; model: ModelConfig } | undefined {
+    const [providerId, modelId] = line === 'talk' ? [this.config.talkProviderId, this.config.talkModelId] : [this.config.activeProviderId, this.config.activeModelId]
+    const provider = this.config.providers.find((p) => p.id === providerId)
+    const model = provider?.models.find((m) => m.id === modelId)
     return provider && model ? { provider, model } : undefined
   }
 
-  /** 现在用的那个模型的调用配置（服务商的地址、key 加上这个模型自己的设置）。 */
-  activeProvider(): ProviderConfig | undefined {
-    const active = this.activeSelection()
+  /** 这条线用的那个模型的调用配置（服务商的地址、key 加上这个模型自己的设置）。 */
+  lineProvider(line: 'talk' | 'work'): ProviderConfig | undefined {
+    const active = this.lineSelection(line)
     return active ? resolveModel(active.provider, active.model) : undefined
+  }
+
+  /** 干活线用的是哪个服务商的哪个模型（只有一条线时“当前用的”就是它）。 */
+  activeSelection(): { provider: StoredProvider; model: ModelConfig } | undefined {
+    return this.lineSelection('work')
+  }
+
+  /** 干活线用的那个模型的调用配置。 */
+  activeProvider(): ProviderConfig | undefined {
+    return this.lineProvider('work')
   }
 
   /** 面板实际监听的地址（环境变量优先）。 */

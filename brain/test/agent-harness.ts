@@ -1,9 +1,16 @@
 // agent 测试用的装配：假的 bridge（内存里按方法名应答）、按脚本回应的假模型、真的 store 和工具。
 // 这里只隔开两个外部边界：游戏（Requester）和模型（LlmClient）。
+//
+// 一个玩家两条线（docs/TALK_WORK.md）：h.agent 是两条线合起来的那个入口，事件照真实的规矩分——玩家说的话到对话线，
+// 任务、例程、身体的事到干活线。两条线各有一个假模型：h.llm 是干活线的（大多数测试关心的是它怎么操作身体），
+// h.talk 是对话线的。脚本用完的假模型回空文本，所以没给对话线写脚本时它听到什么都不出声、也不交事。
+// 只想让干活线做一件事的测试用 told(...)：那就是对话线交给它的一件事（附着主人的原话）。
 
 import path from 'node:path'
-import { Agent } from '../src/agent/agent.ts'
 import type { AgentSettings, AgentTiming, PersistedAgentState } from '../src/agent/agent.ts'
+import type { AgentEvent, SaidEvent } from '../src/agent/events.ts'
+import { Lines } from '../src/agent/lines.ts'
+import type { LinkState } from '../src/agent/lines.ts'
 import type { RoutineLimits } from '../src/agent/routine.ts'
 import { RunLogStore } from '../src/agent/run-log.ts'
 import type { DesignWorkspace } from '../src/design/index.ts'
@@ -14,11 +21,13 @@ import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
 import type { AssistantPart, GenerateRequest, GenerateResult, LlmClient, Message } from '../src/llm/index.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
+import type { ActivityEntry } from '../src/store/activity-log.ts'
+import { ChatLog } from '../src/store/chat-log.ts'
 import type { FeedbackStore } from '../src/store/feedback.ts'
-import { HistoryStore } from '../src/store/history.ts'
+import { HistoryStore, TurnIds } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
-import { ALL_TOOLS } from '../src/tools/index.ts'
+import type { LineName } from '../src/tools/index.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
 type Json = Record<string, unknown>
@@ -97,10 +106,15 @@ export function reply(text: string, calls: { name: string; input?: unknown; id?:
   }
 }
 
-/** 按脚本回应的假模型。脚本用完后一律回空文本（结束这一轮）。 */
+/**
+ * 按脚本回应的假模型。脚本用完后一律回空文本（结束这一轮）；给了 auto 的话脚本用完后由它按请求的内容回
+ * （两条线来回几趟、谁先谁后不好写死顺序的场景用：看它这一步看到了什么，决定回什么）。
+ */
 export class ScriptedLlm implements LlmClient {
   readonly requests: GenerateRequest[] = []
   readonly script: Scripted[] = []
+  /** 脚本用完后怎么回。seen 是这一步新看到的全部文字（最后一条 user 消息里的文字和工具结果）。 */
+  auto: ((seen: string, req: GenerateRequest) => GenerateResult | undefined) | undefined
   /** 同时在途的 generate 调用数的最大值。 */
   maxConcurrent = 0
   private inFlight = 0
@@ -119,7 +133,7 @@ export class ScriptedLlm implements LlmClient {
       const next = this.script.shift()
       const out = typeof next === 'function' ? await next(req) : next
       if (out instanceof Error) throw out
-      return out ?? reply('')
+      return out ?? this.auto?.(this.lastUserText(this.requests.length - 1), req) ?? reply('')
     } finally {
       this.inFlight--
     }
@@ -152,35 +166,59 @@ export const BASE_SETTINGS: AgentSettings = {
 }
 
 export interface AgentHarness {
-  agent: Agent
+  /** 两条线合起来的入口：事件从这里进，照真实的规矩分给对话线和干活线。 */
+  agent: Lines
   game: FakeGame
+  /** 干活线的假模型。 */
   llm: ScriptedLlm
+  /** 对话线的假模型。 */
+  talk: ScriptedLlm
+  /** 干活线的历史。 */
   history: HistoryStore
+  /** 对话线的历史。 */
+  talkHistory: HistoryStore
   memory: MemoryStore
   /** 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里。 */
   manuals: ManualStore
   log: ActivityLog
+  /** 最近的聊天记录（带站位和指向）。 */
+  chatLog: ChatLog
   /** 它写的程序每次运行的全量记录（临时目录的 logs/runs/）。 */
   runLogs: RunLogStore
+  /** 干活线的设置（名字、主人这些两条线一样）。 */
   settings: AgentSettings
+  /** 对话线的设置。 */
+  talkSettings: AgentSettings
   reminders: { dueAt: number; note: string }[]
+  /** 干活线落盘的状态。 */
   persisted: { state: PersistedAgentState | undefined }
+  /** 对话线落盘的状态，和两条线之间留着的事。 */
+  talkPersisted: { state: PersistedAgentState | undefined }
+  links: { state: LinkState | undefined }
   usedTokens: { value: number }
+  dir: string
   /** 用同一份落盘数据、同一个假游戏和假模型再造一个 agent（模拟进程重启）。 */
   restart(overrides?: MakeAgentOptions): AgentHarness
   cleanup(): void
 }
 
 export interface MakeAgentOptions {
+  /** 两条线都用的设置。 */
   settings?: Partial<AgentSettings>
+  /** 只给对话线的设置（它自己的步数上限、历史压缩阈值）。 */
+  talkSettings?: Partial<AgentSettings>
   timing?: Partial<AgentTiming>
   /** 一次程序运行的记录写到多大以后结果只留开头（默认 20 MiB）。 */
   runLogFullTextBytes?: number
-  noModel?: boolean
+  /** 两条线都没有模型；或者只是其中一条没有。 */
+  noModel?: boolean | LineName
   dir?: string
   persisted?: { state: PersistedAgentState | undefined }
+  talkPersisted?: { state: PersistedAgentState | undefined }
+  links?: { state: LinkState | undefined }
   game?: FakeGame
   llm?: ScriptedLlm
+  talk?: ScriptedLlm
   /** 意见簿。给了，模型就能用 report_problem，版本号报的是 brain-under-test / mod-under-test。 */
   feedback?: FeedbackStore
   /** 现在用的模型能不能看图（模型上的那个开关）。默认不能。 */
@@ -193,20 +231,30 @@ export interface MakeAgentOptions {
   routineLimits?: Partial<RoutineLimits>
   /** 本地资料（物品表、配方册……）。 */
   packdata?: PackData
+  /** 这次启动是从只有一条线的老数据升上来的。 */
+  migrated?: boolean
 }
 
 export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const tmp = opts.dir ? { dir: opts.dir, cleanup: () => {} } : tmpDir()
   const settings: AgentSettings = { ...BASE_SETTINGS, ...(opts.settings ?? {}) }
+  const talkSettings: AgentSettings = { ...settings, ...(opts.talkSettings ?? {}) }
   const game = opts.game ?? new FakeGame()
   const llm = opts.llm ?? new ScriptedLlm()
-  const history = new HistoryStore(tmp.dir)
+  const talk = opts.talk ?? new ScriptedLlm()
+  // 和 main.ts 一样：干活线沿用原来的文件名，对话线另有一份；轮的编号两条线共用
+  const turnIds = new TurnIds()
+  const history = new HistoryStore(tmp.dir, { ids: turnIds })
+  const talkHistory = new HistoryStore(tmp.dir, { file: 'talk-history.json', ids: turnIds })
   const memory = new MemoryStore(tmp.dir, () => 4000)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const log = new ActivityLog()
+  const chatLog = new ChatLog(tmp.dir)
   const runLogs = new RunLogStore(tmp.dir, opts.runLogFullTextBytes !== undefined ? { fullTextBytes: opts.runLogFullTextBytes } : {})
   const reminders: { dueAt: number; note: string }[] = []
   const persisted = opts.persisted ?? { state: undefined }
+  const talkPersisted = opts.talkPersisted ?? { state: undefined }
+  const links = opts.links ?? { state: undefined }
   const usedTokens = { value: 0 }
   const timing: Partial<AgentTiming> = {
     debounceMs: 0,
@@ -217,11 +265,14 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     afterDeathDelayMs: 0,
     ...(opts.timing ?? {}),
   }
-  const agent = new Agent({
-    settings: () => settings,
-    llm: () => (opts.noModel ? undefined : llm),
+  const has = (line: LineName): boolean => opts.noModel !== true && opts.noModel !== line
+  const agent = new Lines({
+    settings: (line) => (line === 'talk' ? talkSettings : settings),
+    models: {
+      talk: { llm: () => (has('talk') ? talk : undefined), canSee: () => opts.vision === true },
+      work: { llm: () => (has('work') ? llm : undefined), canSee: () => opts.vision === true },
+    },
     bridge: new BridgeApi(game),
-    tools: ALL_TOOLS,
     memory,
     manuals,
     reminders: {
@@ -231,52 +282,90 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
       },
       list: () => reminders,
     },
-    history,
+    histories: { talk: talkHistory, work: history },
     log,
+    chatLog,
     runLogs,
     todayTokens: () => usedTokens.value,
-    persist: { load: () => persisted.state, save: (s) => (persisted.state = structuredClone(s)) },
+    persist: {
+      work: { load: () => persisted.state, save: (s) => (persisted.state = structuredClone(s)) },
+      talk: { load: () => talkPersisted.state, save: (s) => (talkPersisted.state = structuredClone(s)) },
+      links: { load: () => links.state, save: (s) => (links.state = structuredClone(s)) },
+    },
     timing,
     ...(opts.feedback ? { feedback: opts.feedback, versions: () => ({ brain: 'brain-under-test', mod: 'mod-under-test' }) } : {}),
-    canSeeImages: () => opts.vision === true,
     ...(opts.pictures ? { pictures: opts.pictures } : {}),
     ...(opts.design ? { design: opts.design } : {}),
     ...(opts.routineLimits ? { routineLimits: opts.routineLimits } : {}),
     ...(opts.packdata ? { packdata: opts.packdata } : {}),
+    ...(opts.migrated ? { migrated: true } : {}),
   })
   agent.start()
   const harness: AgentHarness = {
     agent,
     game,
     llm,
+    talk,
     history,
+    talkHistory,
     memory,
     manuals,
     log,
+    chatLog,
     runLogs,
     settings,
+    talkSettings,
     reminders,
     persisted,
+    talkPersisted,
+    links,
     usedTokens,
-    restart: (overrides = {}) => makeAgent({ ...opts, ...overrides, dir: tmp.dir, persisted, game, llm }),
+    dir: tmp.dir,
+    restart: (overrides = {}) => makeAgent({ ...opts, migrated: false, ...overrides, dir: tmp.dir, persisted, talkPersisted, links, game, llm, talk }),
     cleanup: tmp.cleanup,
   }
   return harness
 }
 
 /**
- * 让模型在一轮里调一个工具（有人跟它说了句话 → 它调这个工具 → 看到结果 → 结束这一轮），返回它看到的那个结果。
+ * 让干活线的模型在一轮里调一个工具（对话线交给它一件事 → 它调这个工具 → 看到结果 → 结束这一轮），返回它看到的那个结果。
  * 走的是 agent 的整条路：工具清单按当前模型给，调用经 runTool，结果照“单个工具结果上限”截。
  */
 export async function modelCalls(h: AgentHarness, name: string, input: unknown = {}, said = 'Alu 干活'): Promise<{ content: string; isError: boolean }> {
-  const before = h.llm.requests.length
-  h.llm.enqueue(reply('', [{ id: `c${before}`, name, input }]), reply(''))
-  h.agent.handleEvent(chat('Steve', said))
-  await waitFor(`the model saw the result of ${name}`, () => h.llm.requests.length >= before + 2)
-  const messages = h.llm.requests[before + 1]!.messages
-  const part = messages[messages.length - 1]!.content.find((p) => p.type === 'tool_result' && p.toolCallId === `c${before}`)
+  return lineCalls(h, 'work', name, input, said)
+}
+
+/** 同上，哪条线的模型来调由 line 定：对话线是被 Steve 的一句话叫醒的，干活线是对话线把这句话交过来的。 */
+export async function lineCalls(h: AgentHarness, line: LineName, name: string, input: unknown = {}, said = 'Alu 干活'): Promise<{ content: string; isError: boolean }> {
+  const llm = line === 'talk' ? h.talk : h.llm
+  const before = llm.requests.length
+  llm.enqueue(reply('', [{ id: `c${line}${before}`, name, input }]), reply(''))
+  h.agent.handleEvent(line === 'talk' ? chat('Steve', said) : told(said))
+  await waitFor(`the ${line} model saw the result of ${name}`, () => llm.requests.length >= before + 2)
+  const messages = llm.requests[before + 1]!.messages
+  const part = messages[messages.length - 1]!.content.find((p) => p.type === 'tool_result' && p.toolCallId === `c${line}${before}`)
   await h.agent.whenIdle()
   return part && part.type === 'tool_result' ? { content: part.content, isError: part.isError === true } : { content: '', isError: true }
+}
+
+/** 两条线之间的往来（活动日志里 kind: relay 的那些），可以只要某一种。 */
+export function relays(h: AgentHarness, type?: NonNullable<ActivityEntry['relay']>['type']): ActivityEntry[] {
+  return h.log.recent(0, 500).filter((e) => e.kind === 'relay' && (type === undefined || e.relay?.type === type))
+}
+
+/** 干活线送给对话线的话（汇报、提问、一轮结束留下的、出了状况），按先后。 */
+export function sentToTalk(h: AgentHarness): string[] {
+  return relays(h)
+    .filter((e) => e.relay?.from === 'work')
+    .map((e) => e.detail ?? e.text.replace(/^干活线 → 对话线（[^）]*）：/, ''))
+}
+
+/**
+ * 对话线交给干活线的一件事（tell_worker 之后干活线收到的那个事件）。默认附着 Steve 的原话：就是这句 text。
+ * said 给空数组就是“对话线自己的决定，没有人说话”。
+ */
+export function told(text: string, said: SaidEvent[] = [chat('Steve', text)], time = Date.now()): Extract<AgentEvent, { type: 'told' }> {
+  return { type: 'told', time, text, said }
 }
 
 export function chat(player: string, message: string, time = Date.now()) {

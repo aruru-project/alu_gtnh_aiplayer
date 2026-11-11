@@ -28,6 +28,7 @@
   - check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }（参数和 build_blueprint 一样）：世界和图纸对比，什么都不动。r.data 是 { cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }。
   - haul_items { from, to, items? }：在两个容器之间来回搬，搬完为止（任务；只能在例程里调）。r.data 是 { task, state, result, error }。
   - read_blueprint { name, draft?, from?, to? }：一张图纸里有什么，不用知道它放在哪（draft: true 读你自己的草稿）。r.data 是 { name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }], x, y, z, sx, sy, sz, palette, cells }，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格；整张超过 262144 格时没有 cells，用 from、to 分块读。例子在 blueprint 手册。
+  - recent_chat { minutes?, limit?, player? }：最近的聊天记录（别人说的、面板上发来的、你自己说出去的），早的在前；默认最近 30 句。r.data.lines 是 [{ time, kind, who, text, to?, speaker? }]，speaker 是说话的人当时的 { block, facing, lookingAt, ahead }。交来的事只附着当时那一轮的原话，更早的几句用它查。
   - read_blocks、find_structure、check_structure：见 multiblocks 手册。total_materials：见 crafting 手册。
 - data 里的名字：name 是游戏里看到的中文名（和主人说的、和文字结果里的一样），身体给的英文原名在 en 里。统计、汇报直接用 name。
   - 你的模型不能看图时还有 view_area { x1…z2 或 radius }（世界里一个盒子的文字说明，r.data.kinds 是 [{ id, meta, name, count }]）和 view_image { name }（一张图片的尺寸和主要颜色，r.data 是 { width, height, transparent, colors }）。

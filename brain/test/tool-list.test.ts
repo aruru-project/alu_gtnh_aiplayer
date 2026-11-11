@@ -1,5 +1,6 @@
-// 模型拿到哪些工具，不在清单里的那些（库函数、合并掉的旧名字、不能看图时的看图工具）还用不用得到。
-// 入口是 agent：有人跟它说话 → 它收到工具清单 → 调工具（或者写程序调）→ 看到结果。
+// 两条线的模型各拿到哪些工具，不在清单里的那些（库函数、合并掉的旧名字、不能看图时的看图工具）还用不用得到，
+// 另一条线的事按名字调到时怎么说。
+// 入口是 agent：对话线被人说的话叫醒、干活线被交来的事叫醒 → 它收到工具清单 → 调工具（或者写程序调）→ 看到结果。
 // 游戏是按方法名应答的假服务器，模型是按脚本回应的假模型，跑程序的沙箱是真的。
 //
 // 出发点：从清单里挪走不等于拿掉能力。挪走的东西模型仍然要知道它存在（run_program 说明后面的索引），
@@ -13,8 +14,9 @@ import type { AgentSettings } from '../src/agent/agent.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData } from '../src/packdata/index.ts'
-import { ALL_TOOLS, modelToolSpecs } from '../src/tools/index.ts'
-import { DEFAULT_MANUALS_DIR, chat, makeAgent, modelCalls, reply, taskEnded } from './agent-harness.ts'
+import { LINE_TOOLS, modelToolSpecs } from '../src/tools/index.ts'
+import type { LineName } from '../src/tools/index.ts'
+import { DEFAULT_MANUALS_DIR, chat, lineCalls, makeAgent, modelCalls, reply, taskEnded, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { writeRecipeFixture } from './fixture-recipes.ts'
 import { encodePng, tmpDir, waitFor, worldBlocksAnswer } from './helpers.ts'
@@ -69,60 +71,117 @@ async function program(h: AgentHarness, code: string): Promise<any> {
   return JSON.parse(returned[1]!)
 }
 
-/** 这一次发给模型的工具清单。 */
-async function offered(h: AgentHarness): Promise<{ name: string; description: string; inputSchema: { properties: Record<string, unknown> } }[]> {
-  const before = h.llm.requests.length
-  h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
-  await waitFor('the model was asked', () => h.llm.requests.length > before)
+/** 这一次发给这条线的模型的工具清单。 */
+async function offered(h: AgentHarness, line: LineName = 'work'): Promise<{ name: string; description: string; inputSchema: { properties: Record<string, unknown> } }[]> {
+  const llm = line === 'talk' ? h.talk : h.llm
+  const before = llm.requests.length
+  h.agent.handleEvent(line === 'talk' ? chat('Steve', 'Alu 在吗') : told('看看'))
+  await waitFor('the model was asked', () => llm.requests.length > before)
   await h.agent.whenIdle()
-  return h.llm.requests[before]!.tools as never
+  return llm.requests[before]!.tools as never
 }
 
-// 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
-const TOOLS_WITH_VISION = [
-  'say', 'whisper',
+// 只查不动的工具：两条线都有。能看图的模型才有 view_area、view_image。
+const LOOKUPS = [
   'get_status', 'look_around', 'scan_area', 'view_area', 'inspect_block', 'find_blocks', 'list_containers', 'get_player_position',
-  'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
-  'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
-  'list_designs', 'build_blueprint',
-  'run_program', 'start_routine', 'routine_status', 'stop_routine', 'view_image', 'view_draft', 'publish_draft', 'delete_draft',
-  'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'close_screen',
-  'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
-  'find_quests', 'get_quest',
-  'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
-  'list_manuals', 'read_manual', 'write_manual',
-  'report_problem',
+  'list_designs', 'view_image', 'view_draft',
+  'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'task_status',
 ]
-const LIBRARY = ['list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
+// 记的：记忆、手册、意见簿。两条线都有。
+const NOTES = ['remember', 'forget', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
+// 会让身体动、会改游戏里东西的：只有干活线有。
+const ACTING = [
+  'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
+  'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks', 'build_blueprint',
+  'start_routine', 'routine_status', 'stop_routine', 'publish_draft', 'delete_draft',
+  'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'close_screen',
+  'craft_item', 'process_items', 'cancel_task',
+]
+// 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
+const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
+const TALK_TOOLS_WITH_VISION = ['whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', 'set_reminder', ...NOTES]
+const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
+const LIBRARY = ['recent_chat', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
-  it('能看图的模型：看图的三个工具都在；不能看图的模型：没有 view_area 和 view_image，view_draft 留着但只有出文字的那些参数', async (t) => {
-    const seeing = await offered(setup(t, { vision: true }))
-    assert.deepEqual(seeing.map((tool) => tool.name).sort(), [...TOOLS_WITH_VISION].sort())
-    assert.deepEqual(Object.keys(seeing.find((tool) => tool.name === 'view_draft')!.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program', 'picture', 'from', 'layer'])
+  it('两条线各有各的清单：干活线有操作身体的全部和 report，没有对玩家说话的和提醒；对话线有悄悄话、交事和管干活线的三个、所有只查不动的、提醒，没有任何一个会动身体的，也没有 say', async (t) => {
+    const h = setup(t, { vision: true })
+    const work = (await offered(h, 'work')).map((tool) => tool.name)
+    const talk = (await offered(h, 'talk')).map((tool) => tool.name)
+    assert.deepEqual([...work].sort(), [...WORK_TOOLS_WITH_VISION].sort())
+    assert.deepEqual([...talk].sort(), [...TALK_TOOLS_WITH_VISION].sort())
+    for (const name of ACTING) assert.equal(talk.includes(name), false, `the talk line must not be offered ${name}`)
+    for (const name of ['say', 'whisper', 'set_reminder', 'tell_worker', 'worker_status', 'stop_work']) assert.equal(work.includes(name), false, `the work line must not be offered ${name}`)
+    assert.equal(talk.includes('say'), false)
+  })
 
-    const blind = await offered(setup(t, { vision: false }))
-    assert.deepEqual(blind.map((tool) => tool.name).sort(), TOOLS_WITH_VISION.filter((name) => name !== 'view_area' && name !== 'view_image').sort())
-    const draft = blind.find((tool) => tool.name === 'view_draft')!
-    assert.deepEqual(Object.keys(draft.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program'])
-    assert.doesNotMatch(draft.description, /picture/i)
+  it('对话线直接调了会动身体的名字（工具、库函数、旧名字）：不执行，如实告诉它这归干活线、用 tell_worker 交过去；程序里调也一样；只查不动的照常执行', async (t) => {
+    const h = setup(t)
+    const haul = { from: CHEST, to: BARREL, items: [{ id: 'minecraft:coal', count: 64 }] }
+    const tried: [string, unknown][] = [
+      ['go_to', { x: 1, y: 64, z: 1 }],
+      ['dig_blocks', { blocks: [{ x: 1, y: 64, z: 1 }] }],
+      ['craft_item', { recipe: 'r1' }],
+      ['run_command', { command: 'sethome base' }],
+      ['start_routine', { code: `await tool('go_to', { x: 1, y: 64, z: 1 })` }],
+      ['click_slot', { slot: 0 }],
+      ['publish_draft', { name: 'hut' }],
+      ['cancel_task', {}],
+      ['haul_items', haul],
+      ['set_home', { name: 'base' }],
+    ]
+    for (const [name, input] of tried) {
+      const res = await lineCalls(h, 'talk', name, input)
+      assert.deepEqual([res.isError, res.content], [true, `Not done: "${name}" acts with the body or changes something in the game, and only the worker line does that; the talk line has no tool that does. To have it done, hand it over with tell_worker (say what you want done; the worker has ${name}).`], name)
+    }
+    const inProgram = await lineCalls(h, 'talk', 'run_program', { code: `const r = await tool('go_to', { x: 1, y: 64, z: 1 }); return [r.ok, r.text]` })
+    assert.match(inProgram.content, /Returned: \[false,"go_to cannot be called from run_program: a program there can only look things up \(get_status, .*\)\. Acting is the worker line's: hand the job over with tell_worker\."\]$/)
+    // 身体一样都没动：没有任务、没有指令、没有界面动作
+    for (const method of ['task.start', 'task.cancel', 'bot.command', 'screen.click', 'blueprint.put']) assert.deepEqual(h.game.callsOf(method), [], method)
+    // 只查不动的库函数和旧名字它照常调得到
+    assert.equal((await lineCalls(h, 'talk', 'list_stock', {})).isError, false)
+    assert.equal((await lineCalls(h, 'talk', 'list_blueprints', {})).isError, false)
+    // 干活线调对话线的那几个，同样被告知不归它
+    const mine = await lineCalls(h, 'work', 'tell_worker', { text: '去挖土' })
+    assert.deepEqual([mine.isError, mine.content], [true, `Not done: "tell_worker" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`])
+    const later = await lineCalls(h, 'work', 'set_reminder', { minutes: 5, note: '看作物' })
+    assert.deepEqual([later.isError, later.content], [true, 'Not done: reminders belong to the talk line (a reminder wakes it, not you). report what should be looked at again and when.'])
+    assert.deepEqual(h.reminders, [])
+  })
+
+  it('能看图的模型：看图的三个工具都在；不能看图的模型：没有 view_area 和 view_image，view_draft 留着但只有出文字的那些参数', async (t) => {
+    for (const line of ['work', 'talk'] as const) {
+      const seeing = await offered(setup(t, { vision: true }), line)
+      assert.deepEqual(seeing.map((tool) => tool.name).sort(), [...TOOLS_WITH_VISION[line]].sort())
+      assert.deepEqual(Object.keys(seeing.find((tool) => tool.name === 'view_draft')!.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program', 'picture', 'from', 'layer'])
+
+      const blind = await offered(setup(t, { vision: false }), line)
+      assert.deepEqual(blind.map((tool) => tool.name).sort(), TOOLS_WITH_VISION[line].filter((name) => name !== 'view_area' && name !== 'view_image').sort())
+      const draft = blind.find((tool) => tool.name === 'view_draft')!
+      assert.deepEqual(Object.keys(draft.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program'])
+      assert.doesNotMatch(draft.description, /picture/i)
+    }
   })
 
   it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2000 字符；start_routine 的说明指过去', async (t) => {
-    for (const vision of [true, false]) {
-      const tools = await offered(setup(t, { vision }))
-      const names = tools.map((tool) => tool.name)
-      for (const name of [...LIBRARY, ...OLD_NAMES]) assert.equal(names.includes(name), false, name)
-      const run = tools.find((tool) => tool.name === 'run_program')!.description
-      const index = run.slice(run.indexOf('\nLibrary functions') + 1)
-      assert.ok(index.length <= 2000, `the index is ${index.length} characters`)
-      const lines = index.split('\n')
-      assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
-      // 不能看图时，没进清单的 view_area、view_image 也列在索引里：它们给的文字照样拿得到
-      const listed = vision ? LIBRARY : [...LIBRARY, 'view_area', 'view_image']
-      assert.deepEqual(lines.slice(1).map((line) => /^- (\w+) \{[^}]*\}: .+ -> .+$/.exec(line)?.[1]), listed)
-      assert.match(tools.find((tool) => tool.name === 'start_routine')!.description, /The library functions listed under run_program can be called here too\./)
+    for (const line of ['work', 'talk'] as const) {
+      for (const vision of [true, false]) {
+        const tools = await offered(setup(t, { vision }), line)
+        const names = tools.map((tool) => tool.name)
+        for (const name of [...LIBRARY, ...OLD_NAMES]) assert.equal(names.includes(name), false, name)
+        const run = tools.find((tool) => tool.name === 'run_program')!.description
+        const index = run.slice(run.indexOf('\nLibrary functions') + 1)
+        assert.ok(index.length <= 2000, `the index is ${index.length} characters`)
+        const lines = index.split('\n')
+        assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
+        // 对话线的索引里只有只查不动的：会开任务的 haul_items 不在
+        const library = line === 'talk' ? LIBRARY.filter((name) => name !== 'haul_items') : LIBRARY
+        // 不能看图时，没进清单的 view_area、view_image 也列在索引里：它们给的文字照样拿得到
+        const listed = vision ? library : [...library, 'view_area', 'view_image']
+        assert.deepEqual(lines.slice(1).map((entry) => /^- (\w+) \{[^}]*\}: .+ -> .+$/.exec(entry)?.[1]), listed)
+        if (line === 'work') assert.match(tools.find((tool) => tool.name === 'start_routine')!.description, /The library functions listed under run_program can be called here too\./)
+      }
     }
   })
 
@@ -142,7 +201,7 @@ describe('模型拿到的工具清单', () => {
   })
 
   it('手册里教它在程序里调的每一个名字都真的调得到', () => {
-    const callable = new Set([...TOOLS_WITH_VISION, ...LIBRARY, ...OLD_NAMES])
+    const callable = new Set([...WORK_TOOLS_WITH_VISION, ...LIBRARY, ...OLD_NAMES])
     for (const file of fs.readdirSync(DEFAULT_MANUALS_DIR)) {
       const text = fs.readFileSync(path.join(DEFAULT_MANUALS_DIR, file), 'utf8')
       for (const call of text.matchAll(/\btool\(\s*["']([a-z_]+)["']/g)) assert.ok(callable.has(call[1]!), `${file} calls tool("${call[1]}"), which does not exist`)
@@ -151,28 +210,31 @@ describe('模型拿到的工具清单', () => {
 
   // 每个工具的说明和参数 schema 每一轮都发给模型。加一个工具之前先想：通用能力（走、挖放、用物品、开界面点格子、
   // 存取、写程序）加上模型自己的脑子做得到的事，不做成专用工具；“查一查、算一算”的做成库函数（索引里只占一行）。
-  // 确实要加，再有意识地把这个上限调高。上限是 2026-11 瘦身两步做完时的实际值（42,576）往上留约 5%。
-  // 第三批之后实际是 44,135，上限没动。多出来的 1,559：use_item 的 side / hit / times / every 和空手（+868，身体的新能力）、
-  // run_program 后面的库函数索引（+196：read_blueprint 一行，list_drawers 的 front / hit，total_materials 的 chisel）、
-  // start_routine（+145：不限调用次数、时长由主人定）、say / whisper 照实写怎么分行和上限（+97）、几个说明改成陈述（+253）。
-  // 第四批（覆盖板、流体、方块的全部数据）之后实际是 46,085，上限从 44,700 调到 46,600（+1,900）。多出来的 1,950 都是新能力的参数：
-  // open_screen 的 side / hit / sneak（+654）、deposit_items / withdraw_items 的容器可以带 side / sneak（各 +252，覆盖板里的东西靠它拿）、
-  // inspect_block 的 detail / path（+321，一个方块自己存的全部数据）、find_recipes 的 fluid / circuit（+309，按流体、按电路查配方）、
-  // 库函数索引（+74）、find_in_storage / find_item 的说明（+88）。
-  // 量的是发给模型的那份（modelToolSpecs）：说明加上瘦过的参数 schema。
-  it('防回涨：不能看图的模型每一轮收到的工具清单不超过 46,600 字符', () => {
-    const CEILING = 46_600
-    const sizes = modelToolSpecs(ALL_TOOLS, { canSee: false })
-      .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
-      .sort((a, b) => b.chars - a.chars)
-    const total = sizes.reduce((n, s) => n + s.chars, 0)
-    assert.ok(
-      total <= CEILING,
-      `发给模型的工具清单现在是 ${total} 字符（${sizes.length} 个工具），超过了上限 ${CEILING}。\n` +
-        '这些字符每一轮都发。先看新加的东西能不能做成库函数（src/tools/index.ts 的 LIBRARY_TOOLS，只在索引里占一行）、' +
-        '能不能并进现有的工具、说明能不能只留“调对它所必需的”（怎么用好写进手册，调错了才要知道的写进出错的结果）；确实要加，再把这条测试里的上限调高。\n' +
-        `各工具的大小（大的在前）：\n${sizes.map((s) => `  ${String(s.chars).padStart(5)}  ${s.name}`).join('\n')}`,
-    )
+  // 确实要加，再有意识地把上限调高。量的是发给模型的那份（modelToolSpecs）：说明加上瘦过的参数 schema。
+  // 两条线各有清单、各有上限：
+  //   干活线：分线之前单代理的上限是 46,600（第四批——覆盖板、流体、方块的全部数据——之后实际 46,085）。分线后实际 45,753：
+  //           少了 say、whisper、set_reminder（-1,233），多了 report（+763）和库函数索引里 recent_chat 的一行（+138）。上限不动。
+  //   对话线：实际 20,951（28 个工具），不到干活线的一半；上限留约 2%。它每回一句话都带着这份清单，回话快不快就看它。
+  //           里面最大的几个是它用来自己回答问题的：run_program 连库函数索引（2,7xx）、find_in_storage、report_problem、find_recipes。
+  for (const [line, ceiling] of [['work', 46_600], ['talk', 21_400]] as const) {
+    it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
+      const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
+        .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
+        .sort((a, b) => b.chars - a.chars)
+      const total = sizes.reduce((n, s) => n + s.chars, 0)
+      assert.ok(
+        total <= ceiling,
+        `发给${line === 'work' ? '干活线' : '对话线'}的工具清单现在是 ${total} 字符（${sizes.length} 个工具），超过了上限 ${ceiling}。\n` +
+          '这些字符每一轮都发。先看新加的东西能不能做成库函数（src/tools/index.ts 的 LIBRARY_TOOLS，只在索引里占一行）、' +
+          '能不能并进现有的工具、说明能不能只留“调对它所必需的”（怎么用好写进手册，调错了才要知道的写进出错的结果）；确实要加，再把这条测试里的上限调高。\n' +
+          `各工具的大小（大的在前）：\n${sizes.map((s) => `  ${String(s.chars).padStart(5)}  ${s.name}`).join('\n')}`,
+      )
+    })
+  }
+
+  it('对话线的清单明显比干活线的小：不到一半', () => {
+    const size = (line: LineName) => modelToolSpecs(LINE_TOOLS[line], { canSee: false, line }).reduce((n, spec) => n + JSON.stringify(spec).length, 0)
+    assert.ok(size('talk') * 2 < size('work'), `talk ${size('talk')}, work ${size('work')}`)
   })
 })
 
@@ -251,19 +313,24 @@ describe('库函数：不在清单里，在程序里调', () => {
     await h.agent.whenIdle()
 
     const direct = await modelCalls(h, 'haul_items', haul)
-    assert.deepEqual([direct.isError, direct.content], [false, 'Task t2 (haul) started. It runs in the game on its own. End your turn now; you will be woken with the outcome when it ends.'])
+    assert.deepEqual([direct.isError, direct.content], [false, 'Task t2 (haul) started. It runs in the game on its own: when it ends, the outcome comes to you by itself (waking you if your turn has ended), so there is nothing to wait or poll for; a look at its progress is one model call each time.'])
     assert.deepEqual(h.agent.status().trackedTasks, ['t2'])
   })
 
-  it('调了一个不存在的名字：报错里分两组列出能调的——它的工具，和库函数；看图的两个按它能不能看图归组', async (t) => {
+  it('调了一个不存在的名字：报错里分两组列出能调的——这条线的工具，和库函数；看图的两个按它能不能看图归组', async (t) => {
     const blind = (await modelCalls(setup(t, { vision: false }), 'fly_to_the_moon')).content
-    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
-    assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image/)
+    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
+    assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image|\bsay\b|whisper/)
     assert.ok(blind.length < 1100, `${blind.length} characters`)
     for (const old of OLD_NAMES) assert.equal(blind.includes(old), false, old)
 
     const seeing = (await modelCalls(setup(t, { vision: true }), 'fly_to_the_moon')).content
-    assert.match(seeing, /Your tools: .*\bview_area\b.*\bview_image\b.*\. Library functions \(in a program: await tool\(name, input\)\): list_stock, .*, total_materials\.$/)
+    assert.match(seeing, /Your tools: .*\bview_area\b.*\bview_image\b.*\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, .*, total_materials\.$/)
+
+    // 对话线：列的是它自己的工具和只查不动的库函数
+    const talk = (await lineCalls(setup(t, { vision: false }), 'talk', 'fly_to_the_moon')).content
+    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, .*, total_materials, view_area, view_image\.$/)
+    assert.doesNotMatch(talk, /haul_items|go_to|start_routine/)
   })
 
   it('不能看图的模型：view_area、view_image 给的文字和数据在程序里拿得到——范围、各种方块各多少、一层层各有什么；图片的尺寸和主要颜色', async (t) => {
@@ -425,23 +492,16 @@ describe('图纸里有什么（read_blueprint）', () => {
 })
 
 describe('用 run_command 发悄悄话', () => {
-  it('tell / msg / w 送到了就算已经对人说过话：它这一轮最后留的那段文字不会再被替它公开说一遍；对方不在线没送到的不算', async (t) => {
+  it('干活线没有 whisper，但它用 run_command 发的 tell / msg / w 送到了，日志和聊天记录里照样记成它说的；对方不在线没送到的不记', async (t) => {
     const h = setup(t)
     h.game.handlers['bot.command'] = (p) => ({ output: String(p.command).includes('Herobrine') ? ['That player cannot be found'] : [`You whisper to Steve: ${String(p.command).slice('tell Steve '.length)}`] })
-    h.llm.enqueue(reply('', [{ name: 'run_command', input: { command: 'tell Steve 东西放你箱子里了' } }]), reply('已经私聊告诉他了。'))
-    h.agent.handleEvent(chat('Steve', 'Alu 弄好了悄悄告诉我'))
-    await waitFor('the turn ended', () => h.llm.requests.length === 2)
-    await h.agent.whenIdle()
-    assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['tell Steve 东西放你箱子里了'])
+    await modelCalls(h, 'run_command', { command: 'tell Steve 东西放你箱子里了' })
+    await modelCalls(h, 'run_command', { command: 'msg Herobrine 在吗' })
+    assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['tell Steve 东西放你箱子里了', 'msg Herobrine 在吗'])
     assert.deepEqual(h.game.said, [])
-    // 面板的对话日志里这句话记成它说的
-    assert.ok(h.log.recent(0, 50).some((e) => e.kind === 'say' && e.text === '（私聊 Steve）东西放你箱子里了'))
-
-    h.llm.enqueue(reply('', [{ name: 'run_command', input: { command: 'msg Herobrine 在吗' } }]), reply('他不在线。'))
-    h.agent.handleEvent(chat('Steve', 'Alu 问问 Herobrine'))
-    await waitFor('the second turn ended', () => h.llm.requests.length === 4)
-    await h.agent.whenIdle()
-    assert.deepEqual(h.game.said, ['他不在线。'])
+    // 面板的对话日志里这句话记成它说的，标着是干活线
+    assert.deepEqual(h.log.recent(0, 80).filter((e) => e.kind === 'say').map((e) => [e.agent, e.text]), [['work', '（私聊 Steve）东西放你箱子里了']])
+    assert.deepEqual(h.chatLog.recent().lines.filter((l) => l.kind === 'whispered').map((l) => [l.to, l.text]), [['Steve', '东西放你箱子里了']])
   })
 })
 

@@ -7,6 +7,7 @@ import { DEFAULT_PERSONA } from '../src/agent/prompt.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../src/llm/index.ts'
+import { LlmError } from '../src/llm/index.ts'
 import { DesignWorkspace, decodePng } from '../src/design/index.ts'
 import { StructureBook } from '../src/packdata/index.ts'
 import type { TextureAtlas } from '../src/packdata/index.ts'
@@ -19,18 +20,23 @@ import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { PictureStore } from '../src/store/pictures.ts'
 import { UsageStore } from '../src/store/usage.ts'
-import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
+import { DEFAULT_MANUALS_DIR, FakeGame, chat, makeAgent, relays, reply, told } from './agent-harness.ts'
+import type { AgentHarness } from './agent-harness.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
 import { encodePng, tmpDir, waitFor } from './helpers.ts'
 import { readBlueprintAnswer, readSchematic } from './mock-bridge.ts'
 
 const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
 
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void } } = {}) {
-  const tmp = opts.dir ?? tmpDir()
+/**
+ * lines：给了就接上真的两条线（agent-harness 的 makeAgent 造的：真的 Lines、两份历史、假的游戏和假的模型），
+ * 不给就是只记下收到什么的桩。
+ */
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness } = {}) {
+  const tmp = opts.dir ?? (opts.lines ? { dir: opts.lines.dir, cleanup: opts.lines.cleanup } : tmpDir())
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
-  const game = new FakeGame()
-  const log = opts.log ?? new ActivityLog()
+  const game = opts.lines?.game ?? new FakeGame()
+  const log = opts.lines?.log ?? opts.log ?? new ActivityLog()
   const memory = new MemoryStore(tmp.dir, () => config.get().bot.limits.memoryMaxChars)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const design = new DesignWorkspace({ dataDir: tmp.dir })
@@ -48,7 +54,8 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     memory,
     usage: new UsageStore(tmp.dir),
     log,
-    history: new HistoryStore(tmp.dir),
+    history: opts.lines?.history ?? new HistoryStore(tmp.dir),
+    ...(opts.lines ? { talkHistory: opts.lines.talkHistory } : {}),
     manuals,
     design,
     feedback,
@@ -57,7 +64,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     ...(opts.structures ? { structures: opts.structures } : {}),
     bridge: new BridgeApi(game),
     bridgeStatus: () => ({ state: 'connected', address: '127.0.0.1:1' }),
-    agent: {
+    agent: opts.lines?.agent ?? {
       handleEvent: (ev) => events.push(ev),
       status: () => ({ busy: false, pending: 0, background: 0, botOnline: true, trackedTasks: [] }),
       ownCancel: async (fn) => {
@@ -414,7 +421,7 @@ describe('面板：一个服务商下面的多个模型', () => {
     assert.equal(switched.status, 200, switched.text)
     assert.deepEqual([switched.json.activeProviderId, switched.json.activeModelId], [providerId, thinkingId])
     assert.deepEqual([s.config.activeProvider()?.model, s.config.activeProvider()?.extraBody], ['gpt-x-thinking', { reasoning_effort: 'high' }])
-    assert.ok(s.log.recent(0, 50).some((e) => e.kind === 'info' && e.text === '在面板上把模型换成了 主力 / 思考版，下一轮起生效。'))
+    assert.ok(s.log.recent(0, 50).some((e) => e.kind === 'info' && e.text === '在面板上把两条线的模型都换成了 主力 / 思考版，下一轮起生效。'))
 
     await s.call('POST', '/api/models/use', { providerId: otherId, modelId: claudeId })
     assert.deepEqual([s.config.activeProvider()?.kind, s.config.activeProvider()?.model, s.config.activeProvider()?.options], ['anthropic-messages', 'claude-x', { authStyle: 'bearer', promptCaching: false }])
@@ -1230,5 +1237,129 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual(o.models, [{ providerId: o.provider.id, providerLabel: '主力', modelId: o.provider.modelId, label: 'gpt-x' }])
     assert.deepEqual(o.usage, { today: { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, dailyTokenLimit: 0 })
     assert.equal(o.agent.busy, false)
+  })
+})
+
+describe('面板：两条线', () => {
+  it('状态里两项，顺序固定 talk、work：各有自己的模型、这一轮、历史；例程、身体、在等的回答、最近一次汇报只挂在干活线下面', async (t) => {
+    const lines = makeAgent({ talkSettings: { maxSteps: 7 } })
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    const main = (await s.call('POST', '/api/providers', PROVIDER)).json.provider
+    const fast = (await s.call('POST', `/api/providers/${main.id}/models`, { name: 'gpt-fast', label: '快的' })).json.model.id as string
+    await s.call('POST', '/api/models/use', { providerId: main.id, modelId: fast, line: 'talk' })
+    lines.game.handlers['task.list'] = () => ({ active: { id: 't7', type: 'haul', state: 'running', progress: { done: 3, total: 8 } }, queue: [], recent: [] })
+
+    // 干活线领了事，问了一个问题，然后正在想下一步；对话线空闲
+    let answer!: (r: ReturnType<typeof reply>) => void
+    lines.llm.enqueue(reply('', [{ name: 'report', input: { text: '放哪个箱子？', question: true } }]), () => new Promise((resolve) => (answer = resolve)))
+    lines.agent.handleEvent(told('把圆石搬到箱子里'))
+    await waitFor('the worker is thinking about step 2', () => answer !== undefined)
+    await waitFor('the talk line saw the question', () => lines.talk.requests.length === 1 && lines.agent.state('talk').turn === null)
+
+    const st = (await s.call('GET', '/api/status')).json
+    assert.deepEqual(st.agents.map((a: { agent: string; title: string; name: string }) => [a.agent, a.title, a.name]), [['talk', '对话线', 'Alu'], ['work', '干活线', 'Alu']])
+    const [talk, work] = st.agents
+    // 对话线：自己的模型（快的那个）、空闲、历史里一轮；没有例程和身体这几个键
+    assert.deepEqual([talk.model.state, talk.model.provider, talk.model.model, talk.model.providerId, talk.model.modelId, talk.turn, talk.pending], ['idle', '主力', 'gpt-fast', main.id, fast, null, 0])
+    assert.deepEqual([talk.history.turns, talk.history.hasSummary, talk.history.threshold], [1, false, 60000])
+    for (const key of ['routine', 'lastRoutine', 'body', 'waitingAnswer', 'lastReport']) assert.equal(key in talk, false, key)
+    // 干活线：自己的模型、正在想第 2 步、这一轮的起因；它在等的回答和最近一次送来的话；身体正在做的任务
+    assert.deepEqual([work.model.state, work.model.model, work.model.step, work.turn.steps, work.turn.maxSteps, work.turn.about], ['thinking', 'gpt-x', 2, 1, 16, '对话线交给你的（这一句是它写的）：把圆石搬到箱子里'])
+    assert.deepEqual([work.waitingAnswer.text, work.lastReport.type, work.lastReport.text], ['放哪个箱子？', 'question', '放哪个箱子？'])
+    assert.equal(typeof work.waitingAnswer.since, 'number')
+    assert.deepEqual([work.routine, work.lastRoutine, work.body.online, work.body.task.id, work.body.task.progress], [null, null, true, 't7', { done: 3, total: 8 }])
+    assert.deepEqual([work.history.turns, work.history.threshold], [0, 24000])
+    // 日志条目带着是哪条线的；两条线之间的往来是 kind: relay；轮的编号两条线不重
+    const log = (await s.call('GET', '/api/log')).json.entries as { kind: string; agent?: string; turn?: number; relay?: { type: string; from: string; to: string }; text: string }[]
+    assert.deepEqual(log.filter((e) => e.kind === 'relay').map((e) => [e.agent, e.relay, e.text]), [['work', { type: 'question', from: 'work', to: 'talk' }, '干活线 → 对话线（提问）：放哪个箱子？']])
+    const turns = (agent: string) => new Set(log.filter((e) => e.agent === agent && e.turn !== undefined).map((e) => e.turn))
+    assert.deepEqual([[...turns('work')], [...turns('talk')].some((n) => turns('work').has(n))], [[work.turn.id], false])
+    assert.ok(log.filter((e) => e.kind === 'model_call').every((e) => e.agent === 'talk' || e.agent === 'work'))
+
+    // 概览里旧的那几项还是干活线的；两条线各自的在新加的项里
+    const o = (await s.call('GET', '/api/overview')).json
+    assert.deepEqual([o.provider.model, o.lineModels.work.model, o.lineModels.talk.model, o.lineModels.talk.modelLabel], ['gpt-x', 'gpt-x', 'gpt-fast', '快的'])
+    assert.deepEqual([o.agent.busy, o.talk.busy, o.history.turns, o.histories.talk.turns, o.histories.work.turns], [true, false, 0, 1, 0])
+    answer(reply(''))
+    await lines.agent.whenIdle()
+  })
+
+  it('两条线各选一个模型：带 line 只换那一条，不带是两条一起换（旧界面的行为）；日志里写明换的是哪条', async (t) => {
+    const lines = makeAgent()
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    const main = (await s.call('POST', '/api/providers', PROVIDER)).json.provider
+    const first = main.models[0].id as string
+    const fast = (await s.call('POST', `/api/providers/${main.id}/models`, { name: 'gpt-fast', label: '快的' })).json.model.id as string
+    assert.deepEqual((await s.call('GET', '/api/providers')).json.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first } })
+
+    const talkOnly = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: fast, line: 'talk' })).json
+    assert.deepEqual([talkOnly.lines, talkOnly.activeModelId], [{ talk: { providerId: main.id, modelId: fast }, work: { providerId: main.id, modelId: first } }, first])
+    assert.deepEqual([s.config.lineProvider('talk')?.model, s.config.lineProvider('work')?.model], ['gpt-fast', 'gpt-x'])
+    const workOnly = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: fast, line: 'work' })).json
+    assert.deepEqual([workOnly.lines.work.modelId, workOnly.activeModelId], [fast, fast])
+    const both = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: first })).json
+    assert.deepEqual(both.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first } })
+    assert.equal((await s.call('POST', '/api/models/use', { providerId: main.id, modelId: first, line: 'main' })).status, 400)
+    assert.deepEqual(
+      s.log.recent(0, 50).filter((e) => e.kind === 'info' && e.text.startsWith('在面板上把')).map((e) => e.text),
+      ['在面板上把对话线的模型换成了 主力 / 快的，下一轮起生效。', '在面板上把干活线的模型换成了 主力 / 快的，下一轮起生效。', '在面板上把两条线的模型都换成了 主力 / gpt-x，下一轮起生效。'],
+    )
+    // 两条线的上限各有一项，主人在“AI 玩家”页能改
+    const bot = (await s.call('PUT', '/api/bot', { limits: { talkMaxSteps: 9, talkHistoryTokenThreshold: 30000 } })).json.bot
+    assert.deepEqual([bot.limits.talkMaxSteps, bot.limits.talkHistoryTokenThreshold, bot.limits.maxSteps, bot.limits.historyTokenThreshold], [9, 30000, 60, 24000])
+  })
+
+  it('清空对话历史：带 line 只清那一条线的，不带是两条都清', async (t) => {
+    const lines = makeAgent()
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    const fill = async () => {
+      lines.talk.enqueue(reply('在'))
+      lines.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+      lines.agent.handleEvent(told('看看'))
+      await lines.agent.whenIdle()
+    }
+    const sizes = () => [lines.talkHistory.get().turns.length, lines.history.get().turns.length]
+    await fill()
+    assert.deepEqual(sizes(), [1, 1])
+    await s.call('POST', '/api/history/clear', { line: 'talk' })
+    assert.deepEqual(sizes(), [0, 1])
+    await fill()
+    await s.call('POST', '/api/history/clear', { line: 'work' })
+    assert.deepEqual(sizes(), [1, 0])
+    await fill()
+    assert.equal((await s.call('POST', '/api/history/clear', { line: 'both' })).status, 400)
+    await s.call('POST', '/api/history/clear', {})
+    assert.deepEqual(sizes(), [0, 0])
+  })
+
+  it('总停止：一次请求取消身体的全部任务、打断干活线正在想的那一步；它之后不会自己接着干；日志里是一条从面板发的 relay', async (t) => {
+    const lines = makeAgent()
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    lines.game.handlers['task.cancel'] = () => ({ canceled: 1, ids: ['t1'] })
+    let aborted = false
+    lines.llm.enqueue(
+      reply('', [{ name: 'go_to', input: { x: 9, y: 64, z: 9 } }]),
+      (req) => new Promise((_resolve, reject) => req.signal?.addEventListener('abort', () => ((aborted = true), reject(new LlmError('aborted', 'stopped'))))),
+    )
+    lines.agent.handleEvent(told('过去'))
+    await waitFor('the worker is thinking about step 2', () => lines.llm.requests.length === 2)
+    const turn = lines.agent.state('work').turn!.id
+
+    assert.equal((await s.call('POST', '/api/work/stop', { reason: '走错了' }, { origin: 'https://evil.example' })).status, 403)
+    const res = await s.call('POST', '/api/work/stop', { reason: '走错了' })
+    assert.deepEqual([res.status, res.json], [200, { ok: true, turn: true, routine: null, tasks: 1, dropped: 0 }])
+    await lines.agent.whenIdle()
+    assert.equal(aborted, true)
+    assert.deepEqual(lines.game.callsOf('task.cancel'), [{ bot: 'Alu' }])
+    assert.equal(lines.agent.state('work').turn, null)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(lines.llm.requests.length, 2)
+    assert.equal(lines.log.recent(0, 100).some((e) => e.kind === 'error'), false)
+    const relay = relays(lines, 'stop')
+    assert.deepEqual([relay.length, relay[0]!.agent, relay[0]!.relay, relay[0]!.text], [1, undefined, { type: 'stop', from: 'panel', to: 'work', quotes: 0 }, `面板 → 干活线：停（走错了）。打断了干活线的第 ${turn} 轮（第 2 步），取消了 1 个身体任务。`])
   })
 })

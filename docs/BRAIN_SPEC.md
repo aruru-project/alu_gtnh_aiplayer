@@ -20,7 +20,7 @@ GTNH（Minecraft 1.7.10）服务器里有一个由 mod 生成的 AI 玩家（“
   因此只用可擦除语法：不用 `enum`、参数属性、`namespace`；相对导入写 `.ts` 后缀。`tsconfig.json` 开 `strict`、`erasableSyntaxOnly`、`allowImportingTsExtensions`、`noEmit`。
 - **运行时零依赖**：只用 `node:http` `node:net` `node:fs` `node:crypto` `node:test` 和内置 `fetch`。开发依赖只有 `typescript` 和 `@types/node`（装包走环境变量里的代理）。
 - 面板前端是手写的静态 HTML/CSS/JS，没有构建工具和框架。界面文字用中文。
-- 所有运行期数据放在数据目录（默认 `brain/data/`，可用环境变量 `AIPLAYER_DATA_DIR` 改）。目录权限 700，文件 600。
+- 所有运行期数据放在数据目录（默认 `brain/data/`，可用环境变量 `AIPLAYER_DATA_DIR` 改）。目录权限 700，文件 600。两条线各有历史和状态：干活线是 `history.json`、`agent-state.json`（只有一条线时的文件名，老数据原样归它），对话线是 `talk-history.json`、`talk-state.json`；两条线之间留着的事在 `lines-state.json`，聊天记录在 `chat-log.json`。
 - 只改 `brain/` 下的文件。不要运行任何 git 命令（提交由我来做）。
 - 不要寻找或使用这台机器上任何现有的 API key，不要请求真实的模型接口；模型调用一律用自己写的模拟 HTTP 服务测试。
 - 这台机器上有正在运行的正式游戏服务器（端口 10086 / 25575），不要连接它。测试只连你自己的模拟 bridge。
@@ -115,7 +115,17 @@ interface ProviderConfig {
 
 ## agent 循环 `agent/`
 
-事件驱动，不是阻塞式循环。一个 bot 一个 Agent 实例。
+事件驱动，不是阻塞式循环。
+
+**一个 bot 两条线**（设计和理由见 `docs/TALK_WORK.md`）：同一个进程里两个 Agent 实例，各有模型、对话历史和压缩、落盘的状态、事件队列、每轮步数上限、系统提示词和工具清单，互不等待。
+
+- **对话线**（`talk`）：听人说话、回话、查资料。**它写出来的文字就是它在公共聊天里说的话**——每一步的文字在那一步返回时就说出去（和工具调用同一步时先说再调），什么都不写就是不说；没有 `say` 工具。它没有任何会动身体的工具，要动手的事用 `tell_worker` 交给干活线。
+- **干活线**（`work`）：操作身体的只有它（任务、界面、例程、指令）。它不对玩家说话：中途用 `report` 汇报或提问，一轮结束时留下的文字自动送给对话线。
+- **事件怎么分**（`agent/lines.ts` 的 `lineOf`）：聊天、悄悄话、面板指令、提醒、玩家进出、干活线送来的话 → 对话线；任务开始和结束、受伤、系统消息、对话线交来的事 → 干活线；死亡、上线、下线两条线都收到（死亡两条线都叫醒，上线下线对两条线都只是背景）。
+- **两条线之间**：`tell_worker`（这一轮里的人的原话连同站位和指向由程序原样附上）、`worker_status`、`stop_work`（一次调用取消身体的全部任务和例程、打断干活线正在进行的模型调用、放下它还没处理的事；它随后只在背景里看到“被叫停了”，不因此自己接着干）、`report`。对话线每一轮的“当前状态”里有干活线的现状。话头在两条线之间连着倒了 12 次、中间没有任何外面的事时，之后的往来只作背景、不再互相叫醒（防空转）。
+- **共用**：bridge、本地资料、记忆、手册、意见簿、设计工作区、聊天记录、每日 token 上限（两条线合计）。
+
+下面各条说的是“一条线”的一轮怎么走，两条线都一样；只对某一条线成立的地方写明了。
 
 - **输入事件**：聊天、私聊、任务结束（`task.update` 的 done/failed/canceled）、bot 受伤/死亡/上线、玩家进出、面板发来的指令、定时提醒。
 - **唤醒策略**（纯函数，单独可测）：哪些事件触发一轮决策。
@@ -126,12 +136,12 @@ interface ProviderConfig {
 - **一轮决策**：把待处理事件格式化成一条 user 消息（附当前状态快照：位置、血量、背包摘要、当前任务和队列、在线玩家、游戏内时间）→ 调模型 → 顺序执行工具调用 → 结果回给模型 → 直到模型不再调用工具或达到步数上限（默认 60，可设到 500）。
   - 同一时刻只跑一轮。每一步的工具结果凑齐后、下一次调模型前，这期间新到的会触发决策的事件接在工具结果后面一起给模型（格式同“需要你处理的事”，说话的带站位和指向），算进这一轮：一起落盘、不另开一轮。模型不再调工具、这一轮要结束时又到的事件，照旧在本轮结束后合并成下一轮。
   - 任务是异步的：启动任务的工具立刻返回“已开始”；任务结束事件会再次唤醒它（它那一轮还在进行时，接在当时那一步后面）。提示词里要讲清这一点。
-- **说话**：玩家只能看到 bot 用 `say` 工具说的话。模型最后的纯文本不进聊天，只记入日志。
-  兜底：如果这一轮是被聊天/私聊/面板指令触发的，模型全程没调用 `say` 却给了最终文本，就把这段文本（截断到 200 字）说出去。
+- **说话**：对话线每一步写的文字去掉 markdown 记号、压成一行后在公共聊天里说出去；身体回的发送结果（分了几行、截掉多少字、丢了几行）照实记进日志，有不寻常的接在那一步的工具结果后面告诉模型。干活线的文字不进聊天，只记入日志；它一轮结束时留下的那段送给对话线。
+  （分成两条线之前：玩家只能看到它用 `say` 说的话，没调 `say` 却留了文本时程序替它说出去。这个兜底已经去掉。）
 - **历史与压缩**：历史落盘。估算 token（字符数/3 即可）超过阈值时，把较早的部分用一次不带工具的模型调用压成摘要。只在整轮的边界上切，保证工具调用和结果成对。过长的旧工具结果先截断。
 - **记忆**：模型通过工具读写的持久笔记（键 → 文本），每轮放进提示词，有总长度上限。地点（home 名字和用途）也记在这里。
-- **限制**：每轮步数上限；可选的每日 token 上限（0 为不限）；模型接口连续失败时停止重试并在聊天里说一次（限频），接口恢复后自动继续。
-- **系统提示词**：默认人设是一个在服务器里一起玩的伙伴，中文，简短口语。要写清：它是生存模式的玩家；动手靠任务；任务失败码各自该怎么办（见协议）；不确定区域或高度时先 `scan_area` 或问人；不要动别人的箱子和机器。面板里可改，可恢复默认。
+- **限制**：每轮步数上限（两条线各一个）；可选的每日 token 上限（0 为不限，两条线合计）；模型接口连续失败时停止重试，接口恢复后自动继续——对话线的故障由程序在聊天里说一次（限频），干活线的故障由程序告诉对话线一次。
+- **系统提示词**（`agent/prompt.ts`）：公共部分（它是谁、生存模式的规矩、一个玩家两条线）+ 这条线自己的部分 + 程序每轮生成的几节（手册目录、名字、主人、记忆）。只写事实和后果，不立规矩。每条线的核心提示词（公共部分加自己的部分）不超过 2,400 字，有测试卡着。面板里可改、可恢复默认的是对话线的“说话风格”那一段；干活线没有这一段。
 
 ## 工具 `tools/`
 
@@ -158,7 +168,7 @@ interface ProviderConfig {
 
 任务类工具都带可选参数 `queue: boolean`（对应 `mode: "append"`）。
 
-上面是第一版的清单，留着当记录。现在的工具分三层：发给模型的工具、不发给模型而在它写的程序里调的**库函数**、合并掉的工具的**旧名字**（`set_home` / `list_homes` 现在是通用的 `run_command`，`haul_items` 是库函数……）；看图的工具只发给能看图的模型。现在的清单见 `brain/README.md` 的“工具一览”，三层怎么分、库函数各给什么见 `docs/SCRIPTS.md` 的“库函数”。
+上面是第一版的清单，留着当记录。现在两条线各有一份工具清单（对话线：悄悄话、交事和管干活线的三个、所有只查不动的、`run_program`、记忆、提醒、手册、意见簿；干活线：操作身体的全部、查、记忆、手册、意见簿、`report`），另一条线的事按名字调到时不执行、如实说明归谁。工具分三层：发给模型的工具、不发给模型而在它写的程序里调的**库函数**、合并掉的工具的**旧名字**（`set_home` / `list_homes` 现在是通用的 `run_command`，`haul_items` 是库函数……）；看图的工具只发给能看图的模型。现在的清单见 `brain/README.md` 的“工具一览”，三层怎么分、库函数各给什么见 `docs/SCRIPTS.md` 的“库函数”。
 
 ## bridge 客户端 `bridge/`
 
@@ -187,14 +197,34 @@ interface ProviderConfig {
 
 | 字段 | 出现在 | 含义 |
 |---|---|---|
-| `agent` | 任何条目 | 哪个代理的；不带就是主代理（以后它开的帮手各有各的名字） |
+| `agent` | 两条线各自产生的条目 | 哪条线的：`talk`（对话线）、`work`（干活线）。不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目 |
+| `relay` | `kind: "relay"` | 两条线之间的一次往来，见下 |
+| `sent` | `kind: "say"`（对话线说的话） | 身体回的发送结果里有不寻常的才带：`{ lines, cutChars, droppedLines }`（分了几行、截掉多少字、丢了几行） |
 | `step` | `model_call`、`model_text`、模型直接调的 `tool_call` / `tool_result` | 这一轮的第几次模型调用（从 1 起），和 `turn` 一起定位 |
 | `source` | `tool_call`、`tool_result`、`run`、例程开始和结束的那两条 | 谁发起的：`model`（模型自己）、`program`（`run_program` 的程序）、`routine`（后台的例程） |
 | `runId` | 属于某次程序运行的条目 | `r3`（例程）、`p12`（程序）。每次大脑重启从 1 重新数，唯一的是 `run.file` |
 | `run` | `kind: "run"`，例程开始和结束的那两条 | 这次运行的快照，见下 |
 | `call` | `kind: "model_call"` | 这次模型调用的账，见下 |
 
-`kind` 在原来那些之外多两种，**这两种会原地更新**：SSE 里收到一条数据里的 `id` 是已经有的，就是同一条的新样子，替换掉原来那条；之后再拉日志拿到的也是新样子。更新的那一帧不带 SSE 自己的 `id:` 行（只有 `data:`），所以浏览器断线重连用的 `Last-Event-ID` 一直是最新那条的。
+**`turn` 两条线共用一个计数器，不会重号**：单看 `turn` 就能定位一轮，哪条线的看 `agent`。
+
+对话线写的文字就是它说的话：它每一步的文字是一条 `kind: "say"`（带 `agent: "talk"`、`turn`、`step`），不另有 `model_text`；没说出去的那次是一条 `model_text` 加一条 `error`。干活线的文字照旧是 `model_text`。
+
+**`kind: "relay"`：两条线之间的往来**，一次往来一条（发的那一刻记，收的那头不再另记）：
+
+```jsonc
+{ "id": 901, "time": 1731300000000, "kind": "relay", "agent": "talk", "turn": 40, "step": 1,
+  "text": "对话线 → 干活线：把他指着的那个箱子拆了",
+  "detail": "交给干活线的全文：对话线写的话 + 程序原样附上的主人原话和站位、指向",
+  "relay": { "type": "tell", "from": "talk", "to": "work", "quotes": 1 } }      // quotes：附了几句原话
+{ "id": 930, "time": 1731300050000, "kind": "relay", "agent": "work", "turn": 41, "step": 4,
+  "text": "干活线 → 对话线（提问）：模头（杆）没有库存也没有配方，要不要改用压模机？",
+  "relay": { "type": "question", "from": "work", "to": "talk" } }
+```
+
+`relay.type`：`tell` 对话线交事或带话；`report` 干活线中途汇报；`question` 干活线提问、在等回答；`result` 干活线一轮结束留下的文字；`trouble` 干活线出了状况（模型接口故障、没选模型、到步数上限、任务连着失败——程序替它报的，带 `isError`）；`stop` 叫停，`from` 是 `talk` 或 `panel`（面板叫停的那条没有 `agent`、`turn`；身体的任务没取消成时带 `isError`）。两条线空转、这一条只作背景没有叫醒对方时，`text` 里写着“只作背景，没有叫醒它”。
+
+`kind` 在原来那些之外还多两种，**这两种会原地更新**：SSE 里收到一条数据里的 `id` 是已经有的，就是同一条的新样子，替换掉原来那条；之后再拉日志拿到的也是新样子。更新的那一帧不带 SSE 自己的 `id:` 行（只有 `data:`），所以浏览器断线重连用的 `Last-Event-ID` 一直是最新那条的。
 
 - **`model_call`**：一次模型调用一条。开始想的时候就出现（`call.state: "thinking"`），回来或出错时改成结果。
 
@@ -250,35 +280,56 @@ interface ProviderConfig {
   { "t": "end",   "time": 1731300164000, "status": "done", "ending": "the program finished", "calls": 4, "tasks": 3, "errors": 0, "value": "47" }
   ```
 
-**4. 状态** `GET /api/status`（不缓存，可以一秒一拉；`/api/overview` 原样保留）。三样分开：模型、例程、身体。
+**4. 状态** `GET /api/status`（不缓存，可以一秒一拉；`/api/overview` 原样保留）。`agents` 两项，固定顺序 `talk`、`work`；例程和身体只有一份，挂在干活线下面。
 
 ```jsonc
 { "time": 1731300000000,
-  "agents": [ {
-    "agent": "main", "name": "Alu",
-    "model": { "state": "thinking",                    // idle | thinking | tools | outage
-               "provider": "Anthropic", "model": "claude-…",        // 现在配置用的
-               "turn": 12, "step": 3, "since": 1731300000000, "purpose": "turn",
-               "lastCall": { "time": 1731299990000, "ok": true, "durationMs": 11820, "model": "claude-…",
-                             "inputTokens": 181204, "outputTokens": 412, "cacheReadTokens": 176900 } },
-    "turn": { "id": 12, "startedAt": 1731299950000, "steps": 2, "maxSteps": 60 },
-    "pending": 0,
-    "routine": { "id": "r3", "name": "整理抽屉", "status": "running", "startedAt": 1731300100000,
-                 "calls": 312, "tasks": 150, "errors": 0,
-                 "waiting": "withdraw_items {…}", "waitingSince": 1731300160000, "waitingTask": "t151",
-                 "limitMs": 7200000, "file": "routine-20261111-153012-r3.jsonl" },
-    "lastRoutine": null,
-    "body": { "online": true,
-              "task": { "id": "t151", "type": "withdraw", "state": "running", "progress": { "done": 3, "total": 8 }, "startedAt": 1731300160000 },
-              "queue": [ { "id": "t152", "type": "craft", "state": "queued" } ] }
-  } ] }
+  "agents": [
+    { "agent": "talk", "name": "Alu", "title": "对话线",
+      "model": { "state": "idle",                      // idle | thinking | tools | outage
+                 "provider": "Anthropic", "model": "claude-…", "providerId": "p_ab12", "modelId": "m1",   // 这条线现在配置用的
+                 "lastCall": { "time": 1731299990000, "ok": true, "durationMs": 820, "model": "claude-…",
+                               "inputTokens": 9204, "outputTokens": 31, "cacheReadTokens": 8800 } },
+      "turn": null,
+      "pending": 0,
+      "history": { "turns": 12, "hasSummary": false, "estimatedTokens": 5400, "threshold": 60000 } },
+    { "agent": "work", "name": "Alu", "title": "干活线",
+      "model": { "state": "thinking", "provider": "Anthropic", "model": "claude-…", "providerId": "p_ab12", "modelId": "m2",
+                 "turn": 41, "step": 3, "since": 1731300000000, "purpose": "turn",
+                 "lastCall": { … } },
+      "turn": { "id": 41, "startedAt": 1731299950000, "steps": 2, "maxSteps": 60,
+                "about": "对话线交给你的（这一句是它写的）：把他指着的箱子拆了" },
+      "pending": 0,
+      "history": { "turns": 80, "hasSummary": true, "estimatedTokens": 152000, "threshold": 200000 },
+      "waitingAnswer": { "text": "模头（杆）没有库存也没有配方，要不要改用压模机？", "since": 1731299990000 },
+      "lastReport": { "type": "question", "text": "…", "time": 1731299990000 },
+      "routine": { "id": "r3", "name": "整理抽屉", "status": "running", "startedAt": 1731300100000,
+                   "calls": 312, "tasks": 150, "errors": 0,
+                   "waiting": "withdraw_items {…}", "waitingSince": 1731300160000, "waitingTask": "t151",
+                   "limitMs": 7200000, "file": "routine-20261111-153012-r3.jsonl" },
+      "lastRoutine": null,
+      "body": { "online": true,
+                "task": { "id": "t151", "type": "withdraw", "state": "running", "progress": { "done": 3, "total": 8 }, "startedAt": 1731300160000 },
+                "queue": [ { "id": "t152", "type": "craft", "state": "queued" } ] } } ] }
 ```
 
-- `model.state`：`idle` 没有在跑的一轮；`thinking` 模型调用进行中（带 `turn`、`step`、`since`、`purpose`）；`tools` 这一轮没完、正在执行它要的工具（带 `turn`、`step`）；`outage` 模型接口故障、过一阵再试。有故障时（不管当时是哪个状态）带 `outage: { failures, since, nextRetryAt, lastError }`。
-- `turn`：正在跑的一轮，`steps` 是已经完成的模型调用次数；没有是 `null`。`pending`：排着队还没处理的事件数。
-- `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`）。停它是 `POST /api/routine/stop`。
-- `body`：`task` 是身体正在做的任务（`progress` 身体给了才有），`queue` 是排队的。连不上身体时是 `{ "online": false, "task": null, "queue": [], "error": "…" }`。取消是 `POST /api/tasks/cancel`。
-- **`agents` 是数组**：现在只有 `main` 一项；以后每个帮手一项，各有自己的 `model`、`turn`、`routine`，日志条目用 `agent` 字段对上。界面别写死成只有一个模型。
+- `model.state`：`idle` 没有在跑的一轮；`thinking` 模型调用进行中（带 `turn`、`step`、`since`、`purpose`）；`tools` 这一轮没完、正在执行它要的工具（带 `turn`、`step`）；`outage` 模型接口故障、过一阵再试。有故障时（不管当时是哪个状态）带 `outage: { failures, since, nextRetryAt, lastError }`。两条线各有各的。
+- `turn`：正在跑的一轮，`steps` 是已经完成的模型调用次数，`about` 是这一轮的起因（一行）；没有是 `null`。`pending`：排着队还没处理的事件数。
+- `history`：这条线的对话历史有多长、离压缩还有多远（`threshold` 是这条线的设置）。
+- 下面这几项**只有 `work` 有**，`talk` 那一项没有这些键：
+  - `waitingAnswer`：干活线提了问、还没人带话回答（对话线 `tell_worker` 或叫停以后清掉）；没有是 `null`。`lastReport`：它最近一次送给对话线的（`type` 同 `relay.type` 里干活线发的那四种）；没有是 `null`。这两项落盘，重启后还在。
+  - `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`）。停它是 `POST /api/routine/stop`。
+  - `body`：`task` 是身体正在做的任务（`progress` 身体给了才有），`queue` 是排队的。连不上身体时是 `{ "online": false, "task": null, "queue": [], "error": "…" }`。取消是 `POST /api/tasks/cancel`。
+
+**总停止** `POST /api/work/stop`，body 可带 `{ "reason": "…" }` → `{ "ok": true, "turn": true, "routine": "r3", "tasks": 2, "dropped": 1 }`（打断了正在跑的一轮没有 / 停掉的例程编号或 `null` / 取消了几个身体任务 / 放下了几件它还没处理的事；身体的任务没取消成时 `ok: false` 并带 `error`）。和对话线的 `stop_work` 是同一件事；日志里是一条 `relay`（`type: "stop"`, `from: "panel"`）。
+
+**两条线各选一个模型。**
+
+- `POST /api/models/use { providerId, modelId, line?: "talk" | "work" }`：不带 `line` 是两条线一起换。`POST /api/providers/:id/activate` 也是两条一起。那条线的下一轮起生效。
+- `GET /api/providers`（以及所有返回它的接口）带 `lines: { "talk": { "providerId", "modelId" }, "work": { … } }`；原来的 `activeProviderId` / `activeModelId` 保留，等于干活线的。
+- `GET /api/overview`：`provider`、`agent`、`history` 保留，都是干活线的；另有 `lineModels: { talk: {…同 provider 的形状…} | null, work: … }`、`talk`（对话线的状态，形状同 `agent`）、`histories: { talk: { turns, hasSummary, estimatedTokens, threshold }, work: … }`。
+- `POST /api/history/clear { line?: "talk" | "work" }`：不带是两条线的都清。
+- 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
 
 **5. 图纸里有什么** `GET /api/blueprints/read?name=<名字>&draft=<0|1>&cells=<0|1>` → 和库函数 `read_blueprint` 的 `data` 同一个形状（见 `docs/SCRIPTS.md`）：`{ name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }] }`；`cells=1` 才带 `x y z sx sy sz palette cells`。`draft=1` 读它的草稿。没有这张图纸是 502（身体的原话），没有这张草稿是 404。
 

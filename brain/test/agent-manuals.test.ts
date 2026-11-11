@@ -3,10 +3,10 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { truncateOldToolResults } from '../src/agent/compaction.ts'
 import { manualsInContext } from '../src/agent/context.ts'
-import { DEFAULT_PERSONA } from '../src/agent/prompt.ts'
+import { COMMON_PROMPT, DEFAULT_PERSONA, corePrompt } from '../src/agent/prompt.ts'
 import type { Message } from '../src/llm/index.ts'
 import { ManualStore, manualText } from '../src/store/manuals.ts'
-import { DEFAULT_MANUALS_DIR, chat, makeAgent, reply } from './agent-harness.ts'
+import { DEFAULT_MANUALS_DIR, chat, makeAgent, reply, told } from './agent-harness.ts'
 
 /** 给模型看的那行“哪几本手册的内容还在这段对话里”。 */
 function manualLine(userText: string): string {
@@ -14,58 +14,109 @@ function manualLine(userText: string): string {
 }
 
 describe('手册：提示词只列目录，要用时才读', () => {
-  it('系统提示词里有手册目录（默认的和主人写的各带一句什么时候看），各类活的细节不在提示词里', async (t) => {
+  it('两条线的系统提示词里都有手册目录（默认的和主人写的各带一句什么时候看），各类活的细节不在提示词里；干活线的那份写着动手前先看，对话线的只说它也能读', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.manuals.save({ name: '基地布局', summary: '要在基地里找仓库、机器、工作台时看。', body: '仓库在 (100,64,200) 一带。' })
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
-    const system = h.llm.requests[0]!.system ?? ''
-    assert.match(system, /^# 手册$/m)
-    for (const name of ['blueprint', 'crafting', 'containers', 'terrain', 'travel', 'quests']) {
-      assert.match(system, new RegExp(`^- ${name}：.{8,}$`, 'm'), `the catalogue lists ${name}`)
+    const work = h.llm.requests[0]!.system ?? ''
+    const talk = h.talk.requests[0]!.system ?? ''
+    for (const system of [work, talk]) {
+      assert.match(system, /^# 手册$/m)
+      for (const name of ['blueprint', 'crafting', 'containers', 'terrain', 'travel', 'quests']) {
+        assert.match(system, new RegExp(`^- ${name}：.{8,}$`, 'm'), `the catalogue lists ${name}`)
+      }
+      assert.match(system, /^- 基地布局（主人写的）：要在基地里找仓库、机器、工作台时看。$/m)
+      // 手册的正文不在提示词里：只有模型去读的时候才出现
+      assert.equal(system.includes('仓库在 (100,64,200)'), false)
+      assert.equal(/needsClimbingBlocks|maxFillDepth|craftingTool|匠魂/.test(system), false)
     }
-    assert.match(system, /^- 基地布局（主人写的）：要在基地里找仓库、机器、工作台时看。$/m)
-    assert.match(system, /先用 read_manual 看完再动手/)
-    // 手册的正文不在提示词里：只有模型去读的时候才出现
-    assert.equal(system.includes('仓库在 (100,64,200)'), false)
-    assert.equal(/needsClimbingBlocks|maxFillDepth|craftingTool|匠魂/.test(system), false)
-    // 用户嫌原来的提示词又长又杂（拆手册之前 6900 多字）：核心加目录要明显短
-    assert.ok(DEFAULT_PERSONA.length <= 2400, `core prompt is ${DEFAULT_PERSONA.length} chars`)
-    assert.ok(system.length < 3500, `system prompt is ${system.length} chars`)
+    assert.match(work, /先用 read_manual 看完再动手/)
+    assert.match(talk, /干活线动手之前会自己看。你要回答这类问题、或者想把事交代得更清楚时，可以用 read_manual 读。/)
+    assert.equal(talk.includes('先用 read_manual 看完再动手'), false)
+    // 核心提示词（公共部分加这条线自己的部分）每条线各自不超过 2,400 字；加上目录、名字、主人、记忆也要明显短
+    for (const line of ['talk', 'work'] as const) assert.ok(corePrompt(line, 'Alu').length <= 2400, `the ${line} core prompt is ${corePrompt(line, 'Alu').length} chars`)
+    assert.ok(work.length < 3300, `the work system prompt is ${work.length} chars`)
+    assert.ok(talk.length < 2900, `the talk system prompt is ${talk.length} chars`)
   })
 
-  it('主人自定义了人设提示词的：照旧用他的那份，后面同样附上手册目录', async (t) => {
-    const h = makeAgent({ settings: { persona: '你是 {{name}}，只说文言文。' } })
+  it('两条线的提示词：公共部分一样；对话线的最前面写着“你写出来的文字就是你说的话”，干活线的写着它操作身体、怎么汇报；谁也没有对方那一段', async (t) => {
+    const h = makeAgent()
     t.after(h.cleanup)
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
-    const system = h.llm.requests[0]!.system ?? ''
-    assert.ok(system.startsWith('你是 Alu，只说文言文。'))
-    assert.equal(system.includes('干活靠任务'), false, 'the default core prompt is not mixed in')
-    assert.match(system, /^# 手册$/m)
-    assert.match(system, /^- blueprint：/m)
+    const work = h.llm.requests[0]!.system ?? ''
+    const talk = h.talk.requests[0]!.system ?? ''
+    const common = COMMON_PROMPT.replaceAll('{{name}}', 'Alu')
+    assert.ok(work.startsWith(common) && talk.startsWith(common))
+    assert.match(common, /对话线：听人说话、回话、查资料。它不操作身体。\n- 干活线：操作身体的只有它。它不对玩家说话。/)
+    // 对话线自己的部分第一条就是这个事实
+    assert.ok(talk.slice(common.length).startsWith('\n\n# 你是对话线\n- **你写出来的文字就是你在公共聊天里说的话**：每一步写的字，那一步一结束就说出去；什么都不写就是不说。'))
+    assert.match(talk, /你没有任何让身体动的工具/)
+    assert.match(talk, /stop_work 一次让一切停下/)
+    assert.equal(talk.includes('# 干活靠任务'), false)
+    assert.ok(work.slice(common.length).startsWith('\n\n# 你是干活线\n- 你用工具操纵身体。跟玩家说话的是对话线'))
+    assert.match(work, /一轮结束时留下的文字自动送给对话线/)
+    assert.match(work, /# 干活靠任务/)
+    assert.equal(work.includes('# 说话风格'), false)
+    // 提示词里没有另一条线才有的工具名字当成“你的”：干活线不提 tell_worker，对话线不教它启动任务
+    assert.equal(work.includes('tell_worker'), false)
+    assert.equal(/queue: true/.test(talk), false)
+  })
+
+  it('主人在面板上改的那一段是对话线的说话风格：换成他的那份，别的部分照旧；干活线的提示词里没有它', async (t) => {
+    const h = makeAgent({ settings: { persona: '- 只说文言文，自称{{name}}。' } })
+    t.after(h.cleanup)
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('去仓库'))
+    await h.agent.whenIdle()
+    const talk = h.talk.requests[0]!.system ?? ''
+    assert.match(talk, /# 说话风格\n- 只说文言文，自称Alu。\n\n# 记/)
+    assert.equal(talk.includes(DEFAULT_PERSONA.split('\n')[0]!), false, 'the default style is not mixed in')
+    assert.match(talk, /\*\*你写出来的文字就是你在公共聊天里说的话\*\*/)
+    assert.match(talk, /^# 手册$/m)
+    assert.equal((h.llm.requests[0]!.system ?? '').includes('文言文'), false)
   })
 
   it('读过的手册，之后每一轮的“当前状态”都写明它的内容还在对话里；主人把那本手册改了以后就不再算看过', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('', [{ name: 'read_manual', input: { name: 'blueprint' } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 照图纸盖个房子'))
+    h.agent.handleEvent(told('照图纸盖个房子'))
     await h.agent.whenIdle()
     assert.equal(manualLine(h.llm.lastUserText(0)), '手册：这段对话里现在没有任何一本手册的内容，要做某类事之前先 read_manual。')
     // 工具结果是整本手册
     assert.match(h.llm.lastUserText(1), /^Manual "blueprint": /)
 
-    h.agent.handleEvent(chat('Steve', 'Alu 放在 100 64 200'))
+    h.agent.handleEvent(told('放在 100 64 200'))
     await h.agent.whenIdle()
     assert.equal(manualLine(h.llm.lastUserText(2)), '手册：blueprint 的内容还在这段对话里，不用重看；其余的要用之前先 read_manual。')
 
     // 主人在面板上改了这本手册：模型手里那份是旧的
     h.manuals.save({ name: 'blueprint', summary: '盖房子之前看（我们服的规矩）。', body: '一律先问我，不许自己清场。' })
-    h.agent.handleEvent(chat('Steve', 'Alu 开始吧'))
+    h.agent.handleEvent(told('开始吧'))
     await h.agent.whenIdle()
     assert.equal(manualLine(h.llm.lastUserText(3)), '手册：这段对话里现在没有任何一本手册的内容，要做某类事之前先 read_manual。')
+  })
+
+  it('对话线也能读手册；它不动手，状态里没有“做事之前先看”那句，只在它读过的还留着时说一声', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.talk.enqueue(reply('', [{ name: 'read_manual', input: { name: 'crafting' } }]), reply('要先查配方再找库存'))
+    h.agent.handleEvent(chat('Steve', 'Alu 你平时怎么做东西的'))
+    await h.agent.whenIdle()
+    assert.equal(manualLine(h.talk.lastUserText(0)), '')
+    assert.match(h.talk.lastUserText(1), /^Manual "crafting": /)
+    h.agent.handleEvent(chat('Steve', 'Alu 再说细点'))
+    await h.agent.whenIdle()
+    assert.equal(manualLine(h.talk.lastUserText(2)), '手册：crafting 的内容还在这段对话里。')
+    // 两条线各有各的上下文：对话线读过，不等于干活线读过
+    h.agent.handleEvent(told('做一个桨叶'))
+    await h.agent.whenIdle()
+    assert.equal(manualLine(h.llm.lastUserText(0)), '手册：这段对话里现在没有任何一本手册的内容，要做某类事之前先 read_manual。')
   })
 
   it('历史压缩把较早的手册原文拿掉以后，那本不再算看过，历史里留下一句“要用时重新读”', async (t) => {
@@ -75,7 +126,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     h.manuals.save({ name: '基地布局', summary: '要在基地里找东西时看。', body: `仓库在东边。${'一排排的箱子。'.repeat(770)}` })
     h.manuals.save({ name: '机器清单', summary: '要知道基地里有哪些机器时看。', body: `车床在二楼。${'一台又一台。'.repeat(900)}` })
     const say = async (text: string) => {
-      h.agent.handleEvent(chat('Steve', text))
+      h.agent.handleEvent(told(text))
       await h.agent.whenIdle()
     }
     h.llm.enqueue(reply('', [{ name: 'read_manual', input: { name: '基地布局' } }]), reply(''))
@@ -127,24 +178,30 @@ describe('任务书：默认看谁的进度', () => {
     const h = makeAgent({ settings: { owners: ['Steve', 'Alex'] } })
     t.after(h.cleanup)
     h.game.handlers['quest.lines'] = lines
-    h.llm.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
+    h.talk.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
     h.agent.handleEvent(chat('Alex', 'Alu 任务书推到哪了'))
     await h.agent.whenIdle()
     assert.deepEqual(h.game.callsOf('quest.lines'), [{ player: 'Steve' }])
   })
 
-  it('没有主人名单时看刚才跟它说话的那个玩家的；面板上下的指令没有玩家，就不带', async (t) => {
+  it('没有主人名单时看刚才跟它说话的那个玩家的（两条线看的是同一个人）；面板上下的指令没有玩家，就不带', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.game.handlers['quest.lines'] = lines
-    h.llm.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
+    h.talk.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
     h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '看看任务书' })
     await h.agent.whenIdle()
     assert.deepEqual(h.game.callsOf('quest.lines'), [{}])
 
-    h.llm.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
+    h.talk.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
     h.agent.handleEvent(chat('Alex', 'Alu 我任务书推到哪了'))
     await h.agent.whenIdle()
     assert.deepEqual(h.game.callsOf('quest.lines')[1], { player: 'Alex' })
+
+    // 干活线没有直接听到 Alex 说话，但“刚才跟它说话的人”是同一个玩家的事，它查的也是 Alex 的进度
+    h.llm.enqueue(reply('', [{ name: 'list_quest_lines' }]), reply(''))
+    h.agent.handleEvent(told('看看任务书推到哪了', []))
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.callsOf('quest.lines')[2], { player: 'Alex' })
   })
 })

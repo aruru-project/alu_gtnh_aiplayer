@@ -131,6 +131,7 @@ export const runProgramTool: Tool = {
       run = await design.run(i.code, {
         timeoutMs,
         valueChars: resultMax,
+        ...(ctx.programSlot !== undefined ? { slot: ctx.programSlot } : {}),
         // 程序里可以调查询类的工具；整个程序连等结果的时间有个总上限，到了就停
         hooks: { signal: AbortSignal.timeout(PROGRAM_WALL_MAX_MS), ...(query ? { onCall: (call) => query(call.name, call.input) } : {}) },
       })
@@ -211,7 +212,7 @@ export const stopRoutine: Tool = {
   inputSchema: obj({}),
   async run(ctx) {
     if (!ctx.routines) return fail('Routines are not set up on this brain.')
-    return ctx.routines.stop() ? 'The routine was stopped. You will be woken with its log.' : 'No routine is running.'
+    return ctx.routines.stop() ? 'The routine was stopped. Where it stopped and its log come to you as an event.' : 'No routine is running.'
   },
 }
 
