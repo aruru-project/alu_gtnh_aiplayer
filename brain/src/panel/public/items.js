@@ -225,6 +225,23 @@ export function inventoryPanel(live, onPick) {
   )
 }
 
+/** 身体只给界面的类名（ContainerChisel 这种）。常见的几类认得出来就写成人话，类名留在后面。 */
+const SCREEN_KINDS = [
+  [/cover/i, '覆盖板'],
+  [/chisel/i, '凿子'],
+  [/drawer/i, '抽屉'],
+  [/backpack|bag/i, '背包'],
+  [/workbench|crafting/i, '工作台'],
+  [/furnace/i, '熔炉'],
+  [/chest|crate|barrel/i, '箱子'],
+  [/^GT_|^MTE|gregtech|ModularUI/i, 'GregTech 机器'],
+]
+export function screenTitle(name) {
+  if (!name) return '（没有名字）'
+  const kind = SCREEN_KINDS.find(([re]) => re.test(name))
+  return kind ? `${kind[1]}（${name}）` : name
+}
+
 /** 开着的界面（箱子、机器）：只画界面自己的格子；它背包的那些格子上面已经有了，不重复画。 */
 export function screenPanel(screen, looks, onPick) {
   const theirs = (screen.slots ?? []).filter((s) => !s.own)
@@ -232,7 +249,7 @@ export function screenPanel(screen, looks, onPick) {
   return h(
     'div',
     { class: 'mc-panel screen' },
-    h('div', { class: 'mc-title' }, h('span', { text: `开着的界面：${screen.name || '（没有名字）'}` }), h('span', { class: 'mc-note', text: `${theirs.length} 格，${filled} 格有东西` })),
+    h('div', { class: 'mc-title' }, h('span', { text: `开着的界面：${screenTitle(screen.name)}` }), h('span', { class: 'mc-note', text: `${theirs.length} 格，${filled} 格有东西` })),
     h('p', { class: 'mc-note mc-sub', text: `按格子编号排，不是游戏里的位置。${theirs.some((s) => s.takesNothing) ? '浅色底的是产物格。' : ''}` }),
     theirs.length === 0
       ? h('p', { class: 'mc-note', text: '这个界面没有自己的格子。' })

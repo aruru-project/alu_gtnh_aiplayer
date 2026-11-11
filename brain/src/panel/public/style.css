@@ -581,7 +581,7 @@ pre.code.bad { border-color: #5a2b28; color: #f3b1ac; }
 .tool.bad .tool-name { color: var(--bad); }
 .tool-args { font: 12px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; max-width: 38%; }
 .tool-args.said { font: 13px var(--sans); color: var(--text); max-width: 55%; }
-.tool-result { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
+.tool-result { flex: 1; min-width: 5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
 .tool-result.bad { color: var(--bad); }
 .ms { font-size: 11px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
 .tool-body { padding: 0 0 6px 14px; }
@@ -618,7 +618,7 @@ pre.code.bad { border-color: #5a2b28; color: #f3b1ac; }
 .run-head .turn-meta { flex-wrap: wrap; }
 .run-wait { display: flex; gap: 8px; align-items: baseline; font-size: 12px; margin-top: 3px; overflow: hidden; }
 .run-wait .label { margin: 0; flex: none; }
-.run-wait .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.run-wait .tool-args { max-width: none; flex: 1; }
 .run-ending { font-size: 12.5px; margin-top: 2px; }
 .run .tool-chips { margin: 5px 0 2px; }
 .run-calls { max-height: 420px; overflow-y: auto; padding-right: 6px; }

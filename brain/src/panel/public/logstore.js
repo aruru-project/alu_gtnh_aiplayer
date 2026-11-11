@@ -84,8 +84,12 @@ export function startLog() {
   logState.stream = 'connecting'
   stream = new EventSource(`/api/events?after=${lastId()}`)
   stream.onopen = () => {
+    const wasBroken = logState.stream === 'retrying'
     logState.stream = 'live'
     bus.emit('log-stream')
+    // 断过又连上：断着的那一阵里，已有的条目可能原地变过（在想的那一步回来了、程序运行的汇总更新了），
+    // 重连只补新条目，所以把最近的一批重新拿一遍
+    if (wasBroken) refetchTail()
   }
   stream.onmessage = (ev) => {
     try {
@@ -110,6 +114,16 @@ export function startLog() {
         )
       }, 3000)
     }
+  }
+}
+
+async function refetchTail() {
+  try {
+    const res = await api('GET', `/log?limit=${PAGE}`)
+    for (const e of res.entries ?? []) upsert(e)
+    notify()
+  } catch {
+    /* 下一次重连再说 */
   }
 }
 

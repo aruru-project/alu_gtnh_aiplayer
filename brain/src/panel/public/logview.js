@@ -459,7 +459,12 @@ function renderRun(item, nested = false) {
       ),
     ),
   )
-  if (running && run.waiting) el.append(h('div', { class: 'run-wait' }, h('span', { class: 'label', text: '正在等' }), h('span', { class: 'mono', text: run.waiting })))
+  if (running && run.waiting) {
+    // “withdraw_items {…}”：工具名，加上读得懂的参数
+    const at = run.waiting.indexOf(' ')
+    const raw = at > 0 ? run.waiting.slice(at + 1) : ''
+    el.append(h('div', { class: 'run-wait' }, h('span', { class: 'label', text: '正在等' }), h('span', { class: 'tool-name', text: at > 0 ? run.waiting.slice(0, at) : run.waiting }), argsEl(raw, raw)))
+  }
   if (item.ending && !nested) el.append(h('div', { class: 'run-ending muted', text: item.ending }))
   if (item.legacy && item.calls.length > 0 && routine) {
     el.append(h('div', { class: 'tool-chips' }, toolHistogram(item.calls).map((t) => h('span', { class: 'tchip', text: `${t.name} ×${t.count}` }))))

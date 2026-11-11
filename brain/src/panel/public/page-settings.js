@@ -53,7 +53,13 @@ function lineChoices() {
     const ids = agents.length > 1 ? agents.map((a) => a.agent) : Object.keys(lines ?? {})
     return ids.map((id) => {
       const a = agents.find((x) => x.agent === id)
-      const picked = lines?.[id] ?? (a?.model?.providerId ? { providerId: a.model.providerId, modelId: a.model.modelId } : { providerId: providerState.activeProviderId, modelId: providerState.activeModelId })
+      // 这条线现在用的：后端的清单里写着就用它；状态里带着 id 的用状态里的；只有显示名的按显示名对；都没有就是那个“当前模型”
+      const byLabel = () => {
+        const provider = providerState.providers.find((p) => p.label === a?.model?.provider)
+        const model = provider?.models.find((m) => modelLabel(m) === a?.model?.model)
+        return provider && model ? { providerId: provider.id, modelId: model.id } : undefined
+      }
+      const picked = lines?.[id] ?? (a?.model?.providerId ? { providerId: a.model.providerId, modelId: a.model.modelId } : (byLabel() ?? { providerId: providerState.activeProviderId, modelId: providerState.activeModelId }))
       return { agent: id, label: agentLabel(a ?? id), ...picked }
     })
   }
