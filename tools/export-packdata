@@ -103,8 +103,9 @@ def main():
 
     os.makedirs(out, exist_ok=True)
     names = ["items.jsonl", "blocks.jsonl", "recipes.jsonl", "handlers.json"]
-    if os.path.exists(os.path.join(WORK, "structures.jsonl")):
-        names.append("structures.jsonl")
+    for extra in ("structures.jsonl", "carving.jsonl"):
+        if os.path.exists(os.path.join(WORK, extra)):
+            names.append(extra)
     for name in names:
         shutil.copy2(os.path.join(WORK, name), os.path.join(out, name + ".part"))
         os.replace(os.path.join(out, name + ".part"), os.path.join(out, name))

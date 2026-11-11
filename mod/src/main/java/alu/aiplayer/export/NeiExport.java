@@ -61,6 +61,7 @@ public final class NeiExport {
     private Writer recipes;
     private int recipeCount;
     private int structures;
+    private int carving;
 
     private NeiExport(File dir) {
         this.dir = dir;
@@ -148,6 +149,11 @@ public final class NeiExport {
         } catch (Throwable t) {
             AiPlayerMod.LOG.warn("export: the multiblock structures could not be written", t);
         }
+        try {
+            carving = CarvingExport.run(dir);
+        } catch (Throwable t) {
+            AiPlayerMod.LOG.warn("export: the carving groups could not be written", t);
+        }
         try (Writer w = writer("items.jsonl.part")) {
             for (JsonObject o : items.values()) {
                 w.write(o.toString());
@@ -200,6 +206,7 @@ public final class NeiExport {
         o.addProperty("recipes", recipeCount);
         o.addProperty("pages", handlers.size());
         o.addProperty("structures", structures);
+        o.addProperty("carving", carving);
         o.addProperty("pack", packVersion());
         o.addProperty("seconds", ms / 1000);
         meta.add("nei", o);
