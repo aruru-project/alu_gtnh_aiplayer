@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# Deploys the brain that drives the live server, the way Capistrano or Mina would: one command makes a new
+# release directory from what is committed, points "current" at it and restarts the service.
+#
+#   tools/live setup            once: make the live directory and install the systemd user unit
+#   tools/live deploy [REF]     release what is committed at REF (default: main), test it, switch, restart
+#                               --skip-tests   do not run the brain's tests first
+#   tools/live rollback         back to the release that ran before
+#   tools/live mod              build the mod of the running release into mod/ and say whether the game
+#                               server has that one installed (installing it needs the server stopped
+#                               and is not done here: docs/DEPLOY.md)
+#   tools/live start|stop|restart|status|log [LINES]
+#   tools/live enable|disable   start with the machine or not
+#
+# What is where on this machine comes from tools/local.env (not in git):
+#   AIPLAYER_LIVE_ROOT=/srv/aiplayer                the live directory (made by setup)
+#   AIPLAYER_LIVE_SERVER=/path/to/the/game/server   the server the mod is installed in (its config/aiplayer
+#                                                   holds the bridge token)
+#   AIPLAYER_LIVE_BRIDGE_PORT=25590   AIPLAYER_LIVE_PANEL_PORT=28766   AIPLAYER_LIVE_PANEL_HOST=0.0.0.0
+#
+# The live directory:
+#   releases/<time>-<commit>/   the brain's code as committed; nothing of a working tree gets here
+#   current                     -> the release the unit runs
+#   data/                       shared by all releases: settings with the API keys, memory, history, logs
+#   packdata/                   shared: the pack data the brain reads at start (copied from this checkout's
+#                               brain/packdata on deploy when it has changed)
+#   mod/                        mod jars built by "tools/live mod"
+#   service.env                 optional: what only this machine needs, such as HTTPS_PROXY
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+[[ -f $ROOT/tools/local.env ]] && { set -a; source "$ROOT/tools/local.env"; set +a; }
+LIVE=${AIPLAYER_LIVE_ROOT:-}
+SERVER=${AIPLAYER_LIVE_SERVER:-}
+BRIDGE_PORT=${AIPLAYER_LIVE_BRIDGE_PORT:-25590}
+PANEL_PORT=${AIPLAYER_LIVE_PANEL_PORT:-28766}
+PANEL_HOST=${AIPLAYER_LIVE_PANEL_HOST:-0.0.0.0}
+NODE=${AIPLAYER_NODE:-$HOME/.nvm/versions/node/v24.22.1/bin/node}
+KEEP=${AIPLAYER_LIVE_KEEP:-5}
+UNIT=aiplayer-brain
+UNIT_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT.service
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need_root() { [[ -n $LIVE ]] || die "say where the live directory is: AIPLAYER_LIVE_ROOT=... in tools/local.env"; }
+need_setup() { need_root; [[ -d $LIVE/releases && -f $UNIT_FILE ]] || die "not set up yet: tools/live setup"; }
+running() { systemctl --user is-active --quiet "$UNIT"; }
+current() { [[ -L $LIVE/current ]] && basename "$(readlink "$LIVE/current")" || true; }
+describe() { [[ -n $1 && -f $LIVE/releases/$1/VERSION ]] && tr '\n' ' ' <"$LIVE/releases/$1/VERSION" || printf '%s' "${1:-nothing}"; }
+
+setup() {
+    need_root
+    [[ -n $SERVER ]] || die "say where the game server is: AIPLAYER_LIVE_SERVER=... in tools/local.env"
+    [[ -x $NODE ]] || die "node not found at $NODE (set AIPLAYER_NODE)"
+    mkdir -p "$LIVE/releases" "$LIVE/mod" "$LIVE/packdata" "$(dirname "$UNIT_FILE")"
+    (umask 077; mkdir -p "$LIVE/data")
+    cat >"$UNIT_FILE" <<EOF
+# Written by tools/live setup. Change tools/local.env and run setup again rather than editing this.
+[Unit]
+Description=GTNH AI player brain (live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$LIVE/current
+ExecStart=$NODE --disable-sigusr1 src/main.ts
+Environment=PATH=$(dirname "$NODE"):/usr/local/bin:/usr/bin:/bin
+Environment=LANG=${LANG:-en_US.UTF-8}
+Environment=AIPLAYER_DATA_DIR=$LIVE/data
+Environment=AIPLAYER_PACKDATA=$LIVE/packdata
+Environment=AIPLAYER_BRIDGE_PORT=$BRIDGE_PORT
+Environment=AIPLAYER_BRIDGE_TOKEN_FILE=$SERVER/config/aiplayer/bridge-token.txt
+Environment=AIPLAYER_PANEL_HOST=$PANEL_HOST
+Environment=AIPLAYER_PANEL_PORT=$PANEL_PORT
+EnvironmentFile=-$LIVE/service.env
+StandardOutput=append:$LIVE/brain.log
+StandardError=append:$LIVE/brain.log
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    printf 'live directory: %s\nunit: %s\nnext: tools/live deploy\n' "$LIVE" "$UNIT_FILE"
+}
+
+wait_up() {
+    local waited=0
+    while ((waited < 30)); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$PANEL_PORT") 2>/dev/null; then
+            printf 'running %s\npanel: http://%s:%s/\n' "$(describe "$(current)")" "$(hostname -I 2>/dev/null | awk '{print $1}')" "$PANEL_PORT"
+            return
+        fi
+        running || { tail -n 20 "$LIVE/brain.log"; die "the brain exited while starting"; }
+        sleep 1; waited=$((waited + 1))
+    done
+    die "the panel did not come up on port $PANEL_PORT in 30 s; see $LIVE/brain.log"
+}
+
+point_at() { # release name
+    local was; was=$(current)
+    ln -sfn "releases/$1" "$LIVE/current.new"
+    mv -T "$LIVE/current.new" "$LIVE/current"
+    [[ -n $was && $was != "$1" ]] && printf '%s\n' "$was" >"$LIVE/previous"
+    printf '%s  %s -> %s\n' "$(date -Is)" "${was:-nothing}" "$1" >>"$LIVE/deploy.log"
+}
+
+sync_packdata() {
+    local src=$ROOT/brain/packdata
+    [[ -f $src/meta.json ]] || { printf 'note: this checkout has no pack data (docs/PACKDATA.md); the live one is left as it is\n'; return; }
+    cmp -s "$src/meta.json" "$LIVE/packdata/meta.json" 2>/dev/null && return
+    command -v rsync >/dev/null || die "rsync is needed to copy the pack data"
+    # Into a new directory, then swapped: a brain that is starting never reads a half-copied set.
+    rm -rf "$LIVE/packdata.new"
+    rsync -a --delete "$src/" "$LIVE/packdata.new/"
+    [[ -d $LIVE/packdata ]] && mv "$LIVE/packdata" "$LIVE/packdata.old"
+    mv "$LIVE/packdata.new" "$LIVE/packdata"
+    rm -rf "$LIVE/packdata.old"
+    printf 'pack data: copied (%s)\n' "$(du -sh "$LIVE/packdata" | cut -f1)"
+}
+
+deploy() {
+    need_setup
+    local ref=main tests=yes
+    for a in "$@"; do
+        case $a in --skip-tests) tests=no ;; -*) die "unknown option $a" ;; *) ref=$a ;; esac
+    done
+    local commit; commit=$(git -C "$ROOT" rev-parse -q --verify "$ref^{commit}") || die "no such commit: $ref"
+    local short=${commit:0:10}
+    local name; name=$(date +%Y%m%d-%H%M%S)-$short
+    [[ $(current) == *-"$short" ]] && die "that commit ($short) is what runs now"
+
+    # A clean checkout of exactly that commit: what is tested is what gets released.
+    local work; work=$(mktemp -d "${TMPDIR:-/tmp}/aiplayer-deploy.XXXXXX")
+    trap 'git -C "$ROOT" worktree remove --force "$work/src" 2>/dev/null || true; rm -rf "$work"' EXIT
+    git -C "$ROOT" worktree add -q --detach "$work/src" "$commit"
+    [[ -f $work/src/brain/src/main.ts ]] || die "$ref has no brain/src/main.ts"
+    if [[ $tests == yes ]]; then
+        printf 'testing %s ...\n' "$short"
+        if ! (cd "$work/src/brain" && PATH="$(dirname "$NODE"):$PATH" "$NODE" --test "test/**/*.test.ts" >"$work/test.log" 2>&1); then
+            grep -E '^not ok|^✖|^ℹ (tests|pass|fail)' "$work/test.log" | head -20
+            die "the tests of $short fail; nothing was deployed (full output: rerun in a checkout)"
+        fi
+        grep -E '^ℹ (tests|pass|fail)' "$work/test.log" | tr '\n' ' '; echo
+    fi
+
+    local dest=$LIVE/releases/$name
+    mkdir -p "$dest.part"
+    (cd "$work/src/brain" && tar -c --exclude=./node_modules --exclude=./data --exclude=./packdata --exclude=./test .) | tar -x -C "$dest.part"
+    {
+        printf '%s %s\n' "$(git -C "$ROOT" describe --tags --always "$commit" 2>/dev/null || echo "$short")" "$short"
+        git -C "$ROOT" log -1 --format='%cI %s' "$commit"
+    } >"$dest.part/VERSION"
+    mv "$dest.part" "$dest"
+
+    sync_packdata
+    point_at "$name"
+    printf 'released %s\n' "$(describe "$name")"
+    if running; then systemctl --user restart "$UNIT"; else systemctl --user start "$UNIT"; fi
+    wait_up
+
+    # Old releases go, the newest $KEEP stay (the one before this is among them, for rollback).
+    ls -1 "$LIVE/releases" | grep -v '\.part$' | sort | head -n -"$KEEP" | while read -r old; do rm -rf "${LIVE:?}/releases/$old"; done
+}
+
+rollback() {
+    need_setup
+    [[ -f $LIVE/previous ]] || die "nothing ran before the current release"
+    local to; to=$(cat "$LIVE/previous")
+    [[ -f $LIVE/releases/$to/src/main.ts ]] || die "the release before ($to) is no longer there"
+    point_at "$to"
+    printf 'back to %s\n' "$(describe "$to")"
+    if running; then systemctl --user restart "$UNIT"; else systemctl --user start "$UNIT"; fi
+    wait_up
+}
+
+mod() {
+    need_setup
+    local cur; cur=$(current)
+    [[ -n $cur ]] || die "nothing is deployed yet"
+    local short=${cur##*-}
+    local out=$LIVE/mod/aiplayer-$short.jar
+    if [[ ! -f $out ]]; then
+        local work; work=$(mktemp -d "${TMPDIR:-/tmp}/aiplayer-mod.XXXXXX")
+        trap 'git -C "$ROOT" worktree remove --force "$work/src" 2>/dev/null || true; rm -rf "$work"' EXIT
+        git -C "$ROOT" worktree add -q --detach "$work/src" "$short"
+        printf 'building the mod of %s ...\n' "$short"
+        (cd "$work/src" && tools/gradle build -q >"$work/build.log" 2>&1) || { tail -n 20 "$work/build.log"; die "the mod of $short did not build"; }
+        cp "$(ls -t "$work/src/mod/build/libs/"aiplayer-*.jar | grep -vE -- '-(dev|sources|javadoc)\.jar$' | head -1)" "$out"
+    fi
+    printf 'mod of the running release: %s\n' "$out"
+    local installed; installed=$(ls "$SERVER/mods/"aiplayer*.jar 2>/dev/null | head -1 || true)
+    if [[ -z $installed ]]; then
+        printf 'the game server (%s) has no aiplayer mod installed\n' "$SERVER"
+    elif cmp -s "$installed" "$out"; then
+        printf 'the game server has this one installed\n'
+    else
+        printf 'the game server has another one installed (%s); see docs/DEPLOY.md for changing it\n' "$(basename "$installed")"
+    fi
+}
+
+status() {
+    need_setup
+    if running; then
+        printf 'running %s (pid %s)\n' "$(describe "$(current)")" "$(systemctl --user show -p MainPID --value "$UNIT")"
+    else
+        printf 'stopped; current release: %s\n' "$(describe "$(current)")"
+    fi
+    printf 'releases: %s\n' "$(ls "$LIVE/releases" 2>/dev/null | tr '\n' ' ')"
+    printf 'starts with the machine: %s\n' "$(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo no)"
+}
+
+case ${1:-} in
+    setup) setup ;;
+    deploy) shift; deploy "$@" ;;
+    rollback) rollback ;;
+    mod) mod ;;
+    start) need_setup; [[ -L $LIVE/current ]] || die "nothing is deployed yet: tools/live deploy"; systemctl --user start "$UNIT"; wait_up ;;
+    stop) systemctl --user stop "$UNIT"; echo stopped ;;
+    restart) need_setup; systemctl --user restart "$UNIT"; wait_up ;;
+    status) status ;;
+    log) need_root; tail -n "${2:-40}" "$LIVE/brain.log" ;;
+    enable) systemctl --user enable "$UNIT" ;;
+    disable) systemctl --user disable "$UNIT" ;;
+    *) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
