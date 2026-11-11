@@ -74,6 +74,8 @@ async function openPage(path, english = false) {
       const data = await api('GET', `/guide?book=${encodeURIComponent(page.book)}`)
       view.list = data.list ?? []
       for (const p of view.list) if (!p.parent) view.open.add(p.path)
+      // 换了一本书：在“这本书”里搜的结果要跟着换
+      if (view.query.trim() && view.scope === 'book') await search(view.query)
     }
     for (const p of ancestors(path)) view.open.add(p.path)
     loadItemNames(page)
