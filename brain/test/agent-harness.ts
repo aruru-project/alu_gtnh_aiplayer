@@ -106,10 +106,15 @@ export function reply(text: string, calls: { name: string; input?: unknown; id?:
   }
 }
 
-/** 按脚本回应的假模型。脚本用完后一律回空文本（结束这一轮）。 */
+/**
+ * 按脚本回应的假模型。脚本用完后一律回空文本（结束这一轮）；给了 auto 的话脚本用完后由它按请求的内容回
+ * （两条线来回几趟、谁先谁后不好写死顺序的场景用：看它这一步看到了什么，决定回什么）。
+ */
 export class ScriptedLlm implements LlmClient {
   readonly requests: GenerateRequest[] = []
   readonly script: Scripted[] = []
+  /** 脚本用完后怎么回。seen 是这一步新看到的全部文字（最后一条 user 消息里的文字和工具结果）。 */
+  auto: ((seen: string, req: GenerateRequest) => GenerateResult | undefined) | undefined
   /** 同时在途的 generate 调用数的最大值。 */
   maxConcurrent = 0
   private inFlight = 0
@@ -128,7 +133,7 @@ export class ScriptedLlm implements LlmClient {
       const next = this.script.shift()
       const out = typeof next === 'function' ? await next(req) : next
       if (out instanceof Error) throw out
-      return out ?? reply('')
+      return out ?? this.auto?.(this.lastUserText(this.requests.length - 1), req) ?? reply('')
     } finally {
       this.inFlight--
     }

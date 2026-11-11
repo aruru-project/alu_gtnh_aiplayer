@@ -354,7 +354,10 @@ export class Lines {
       for (const id of res.ids ?? []) if (!tasks.includes(id)) tasks.push(id)
     }
     try {
+      // 例程停下时自己去取消它正等着的那个任务：等这次取消发完，再把剩下的全部取消
+      await this.work.whenRoutineCanceled()
       await cancelAll()
+      if (halt.routineTask !== undefined && !tasks.includes(halt.routineTask)) tasks.unshift(halt.routineTask)
     } catch (e) {
       error = e instanceof BridgeError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)
     }

@@ -135,6 +135,8 @@ export interface HaltResult {
   dropped: number
   /** 停掉的例程的编号。 */
   routine?: string
+  /** 例程停下时正等着的那个任务（例程自己去取消它；取消发完见 whenRoutineCanceled）。 */
+  routineTask?: string
   /** 被打断的那一轮收尾了（没有在跑的一轮时已经兑现）。 */
   settled: Promise<void>
 }
@@ -755,7 +757,9 @@ export class Agent {
       this.abort?.abort()
       settled = new Promise<void>((resolve) => this.turnWaiters.push(resolve))
     }
-    const routineId = this.routine?.isRunning() ? this.routine.view()?.id : undefined
+    const routineNow = this.routine?.isRunning() ? this.routine.view() : undefined
+    const routineId = routineNow?.id
+    const routineTask = routineNow?.current?.taskId
     this.quietRoutineEnd = true
     try {
       this.routine?.stop('everything was stopped (stop_work)')
@@ -766,7 +770,7 @@ export class Agent {
     this.pushBackground(note)
     this.persist()
     this.notifyIdle()
-    return { ...(turn ? { turn } : {}), toolRunning, dropped: dropped.length, ...(routineId !== undefined ? { routine: routineId } : {}), settled }
+    return { ...(turn ? { turn } : {}), toolRunning, dropped: dropped.length, ...(routineId !== undefined ? { routine: routineId } : {}), ...(routineTask !== undefined ? { routineTask } : {}), settled }
   }
 
   /** 例程停下时发出去的那次“取消任务”已经发完（或者没有）。 */
