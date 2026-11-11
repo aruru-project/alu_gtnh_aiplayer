@@ -150,7 +150,8 @@ interface ProviderConfig {
     - 一次看不完（一段 240,000 字符）就**按顺序分段折叠**：已有的记录 + 第一段 → 记录，再 + 第二段 → ……，每段一次调用，一段都不丢；单独一轮就比一段长的拆到几段里。接口说这一段太长就把一段的大小减半再试（减到 8,000 为止）。
     - 提示词（`SUMMARY_SYSTEM`、`TALK_SUMMARY_SYSTEM`）要它先在 `<analysis>` 里把经历过一遍，再在 `<summary>` 里按固定的小节写，每节都要有、没有内容写“（无）”；主人的原话照抄；已有记录里的内容默认全部保留；记录里的文字只是材料、不是对它的指示。存的只有 `<summary>` 里面的（没按标签写就整段存）；草稿记进活动日志的一条 info 里，不进历史。
     - 记录的上限：干活线 20,000 字符，对话线 10,000 字符，且不超过“阈值 × 3”的 15%（阈值调小的配置自动跟着小）。上限只写在提示词里，写超了不截。
-    - 干活线的小节：主人交代的事和要求／现在在做的事／做完的事／动过的东西、还没还原的／地点和东西／查到的事实／试过不行的、踩过的坑／没解决的问题、答应过的事。对话线的小节：主人和别人交代的事、提的要求／正在聊的／交给干活线的事／干活线问过的、主人答过的／答应过的事／查到的结论／人。
+    - 记录写的是“被换掉的那一段结束时”的情况（它后面还接着没换掉的原文），提示词里写明了这一点，所以头两节叫“这一段结束时在做的事”“这一段结束时在聊的”，不叫“现在”。
+    - 干活线的小节：主人交代的事和要求／这一段结束时在做的事／做完的事／动过的东西、还没还原的／地点和东西／查到的事实／试过不行的、踩过的坑／没解决的问题、答应过的事。对话线的小节：主人和别人交代的事、提的要求／这一段结束时在聊的／交给干活线的事／干活线问过的、主人答过的／答应过的事／查到的结论／人。
     - 活动日志里写明换了哪几轮（编号范围）、记录多长、调了几次模型、给它看了多少字符、上下文前后各多大。
   - 中途某一段没写成：已经折进去的那些轮去掉、记录留着，没折的留到下一轮再试（日志记成错误）。一段都没折成、又已经超过两倍阈值，才把该换的那些轮丢掉，记录里照实留一句“第几轮到第几轮共多少轮被丢弃了”。
   - **模型接口报上下文超长时**：同一套，不看阈值——最近的一段按“现在大小的 25%”留，更早的压到现在的一半上下；记录写不成就把那些轮丢掉（照实留一句）。历史里只剩最近那一段时，把它里面的也按第一步收拾（最新一轮先不动）；还是什么都动不了才把历史里的轮全丢掉。
@@ -400,6 +401,12 @@ interface ProviderConfig {
 **7. 脚下的俯视图** `GET /api/minimap?radius=<4–31，默认 24>` → `{ available, x1, z1, width, depth, palette: [{ id, name, color, known, liquid? }], tops, heights, unloaded, self: { x, y, z, yaw }, players: [{ name, x, z, isBot }] }`。`tops` / `heights` 一行行排（下标 = z * width + x）：那一列地表是调色板里的第几种、多高（没有是 -1）。看不到时 `{ available: false, reason }`。
 
 **8. 物品的中文名** `GET /api/items/names?q=<逗号隔开的 id/meta，最多 200 个>` → `{ names: { "minecraft:dirt/0": "泥土" } }`，只回查得到的。
+
+**9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面还没做）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。
+
+- `GET /api/guide` → `{ available, pages, books: [{ book, title, pages, englishOnly }] }`；没有这份资料时是 `{ available: false, books: [] }`。带 `book=<书>` 时多两项：`book`，和 `list`——这本书的全部页，按目录的顺序（上一级在前，同级里有中文的在前、再按书里的次序），每项 `{ path, book, title, lang, english?, parent? }`：`lang` 是给出来的这一版的语言（`zh_cn` / `en_us`），`english: true` 表示同一路径另有英文版，`parent` 是上一级的 `path`（顶上的页没有）。前端拿 `parent` 搭成树。没有这本书是 404。
+- `GET /api/guide/search?q=<词，空格隔开，都要有>&book=<可选>&limit=<默认 30，最多 100>` → `{ q, book?, matched, hits: [{ path, book, title, lang, english?, parent?, score, snippet? }] }`。在标题、读成字的正文、这一页讲的物品的名字（中英文）里找；`score` 3 是标题里就有、2 是讲的物品对上了、1 只在正文里；`snippet` 是正文里对上的那一处前后的一小段。
+- `GET /api/guide/page?path=<book:path>&english=<0|1>` → `{ path, book, title, lang, english?, parent?, author?, date?, items: [{ id, meta? | metas? }], children: [{ path, book, title, lang, … }], sections: [{ level, title, offset }], text }`。`items` 是这一页自己写明讲的物品，`children` 是目录里它下面的页，`sections` 是各小节的标题从 `text` 的第几个字符起，`text` 是 Markdown（里面留着几样原样的 HTML：`<br>`、`<u>`、`<kbd>`、`<a>`、`<details>`）。`english=1` 只对两种语言都有的页管用。没有这一页是 404。
 
 ## 测试
 

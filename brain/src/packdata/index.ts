@@ -6,6 +6,7 @@
 // 用它的工具自己退回去问服务器。
 
 import { CarvingBook } from './carving.ts'
+import { GuideBook } from './guide.ts'
 import { FluidTable } from './fluids.ts'
 import { StructureBook } from './structures.ts'
 import fs from 'node:fs'
@@ -28,6 +29,8 @@ export type { Recipe, RecipeFluid, RecipeHandler, RecipeSlot, RecipeStack } from
 export { ItemTable } from './items.ts'
 export { StructureBook, structureCells } from './structures.ts'
 export { CarvingBook } from './carving.ts'
+export { GuideBook } from './guide.ts'
+export type { GuideEntry, GuideHit, GuidePage } from './guide.ts'
 export { FLUID_DISPLAY_ID, FluidTable } from './fluids.ts'
 export type { FluidInfo } from './fluids.ts'
 export type { CarvingGroup, CarvingMatch, CarvingVariant } from './carving.ts'
@@ -55,6 +58,8 @@ export interface PackData {
   carving?: CarvingBook
   /** 流体表（从配方册和物品表拼出来的）：注册名 ↔ 中文名、英文名。没有配方册时没有。 */
   fluids?: FluidTable
+  /** 游戏内指南（guide.jsonl）：玩家在游戏里按 G 看到的那本。没有时 read_guide 照实说这份资料没导出。 */
+  guide?: GuideBook
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -266,6 +271,20 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
     }
   } catch (e) {
     log(`凿子的组（carving.jsonl）读不了（${reason(e)}），当它没有。`)
+  }
+  try {
+    const loaded = GuideBook.load(dir)
+    // 文件不在就当没有，不用说
+    if (loaded) {
+      // 指南里的物品、任务叫什么名字，从上面读到的物品表、流体表、任务书来；哪样没有，那里就原样留 id
+      loaded.guide.bind({ items: data.items, fluids: data.fluids, quests: data.quests })
+      data.guide = loaded.guide
+      const books = loaded.guide.books()
+      const english = books.reduce((n, b) => n + b.englishOnly, 0)
+      log(`游戏内指南：${books.length} 本书、${loaded.guide.size} 页（${english > 0 ? `其中 ${english} 页只有英文；` : ''}文件里两种语言一共 ${loaded.rows} 行${loaded.bad > 0 ? `，${loaded.bad} 行认不出来，跳过了` : ''}）。`)
+    }
+  } catch (e) {
+    log(`游戏内指南（guide.jsonl）读不了（${reason(e)}），当它没有。`)
   }
   return data
 }

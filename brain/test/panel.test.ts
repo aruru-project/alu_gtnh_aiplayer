@@ -11,8 +11,8 @@ import { LlmError } from '../src/llm/index.ts'
 import { DesignWorkspace, decodePng } from '../src/design/index.ts'
 import { itemLines, parseItemIcons } from '../src/packdata/icons.ts'
 import type { ItemIcons } from '../src/packdata/icons.ts'
-import { ItemTable, StructureBook } from '../src/packdata/index.ts'
-import type { TextureAtlas } from '../src/packdata/index.ts'
+import { ItemTable, StructureBook, loadPackData } from '../src/packdata/index.ts'
+import type { GuideBook, TextureAtlas } from '../src/packdata/index.ts'
 import { PanelLive } from '../src/panel/live.ts'
 import { PanelServer } from '../src/panel/server.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
@@ -26,6 +26,7 @@ import { UsageStore } from '../src/store/usage.ts'
 import { useLocalNames } from '../src/tools/format.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame, chat, makeAgent, relays, reply, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
+import { buildGuidePackdata, pythonMissing } from './fixture-guide.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
 import { encodePng, tmpDir, waitFor } from './helpers.ts'
 import { readBlueprintAnswer, readSchematic } from './mock-bridge.ts'
@@ -36,7 +37,7 @@ const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
  * lines：给了就接上真的两条线（agent-harness 的 makeAgent 造的：真的 Lines、两份历史、假的游戏和假的模型），
  * 不给就是只记下收到什么的桩。
  */
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; guide?: GuideBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
   const tmp = opts.dir ?? (opts.lines ? { dir: opts.lines.dir, cleanup: opts.lines.cleanup } : tmpDir())
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = opts.lines?.game ?? new FakeGame()
@@ -66,6 +67,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     pictures,
     ...(opts.textures ? { textures: opts.textures } : {}),
     ...(opts.structures ? { structures: opts.structures } : {}),
+    ...(opts.guide ? { guide: opts.guide } : {}),
     // 物品图标：测试里不去找这台机器上的 packdata，给了才有
     icons: opts.icons ?? false,
     bridge: new BridgeApi(game),
@@ -973,6 +975,69 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual((await bare.call('GET', '/api/structures')).json, { available: false, total: 0, machines: [] })
   })
 
+  it('游戏内指南（只读）：有哪几本书、一本书的页（带上一级，前端搭成树）、按词找、读一页——读出来的是读成字以后的正文；没有这份资料时照实说', { skip: pythonMissing() }, async (t) => {
+    const dir = tmpDir()
+    t.after(dir.cleanup)
+    const packdata = loadPackData(buildGuidePackdata(dir.dir))
+    t.after(() => packdata.recipes?.close())
+    const s = await setup(t, {}, { guide: packdata.guide! })
+    await s.login()
+    const books = await s.call('GET', '/api/guide')
+    assert.deepEqual(books.json, {
+      available: true,
+      pages: 7,
+      books: [
+        { book: 'changelog', title: '2.9 新内容', pages: 1, englishOnly: 0 },
+        { book: 'gregtech', title: 'GT 新视野', pages: 6, englishOnly: 1 },
+      ],
+    })
+    const list = (await s.call('GET', '/api/guide?book=gregtech')).json
+    assert.deepEqual([list.book, list.list.length], ['gregtech', 6])
+    assert.deepEqual(list.list.slice(0, 2), [
+      { path: 'gregtech:index.md', book: 'gregtech', title: 'GT 新视野', lang: 'zh_cn', english: true },
+      { path: 'gregtech:power/cable.md', book: 'gregtech', title: '导线与线缆', lang: 'zh_cn', english: true, parent: 'gregtech:index.md' },
+    ])
+    assert.deepEqual(list.list.at(-1), { path: 'gregtech:multiblocks/vacuum_freezer.md', book: 'gregtech', title: 'Vacuum Freezer', lang: 'en_us', parent: 'gregtech:multiblocks/multiblocks_index.md' })
+    assert.equal((await s.call('GET', '/api/guide?book=nope')).status, 404)
+
+    const found = (await s.call('GET', `/api/guide/search?q=${encodeURIComponent('防冻')}`)).json
+    assert.deepEqual([found.q, found.matched, found.hits[0].path, found.hits[0].title, found.hits[0].score], ['防冻', 1, 'gregtech:multiblocks/hv/vacuum_freezer.md', '真空冷冻机', 1])
+    assert.match(found.hits[0].snippet, /防冻机械方块 \[gregtech:gt\.blockcasings2\/1\]/)
+    assert.equal((await s.call('GET', '/api/guide/search')).status, 400)
+
+    const page = (await s.call('GET', `/api/guide/page?path=${encodeURIComponent('gregtech:power/cable.md')}`)).json
+    assert.deepEqual(page, {
+      path: 'gregtech:power/cable.md',
+      book: 'gregtech',
+      title: '导线与线缆',
+      lang: 'zh_cn',
+      english: true,
+      parent: 'gregtech:index.md',
+      items: [],
+      children: [],
+      sections: [
+        { level: 1, title: '导线与线缆', offset: 0 },
+        { level: 2, title: '线损', offset: 73 },
+      ],
+      text: '# 导线与线缆\n\n电流越大，线损越大：$P = U \\times I$。按 [key binding key.gt.wire] 看导线的参数。\n\n## 线损\n\n每一格导线都会损耗电压。',
+    })
+    const english = (await s.call('GET', `/api/guide/page?path=${encodeURIComponent('gregtech:power/cable.md')}&english=1`)).json
+    assert.deepEqual([english.title, english.lang, english.text], ['Wires and Cables', 'en_us', '# Wires and Cables\n\nCables lose power over distance.'])
+    // 物品的名字和模型看到的一样；这一页讲的物品、下面的页也给
+    const index = (await s.call('GET', `/api/guide/page?path=${encodeURIComponent('gregtech:multiblocks/multiblocks_index.md')}`)).json
+    assert.deepEqual(index.children.map((c: { title: string }) => c.title), ['工业高炉', '真空冷冻机', 'Vacuum Freezer'])
+    const freezer = (await s.call('GET', `/api/guide/page?path=${encodeURIComponent('gregtech:multiblocks/hv/vacuum_freezer.md')}`)).json
+    assert.deepEqual([freezer.items, freezer.author, freezer.date], [[{ id: 'gregtech:gt.blockmachines', meta: 1002 }], 'Skorched', '2026-05-27'])
+    assert.ok(freezer.text.includes('[3D scene shown here in the game: the structure of 真空冷冻机 [gregtech:gt.blockmachines/1002], tier 2]'))
+    assert.equal((await s.call('GET', '/api/guide/page?path=gregtech:nope.md')).status, 404)
+
+    // 大脑没有这份资料
+    const bare = await setup(t)
+    await bare.login()
+    assert.deepEqual((await bare.call('GET', '/api/guide')).json, { available: false, books: [] })
+    assert.deepEqual([(await bare.call('GET', '/api/guide/search?q=x')).status, (await bare.call('GET', '/api/guide/page?path=gregtech:index.md')).status], [404, 404])
+  })
+
   it('三维预览的数据：草稿和对话日志里的简图都给得出“每一格是什么、每种方块怎么画”；有贴图图集时指到图集的第几格，图集那张图也取得到', async (t) => {
     // 一份只有两格的图集：第 0 格是红羊毛的贴图
     const dir = tmpDir()
@@ -1546,7 +1611,7 @@ describe('面板：两条线', () => {
     const before = structuredClone(lines.history.get())
 
     // 试写：最近那一段（两轮）以外的六轮写成记录，历史一个字没动
-    lines.llm.enqueue(reply('<analysis>先过一遍</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } }))
+    lines.llm.enqueue(reply('<analysis>先过一遍</analysis><summary>## 这一段结束时在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } }))
     const tried = await s.call('POST', '/api/history/compact', { line: 'work', dryRun: true })
     assert.equal(tried.status, 200)
     const { inputChars, tokensBefore, tokensAfter, tidied, ms, ...rest } = tried.json
@@ -1556,13 +1621,13 @@ describe('面板：两条线', () => {
       dryRun: true,
       applied: false,
       action: 'summarized',
-      summary: '## 现在在做的事\n（无）',
+      summary: '## 这一段结束时在做的事\n（无）',
       analysis: '先过一遍',
       turns: { from: ids[0], to: ids[5], count: 6 },
       kept: 2,
       calls: 1,
       usage: { inputTokens: 5000, outputTokens: 300 },
-      summaryChars: 13,
+      summaryChars: 17,
       capChars: 1800,
     })
     assert.equal(inputChars, lines.llm.requests.at(-1)!.messages[0]!.content.map((p) => (p.type === 'text' ? p.text : '')).join('').length)

@@ -73,7 +73,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | | `run_program` | `start_routine`（例程） |
 |---|---|---|
 | 什么时候跑完 | 模型的这一轮里，结果当场回来 | 后台。模型启动它以后这一轮就结束 |
-| 能调哪些工具 | 只有查询类的（`brain/src/tools/index.ts` 的 `QUERY_TOOLS`：看状态、看仓库、查配方、查任务书……，只查不动的库函数也在里面） | 除了 `run_program` 和例程自己的三个工具以外的全部，库函数和旧名字也算 |
+| 能调哪些工具 | 只有查询类的（`brain/src/tools/index.ts` 的 `QUERY_TOOLS`：看状态、看仓库、查配方、查任务书、读游戏内指南……，只查不动的库函数也在里面） | 除了 `run_program` 和例程自己的三个工具以外的全部，库函数和旧名字也算 |
 | 开任务的工具 | 调不了（结果是失败，并指到 `start_routine`） | 等任务结束才返回：`ok` 是任务成没成，`data` 是 `{ task, state, result, error }` |
 | 总时长 | 90 秒（连等查询结果的时间） | 默认 120 分钟、`minutes` 最多要到 720（12 小时）；这两个数主人在面板“设置”里改，启动的结果里写着这一次给了多少 |
 | 程序自己的计算时间 | 默认 10 秒，`timeout` 最多 30 | 20 秒 |
@@ -107,7 +107,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | | 发给模型 | 模型怎么知道它存在 | 怎么调 |
 |---|---|---|---|
 | 工具（干活线 `WORK_TOOLS`、对话线 `TALK_TOOLS`） | 每一轮，连说明和 schema | 工具清单 | 直接调；程序里也能调 |
-| 库函数（`LIBRARY_TOOLS`） | 不发 | `run_program` 的说明后面有一份**索引**：每个一行（名字、参数要点、`data` 里有什么），整份不超过 2000 字符；`start_routine` 的说明指过去。细节在 `routines` 手册的“库函数”一节 | 程序里 `await tool(名字, 参数)` |
+| 库函数（`LIBRARY_TOOLS`） | 不发 | `run_program` 的说明后面有一份**索引**：每个一行（名字、参数要点、`data` 里有什么），整份不超过 2200 字符；`start_routine` 的说明指过去。细节在 `routines` 手册的“库函数”一节 | 程序里 `await tool(名字, 参数)` |
 | 旧名字（`LEGACY_TOOLS`） | 不发 | 不提（只为已经存着的例程、笔记、它自己写的手册还能用） | 同上 |
 
 **挪走不等于拿掉能力。** `runTool` 按名字找的时候三层都找：模型直接调了一个库函数或旧名字，和调工具一样**照常执行**（同样的参数校验、同样的结果），不回“没有这个工具”，也不回“请写程序”。旧习惯、旧笔记、小模型的误调都不会变成一次失败。调了真不存在的名字时，报错里分两组列出能调的：它的工具，和库函数。
@@ -124,6 +124,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | | |
 |---|---|
 | `recent_chat { minutes?, limit?, player? }` | 最近的聊天记录，只读，早的在前：公共聊天、对它的悄悄话、主人在面板上发来的话、它自己说出去的话；别人说的每一句带着他当时站在哪、朝哪、指着什么。干活线不直接听人说话，交来的事只附着当时那一轮的原话，更早的几句靠它查。`data`：`{ lines: [{ time, kind: 'chat' \| 'whisper' \| 'panel' \| 'said' \| 'whispered', who, text, to?, speaker? }], matched }`（`speaker` 是身体给的那份 `{ block, facing, lookingAt, ahead }`）。默认最近 30 句、最多 100；记录一共留最近 300 句（数据目录 `chat-log.json`） |
+| `read_log { turn?, turnTo?, from?, to?, minutes?, query?, kinds?, line?, id?, offset?, after?, before?, limit? }` | 它自己的活动日志（面板“对话”页那一份，留最近 14 个有记录的日子），只读：对话历史里较早的轮换成交接记录以后，原文在这里。按第几轮、时间段、词、类别（`said` 它说的、`heard` 别人说的和面板上发来的、`tools` 工具调用和结果、`relay` 两条线之间、`thought`、`turns`、`events`、`notes`、`runs`、`calls`）取；给了起点（`turn`、`from`、`after`）从头往后读，否则给最晚的；`id` 读一条的全文。`data`：`{ entries: [{ id, time, kind, turn?, step?, agent?, who?, text, detail?, isError? }], matched, earlier, later, shown }`（`entries` 是这一页的整条，`detail` 是日志里存着的全部——落盘时超过 8000 字符的被截过，末尾写着原长）；`id` 时是 `{ entry }` |
 | `list_stock { radius?, contains?, below?, at?, page? }` | 周围所有箱子和抽屉合成一张存货表；机器各个面上能装东西的覆盖板（槽位扩展）里的东西也算（机器自己的格子不算）。`data`：`{ items: [{ id, meta, name?, count, automated, places: [{ x, y, z, count, kind?, side?, automated? }] }] }`（全部，不分页；`text` 一页 40 行）。`kind: "cover"` 的那一处在那个方块 `side` 面的覆盖板里，取它的容器写成 `{ x, y, z, side, sneak: true }` |
 | `list_drawers { x, y, z, below?, page? }` | 一个抽屉管理器（或一个抽屉方块）的每一格。`data` 是身体 `world.drawers` 的原样回答：`{ controller?, drawers, slotsTotal, slotsUsed, slots: [{ x, y, z, slot, id, meta, name, count, room, front, hit } 或 { x, y, z, slot, empty: true }], total, offset }`。`front`（正面朝哪）和 `hit`（点这一格时点在方块里的哪一点）可以原样交给 `use_item` 的 `side` / `hit` |
 | `read_blueprint { name, draft?, from?, to? }` | 一张图纸里有什么，不用知道它放在哪：服务器上的图纸（身体的 `blueprint.read`），或者 `draft: true` 读它自己的草稿，两边是同一个形状。`data`：`{ name, source: 'server' \| 'draft', size: { x, y, z }, blocks, materials: [{ id, meta, name?, count, item?, byHand? }], x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells }`，`palette[cells[(dy * sz + dz) * sx + dx]]` 是盒子里那一格（`palette[0]` 是空）。整张超过 262,144 格时不带格子那几项，文字里写明用 `from` / `to` 分块读；草稿没有 `byHand`（发布以后才知道） |
@@ -151,11 +152,13 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **覆盖板**在同一批 `data` 里是 `covers: [{ side, id, meta, name, screen, slots?, usedSlots?, items?, moreKinds? }]`；`find_in_storage` 的存放点带 `kind: "cover"`、`cover`、`side`。
 
+**游戏内指南**：`read_guide`（在工具清单里，两条线都有）在程序里一样调。读一页（`{ path }`）的 `data` 是 `{ path, book, title, lang, english?, parent?, author?, date?, items?, quests?, children, sections: [{ level, title, offset }], text }`，`text` 是整页读成字以后的正文，不受单个结果上限的限制；目录（`{ book }`）是 `{ book, pages: [{ path, book, title, lang, english?, parent?, items? }] }`；搜索（`{ query }`）是 `{ matched, hits: [{ path, title, …, score, snippet? }] }`；按物品（`{ id, meta? }`）是 `{ pages: […] }`。怎么读成字的见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”。
+
 **一个方块自己存的全部数据**：`inspect_block { x, y, z, detail: true }`（在工具清单里）的 `data` 多 `class`、`says`（它对扫描器自报的那几行话）、`saved`（它存档里的全部数据，键是内部名字，值原样；`path` 只看其中一部分）。这两项在 `data` 里一个字不改（不换中文名），所以程序可以写个循环把一片机器的某个设置扫一遍：`(await tool("inspect_block", { x, y, z, detail: true })).data.saved.lockedFluidName`。
 
 合并掉的旧名字（程序里照样能调）：`list_blueprints`、`list_drafts`、`list_images`（现在是 `list_designs`，`data` 是 `{ blueprints?, drafts?, images? }`）；`set_home`、`list_homes`、`join_team`（现在是 `run_command`：发一条服务器指令，`data` 是 `{ command, output: [回显的每一行] }`。能发哪些由身体的允许列表定，协议里没有读这份列表的接口，所以被拒绝时结果里写明原因和默认的列表）。
 
-**加一个库函数**：写成一个 `Tool`（`brain/src/tools/structures.ts` 是例子），放进 `LIBRARY_TOOLS`，写上 `brief`（索引里的那一行，尽量短：整份索引有 2000 字符的上限，有测试看着；真正的闸是清单总大小那条测试）和结构化的 `data`，把 `data` 的形状补进上面这张表和 `routines` 手册。只查不动的自动进 `QUERY_TOOLS`；会开任务的要另外登记在 `LIBRARY_TASKS`（那样它只能在例程里调）。`test/tool-list.test.ts` 里有一条防回涨的测试：发给模型的工具清单总字符数超过上限就失败，并列出各工具的大小——往 `ALL_TOOLS` 里加东西之前先想能不能做成库函数。
+**加一个库函数**：写成一个 `Tool`（`brain/src/tools/structures.ts` 是例子），放进 `LIBRARY_TOOLS`，写上 `brief`（索引里的那一行，尽量短：整份索引有 2200 字符的上限，有测试看着；真正的闸是清单总大小那条测试）和结构化的 `data`，把 `data` 的形状补进上面这张表和 `routines` 手册。只查不动的自动进 `QUERY_TOOLS`；会开任务的要另外登记在 `LIBRARY_TASKS`（那样它只能在例程里调）。`test/tool-list.test.ts` 里有一条防回涨的测试：发给模型的工具清单总字符数超过上限就失败，并列出各工具的大小——往 `ALL_TOOLS` 里加东西之前先想能不能做成库函数。
 
 **程序里看长结果。** `return` 的值最多和一个工具结果一样长（跟“单个工具结果上限”那个设置走），更长的只给开头，并写明一共多少字符、给了多少、剩下的怎么拿（从 `r.data` 里挑、用工具自己的筛选和翻页参数、分段返回 `r.text`）。同一条路上别的会截短的地方也都写明：程序的日志满了（4000 字符）、例程只留最近 40 行日志和最近 12 次调用（每次只留结果的第一行）、报错的话超过 1000 字符。
 

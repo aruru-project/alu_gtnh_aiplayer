@@ -16,6 +16,7 @@ import type { InventoryItem } from '../bridge/protocol.ts'
 import { StructureBook, structureCells } from '../packdata/index.ts'
 import type { Structure, StructurePart, StructureRow } from '../packdata/index.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
+import { guideNote } from './guide.ts'
 import { spread, whereItStands } from './recipe-book.ts'
 import { int, obj, str } from './schema.ts'
 import { pos } from './tasks.ts'
@@ -136,6 +137,9 @@ export const findStructure: Tool = {
     const lines: string[] = [`${head}: a multiblock machine with ${tiers.length} tier(s)${tiers.length > 1 ? ` (${tiers[0]}–${tiers.at(-1)}; the tier is how many Multiblock Structure Hologram Projectors are stacked when it is built)` : ''}.`]
     const about = machine.info.filter((l) => !noise(l))
     if (about.length > 0) lines.push(`About it: ${about.slice(0, 8).join(' | ')}`)
+    // 游戏内指南里有讲这台机器的页：带一行页名和怎么读
+    const page = guideNote(ctx.packdata?.guide, machine.id, machine.meta)
+    if (page !== undefined) lines.push(`I${page.slice(1)}`)
     const notes = machine.structureInfo.filter((l) => !noise(l))
     if (notes.length > 0) {
       lines.push('How it is built (the machine\'s own notes; "任意机械方块" means that part may replace any casing):')

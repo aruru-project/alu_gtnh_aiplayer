@@ -169,6 +169,10 @@ describe('历史压缩', () => {
     // 它要写很久：这次调用至少等二十分钟，超时了不原样重试
     assert.deepEqual([req.minTimeoutMs, req.noRetryOnTimeout], [1_200_000, true])
     assert.match(req.system, /^你在替一个 Minecraft（GTNH 整合包）服务器里的 AI 玩家写“交接记录”。/)
+    // 记录写到这一段结束时为止（后面还接着没换掉的原文），所以那一节叫“这一段结束时在做的事”，不叫“现在”
+    assert.ok(req.system.includes('这份记录后面还接着它最近的经历的原文（没被换掉的那些轮），所以记录写到这一段结束时为止：这一段结束时的情况，不一定是它现在的情况。\n'))
+    assert.ok(req.system.includes('\n## 这一段结束时在做的事\n这一段结束的那一刻正在做哪件事、做到哪一步、紧接着的下一步是什么；'))
+    assert.equal(req.system.includes('现在在做的事'), false)
     assert.match(req.system, /上限 1080 字，/)
     const text = shownTo(req)
     assert.match(text, /^【已有的交接记录】\n旧记录：它叫 Alu。\n\n【之后的经历】\n=== 第 1 轮 ===\n\[它看到的\] event of turn 1\n/)
@@ -730,7 +734,7 @@ describe('agent 跑久了以后的历史', () => {
     // 试写：最近那段是阈值的四分之一（一千 token，两轮），其余六轮写成记录——历史一个字没动
     h.llm.enqueue(async () => {
       await new Promise((r) => setTimeout(r, 40))
-      return reply('<analysis>草稿</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } })
+      return reply('<analysis>草稿</analysis><summary>## 这一段结束时在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } })
     })
     const tried = await h.agent.compactNow('work', { dryRun: true })
     assert.ok(tried.ok)
@@ -738,7 +742,7 @@ describe('agent 跑久了以后的历史', () => {
     assert.ok(tried.ms >= 35 && tried.ms < 5000, `ms ${tried.ms}`)
     assert.deepEqual(
       [tried.applied, tried.action, tried.summary, tried.analysis, tried.turns, tried.kept, tried.calls, tried.usage, tried.summaryChars, tried.capChars],
-      [false, 'summarized', '## 现在在做的事\n（无）', '草稿', { from: ids[0], to: ids[5], count: 6 }, 2, 1, { inputTokens: 5000, outputTokens: 300 }, 13, 1800],
+      [false, 'summarized', '## 这一段结束时在做的事\n（无）', '草稿', { from: ids[0], to: ids[5], count: 6 }, 2, 1, { inputTokens: 5000, outputTokens: 300 }, 17, 1800],
     )
     assert.equal(tried.inputChars, shownTo(h.llm.requests.at(-1)!).length)
     assert.deepEqual(h.history.get(), before)

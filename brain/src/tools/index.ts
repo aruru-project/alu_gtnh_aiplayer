@@ -25,6 +25,7 @@ import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routine
 import { reportProblem } from './feedback.ts'
 import { clip, dataWithLocalNames } from './format.ts'
 import { recentChat, report, stopWork, tellWorker, workerStatus } from './lines.ts'
+import { readGuide } from './guide.ts'
 import { readLog } from './log.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
@@ -127,6 +128,7 @@ export const WORK_TOOLS: readonly Tool[] = [
   processItems,
   findQuests,
   getQuest,
+  readGuide,
   taskStatus,
   cancelTask,
   remember,
@@ -164,6 +166,7 @@ export const TALK_TOOLS: readonly Tool[] = [
   findMachines,
   findQuests,
   getQuest,
+  readGuide,
   taskStatus,
   remember,
   forget,
@@ -238,6 +241,7 @@ export const QUERY_TOOLS: readonly string[] = [
   'find_machines',
   'find_quests',
   'get_quest',
+  'read_guide',
   'task_status',
   ...LIBRARY_TOOLS.map((t) => t.name).filter((name) => !LIBRARY_TASKS.includes(name)),
   // 旧名字里只查不动的
@@ -300,7 +304,7 @@ export const LIBRARY_INDEX_HEAD =
 
 /**
  * 库函数的索引：run_program 的说明后面带着它，模型靠它知道这些函数存在（start_routine 的说明指到这里，不重复）。
- * 每个一行（Tool.brief）。整份不超过 2000 字符（test/tool-list.test.ts 看着；真正的闸是清单总大小那条测试）：它每一轮都发，
+ * 每个一行（Tool.brief）。整份不超过 2200 字符（test/tool-list.test.ts 看着；真正的闸是清单总大小那条测试）：它每一轮都发，
  * 写长了就把挪走工具省下的又花回去了；各自的参数和 data 的细节在 routines 手册的“库函数”一节。
  */
 export function libraryIndex(tools: readonly Tool[], view: ModelView): string {

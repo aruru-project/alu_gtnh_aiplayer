@@ -1032,6 +1032,7 @@ export class Agent {
       owners: settings.owners,
       memory: this.deps.memory.render(),
       manuals,
+      ...(this.deps.packdata?.guide ? { guide: { pages: this.deps.packdata.guide.size } } : {}),
     })
     // 清单按这条线、这一轮用的模型给：看图的工具只发给能看图的模型；库函数不在清单里，在 run_program 说明后面的索引里
     const toolSpecs = modelToolSpecs(this.deps.tools, { canSee, line: this.line })

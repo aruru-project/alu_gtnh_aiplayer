@@ -9,6 +9,7 @@ import type { RunLogStore } from '../agent/run-log.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
+import type { GuideBook, GuideEntry } from '../packdata/index.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
 import type { ActivityLog, ActivityRun } from '../store/activity-log.ts'
@@ -217,4 +218,78 @@ export async function blueprintRead(deps: { bridge: BridgeApi; design: DesignWor
   const data = await blueprintData(deps, { name, draft: params.get('draft') === '1', cells: params.get('cells') === '1' })
   if ('content' in data) return reject(404, 'not_found', data.content)
   return dataWithLocalNames(data)
+}
+
+// ── 游戏内指南（只读；面板“知识”页用） ──
+
+/** 目录和搜索结果里的一页。 */
+interface GuidePageRef {
+  /** 能直接拿去读的写法：book:path。 */
+  path: string
+  book: string
+  title: string
+  /** 给出来的这一版是什么语言（zh_cn、en_us）：有中文的给中文。 */
+  lang: string
+  /** 同一路径另有英文版（读的时候带 english=1 拿它）。 */
+  english?: true
+  /** 目录里的上一级（同样是 book:path）；顶上的页没有。 */
+  parent?: string
+}
+
+function guidePageRef(guide: GuideBook, e: GuideEntry): GuidePageRef {
+  const parent = guide.parentOf(e)
+  return { path: e.ref, book: e.book, title: e.page.title, lang: e.page.lang, ...(e.english ? { english: true as const } : {}), ...(parent ? { parent: parent.ref } : {}) }
+}
+
+/**
+ * GET /api/guide：有哪几本书。带 book=… 时多一项 pages：这本书的全部页，按目录的顺序（上一级在前，同级按书里的次序），
+ * 每页带 parent，前端自己搭成树。没有这份资料时 available 是 false。
+ */
+export function guideBooks(guide: GuideBook | undefined, params: URLSearchParams, reject: Reject): unknown {
+  if (!guide) return { available: false, books: [] }
+  const books = guide.books()
+  const book = params.get('book')
+  if (book === null) return { available: true, pages: guide.size, books }
+  if (guide.entries(book).length === 0) return reject(404, 'not_found', `指南里没有 ${book} 这本书`)
+  return { available: true, pages: guide.size, books, book, list: guide.entries(book).map((e) => guidePageRef(guide, e)) }
+}
+
+const GUIDE_HITS_DEFAULT = 30
+const GUIDE_HITS_MAX = 100
+
+/** GET /api/guide/search?q=…&book=…&limit=…：按词找页（标题、读成字的正文、讲的物品的名字；每个词都要有）。标题对上的在前。 */
+export function guideSearch(guide: GuideBook | undefined, params: URLSearchParams, reject: Reject): unknown {
+  if (!guide) return reject(404, 'not_found', '这个大脑没有游戏内指南的资料（guide.jsonl 没导出）')
+  const q = (params.get('q') ?? '').trim()
+  if (q.length === 0) return reject(400, 'bad_request', '要找什么：q')
+  const book = params.get('book') ?? undefined
+  const hits = guide.search(q, book !== undefined ? { book } : {})
+  const limit = whole(params.get('limit'), GUIDE_HITS_DEFAULT, 1, GUIDE_HITS_MAX)
+  return { q, ...(book !== undefined ? { book } : {}), matched: hits.length, hits: hits.slice(0, limit).map((h) => ({ ...guidePageRef(guide, h.entry), score: h.score, ...(h.snippet !== undefined ? { snippet: h.snippet } : {}) })) }
+}
+
+/**
+ * GET /api/guide/page?path=book:path&english=1：读一页。text 是读成字以后的正文（和 read_guide 给模型的是同一份：物品换成了
+ * “中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 book:path），sections 是各小节从第几个字符起。
+ */
+export function guidePage(guide: GuideBook | undefined, params: URLSearchParams, reject: Reject): unknown {
+  if (!guide) return reject(404, 'not_found', '这个大脑没有游戏内指南的资料（guide.jsonl 没导出）')
+  const ref = (params.get('path') ?? '').trim()
+  const entry = guide.get(ref)
+  if (!entry) return reject(404, 'not_found', ref.length > 0 ? `指南里没有 ${ref} 这一页` : '要读哪一页：path（book:path）')
+  const english = ['1', 'true'].includes(params.get('english') ?? '') && entry.english !== undefined
+  const page = english ? entry.english! : entry.page
+  const rendered = guide.render(entry, english)
+  return {
+    ...guidePageRef(guide, entry),
+    title: page.title,
+    lang: page.lang,
+    ...(page.author !== undefined ? { author: page.author } : {}),
+    ...(page.date !== undefined ? { date: page.date } : {}),
+    // 这一页讲的物品（页自己写明的）
+    items: page.items,
+    children: guide.childrenOf(entry).map((e) => guidePageRef(guide, e)),
+    sections: rendered.sections,
+    text: rendered.text,
+  }
 }

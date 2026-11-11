@@ -63,12 +63,14 @@ npm run dev:testserver
 | 资料 | 文件 | 谁用 | 没有时 |
 |---|---|---|---|
 | 任务书 | `quests.jsonl` `questlines.json` | `list_quest_lines` / `find_quests` / `get_quest`；只有“谁做完了哪些”问服务器 | 这三个工具改问服务器（英文） |
+| 游戏内指南（玩家按 G 看到的那本） | `guide.jsonl` | `read_guide`；`find_item`、`inspect_block`、`find_machines`、`find_structure` 说到指南里有页讲的物品时带一行页名和怎么读；提示词里一句“包里有这本指南” | `read_guide` 照实说这份资料没导出；别处不提指南 |
 | 物品表（中英文名、矿辞名） | `items.jsonl` | `find_item`；服务器回来的东西（背包、箱子、机器、任务结果、主人指着的方块）凡是带 id 的，给模型看时都换成中文名 | `find_item` 改问服务器（只认英文名），名字都是英文 |
 | 配方册（NEI 里的全部配方） | `recipes.jsonl` `handlers.json` | `find_recipes`（NEI 的 R）、`find_uses`（NEI 的 U）、`craft_item` / `process_items` 按配方编号干活 | `find_recipes` 改问服务器（英文、每种机器只给前几条），`find_uses` 用不了，合成用服务器自己知道的配方 |
 | 方块颜色表、贴图 | `blocks.jsonl` `textures/` | 像素画配色、简图上色、面板的三维预览 | 内置的 16 色羊毛和 16 色染色粘土；三维预览按颜色画 |
 
 ```sh
 tools/make-packdata.py quests --client <客户端包.zip> --out brain/packdata    # 任务书。在仓库根目录执行，不到一秒
+tools/make-packdata.py guide --client <客户端包.zip> --out brain/packdata     # 游戏内指南。不到一秒
 tools/export-packdata                                                        # 物品表、配方册、方块颜色表：从一个真的客户端里导出，十来分钟，见 docs/PACKDATA.md
 ```
 
@@ -258,9 +260,9 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 两条线各有一份工具清单（`tools/index.ts` 的 `TALK_TOOLS`、`WORK_TOOLS`），模型能用的东西分三层（细节见 `docs/SCRIPTS.md` 的“库函数”）：
 
 - **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。
-  - **干活线**：操作身体的全部，加上查、记忆、手册、意见簿和 `report`；没有对玩家说话的（`say`、`whisper`）和提醒。不能看图的模型拿到 52 个、约 46,900 字符；能看图的 54 个、四万九千字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。
-  - **对话线**：`whisper`、`tell_worker`、`worker_status`、`stop_work`、所有只查不动的、`run_program`、记忆、提醒、手册、意见簿；没有任何会动身体的，也没有 `say`（它写的文字就是它说的话）。不能看图的模型拿到 28 个、20,951 字符，不到干活线的一半；能看图的 30 个。它每回一句话都带着这份清单。
-- **库函数**（13 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 2000 字符），模型靠它知道这些函数存在。对话线的索引里只有只查不动的（没有会开任务的 `haul_items`）。
+  - **干活线**：操作身体的全部，加上查、记忆、手册、意见簿和 `report`；没有对玩家说话的（`say`、`whisper`）和提醒。不能看图的模型拿到 53 个、约 48,400 字符；能看图的 55 个、五万字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。
+  - **对话线**：`whisper`、`tell_worker`、`worker_status`、`stop_work`、所有只查不动的、`run_program`、记忆、提醒、手册、意见簿；没有任何会动身体的，也没有 `say`（它写的文字就是它说的话）。不能看图的模型拿到 29 个、约 22,500 字符，不到干活线的一半；能看图的 30 个。它每回一句话都带着这份清单。
+- **库函数**（14 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 2200 字符），模型靠它知道这些函数存在。对话线的索引里只有只查不动的（没有会开任务的 `haul_items`）。
 - **旧名字**（6 个）：合并掉的工具原来的名字，不发、不提，只为已经存着的例程、笔记和它自己写的手册还能用。
 
 不在清单里不等于调不到：模型直接调了一个库函数或旧名字，和调工具一样照常执行——除非那是另一条线的事（对话线调会动身体的、干活线调对玩家说话的），那样不执行，结果里如实说归谁。`test/tool-list.test.ts` 有防回涨的测试，两条线各一个上限（干活线 46,600，对话线 21,400）：发给模型的清单总字符数超过就失败，并列出各工具的大小。
@@ -290,6 +292,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 制作 | `find_item`（物品和流体）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines`；干活线：`craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
 | 界面（通用，干活线） | `open_screen` `click_slot` `use_control` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲，结果里连界面上格子以外的控件一起列；`use_control` 按或者设这些控件——开关、选项、页签、流体格、按钮） | |
 | 任务书 | `find_quests` `get_quest` | `list_quest_lines`（各章和进度） |
+| 游戏内指南 | `read_guide`（整合包带的那本、玩家按 G 看到的：看目录、按词找、按物品找讲它的页、读一页；页里的物品、配方框、立体图都读成了字） | |
 | 多方块结构 | | `find_structure` `check_structure` |
 | 任务、记忆、手册、意见簿 | `task_status` `remember` `forget` `list_manuals` `read_manual` `write_manual`（把主人教的做法写成自己的手册）`report_problem`；干活线：`cancel_task`；对话线：`set_reminder`（提醒到点叫醒的是对话线） | |
 

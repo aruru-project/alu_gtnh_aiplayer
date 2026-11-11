@@ -11,6 +11,7 @@ import type { OtherMachineLine } from './format.ts'
 import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
 import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, spread, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
+import { guideNote, itemOfBlock } from './guide.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
@@ -49,7 +50,7 @@ export const findItem: Tool = {
   ),
   async run(ctx, i: { query: string; page?: number; limit?: number }) {
     const items = ctx.packdata?.items
-    if (items) return findItemLocal(items, ctx.packdata?.recipes, i, ctx.packdata?.carving, ctx.packdata?.fluids)
+    if (items) return findItemLocal(items, ctx.packdata?.recipes, i, ctx.packdata?.carving, ctx.packdata?.fluids, ctx.packdata?.guide)
     // 没有本地物品表：问服务器（它只认英文名）
     const query = i.query.trim()
     const res = await ctx.bridge.itemSearch(query, i.limit)
@@ -267,8 +268,19 @@ export const findMachines: Tool = {
         if (!(e instanceof BridgeError)) throw e
       }
     }
+    // 游戏内指南里讲这种机器的页：每一页只在头一台那里说一次
+    const guide = ctx.packdata?.guide
+    const told = new Set<string>()
+    const guideOf = (item: { id: string; meta?: number } | undefined): string | undefined => {
+      const note = item ? guideNote(guide, item.id, item.meta) : undefined
+      if (note === undefined || told.has(note)) return undefined
+      told.add(note)
+      return note
+    }
+    // GregTech 的机器在世界里的 meta 不是它作为物品的 meta：拿身体给的英文名到物品表里对
+    const guideLine = guide ? (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => guideOf(m.item ?? itemOfBlock(ctx.packdata?.items, { ...m, tileEntity: true })) : undefined
     // data：身体的原样回答（每台机器的状态、总线和仓、覆盖板、流体罐），加上照配方册认出来的别的机器
-    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}) }), data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
+    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}), ...(guideLine ? { guide: guideLine } : {}) }), data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
   },
 }
 

@@ -1268,7 +1268,10 @@ export interface OtherMachineLine {
   attached?: readonly AttachedBlock[]
 }
 
-function otherMachineLines(others: readonly OtherMachineLine[], radius: number): string[] {
+/** 一台机器在游戏内指南里有没有讲它的页：有就是那一行字（find_machines 传进来，每一页只说一次）。 */
+type GuideLine = (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => string | undefined
+
+function otherMachineLines(others: readonly OtherMachineLine[], radius: number, guide?: GuideLine): string[] {
   if (others.length === 0) return []
   const lines = [
     `${others.length} other machine(s) within ${Math.min(radius, 32)} blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read, but process_items works on them the way a player would — inputs in, wait, products out):`,
@@ -1276,6 +1279,8 @@ function otherMachineLines(others: readonly OtherMachineLine[], radius: number):
   for (const o of others.slice(0, 30)) {
     const auto = attachedText(o.attached)
     lines.push(`- ${formatPos(o)} "${nameOf(o.item) ?? nameOf(o, { block: true }) ?? o.name ?? o.id}": runs ${o.wayNames.slice(0, 4).map((w) => `"${w}"`).join(', ')}${o.wayNames.length > 4 ? ` and ${o.wayNames.length - 4} more kinds of` : ''} recipes${auto ? `; ${auto}` : ''}`)
+    const page = guide?.(o)
+    if (page !== undefined) lines.push(`    ${page}`)
   }
   if (others.length > 30) lines.push(`- … and ${others.length - 30} more`)
   return lines
@@ -1283,12 +1288,12 @@ function otherMachineLines(others: readonly OtherMachineLine[], radius: number):
 
 export function formatMachines(
   res: { machines?: MachineInfo[]; total?: number },
-  asked: { radius: number; name?: string; wayName?: WayName; of?: string; hint?: string; others?: readonly OtherMachineLine[] },
+  asked: { radius: number; name?: string; wayName?: WayName; of?: string; hint?: string; others?: readonly OtherMachineLine[]; guide?: GuideLine },
 ): string {
   const of = asked.of ?? 'you'
   const machines = res.machines ?? []
   const filter = asked.name ? ` whose name or recipe type contains "${asked.name}"` : ''
-  const others = otherMachineLines(asked.others ?? [], asked.radius)
+  const others = otherMachineLines(asked.others ?? [], asked.radius, asked.guide)
   if (machines.length === 0) {
     const none =
       `No GregTech machine${filter} within ${asked.radius} blocks of ${of} (only loaded chunks are searched). ` +
@@ -1308,6 +1313,8 @@ export function formatMachines(
     if (tanks) lines.push(`    ${tanks}`)
     for (const cover of m.covers ?? []) lines.push(`    ${coverText(cover)}`)
     if (holdsCoverItems(m)) coverItems = true
+    const page = asked.guide?.(m)
+    if (page !== undefined) lines.push(`    ${page}`)
     // 它正在做（或者卡在）哪条配方：输入里有什么流体、设的几号电路都在上面了，拿去查就是那一条
     const way = typeof m.recipeKey === 'string' ? asked.wayName?.(m.recipeKey) : undefined
     const input = [...(m.inputHatches ?? [])].find((h) => h.fluid !== undefined && (h.amount ?? 0) > 0)

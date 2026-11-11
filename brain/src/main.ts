@@ -309,6 +309,7 @@ async function main(): Promise<void> {
     pictures,
     ...(packdata.textures ? { textures: packdata.textures } : {}),
     ...(packdata.structures ? { structures: packdata.structures } : {}),
+    ...(packdata.guide ? { guide: packdata.guide } : {}),
     icons: itemIcons ?? false,
     bridge,
     bridgeStatus: () => bridgeClient.status(),

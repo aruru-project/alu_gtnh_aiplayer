@@ -235,6 +235,47 @@ tools/make-packdata.py guide --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-A
 
 指南的内容是 CC BY-NC-SA 4.0（GTNewHorizons/GTNH-Guide-Pack）。`brain/packdata/` 不进 git，这份只在本机用。
 
+### 大脑怎么用
+
+启动时读进来（`brain/src/packdata/guide.ts`；689 行十几毫秒，全部读成字再五十毫秒，日志里一行“游戏内指南：7 本书、382 页……”）。文件不在就当没有：`read_guide` 照实说这份资料没导出，别的工具不提指南，提示词里也没有那一节。
+
+**页怎么算。** 一本书里同一个路径两种语言都有的算一页，给中文的，并说明英文也有（`english: true` 拿英文版）；只有一种语言的照常算一页，只有英文的在目录里标 `[en]`。2.9.0 这一份合起来是 382 页，其中 63 页只有英文（都在 `gregtech`）。同级里的先后：有中文的在前，各自按页里写的 `position`，再按路径。一页写成 `book:path`（`gregtech:multiblocks/hv/vacuum_freezer.md`），目录、搜索结果、页间链接、别的工具带的那一行用的都是这个写法，能直接拿去读。
+
+**标签读成字。** 给模型的（和面板接口给的）是同一份读成字以后的正文，不是原文：
+
+| 原文里 | 读成 |
+|---|---|
+| `<ItemLink id="mod:name:meta"/>`、`<ItemImage …/>` | `中文名 [mod:name/meta]`；物品表里没有的只有 `[mod:name/meta]`；带了自己的字的是“那几个字 (中文名 [id/meta])”。图标紧挨着同一件物品的链接只说一次。NEI 的流体展示物品说成 `流体名 [fluid 注册名]` |
+| `<RecipesFor …/>`、`<RecipeFor …/>`、`<Recipe …/>`、`<RecipesUsage …/>` | 一句 `[the recipes for 名字 [id/meta] are shown here in the game]`（`RecipeFor`、`Recipe` 是 `a recipe for …`，`RecipesUsage` 是 `the recipes that use …`），标签上写的配方页、输入、输出、条数照写在括号里 |
+| `<GameScene>` | 一句 `[3D scene shown here in the game: …]`，冒号后面是场景里摆的东西：`<ImportStructureLib controller=… tier=…/>` 是“哪台机器的结构、第几级”，`<ImportStructure src/>` 是“一个搭好的例子（文件名）”，`<ImportPonder src/>` 是“一段演示（文件名）”，`<Block …/>`、`<RemoveBlocks …/>` 是摆了、去掉了哪种方块。下面一行一条批注：`BoxAnnotation`、`DiamondAnnotation`、`LineAnnotation`、`BlockAnnotation`、`TextAnnotation` 各写明指着哪里（原样的坐标）和它的字；没有字的（只画了一条线、一个框）不留。`<IsometricCamera/>` 只管视角，不留 |
+| `![标题](x.png)`、`<FloatingImage src title>`、`<BlockImage id meta>` | 一句 `[image shown here in the game: 标题 (文件名)]` / `[picture of the block … shown here in the game]`；`<ImageAnnotation>` 里的字接在后面 |
+| `<Color>`、`<Row>`、`<Column>`、`<ContentTabs title>`、`<Tab title>`、`<Tooltip label>` | 只留里面的字（去掉为排进标签而整体缩进的那几格）；页签留标题，`Tooltip` 是“标签 (提示)” |
+| `<Latex formula/>` | `$公式$`，里面另写的字接在后面 |
+| `<FunctionGraph>`、`<LineChart>` 和里面的 `<Function expr label domain/>`、`<Plot/>`、`<Series name data/>` | 一句 `[graph shown here in the game: 标题; x: …; y: …]`，下面一行一条曲线或一组数：名字、式子或数据、定义域 |
+| `<KeyBind id/>` | `[key binding id]` |
+| `<QuestLink id/>` | `“任务名” [quest 任务 id]`（id 从 base64 换成任务书里的写法；任务书里没有的只有 id） |
+| `<PlayerName/>` | 中文页是“玩家”，英文页是 `player` |
+| `<SubPages/>`、`<Category name/>` | 它指的那些页，一页一行：`- 标题 (book:path)` |
+| 页间链接 `](../x.md)`、`](./a/b.md#节)`、`](/a.md)`、`](x.md)` | `](book:path#节)`；网址不动 |
+| 代码（行内的和三个反引号围起来的） | 原样，里面的尖括号不当标签 |
+| 别的（`<br>`、`<u>`、`<kbd>`、`<a>`、`<details>`、`<summary>`、`<sup>` 这些 HTML，和以后新出的标签） | 原样留着 |
+
+2.9.0 这一份读成字以后，剩下没读成字的只有那几样 HTML：`br` 581 处、`u` 162、`kbd` 68、`a` 15、`details` 4、`summary` 4、`sup` 2。物品引用四千多处里只有 13 处物品表里查不到名字；页间链接全部指得到；最长的一页（`gregtech:multiblocks/bose_einstein_condensate_line.md`，只有英文）读成字是 38,959 字符，超过 6,000 字符的有 39 页；七本书的目录加起来一万八千字符。
+
+**模型的工具 `read_guide`**（两条线都有，只看；程序里也能调）：
+
+- 不带参数：有哪几本书、各多少页、顶上有哪几章。
+- `book`（可带 `under`：一页的路径）：这本书（那一页下面）的目录，一页一行、缩进是上下级。放不下时把深的那几层收起来，写明下面还有几页、怎么看。
+- `query`（可带 `book`、`page`）：按词找，每个词都要在标题、读成字以后的正文、或者这一页讲的物品的名字（中英文）里。标题对上的在前，其次是讲的物品对上的，再是正文里出现得多的；每页带对上的那一处前后的一小段。一页十条。
+- `id`（可带 `meta`）：页自己写明讲这件物品的那些页，中文的在前。
+- `path`（`book:path`，可以接 `#小节`；可带 `offset`、`english`）：读一页。开头几行是这一页的事实：什么语言、谁在什么时候写的、讲的是哪些物品、上一级和下面的页、讲同一件物品的别的页。正文超过单个结果上限时给到放得下为止（尽量断在段落末尾），写明给了第几到第几个字符、一共多少、接着读的 `offset`，并列出各小节各从第几个字符起（那个数可以直接当 `offset`）。程序里 `r.data.text` 是全文，`r.data.sections` 是小节。
+
+**别的工具里的一行。** `find_item`、`inspect_block`、`find_machines`、`find_structure` 说到一件指南里有页讲它的物品时，带一行 `in the guide: "页名" — read_guide {path: "book:path"}`；讲它的不止一页时写第一页并说还有几页、怎么列出来。`find_machines` 同一种机器只在头一台下面说一次。世界里的机器靠身体给的英文名到物品表里认出是哪件物品（它在世界里的 meta 不是物品的 meta）；认不出的不猜。
+
+**提示词。** 读到了指南时，两条线的系统提示词里各有同一节（`agent/prompt.ts` 的 `guideSection`）：包里带着这本指南、多少页、`read_guide` 读到的和主人看到的是同一份；它是人写的说明，2026 年 5 月前后照 2.9 写的，配方和多方块结构以从这个客户端导出来的资料为准。
+
+**面板。** 只读接口 `GET /api/guide`、`/api/guide/search`、`/api/guide/page`（见 `docs/BRAIN_SPEC.md`），读出来的也是读成字以后的正文；页面还没做。
+
 ## 物品
 
 `items.jsonl`，一行一个物品：`{"id":"mod:name","meta":0,"name":"中文显示名","en":"English name","ores":["plateSteel"]}`（`en`、`ores` 可以没有）。

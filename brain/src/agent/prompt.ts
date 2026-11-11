@@ -94,6 +94,16 @@ export interface PromptInput {
   memory: string
   /** 现在有哪些手册（默认的和主人写的）。不给或为空时提示词里没有手册一节。 */
   manuals?: readonly ManualListing[]
+  /** 读到了游戏内指南（packdata 的 guide.jsonl）时：一共几页。没读到就没有“游戏内指南”那一节。 */
+  guide?: { pages: number }
+}
+
+/**
+ * “游戏内指南”一节：一句事实——包里带着这本指南，它是什么、和导出的资料是什么关系。两条线一样。只在读到了这份资料时有。
+ * 指南是 2026 年 5 月前后照 2.9 写的；配方册和结构是从这个客户端导出来的。
+ */
+export function guideSection(pages: number): string {
+  return `# 游戏内指南\n这个整合包带着一本游戏内指南（玩家在游戏里按 G 打开的那本，${pages} 页），read_guide 读到的和主人看到的是同一份。它是人写的说明，2026 年 5 月前后照 2.9 写的；配方和多方块结构以从这个客户端导出来的资料为准（find_recipes、find_structure）。`
 }
 
 /**
@@ -121,6 +131,7 @@ export function corePrompt(line: LineName, botName: string, style = ''): string 
 export function buildSystemPrompt(input: PromptInput): string {
   const parts: string[] = [corePrompt(input.line, input.botName, input.persona)]
   if (input.manuals && input.manuals.length > 0) parts.push(manualSection(input.manuals, input.line))
+  if (input.guide) parts.push(guideSection(input.guide.pages))
 
   const names = [`你的游戏名是 ${input.botName}。`]
   if (input.aliases.length > 0) names.push(`别人也可能这样叫你：${input.aliases.join('、')}。`)

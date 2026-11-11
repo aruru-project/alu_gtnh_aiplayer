@@ -85,7 +85,7 @@ async function offered(h: AgentHarness, line: LineName = 'work'): Promise<{ name
 const LOOKUPS = [
   'get_status', 'look_around', 'scan_area', 'view_area', 'inspect_block', 'find_blocks', 'list_containers', 'get_player_position',
   'list_designs', 'view_image', 'view_draft',
-  'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'task_status',
+  'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'read_guide', 'task_status',
 ]
 // 记的：记忆、手册、意见簿。两条线都有。
 const NOTES = ['remember', 'forget', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
@@ -217,9 +217,12 @@ describe('模型拿到的工具清单', () => {
   //           少了 say、whisper、set_reminder（-1,233），多了 report（+763）和库函数索引里 recent_chat 的一行（+138）。上限不动。
   //           第五批（界面上格子以外的控件）之后实际约 46,900（report 的说明后来又长了 109），上限从 46,600 调到 47,200（+600）：多了 use_control（+1,005，
   //           按和设界面自己的开关、选项、页签、流体格——没有它就开不了机器的自动输出），open_screen 的说明多一句（+25）。
+  //           第六批之后实际 48,420，上限从 47,200 调到 48,700（+1,500）：多了 read_guide（+1,328：整合包带的游戏内指南——看目录、
+  //           按词找、按物品找讲它的页、读一页，一个工具四种问法），库函数索引里 read_log 的一行（+190：翻自己的活动日志）。
   //   对话线：实际 20,951（28 个工具），不到干活线的一半；上限留约 2%。它每回一句话都带着这份清单，回话快不快就看它。
   //           里面最大的几个是它用来自己回答问题的：run_program 连库函数索引（2,7xx）、find_in_storage、report_problem、find_recipes。
-  for (const [line, ceiling] of [['work', 47_200], ['talk', 21_400]] as const) {
+  //           第六批之后实际 22,479（29 个工具），上限从 21,400 调到 22,800（+1,400）：多的是同样的两样，read_guide 和 read_log 的那一行。
+  for (const [line, ceiling] of [['work', 48_700], ['talk', 22_800]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

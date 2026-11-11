@@ -21,7 +21,7 @@ import type { DesignWorkspace } from '../design/index.ts'
 import { listAdapters } from '../llm/index.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../llm/index.ts'
 import { StructureBook } from '../packdata/index.ts'
-import type { TextureAtlas } from '../packdata/index.ts'
+import type { GuideBook, TextureAtlas } from '../packdata/index.ts'
 import { BlockLooks, CORNERS, GridError, PICTURE_MAX_SIZE, SIDES, gridFromBlocks, gridFromDraft, renderView, sceneOf } from '../render/index.ts'
 import type { Corner, Scene, Side, ViewSpec, VoxelGrid } from '../render/index.ts'
 import type { ActivityEntry, ActivityLog } from '../store/activity-log.ts'
@@ -48,7 +48,7 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
-import { blueprintRead, historyCompact, logPage, panelStatus, runList, runRecords } from './data-api.ts'
+import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, logPage, panelStatus, runList, runRecords } from './data-api.ts'
 import type { HistorySize } from './data-api.ts'
 
 export interface PanelDeps {
@@ -71,6 +71,8 @@ export interface PanelDeps {
   textures?: TextureAtlas
   /** 多方块机器怎么搭（本地资料里的 structures.jsonl）。没提供时“多方块结构”一块说明没有这份资料。 */
   structures?: StructureBook
+  /** 游戏内指南（本地资料里的 guide.jsonl）。没提供时 /api/guide 说没有这份资料。 */
+  guide?: GuideBook
   /** 物品图标的图集（本地资料里的 icons/）。false：没有；不给：面板自己到配置的 packdata 目录里找一次。没有时物品栏用替代的画法。 */
   icons?: ItemIcons | false
   bridge: BridgeApi
@@ -513,6 +515,12 @@ export class PanelServer {
         return runRecords(this.deps.runs, url.searchParams, panelReject)
       case 'GET /blueprints/read':
         return blueprintRead(this.deps, url.searchParams, panelReject)
+      case 'GET /guide':
+        return guideBooks(this.deps.guide, url.searchParams, panelReject)
+      case 'GET /guide/search':
+        return guideSearch(this.deps.guide, url.searchParams, panelReject)
+      case 'GET /guide/page':
+        return guidePage(this.deps.guide, url.searchParams, panelReject)
       case 'POST /command':
         return this.command(body)
       case 'GET /providers':

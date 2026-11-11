@@ -8,10 +8,11 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
-import type { CarvingBook, FluidInfo, FluidTable, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
+import type { CarvingBook, FluidInfo, FluidTable, GuideBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
 import { CHISEL_WAY, chiselData, chiselDetail, chiselMatches, chiselSummary, isChiselWay } from './chisel.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
+import { guideNote } from './guide.ts'
 import { fail } from './types.ts'
 import type { ToolContext, ToolResult } from './types.ts'
 
@@ -674,7 +675,7 @@ function fluidLines(fluids: FluidTable, recipes: RecipeBook | undefined, found: 
 
 const FLUID_HOW = 'A fluid is not an item: find_recipes (how it is made) and the library function find_uses (what takes it) are asked with "fluid" instead of "id": its name, or the internal name in the brackets.'
 
-export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook, fluids?: FluidTable): ToolResult | string {
+export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook, fluids?: FluidTable, guide?: GuideBook): ToolResult | string {
   const query = input.query.trim()
   if (query.length < 1) return fail('Give a word of the name: Chinese, English, an id or an ore-dictionary name.')
   const limit = input.limit ?? ITEMS_PER_PAGE
@@ -715,6 +716,9 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
     const groups = (carving?.groupsOf(h.id, h.meta) ?? []).map((m) => `"${m.group.group}"`)
     if (groups.length > 0) facts.push(`chisel group ${groups.join(', ')}`)
     if (h.variants) facts.push(`${h.variants} variants that differ only in their data (same id/meta)`)
+    // 游戏内指南里有讲它的页：写出页名和怎么读
+    const page = guideNote(guide, h.id, h.meta)
+    if (page !== undefined) facts.push(page)
     return `- ${h.name} [${itemKey(h)}]${en}${facts.length > 0 ? `: ${facts.join('; ')}` : ''}`
   })
   const first = (page - 1) * limit + 1
