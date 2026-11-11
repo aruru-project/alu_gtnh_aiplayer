@@ -22,6 +22,7 @@
 |---|---|---|
 | `meta.json` | 每个子命令一节：来源、生成时间、条数 | 各子命令，各写各的那一节 |
 | `quests.jsonl` `questlines.json` | 任务书，见“任务书” | `make-packdata.py quests` |
+| `guide.jsonl` | 游戏内指南（玩家按 G 打开的那本）的每一页，见“游戏内指南” | `make-packdata.py guide` |
 | `items.jsonl` | 物品表，见“物品” | `tools/export-packdata` |
 | `blocks.jsonl` | 方块颜色表，见“方块颜色” | `tools/export-packdata` |
 | `textures/atlas.png` `textures/atlas.json` | 方块贴图的图集，见“方块贴图” | `make-packdata.py textures` |
@@ -179,6 +180,59 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 - 进度问服务器：`quest.progress {player}` → `{player, completed: [id…], unclaimed: [id…]}`（见 `docs/PROTOCOL.md`），结果缓存 20 秒。
   “做完了 / 现在能做 / 没解锁”由大脑拿 `completed` 和上面的 `pre`、`logic` 算；`unclaimed` 里的显示成“做完了，奖励没领”。
 - 这两个文件不在时，三个工具整个退回去问服务器的 `quest.lines` / `quest.search` / `quest.get`（英文，不能翻页）。
+
+## 游戏内指南
+
+整合包带着一本游戏里看的指南（GuideNH：把物品栏里的东西按住 G，或从按键打开）。它是人写的说明：一台机器是干什么的、怎么搭、
+接什么仓、电怎么算、出了毛病查什么；另有 AE2、神秘时代几本和各版本的更新说明。配方册和多方块结构是从游戏里导出来的事实，
+这本是玩家写给玩家的解释，两样互相补。
+
+```sh
+tools/make-packdata.py guide --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip --out brain/packdata
+```
+
+不用开游戏，一秒以内。来源是客户端包里的 `config/guidenh/*.zip`（2.9.0 里是 `DefaultGuide.zip`，即 GTNH-Guide-Pack 0.1.26）；
+`--pack 某个.zip` 可以直接指定指南包，给几次读几个，后面的页盖掉前面同名的页。
+指南包是一个资源包：`assets/<书>/guidenh/_<语言>/<页>.md`，每页是 Markdown，最前面有几行 YAML（标题、在目录里的位置、讲的是哪些物品）。
+
+2.9.0 的这一份：689 页、209 万字符，7 本书。
+
+| 书（`book`） | 中文页 | 英文页 | 内容 |
+|---|---|---|---|
+| `gregtech` | 32 | 83 | 机器、多方块、电力、超频和并行。**两种语言的页不是一一对应的**：中文是另外写的一套（路径也不同，如 `multiblocks/hv/vacuum_freezer.md`），英文有 60 多页没有中文 |
+| `appliedenergistics2` | 116 | 116 | AE2 的机制和每样东西 |
+| `changelog` | 159 | 159 | 各版本改了什么 |
+| `thaumcraft` | 9 | 9 | 神秘时代 |
+| `bloodmagic` `botania` `forestry` | 各 1 | 各 1 | 只有一页开头 |
+
+### guide.jsonl
+
+一行一页，按书、语言、路径排序。**正文是原样的**：页里的标签（`<ItemLink id="…"/>`、`<RecipesFor …/>`、`<GameScene>…` 等）不动，
+怎么读给模型是大脑的事。
+
+```jsonc
+{
+  "book": "gregtech",
+  "lang": "zh_cn",                                   // 这一页的语言；同一路径可能两种语言各有一行
+  "path": "multiblocks/hv/vacuum_freezer.md",        // 在这本书里的路径
+  "title": "真空冷冻机",                              // 目录里的名字；页里没写时取正文第一个一级标题
+  "parent": "multiblocks/multiblocks_index.md",      // 目录里的上一级（同一本书、同一种语言的 path）；没有就是顶层
+  "position": 10,                                    // 在同级里的次序
+  "icon": {"id": "gregtech:gt.blockmachines", "meta": 1002},
+  "items": [{"id": "gregtech:gt.blockmachines", "meta": 1002}],   // 这一页讲的是哪些物品（游戏里对着它按 G 就翻到这页）
+  "quests": ["EL2z-VAzS9eVmQFpNnwimg=="],            // 页里挂的任务（任务书的 base64 id）
+  "categories": ["network infrastructure"],
+  "author": "Skorched", "date": "2026-05-27",
+  "text": "# 真空冷冻机\n\n<GameScene …"            // 去掉开头那几行 YAML 之后的全文
+}
+```
+
+- `items` 里一项是 `{id, meta}`、`{id}`（没写损害值，或写的是 `*`）或 `{id, metas: [516, 517, [520, 536]]}`（页里写的是一串损害值或范围）。
+- `parent` 页里写的是从书的顶上数的路径，以 `.` 开头时从这一页自己的文件夹数；这里统一成书里的路径。指不到任何一页的原样留着，并带 `parentUnknown: true`（这一份里没有）。
+- `position` 页里写成 `010` 的按十进制读成 10（游戏按八进制读成 8，这一份里有两页这样），只影响同级里的先后。
+- 没有带进来的：图（70 张）、场景里摆的结构（113 个 `.snbt`）、演示动画（12 个 `.json`）、一张表（`.tsv`）。数目记在 `meta.json` 的 `guide.notTaken`。
+
+指南的内容是 CC BY-NC-SA 4.0（GTNewHorizons/GTNH-Guide-Pack）。`brain/packdata/` 不进 git，这份只在本机用。
 
 ## 物品
 

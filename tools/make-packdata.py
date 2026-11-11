@@ -3,12 +3,15 @@
 
   make-packdata.py quests --client CLIENT.zip --out brain/packdata
   make-packdata.py textures --client CLIENT.zip --jar minecraft-1.7.10-client.jar --out brain/packdata
+  make-packdata.py guide --client CLIENT.zip --out brain/packdata
 
 quests    the quest book (BetterQuesting) in Chinese: quests.jsonl, questlines.json and the "quests" section
           of meta.json
 textures  the block textures that blocks.jsonl names (and every vanilla block texture), taken from the mod jars
           in the pack and packed into one image: textures/atlas.png, textures/atlas.json and the "textures"
           section of meta.json
+guide     the pages of the in-game guide (GuideNH, the book a player opens with G), as they are written:
+          guide.jsonl and the "guide" section of meta.json
 
 The client pack is only read. Each output file is replaced in one step, and meta.json keeps the sections that
 other subcommands wrote.
@@ -812,6 +815,216 @@ def cmd_textures(args):
     )
 
 
+# ── the in-game guide (GuideNH) ──
+# A guide pack is a resource pack: assets/<book>/guidenh/_<language>/<page>.md, each page Markdown with a few
+# lines of YAML in front (its title and place in the contents, the items it is about). The pack ships one as
+# config/guidenh/DefaultGuide.zip. Pages are taken as written; what their tags mean is the reader's business.
+
+GUIDE_FORMAT = 1
+GUIDE_DIR = "config/guidenh/"
+GUIDE_PAGE = re.compile(r"^(?:.*/)?assets/([^/]+)/guidenh/_([a-z]{2}_[a-z]{2})/(.+\.md)$")
+GUIDE_HEAD = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.S)
+
+
+def yaml_scalar(text):
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    if text.startswith("[") and text.endswith("]"):
+        return [yaml_scalar(part) for part in text[1:-1].split(",") if part.strip()]
+    return text
+
+
+def front_matter(head):
+    """The little of YAML that guide pages use: `key: value`, `key:` with a list or a map of such under it."""
+    out = {}
+    key = None
+    for line in head.split("\n"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        body = line.strip()
+        if body.startswith("- ") or body == "-":
+            if key is not None:
+                if not isinstance(out.get(key), list):
+                    out[key] = []
+                value = yaml_scalar(body[1:])
+                if value != "":
+                    out[key].append(value)
+            continue
+        name, colon, rest = body.partition(":")
+        if not colon:
+            continue
+        if indent == 0:
+            key = name.strip()
+            out[key] = yaml_scalar(rest) if rest.strip() else None
+        elif key is not None:
+            if not isinstance(out.get(key), dict):
+                out[key] = {}
+            out[key][name.strip()] = yaml_scalar(rest)
+    return out
+
+
+def guide_item(text):
+    """`mod:name`, `mod:name:meta`, `mod:name:*`, or `mod:name 1,2,5-9` as the guide writes the items of a page."""
+    text = str(text).strip()
+    name, _, tail = text.partition(" ")
+    parts = name.split(":")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    out = {"id": parts[0] + ":" + parts[1]}
+    if tail.strip():
+        metas = []
+        for piece in tail.replace(" ", "").split(","):
+            low, dash, high = piece.partition("-")
+            if low.isdigit() and (not dash or high.isdigit()):
+                metas.append([int(low), int(high)] if dash else int(low))
+        if metas:
+            out["metas"] = metas
+    elif len(parts) >= 3 and parts[2].isdigit():
+        out["meta"] = int(parts[2])
+    return out
+
+
+def as_list(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def guide_packs(args):
+    """(name, ZipFile) of every guide pack to read."""
+    if args.pack:
+        for path in args.pack:
+            if not os.path.isfile(path):
+                fail("no such file: " + path)
+            try:
+                yield os.path.basename(path), zipfile.ZipFile(path)
+            except (zipfile.BadZipFile, OSError) as e:
+                fail("cannot read %s: %s" % (path, e))
+        return
+    if not args.client:
+        fail("give --client CLIENT.zip (the guide is read from config/guidenh/ in it) or --pack GUIDE.zip")
+    if not os.path.isfile(args.client):
+        fail("no such file: " + args.client)
+    try:
+        client = zipfile.ZipFile(args.client)
+    except (zipfile.BadZipFile, OSError) as e:
+        fail("cannot read %s: %s" % (args.client, e))
+    with client:
+        inner = sorted(n for n in client.namelist() if ("/" + n).find("/" + GUIDE_DIR) >= 0 and n.lower().endswith(".zip"))
+        if not inner:
+            fail("the pack has no guide (%s*.zip): is GuideNH part of it?" % GUIDE_DIR)
+        for name in inner:
+            try:
+                yield os.path.basename(name), zipfile.ZipFile(io.BytesIO(client.read(name)))
+            except zipfile.BadZipFile as e:
+                fail("cannot read %s inside %s: %s" % (name, args.client, e))
+
+
+def cmd_guide(args):
+    rows = {}
+    sources = []
+    others = {}
+    for source, pack in guide_packs(args):
+        with pack:
+            version = None
+            try:
+                info = json.loads(pack.read("pack.mcmeta").decode("utf-8-sig"))
+                version = (info.get("gtnh_resource_pack_updater") or {}).get("pack_version")
+            except (KeyError, ValueError):
+                pass
+            sources.append({"file": source, "version": version} if version else {"file": source})
+            for name in pack.namelist():
+                if name.endswith("/"):
+                    continue
+                m = GUIDE_PAGE.match(name)
+                if not m:
+                    if "/guidenh/" in name:
+                        kind = name.rsplit(".", 1)[-1].lower() if "." in name.rsplit("/", 1)[-1] else "other"
+                        others[kind] = others.get(kind, 0) + 1
+                    continue
+                book, lang, path = m.group(1), m.group(2), m.group(3)
+                text = pack.read(name).decode("utf-8-sig", "replace").replace("\r\n", "\n").replace("\r", "\n")
+                head = GUIDE_HEAD.match(text)
+                meta = front_matter(head.group(1)) if head else {}
+                body = text[head.end():] if head else text
+                nav = meta.get("navigation") if isinstance(meta.get("navigation"), dict) else {}
+                row = {"book": book, "lang": lang, "path": path}
+                title = nav.get("title")
+                if not title:
+                    h1 = re.search(r"^#\s+(.+?)\s*$", body, re.M)
+                    title = h1.group(1) if h1 else None
+                if title:
+                    row["title"] = str(title)
+                if nav.get("parent"):
+                    row["parentAsWritten"] = str(nav["parent"])
+                if str(nav.get("position", "")).lstrip("-").isdigit():
+                    row["position"] = int(nav["position"])
+                icon = guide_item(nav["icon"]) if nav.get("icon") else None
+                if icon:
+                    row["icon"] = icon
+                items = [i for i in (guide_item(v) for v in as_list(meta.get("item_ids")) + as_list(meta.get("item_id"))) if i]
+                if items:
+                    row["items"] = items
+                quests = [str(q) for q in as_list(meta.get("quest_ids"))]
+                if quests:
+                    row["quests"] = quests
+                categories = [str(c) for c in as_list(meta.get("categories"))]
+                if categories:
+                    row["categories"] = categories
+                for key in ("author", "date"):
+                    if meta.get(key) and not isinstance(meta[key], (list, dict)):
+                        row[key] = str(meta[key])
+                row["text"] = body.strip("\n")
+                rows[(book, lang, path)] = row  # a later pack replaces the page of an earlier one
+    if not rows:
+        fail("no guide pages found (assets/<book>/guidenh/_<language>/*.md)")
+    # A page names its parent from the top of the book, or from its own folder when it starts with a dot. Kept
+    # as the path inside the book, as "path" is; one that names no page of the book is kept as written.
+    unknown = 0
+    for (book, lang, path), row in rows.items():
+        written = row.pop("parentAsWritten", None)
+        if written is None:
+            continue
+        name = written.split(":", 1)[1] if ":" in written else written
+        here = os.path.dirname(path)
+        tries = [os.path.join(here, name)] if name.startswith(".") else [name.lstrip("/"), os.path.join(here, name.lstrip("/"))]
+        for candidate in tries:
+            candidate = os.path.normpath(candidate).replace(os.sep, "/")
+            if (book, lang, candidate) in rows:
+                row["parent"] = candidate
+                break
+        else:
+            row["parent"] = written
+            row["parentUnknown"] = True
+            unknown += 1
+    os.makedirs(args.out, exist_ok=True)
+    ordered = [rows[k] for k in sorted(rows)]
+    write_atomic(os.path.join(args.out, "guide.jsonl"), "".join(dump(r) + "\n" for r in ordered))
+    books = {}
+    for r in ordered:
+        b = books.setdefault(r["book"], {})
+        b[r["lang"]] = b.get(r["lang"], 0) + 1
+    update_meta(
+        args.out,
+        "guide",
+        {
+            "format": GUIDE_FORMAT,
+            "source": sources,
+            "generatedAt": now_utc(),
+            "pages": len(ordered),
+            "chars": sum(len(r["text"]) for r in ordered),
+            "books": books,
+            "parentsUnknown": unknown,
+            "notTaken": others,
+        },
+    )
+    print("guide: %d pages (%d characters) of %d books; left out: %s" % (
+        len(ordered), sum(len(r["text"]) for r in ordered), len(books),
+        ", ".join("%d %s" % (n, k) for k, n in sorted(others.items())) or "nothing"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Builds the brain's local pack data from the game client pack (docs/PACKDATA.md).")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -828,6 +1041,11 @@ def main():
     textures.add_argument("--out", required=True, metavar="DIR", help="where the pack data goes, e.g. brain/packdata")
     textures.add_argument("--tile", type=int, default=16, choices=(16, 32), help="pixels along the side of one texture in the image (default 16)")
     textures.set_defaults(run=cmd_textures)
+    guide = commands.add_parser("guide", help="the pages of the in-game guide (GuideNH): guide.jsonl")
+    guide.add_argument("--client", metavar="ZIP", help="the client pack (only read): the guide packs in its config/guidenh/ are taken")
+    guide.add_argument("--pack", action="append", metavar="ZIP", help="a guide pack to read instead of the ones in the client pack; may be given several times, a later one's pages replace an earlier one's")
+    guide.add_argument("--out", required=True, metavar="DIR", help="where the pack data goes, e.g. brain/packdata")
+    guide.set_defaults(run=cmd_guide)
     args = parser.parse_args()
     args.run(args)
 
