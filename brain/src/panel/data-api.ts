@@ -10,7 +10,7 @@ import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { FluidTable, GuideBook, GuideEntry, ItemTable, ItemTooltip, RecipeBook, TooltipTable } from '../packdata/index.ts'
-import { buildMethod, methodLine } from '../tools/methods.ts'
+import { buildMethod, methodLine, methodState } from '../tools/methods.ts'
 import type { MethodAccess, MethodInput } from '../tools/methods.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
@@ -340,11 +340,11 @@ export interface MethodsEnv {
  * 每条带 line：给人看的一行（和它用 base_methods 看到的一样，具体东西的配方对回了现在的编号）。没有这份存储时 available 是 false。
  */
 export function methodsList(methods: MethodAccess | undefined, env: MethodsEnv): unknown {
-  if (!methods) return { available: false, total: 0, counts: { part: 0, order: 0, thing: 0, machine: 0 }, entries: [] }
+  if (!methods) return { available: false, total: 0, counts: { part: 0, ready: 0, same: 0, order: 0, thing: 0, machine: 0 }, entries: [] }
   const entries = methods.list()
-  const counts = { part: 0, order: 0, thing: 0, machine: 0 }
+  const counts = { part: 0, ready: 0, same: 0, order: 0, thing: 0, machine: 0 }
   for (const m of entries) counts[m.kind]++
-  return { available: true, total: entries.length, counts, entries: entries.map((m) => ({ ...m, line: methodLine(m, env) })) }
+  return { available: true, total: entries.length, counts, entries: entries.map((m) => ({ ...m, ...methodState(m, env), line: methodLine(m, env) })) }
 }
 
 /**
@@ -362,7 +362,7 @@ export function methodsPut(methods: MethodAccess | undefined, body: Record<strin
   } catch (e) {
     return reject(400, 'bad_request', e instanceof Error ? e.message : String(e))
   }
-  return { entry: { ...built.entry, line: methodLine(built.entry, env) }, replaced: replaced !== undefined }
+  return { entry: { ...built.entry, ...methodState(built.entry, env), line: methodLine(built.entry, env) }, replaced: replaced !== undefined }
 }
 
 /** DELETE /api/methods { key }：删一条。 */

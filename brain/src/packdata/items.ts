@@ -89,6 +89,13 @@ export class ItemTable {
     return index
   }
 
+  /** 有没有以这个前缀开头的矿辞名（前缀后面是大写字母或数字：ingot 对上 ingotSteel）。 */
+  hasOrePrefix(prefix: string): boolean {
+    this.withOre('')
+    for (const ore of this.ores!.keys()) if (ore.startsWith(prefix) && /[A-Z0-9]/.test(ore.charAt(prefix.length))) return true
+    return false
+  }
+
   /** 登记在这个矿辞名下的物品。 */
   withOre(ore: string): readonly PackItemInfo[] {
     if (!this.ores) {

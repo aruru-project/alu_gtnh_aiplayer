@@ -14,6 +14,7 @@ import { MemoryStore } from '../src/store/memory.ts'
 import { MethodStore } from '../src/store/methods.ts'
 import { useLocalNames } from '../src/tools/format.ts'
 import { LINE_TOOLS, runTool } from '../src/tools/index.ts'
+import { methodsList } from '../src/panel/data-api.ts'
 import { partMethodFor } from '../src/tools/methods.ts'
 import type { Method } from '../src/store/methods.ts'
 import type { LineName } from '../src/tools/index.ts'
@@ -58,7 +59,7 @@ function setup(t: { after(fn: () => void): void }, opts: { dir?: string; recipes
     const res = await runTool(LINE_TOOLS[line], ctx(line), name, input)
     return { ok: res.isError !== true, text: res.content, lines: res.content.split('\n'), data: res.data as any }
   }
-  return { dir, methods, run }
+  return { dir, methods, run, packdata }
 }
 
 /** 主人今晚教的那几件事，各记一条。 */
@@ -187,6 +188,15 @@ describe('基地的做法', () => {
       `- 模头（转轴） ← NO LONGER IN THE RECIPE BOOK — it was 有序合成: 4× 玄钢板 + 1× 模头（杆） + any craftingToolHardHammer (e.g. 锤) (not used up) → 1× 模头（转轴） — your owner, ${DAY} [key thing:miscutils:MU-metaitem.01/32040]`,
     ])
     assert.equal((await again.run('work', 'find_recipes', { ...P.pin })).lines[1], `The base's methods have a recipe for this thing: #${pinNow} (烧制) — you, ${DAY}: 一锭八个，最省.`)
+    // 面板拿到的条目带着现在的编号（recipeNow）和对不对得上（stale）：对不回来的是 null 和 true
+    const env = { book: again.packdata.recipes, items: again.packdata.items }
+    const listed = methodsList(again.methods, env) as { entries: { key: string; recipeNow?: number | null; stale?: boolean }[] }
+    assert.deepEqual(listed.entries.map((m) => [m.key, m.recipeNow, m.stale]), [
+      ['thing:demo:pin/0', pinNow, false],
+      ['thing:miscutils:MU-metaitem.01/32040', null, true],
+    ])
+    // 没有配方册时不判断，这两项都不带
+    assert.deepEqual(Object.keys((methodsList(again.methods, {}) as { entries: object[] }).entries[0]!).filter((k) => k === 'recipeNow' || k === 'stale'), [])
     assert.equal(
       (await again.run('work', 'find_recipes', { ...P.shaftShape })).lines[1],
       `The base's methods have a recipe for this thing, but it is no longer in the recipe book (it was 有序合成: 4× 玄钢板 + 1× 模头（杆） + any craftingToolHardHammer (e.g. 锤) (not used up) → 1× 模头（转轴）) — your owner, ${DAY}. [key thing:miscutils:MU-metaitem.01/32040]`,
@@ -212,6 +222,37 @@ describe('基地的做法', () => {
     assert.deepEqual(hit([part('plate'), part('plate', 'Steel')], 'plateIron'), ['part:plate', 'Iron'])
   })
 
+  it('“当现成的”和“同料时用哪种”也记得下：矿辞前缀、矿辞名、具体物品都认，写错的说清；查一样东西的做法时说它是当现成的', async (t) => {
+    const s = setup(t)
+    assert.equal((await s.run('talk', 'set_base_method', { ready: 'ingot', by: 'owner', why: '从零算时停在锭' })).text, `Recorded in the base's methods: ingot parts: taken ready-made, not made — your owner, ${DAY}: 从零算时停在锭 [key ready:ingot]`)
+    assert.equal((await s.run('work', 'set_base_method', { ready: 'dustSteel', by: 'self' })).text, `Recorded in the base's methods: dustSteel: taken ready-made, not made — you, ${DAY} [key ready:dustSteel]`)
+    assert.equal((await s.run('work', 'set_base_method', { ready: 'gregtech:gt.metaitem.01/2365', by: 'owner' })).text, `Recorded in the base's methods: 磁钢粉 [gregtech:gt.metaitem.01/2365]: taken ready-made, not made — your owner, ${DAY} [key ready:gregtech:gt.metaitem.01/2365]`)
+    assert.equal(
+      (await s.run('talk', 'set_base_method', { use: '有序合成', over: '压模', noTools: true, by: 'owner', why: '料一样，手工不耗电' })).text,
+      `Recorded in the base's methods: same ingredients: 有序合成 over 压模机 (only when the 有序合成 recipe needs no tools) — your owner, ${DAY}: 料一样，手工不耗电 [key same:有序合成>压模机]`,
+    )
+    const refused = async (input: Record<string, unknown>) => {
+      const res = await s.run('work', 'set_base_method', { by: 'owner', ...input })
+      assert.equal(res.ok, false, res.text)
+      return res.text
+    }
+    assert.equal(await refused({ ready: 'ingto' }), 'No ore name starts with "ingto": a prefix is the part of an ore name before the material, such as "ingot" in ingotSteel (find_item shows an item\'s ore names).')
+    assert.equal(await refused({ ready: 'x:y' }), 'No item x:y is known: give an item id as find_item shows it, or an ore-dictionary prefix such as "ingot".')
+    assert.equal(await refused({ use: '有序合成' }), '"use" and "over" go together: the way to use, and the way not to use, when both make a thing from the same ingredients.')
+    assert.equal(await refused({ use: '压模机', over: '压模' }), '"use" and "over" are the same way (压模机).')
+    assert.equal(await refused({ use: '水力压裂', over: '压模机' }), 'no way of making is named "水力压裂": use a name as find_recipes lists the ways (e.g. "卷板机", "有序合成")')
+    assert.match(await refused({ ready: 'ingot', part: 'plate', way: '卷板机' }), /^Give exactly one of: "part" \(a kind of part and the way that makes it\), "ready"/)
+    // 查钢锭的做法：说它是当现成的（照的是那条前缀）
+    assert.equal((await s.run('work', 'find_recipes', { ...P.steelIngot })).lines[1], `The base's methods take ingot parts ready-made (total_materials does not make them) — your owner, ${DAY}: 从零算时停在锭.`)
+    assert.deepEqual((await s.run('work', 'base_methods', { kind: 'ready' })).lines.slice(1), [
+      // 同一时刻记的照键排
+      'Taken ready-made (not made) (3):',
+      `- dustSteel: taken ready-made, not made — you, ${DAY} [key ready:dustSteel]`,
+      `- 磁钢粉 [gregtech:gt.metaitem.01/2365]: taken ready-made, not made — your owner, ${DAY} [key ready:gregtech:gt.metaitem.01/2365]`,
+      `- ingot parts: taken ready-made, not made — your owner, ${DAY}: 从零算时停在锭 [key ready:ingot]`,
+    ])
+  })
+
   it('每一轮两条线的系统提示词里有“基地的做法”一节：一类零件怎么做、总的先后全文列出，具体的东西和机器只说各有几条、怎么看；记了新的下一轮就在；一条都没有时也说还没记', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
@@ -224,6 +265,9 @@ describe('基地的做法', () => {
     h.methods.set({ kind: 'part', key: 'part:plate', prefix: 'plate', way: '卷板机', from: 'ingot', by: 'owner', at: NOW, why: '一锭一板' })
     h.methods.set({ kind: 'part', key: 'part:stick:Steel', prefix: 'stick', material: 'Steel', way: '压模机', by: 'self', at: NOW, why: '' })
     h.methods.set({ kind: 'order', key: 'order', ways: ['有序合成', '组装机'], by: 'owner', at: NOW, why: '手工不耗电' })
+    h.methods.set({ kind: 'ready', key: 'ready:ingot', match: 'prefix', text: 'ingot', by: 'owner', at: NOW, why: '停在锭' })
+    h.methods.set({ kind: 'ready', key: 'ready:minecraft:stone', match: 'item', text: 'minecraft:stone', name: '石头', by: 'self', at: NOW + 1, why: '' })
+    h.methods.set({ kind: 'same', key: 'same:有序合成>组装机', use: '有序合成', over: '组装机', noTools: true, by: 'owner', at: NOW, why: '组装机还要耗电' })
     h.methods.set({ kind: 'thing', key: 'thing:demo:pin/0', thing: 'demo:pin/0', name: '钢销', recipe: { ref: 51, way: 'k', wayName: '烧制', in: [], out: [], fin: [], fout: [], text: '1× 钢锭 → 8× 钢销' }, by: 'self', at: NOW, why: '' })
     h.methods.set({ kind: 'machine', key: 'machine:16,64,-8', x: 16, y: 64, z: -8, does: '专门压板', by: 'owner', at: NOW, why: '' })
     h.agent.handleEvent(chat('Steve', 'Alu 还在吗'))
@@ -235,6 +279,8 @@ describe('基地的做法', () => {
       '一类零件怎么做（2 条，写的是矿辞前缀）：',
       '- plate ← 卷板机，从 ingot（主人定的：一锭一板）',
       '- stick（只管 Steel） ← 压模机（你定的）',
+      '当现成的、不往下做：ingot（这一类）（主人定的：停在锭）；石头（minecraft:stone）（你定的）',
+      '两种做法用的料一样时（工具不算料）：用 有序合成，不用 组装机；只在 有序合成 那条不用工具时（主人定的：组装机还要耗电）',
       '没有更具体的记录时，做法的先后：有序合成 > 组装机（主人定的：手工不耗电）',
       '另外记着 1 样具体的东西各用哪条配方、 1 台机器各是干什么的：base_methods 看。',
       '',

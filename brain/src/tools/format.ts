@@ -1029,14 +1029,16 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
 }
 
 /** world.stock 的结果：每样东西一共多少、在哪几处（坐标、容器名、是不是抽屉、数量、具体是哪种物品）。 */
-export function formatStock(res: StockResult, radius: number, from: { of: string; hint: string } = { of: 'you', hint: '' }): string {
-  const looked = count(res.containersLookedInto)
+export function formatStock(res: StockResult, radius: number, from: { of: string; hint: string; looked?: string } = { of: 'you', hint: '' }): string {
+  // 切成几块查的：查了哪几块、花了多久
+  const looked = from.looked ? ` (${from.looked})` : ''
+  const containers = count(res.containersLookedInto)
   const items = res.items ?? []
-  if (looked === 0) {
-    return `There is no container within ${radius} blocks of ${from.of} (only loaded chunks are searched). ${from.of === 'you' ? 'Look around where the storage is instead: give "at" (the position of a chest or drawer controller there, or where your owner stands), or go there.' : 'Check the position with your owner.'}`
+  if (containers === 0) {
+    return `There is no container within ${radius} blocks of ${from.of}${looked} (only loaded chunks are searched). ${from.of === 'you' ? 'Look around where the storage is instead: give "at" (the position of a chest or drawer controller there, or where your owner stands), or go there.' : 'Check the position with your owner.'}`
   }
   const lines: string[] = [
-    `Looked into ${looked} container(s) within ${radius} blocks of ${from.of}. withdraw_items takes things out (container = the position, items = the exact id/meta).`,
+    `Looked into ${containers} container(s) within ${radius} blocks of ${from.of}${looked}. withdraw_items takes things out (container = the position, items = the exact id/meta).`,
   ]
   let inCover = false
   for (const it of items) {

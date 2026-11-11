@@ -8,18 +8,21 @@
 
 import type { ContainerInfo, DrawerSlot } from '../bridge/protocol.ts'
 import { COVER_NOTE, attachedText, formatContainer, formatPos, holdsCoverItems, itemKey, mergeItems, nameOf } from './format.ts'
+import { BASE_RADIUS, eachPiece, pieces, piecesText, spotOf } from './reach.ts'
+import type { Pieces } from './reach.ts'
 import { int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At, LookFrom } from './where.ts'
 
+/** 身体一次看容器每个方向最多看这么远；工具给得更大时（一个基地，BASE_RADIUS）切成这么大的几块各看一次。 */
 export const CONTAINERS_MAX_RADIUS = 32
 export const CONTAINERS_PER_PAGE = 20
 export const DRAWER_SLOTS_PER_PAGE = 60
 export const STOCK_LINES_PER_PAGE = 40
-/** list_stock 一次最多看这么多个容器（身体一页最多给 100 个）。 */
-export const STOCK_MAX_CONTAINERS = 400
+/** list_stock、list_containers 一次最多读这么多个容器（身体一页最多给 100 个）。 */
+export const STOCK_MAX_CONTAINERS = 3000
 /** 存货总表一次向身体要多少个容器：每个容器的东西都要全，所以一页要得少一些（协议一行最多 4 MiB）。 */
 const SERVER_PAGE = 50
 /** 一个容器里的东西向身体要全：这是协议允许的最大种数。 */
@@ -38,7 +41,7 @@ export const listContainers: Tool = {
   name: 'list_containers',
   description: `Containers around you or around "at", nearest first, a page at a time: position, name, kind (chest, [drawers], [drawer controller], [machine]), slots used and contents merged per item (the first ${KINDS_PER_LINE} kinds of each; radius 0 lists one container whole). Drawer counts are what is really stored. "AUTOMATED" marks a container with a hopper or pipe attached: part of your owner's automation.`,
   inputSchema: obj({
-    radius: int('Search radius in blocks (default 16). 0: only the container at "at", with everything in it.', { min: 0, max: CONTAINERS_MAX_RADIUS }),
+    radius: int(`Search radius in blocks (default 16, up to ${BASE_RADIUS}: a whole base). 0: only the container at "at", with everything in it.`, { min: 0, max: BASE_RADIUS }),
     page: int(`Page (${CONTAINERS_PER_PAGE} containers per page, default 1).`, { min: 1 }),
     at: AT,
   }),
@@ -48,6 +51,22 @@ export const listContainers: Tool = {
     if (radius === 0 && !input.at) return fail('radius 0 looks at one container: give its position as "at".')
     const page = input.page ?? 1
     const offset = (page - 1) * CONTAINERS_PER_PAGE
+    // 比身体一次看得了的远：切成几块各看一次，合起来照远近排、自己分页
+    if (radius > CONTAINERS_MAX_RADIUS) {
+      const wide = await containersInPieces(ctx, input.at, radius)
+      if ('error' in wide) return fail(wide.error)
+      const { containers, total, of, looked } = wide
+      if (total === 0) return `No containers within ${radius} blocks of ${of} (${looked}).`
+      const paged = containers.slice(offset, offset + CONTAINERS_PER_PAGE)
+      if (paged.length === 0) return fail(`There is no page ${page}: ${containers.length} container(s) within ${radius} blocks, ${pages(containers.length, CONTAINERS_PER_PAGE)} page(s).`)
+      const lines = paged.map((c) => `- ${formatContainer(c, KINDS_PER_LINE)}`)
+      const range = containers.length > paged.length ? `containers ${offset + 1}–${offset + paged.length} of ${containers.length} (page ${page} of ${pages(containers.length, CONTAINERS_PER_PAGE)}), nearest first` : `${containers.length} container(s)`
+      const notes: string[] = []
+      if (total > containers.length) notes.push(`Only ${containers.length} of the ${total} containers there were read (at most ${STOCK_MAX_CONTAINERS} at a time): give a smaller radius or "at" to see the others.`)
+      if (paged.some((c) => mergeItems(c.items ?? []).length > KINDS_PER_LINE || cutByServer(c))) notes.push('Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).')
+      if (paged.some(holdsCoverItems)) notes.push(COVER_NOTE)
+      return { content: [`Within ${radius} blocks of ${of} (${looked}): ${range}.`, ...lines, ...notes].join('\n'), data: { total, offset, containers: paged }, keepWhole: true }
+    }
     const from = await lookFrom(ctx, input.at)
     // 每个容器里的东西都要全：data 给程序的是全的；文字里一个容器列多少种在下面定
     const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: CONTAINERS_PER_PAGE, kinds: CONTAINER_KINDS_ALL })
@@ -126,11 +145,11 @@ interface StockLine {
 }
 
 /** 把范围里的容器一页一页全读回来（到上限为止）。 */
-async function allContainers(ctx: ToolContext, from: LookFrom, radius: number): Promise<{ containers: ContainerInfo[]; total: number }> {
+async function allContainers(ctx: ToolContext, center: LookFrom['center'], radius: number, max = STOCK_MAX_CONTAINERS): Promise<{ containers: ContainerInfo[]; total: number }> {
   const containers: ContainerInfo[] = []
   let total = 0
-  for (let offset = 0; offset < STOCK_MAX_CONTAINERS; ) {
-    const res = await ctx.bridge.worldContainers(from.center, { radius, offset, limit: SERVER_PAGE, kinds: CONTAINER_KINDS_ALL })
+  for (let offset = 0; offset < max; ) {
+    const res = await ctx.bridge.worldContainers(center, { radius, offset, limit: SERVER_PAGE, kinds: CONTAINER_KINDS_ALL })
     const got = res.containers ?? []
     total = res.total ?? offset + got.length
     containers.push(...got)
@@ -141,12 +160,45 @@ async function allContainers(ctx: ToolContext, from: LookFrom, radius: number): 
   return { containers, total }
 }
 
+/**
+ * 一大片里的容器（比身体一次看得了的远）：切成每块每个方向 CONTAINERS_MAX_RADIUS 格的立方体，各读一遍再合起来，照到中心的远近排。
+ * 块挨着不重叠，所以 total 是各块之和；读到上限（STOCK_MAX_CONTAINERS）就不再读，containers 比 total 少。
+ */
+async function containersInPieces(
+  ctx: ToolContext,
+  at: At | undefined,
+  radius: number,
+): Promise<{ containers: ContainerInfo[]; total: number; of: string; looked: string; pieces: Pieces } | { error: string }> {
+  const where = await spotOf(ctx, at)
+  if (!where) return { error: `${ctx.botName} is not in the game world, so there is no "around you" to look at: give "at".` }
+  const started = Date.now()
+  const cut = pieces(where.spot, radius, CONTAINERS_MAX_RADIUS)
+  let read = 0
+  const answers = await eachPiece(cut.centers, async (center) => {
+    const left = Math.max(0, STOCK_MAX_CONTAINERS - read)
+    if (left === 0) {
+      // 已经读够了：这一块只问一共有几个
+      const res = await ctx.bridge.worldContainers(center, { radius: CONTAINERS_MAX_RADIUS, offset: 0, limit: 1, kinds: 1 })
+      return { containers: [] as ContainerInfo[], total: res.total ?? 0 }
+    }
+    const got = await allContainers(ctx, center, CONTAINERS_MAX_RADIUS, left)
+    read += got.containers.length
+    return got
+  })
+  const seen = new Map<string, ContainerInfo>()
+  for (const a of answers) for (const c of a.containers) seen.set(`${c.x},${c.y},${c.z}`, c)
+  const d = (c: ContainerInfo): number => Math.hypot(c.x - where.spot.x, c.y - where.spot.y, c.z - where.spot.z)
+  const containers = [...seen.values()].sort((a, b) => d(a) - d(b))
+  const total = Math.max(containers.length, answers.reduce((n, a) => n + a.total, 0))
+  return { containers, total, of: where.of, looked: `looked ${piecesText(cut, Date.now() - started)}`, pieces: cut }
+}
+
 export const listStock: Tool = {
   name: 'list_stock',
   brief: '{radius?, contains?, below?, at?}: everything stored around -> items[{id, meta, count, places}]',
   description: `Everything stored around you, or around a place you give ("at"), as one table: each item with its total and where most of it is, summed over all chests and drawers within the radius, most first. Filter with "contains" (a word of the name or id) and "below" (items you have fewer than that of). Machines and drawer controllers are not counted; what sits in automated containers is marked.`,
   inputSchema: obj({
-    radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }),
+    radius: int(`Search radius in blocks (default 16, up to ${BASE_RADIUS}: a whole base).`, { min: 1, max: BASE_RADIUS }),
     contains: str('Only items whose name or id contains this.', { maxLength: 60 }),
     below: int('Only items whose total is below this.', { min: 1 }),
     page: int(`Page (${STOCK_LINES_PER_PAGE} items per page, default 1).`, { min: 1 }),
@@ -154,9 +206,24 @@ export const listStock: Tool = {
   }),
   async run(ctx, i: { radius?: number; contains?: string; below?: number; page?: number; at?: At }): Promise<ToolResult | string> {
     const radius = i.radius ?? 16
-    const from = await lookFrom(ctx, i.at)
-    const { containers, total } = await allContainers(ctx, from, radius)
-    if (total === 0) return { content: `No containers within ${radius} blocks of ${from.of}.${from.hint}`, data: { items: [] } }
+    // 比身体一次看得了的远：切成几块各看一次
+    let containers: ContainerInfo[]
+    let total: number
+    let of: string
+    let hint = ''
+    let looked = ''
+    if (radius > CONTAINERS_MAX_RADIUS) {
+      const wide = await containersInPieces(ctx, i.at, radius)
+      if ('error' in wide) return fail(wide.error)
+      ;({ containers, total, of } = wide)
+      looked = ` (${wide.looked})`
+    } else {
+      const from = await lookFrom(ctx, i.at)
+      ;({ containers, total } = await allContainers(ctx, from.center, radius))
+      of = from.of
+      hint = from.hint
+    }
+    if (total === 0) return { content: `No containers within ${radius} blocks of ${of}${looked}.${hint}`, data: { items: [] } }
     const storage = containers.filter((c) => c.kind !== 'machine' && c.kind !== 'drawer_controller')
     const merged = new Map<string, StockLine>()
     let truncated = 0
@@ -191,9 +258,9 @@ export const listStock: Tool = {
     if (i.below !== undefined) list = list.filter((l) => l.count < i.below!)
     const skipped = containers.length - storage.length
     const notes = [
-      `Looked into ${storage.length} chest(s) and drawer(s)${covers > 0 ? ` and ${covers} cover(s) that hold items` : ''} within ${radius} blocks of ${from.of}${skipped > 0 ? ` (the own slots of ${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
+      `Looked into ${storage.length} chest(s) and drawer(s)${covers > 0 ? ` and ${covers} cover(s) that hold items` : ''} within ${radius} blocks of ${of}${looked}${skipped > 0 ? ` (the own slots of ${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
       ...(covers > 0 ? ['A place marked "cover <side>" is a cover on that face of the block there: withdraw_items with container {x, y, z, side, sneak: true}.'] : []),
-      ...(total > containers.length ? [`Only the nearest ${containers.length} of ${total} containers were read: the totals are not complete. Use a smaller radius.`] : []),
+      ...(total > containers.length ? [`Only ${containers.length} of ${total} containers were read (at most ${STOCK_MAX_CONTAINERS} at a time): the totals are not complete. Use a smaller radius, or "at" where the storage is.`] : []),
       // 向身体要的是每个容器的全部；还有没列全的，只会是老的身体（不认 kinds，一个容器最多给 60 种）
       ...(truncated > 0 ? [`The game server did not list everything in ${truncated} container(s) (its mod is too old to list more than 60 kinds of a container): what it left out is missing from these totals. find_in_storage still finds a particular item.`] : []),
     ]

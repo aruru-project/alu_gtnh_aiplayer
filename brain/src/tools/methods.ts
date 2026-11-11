@@ -2,18 +2,19 @@
 //   - base_methods：看；set_base_method：记一条、改一条、删一条。两条线都有（主人在聊天里教的，对话线可以直接记）。
 //   - 一条记录写得对不对在这里查：做法的名字认不认得、配方做不做得出那样东西；面板的写接口用的也是这一个（buildMethod）。
 //   - 一条配方记成认得回来的特征（recipeMark），用的时候对回现在的编号（resolveMark）。
-//   - 一样东西归哪条“一类零件”的记录（partMethodFor）。
+//   - 一样东西归哪条“一类零件”的记录（partMethodFor）、算不算“当现成的”（readyMethodFor）；两条配方算不算“用的料一样”（sameIngredients）。
 //   - 它本来会看的地方带上相关的那一条：查做法（methodNoteForThing）、看机器（methodNoteForMachine）。
 // 工具只陈述记录里写了什么，不替它判断这条记录好不好。
 
 import type { FluidTable, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable } from '../packdata/items.ts'
-import { METHOD_TEXT_MAX_CHARS, METHOD_WHY_MAX_CHARS, ORDER_KEY, machineKey, partKey, thingKey } from '../store/methods.ts'
-import type { MachineMethod, Method, MethodBy, MethodPos, OrderMethod, PartMethod, RecipeMark, ThingMethod } from '../store/methods.ts'
-import { thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
+import { ANY_META } from '../packdata/index.ts'
+import { METHOD_TEXT_MAX_CHARS, METHOD_WHY_MAX_CHARS, ORDER_KEY, machineKey, partKey, readyKey, sameKey, thingKey } from '../store/methods.ts'
+import type { MachineMethod, Method, MethodBy, MethodPos, OrderMethod, PartMethod, ReadyMethod, RecipeMark, SameMethod, ThingMethod } from '../store/methods.ts'
+import { serves, thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
 import { circuitOf, fluidLabel, isTool, lookAround, mergedSlots, namer, quantity, slotName } from './recipe-book.ts'
 import type { Namer } from './recipe-book.ts'
-import { arr, int, obj, str } from './schema.ts'
+import { arr, bool, int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext } from './types.ts'
 
@@ -136,14 +137,19 @@ export function resolveMark(mark: RecipeMark, book: RecipeBook | undefined, item
  * ores：这样东西登记在哪些矿辞名下。返回管得到它的那条记录（限定了材料的在先，其次前缀长的），和它的材料那一半（Steel）。
  * “板”的记录管不到双层板、小撮粉这些自己另算一种的零件（OWN_PREFIXES）。
  */
+/** 这个前缀管不管这个矿辞名：ore 是前缀加上材料（后面是大写字母或数字），而且不是另算一种的零件（plate 管不到 plateDoubleSteel）。 */
+export function prefixCovers(prefix: string, ore: string): boolean {
+  if (!ore.startsWith(prefix) || !/[A-Z0-9]/.test(ore.charAt(prefix.length))) return false
+  const own = OWN_PREFIXES.find((p) => ore.startsWith(p) && /[A-Z0-9]/.test(ore.charAt(p.length)))
+  return own === undefined || own.length <= prefix.length
+}
+
 export function partMethodFor(methods: readonly Method[], ores: readonly string[]): { entry: PartMethod; ore: string; material: string } | undefined {
   let best: { entry: PartMethod; ore: string; material: string } | undefined
   for (const entry of methods) {
     if (entry.kind !== 'part') continue
     for (const ore of ores) {
-      if (!ore.startsWith(entry.prefix) || !/[A-Z0-9]/.test(ore.charAt(entry.prefix.length))) continue
-      const own = OWN_PREFIXES.find((p) => ore.startsWith(p) && /[A-Z0-9]/.test(ore.charAt(p.length)))
-      if (own !== undefined && own.length > entry.prefix.length) continue
+      if (!prefixCovers(entry.prefix, ore)) continue
       const material = ore.slice(entry.prefix.length)
       if (entry.material !== undefined && entry.material !== material) continue
       const better = !best || Number(entry.material !== undefined) > Number(best.entry.material !== undefined) || (Number(entry.material !== undefined) === Number(best.entry.material !== undefined) && entry.prefix.length > best.entry.prefix.length)
@@ -151,6 +157,44 @@ export function partMethodFor(methods: readonly Method[], ores: readonly string[
     }
   }
   return best
+}
+
+/** 这样东西是不是“当现成的”：对上的那一条（一样具体的物品 → 矿辞名 → 矿辞前缀，先对上的算）。 */
+export function readyMethodFor(methods: readonly Method[], thing: { key: string; members: readonly { id: string; meta: number }[] }, items: ItemTable | undefined): ReadyMethod | undefined {
+  const ready = methods.filter((m): m is ReadyMethod => m.kind === 'ready')
+  if (ready.length === 0) return undefined
+  const ores = oresOfThing(thing, items)
+  return (
+    ready.find((m) => m.match === 'item' && thing.members.some((x) => x.id === m.text && (m.meta === undefined || m.meta === x.meta))) ??
+    ready.find((m) => m.match === 'ore' && ores.includes(m.text)) ??
+    ready.find((m) => m.match === 'prefix' && ores.some((ore) => prefixCovers(m.text, ore)))
+  )
+}
+
+/** 一格原料能放哪些物品（配方里写着的那几种）。 */
+const slotItems = (s: RecipeSlot): { id: string; meta: number }[] => (s.kind === 'item' ? [{ id: s.id, meta: s.meta }] : s.any.map(([id, meta]) => ({ id, meta })))
+const asItem = (x: { id: string; meta: number }): { id: string; meta: number } => ({ id: x.id, meta: x.meta === ANY_META ? 0 : x.meta })
+
+/**
+ * 两条配方用的料一样不一样：消耗的物品一格一格对得上（同样多，放得进同一种东西：钢锭和“任何 ingotSteel”算一样），
+ * 流体一样多，做出来的这样东西一样多。工具、编程电路、不消耗的模具不算料。
+ */
+export function sameIngredients(a: Recipe, b: Recipe, yieldA: number, yieldB: number, items: ItemTable | undefined): boolean {
+  if (yieldA !== yieldB) return false
+  const fluids = (r: Recipe): string => JSON.stringify([...r.fin].map((f) => [f.f, f.mb]).sort())
+  if (fluids(a) !== fluids(b)) return false
+  const consumed = (r: Recipe): RecipeSlot[] => mergedSlots(r.in).filter((s) => s.n > 0 && !isTool(s) && circuitOf(s) === undefined)
+  const left = consumed(a)
+  const right = consumed(b)
+  if (left.length !== right.length) return false
+  const overlaps = (x: RecipeSlot, y: RecipeSlot): boolean => slotItems(y).some((m) => serves(x, asItem(m), items)) || slotItems(x).some((m) => serves(y, asItem(m), items))
+  const free = [...right]
+  for (const s of left) {
+    const at = free.findIndex((t) => t.n === s.n && overlaps(s, t))
+    if (at === -1) return false
+    free.splice(at, 1)
+  }
+  return true
 }
 
 /** 一样东西登记在哪些矿辞名下（它的键是矿辞名的就是那个；别的看物品表）。 */
@@ -171,12 +215,46 @@ export function comesFrom(recipe: Recipe, from: string, material: string, items:
   })
 }
 
+// ── 一条记录现在还对不对得上 ──
+
+/**
+ * 一条记录在现在这份配方册、物品表里还对不对得上（给面板判断失效用）：
+ * recipeNow 是具体东西的那条配方现在的编号（对不回来是 null）；stale 是这条记录说的东西现在找不到了——
+ * 配方对不回来、做法的名字（part、same、order 里的）不在配方册里了、当现成的物品或矿辞名不在物品表里了。没有配方册时不判断（都不带）。
+ */
+export function methodState(m: Method, env: { book?: RecipeBook | undefined; items?: ItemTable | undefined }): { recipeNow?: number | null; stale?: boolean } {
+  const book = env.book
+  if (!book) return {}
+  const gone = (way: string): boolean => handlersOf(book, way).length === 0
+  if (m.kind === 'thing') {
+    const now = resolveMark(m.recipe, book, env.items)
+    return { recipeNow: now?.ref ?? null, stale: now === undefined }
+  }
+  if (m.kind === 'part') return { stale: gone(m.way) }
+  if (m.kind === 'same') return { stale: gone(m.use) || gone(m.over) }
+  if (m.kind === 'order') return { stale: m.ways.some(gone) }
+  if (m.kind === 'ready') {
+    const items = env.items
+    if (!items) return { stale: false }
+    if (m.match === 'item') return { stale: items.get(m.text, m.meta ?? 0) === undefined }
+    return { stale: m.match === 'ore' ? items.withOre(m.text).length === 0 : !items.hasOrePrefix(m.text) }
+  }
+  return { stale: false }
+}
+
 // ── 一条记录给模型看的一行 ──
+
+/** “当现成的”管的是什么：ingot parts / ingotSteel / 钢锭 [id/meta]。 */
+export const readyWhat = (m: ReadyMethod): string => (m.match === 'prefix' ? `${m.text} parts` : m.match === 'ore' ? m.text : `${m.name ?? m.text} [${m.meta !== undefined ? `${m.text}/${m.meta}` : `${m.text}, any meta`}]`)
 
 export function methodLine(m: Method, env: { book?: RecipeBook | undefined; items?: ItemTable | undefined } = {}): string {
   const tail = ` — ${methodSource(m)} [key ${m.key}]`
-  if (m.kind === 'part') return `${m.prefix}${m.material ? ` of ${m.material}` : ''} ← ${m.way}${m.from ? `, from ${m.from}` : ''}${tail}`
-  if (m.kind === 'order') return `${m.ways.join(' > ')}${tail}`
+  // 做法的名字、物品、矿辞名现在找不到了：照实说
+  const gone = m.kind !== 'thing' && m.kind !== 'machine' && methodState(m, env).stale === true ? ` [NOT FOUND ANY MORE in this ${m.kind === 'ready' ? 'item table' : 'recipe book'}]` : ''
+  if (m.kind === 'part') return `${m.prefix}${m.material ? ` of ${m.material}` : ''} ← ${m.way}${m.from ? `, from ${m.from}` : ''}${gone}${tail}`
+  if (m.kind === 'order') return `${m.ways.join(' > ')}${gone}${tail}`
+  if (m.kind === 'ready') return `${readyWhat(m)}: taken ready-made, not made${gone}${tail}`
+  if (m.kind === 'same') return `same ingredients: ${m.use} over ${m.over}${m.noTools ? ` (only when the ${m.use} recipe needs no tools)` : ''}${gone}${tail}`
   if (m.kind === 'machine') {
     const parts = [m.does, ...(m.feed ? [`feed: ${formatPos(m.feed)}`] : []), ...(m.collect ? [`collect: ${formatPos(m.collect)}`] : []), ...(m.keep ? [`do not touch: ${m.keep}`] : [])]
     return `${m.name ?? 'machine'} at ${formatPos(m)}: ${parts.join('; ')}${tail}`
@@ -195,6 +273,10 @@ export function methodLine(m: Method, env: { book?: RecipeBook | undefined; item
 // ── 写一条 ──
 
 export interface MethodInput {
+  ready?: string
+  use?: string
+  over?: string
+  noTools?: boolean
   part?: string
   material?: string
   way?: string
@@ -231,8 +313,8 @@ const PREFIX_RE = /^[a-z][A-Za-z0-9]{1,30}$/
  * 给的是哪一种看带了什么：part（一类零件）、id / fluid + recipe（一样具体的东西）、order（总的先后）、machine（一台机器）。
  */
 export function buildMethod(input: MethodInput, env: MethodEnv): { entry: Method } | { error: string } {
-  const kinds = [input.part !== undefined, input.id !== undefined || input.fluid !== undefined, input.order !== undefined, input.machine !== undefined].filter(Boolean).length
-  if (kinds !== 1) return { error: 'Give exactly one of: "part" (a kind of part and the way that makes it), "id" or "fluid" with "recipe" (one particular thing), "order" (ways, the first to use first), "machine" (what a machine is for).' }
+  const kinds = [input.part !== undefined, input.ready !== undefined, input.use !== undefined || input.over !== undefined, input.id !== undefined || input.fluid !== undefined, input.order !== undefined, input.machine !== undefined].filter(Boolean).length
+  if (kinds !== 1) return { error: 'Give exactly one of: "part" (a kind of part and the way that makes it), "ready" (what is taken ready-made), "use" with "over" (which of two ways, when they take the same ingredients), "id" or "fluid" with "recipe" (one particular thing), "order" (ways, the first to use first), "machine" (what a machine is for).' }
   if (input.by !== 'owner' && input.by !== 'self') return { error: 'Say who decided it: by "owner" (your owner said so) or "self" (you decided).' }
   const common = { by: input.by, at: env.now, why: text(input.why, METHOD_WHY_MAX_CHARS) }
   const book = env.book
@@ -249,6 +331,35 @@ export function buildMethod(input: MethodInput, env: MethodEnv): { entry: Method
     if (from.length > 0 && !PREFIX_RE.test(from)) return { error: `"from" is an ore-dictionary prefix too (the form it is made from, e.g. "ingot"), not "${from}".` }
     if (material.length > 0 && env.items && env.items.withOre(`${prefix}${material}`).length === 0) return { error: `No item is registered under the ore name ${prefix}${material}: "material" is the rest of the ore name after the prefix, e.g. "Steel" in plateSteel.` }
     return { entry: { ...common, kind: 'part', key: partKey(prefix, material || undefined), prefix, way: way.name, ...(material ? { material } : {}), ...(from ? { from } : {}) } }
+  }
+
+  if (input.ready !== undefined) {
+    const wanted = input.ready.trim()
+    // 一样物品：mod:name 或 mod:name/meta
+    if (wanted.includes(':')) {
+      const cut = wanted.lastIndexOf('/')
+      const meta = cut > 0 && /^\d+$/.test(wanted.slice(cut + 1)) ? Number(wanted.slice(cut + 1)) : undefined
+      const id = meta !== undefined ? wanted.slice(0, cut) : wanted
+      const item = env.items?.get(id, meta ?? 0)
+      if (env.items && !item) return { error: `No item ${meta !== undefined ? `${id}/${meta}` : id} is known: give an item id as find_item shows it, or an ore-dictionary prefix such as "ingot".` }
+      return { entry: { ...common, kind: 'ready', key: readyKey(id, meta), match: 'item', text: id, ...(meta !== undefined ? { meta } : {}), ...(item ? { name: item.name } : {}) } }
+    }
+    if (!PREFIX_RE.test(wanted)) return { error: `"${wanted}" is neither an ore-dictionary prefix ("ingot", "dust", "gem"), an ore name ("ingotSteel"), nor an item id ("mod:name" or "mod:name/meta").` }
+    // 正好是一个矿辞名就是那一个；不然是前缀，得真有以它开头的矿辞名
+    if (env.items && env.items.withOre(wanted).length > 0) return { entry: { ...common, kind: 'ready', key: readyKey(wanted), match: 'ore', text: wanted } }
+    if (env.items && !env.items.hasOrePrefix(wanted)) return { error: `No ore name starts with "${wanted}": a prefix is the part of an ore name before the material, such as "ingot" in ingotSteel (find_item shows an item's ore names).` }
+    return { entry: { ...common, kind: 'ready', key: readyKey(wanted), match: 'prefix', text: wanted } }
+  }
+
+  if (input.use !== undefined || input.over !== undefined) {
+    if (!book) return { error: 'There is no recipe book on this brain, so ways of making cannot be checked.' }
+    if (input.use === undefined || input.over === undefined) return { error: '"use" and "over" go together: the way to use, and the way not to use, when both make a thing from the same ingredients.' }
+    const use = waysNamed(book, input.use)
+    if ('error' in use) return use
+    const over = waysNamed(book, input.over)
+    if ('error' in over) return over
+    if (use.name === over.name) return { error: `"use" and "over" are the same way (${use.name}).` }
+    return { entry: { ...common, kind: 'same', key: sameKey(use.name, over.name), use: use.name, over: over.name, ...(input.noTools === true ? { noTools: true as const } : {}) } }
   }
 
   if (input.order !== undefined) {
@@ -324,6 +435,8 @@ export function methodNoteForThing(methods: MethodAccess | undefined, env: { boo
         : `The base's methods have a recipe for this thing, but it is no longer in the recipe book (it was ${own.recipe.wayName}: ${own.recipe.text}) — ${methodSource(own)}. [key ${own.key}]`,
     )
   }
+  const ready = readyMethodFor(methods.list(), thing, env.items)
+  if (ready) lines.push(`The base's methods take ${readyWhat(ready)} ready-made (total_materials does not make them) — ${methodSource(ready)}.`)
   const part = partMethodFor(methods.list(), oresOfThing(thing, env.items))
   if (part) lines.push(`The base's methods for ${part.entry.prefix} parts${part.entry.material ? ` of ${part.entry.material}` : ''}: ${part.entry.way}${part.entry.from ? `, from ${part.entry.from}` : ''} — ${methodSource(part.entry)}.${own ? ' (The recipe recorded for this thing itself comes first.)' : ''}`)
   return lines.length > 0 ? lines.join('\n') : undefined
@@ -340,9 +453,11 @@ export function methodNoteForMachine(methods: MethodAccess | undefined, at: Meth
 // ── 工具 ──
 
 const NO_STORE = "The base's methods are not available on this brain."
-const KINDS: Method['kind'][] = ['part', 'order', 'thing', 'machine']
+const KINDS: Method['kind'][] = ['part', 'ready', 'same', 'order', 'thing', 'machine']
 const KIND_HEAD: Record<Method['kind'], string> = {
   part: 'Kinds of parts (ore-dictionary prefix ← the way that makes it)',
+  ready: 'Taken ready-made (not made)',
+  same: 'Which way, when two take the same ingredients',
   order: 'Order of ways when nothing more specific applies',
   thing: 'Particular things (thing ← its recipe)',
   machine: 'Machines (what each is for)',
@@ -379,12 +494,16 @@ export const baseMethods: Tool = {
 export const setBaseMethod: Tool = {
   name: 'set_base_method',
   description:
-    'Record, change or remove one entry of the base\'s methods (kept across restarts; the same key replaces). What you give tells the kind: "part" + "way": a kind of part is made this way; "id" or "fluid" + "recipe": this particular thing is made by that recipe; "order": ways, in the order to use them when nothing more specific applies; "machine" + "does": what the machine there is for. "remove": the key of an entry to delete.',
+    'Record, change or remove one entry of the base\'s methods (kept across restarts; the same key replaces). What you give tells the kind: "part" + "way": a kind of part is made this way; "ready": taken ready-made, not made; "use" + "over": when both ways make a thing from the same ingredients (tools not counted), "use" is used; "id" or "fluid" + "recipe": this particular thing is made by that recipe; "order": ways, in the order to use them when nothing more specific applies; "machine" + "does": what the machine there is for. "remove": the key of an entry to delete.',
   inputSchema: obj({
     part: str('Ore-dictionary prefix of a kind of part: "plate", "stick", "screw", "wireGt01".'),
     material: str('With "part": only this material, e.g. "Steel".'),
     way: str('With "part": the way, as find_recipes names it, e.g. "卷板机".'),
     from: str('With "part": the form it is made from, e.g. "ingot".'),
+    ready: str('Prefix ("ingot"), ore name ("ingotSteel") or item id ("mod:name/meta").'),
+    use: str('A way, e.g. "有序合成".'),
+    over: str('The other way, e.g. "组装机".'),
+    noTools: bool('With "use": only when its recipe needs no tools.'),
     id: str('Item id of a particular thing.'),
     meta: int('Its meta (default 0).', { min: 0 }),
     fluid: str('Or a fluid, by name.'),

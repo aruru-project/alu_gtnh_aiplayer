@@ -2,6 +2,7 @@
 // 入口是整个 agent（h.agent）：事件像真实运行时那样进来，两条线各有一个按脚本回应的假模型（h.talk、h.llm），
 // 游戏是按方法名应答的假服务器。设计稿最后“实现时要验证的”每一条在这里都有一条对应的测试。
 
+import { SAID_NOTE } from '../src/agent/agent.ts'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { VOLLEY_MAX, lineOf } from '../src/agent/lines.ts'
@@ -66,6 +67,10 @@ describe('对话线说话：它写的文字就是它说的话', () => {
     assert.equal(h.log.recent(0, 200).filter((e) => e.kind === 'model_text').length, 0)
     // 它说过的话留在它自己的历史里（下一轮它知道自己说过什么），也进了聊天记录
     assert.equal(JSON.stringify(h.talkHistory.get().turns).split('身上有 64 个泥土').length - 1, 1)
+    // 写了字又调了工具的那两步：工具结果后面照实说一句“这一步写的字已经说出去了”（不复述那段字）；什么都没写的那一步没有
+    const after = (n: number) => (h.talk.requests[n]!.messages.at(-1)!.content as { type: string; text?: string }[]).filter((p) => p.type === 'text').map((p) => p.text)
+    assert.deepEqual([after(1), after(2), after(3)], [[SAID_NOTE], [], [SAID_NOTE]])
+    assert.equal(SAID_NOTE, '[系统] 你这一步写的字已经在公共聊天里说出去了，大家都看到了。')
     assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.who, l.text]), [
       ['chat', 'Steve', 'Alu 你身上有什么'],
       ['said', 'Alu', '我看一下'],

@@ -260,6 +260,52 @@ describe('total_materials：照基地的做法展开整棵树', () => {
     assert.match(blades.text, /3× 钢螺丝 \[gregtech:gt\.metaitem\.01\/27305\] \(there are 2 on you, 3 at \(12,64,-4\)\)/)
   })
 
+  it('“当现成的”：从零算整条线要多少时停在锭——钢锭、玄钢锭不往下做，记成要现成的，写明是照哪一条（具体的矿辞名在前缀前面）；目标自己是锭时照样往下做', async (t) => {
+    const s = setup(t)
+    await s.teach()
+    await s.run('set_base_method', { ready: 'ingot', by: 'owner', why: '从零算时停在锭' })
+    await s.run('set_base_method', { ready: 'ingotSteel', by: 'owner' })
+    const res = await s.total({ ...P.blades, count: 3, stock: false })
+    // 玄钢锭以下（玄钢粉、搅拌机那一步）、钢锭以下（钢粉、高炉那一步）都不做了：要做的只剩板、模头、柄、桨叶
+    assert.match(res.lines[0]!, /^For 3× 直升机桨叶 \[adventurebackpack:backpackComponent\/6\]: 4 thing\(s\) to make in 4 wave\(s\)/)
+    assert.deepEqual(res.lines.slice(res.lines.indexOf('Raw materials needed (5):'), res.lines.indexOf('Raw materials needed (5):') + 3), [
+      'Raw materials needed (5):',
+      "- taken ready-made, by the base's methods (2): 108× 钢锭 [gregtech:gt.metaitem.01/11305] [ready:ingotSteel], 4× 玄钢锭 [EnderIO:itemAlloy/6] [ready:ingot]",
+      '- nothing in the recipe book makes it (3): 9× 钢螺丝 [gregtech:gt.metaitem.01/27305], 3× 钢齿轮 [gregtech:gt.metaitem.02/31305], 1× 模头（杆） [gregtech:gt.metaitem.01/32351]',
+    ])
+    assert.deepEqual(res.data.missing.filter((m: any) => m.why === 'ready').map((m: any) => [m.name, m.count]), [['钢锭', 108], ['玄钢锭', 4]])
+    assert.equal(res.text.includes('#' + R.mixDark + ' '), false)
+    // 问的就是钢锭：照常往下做（照总的先后走高炉，钢粉没定）
+    const ingot = await s.total({ ...P.steelIngot, count: 5, stock: false })
+    assert.match(ingot.lines[0]!, /: 1 thing\(s\) to make in 1 wave\(s\) \(1 by the base's methods\); 1 thing\(s\) NOT DECIDED/)
+    assert.equal(ingot.lines.at(-1), `  - #${R.smeltSteel} × 5 → 5× 钢锭 [gregtech:gt.metaitem.01/11305] [base order: 工业高炉] — takes NOT DECIDED: 钢粉`)
+  })
+
+  it('“两种做法用的料一样时用哪一种”：玄钢粉手工和搅拌机用的料一样（都是三样粉各一个、出 3 个），记了“无序合成胜过搅拌机，只在手工不用工具时”就走手工，写明照的是这一条；手工要工具、或者料不一样时它不起作用，往下照总的先后', async (t) => {
+    const s = setup(t)
+    const dusts = [{ ...P.magneticDust, n: 1 }, { ore: 'dustCoal', n: 1, any: [[P.coalDust.id, P.coalDust.meta]], more: 0 }, { ore: 'dustObsidian', n: 1, any: [[P.obsidianDust.id, P.obsidianDust.meta]], more: 0 }]
+    const SHAPELESS = 'codechicken.nei.recipe.ShapelessRecipeHandler'
+    const SHAPED = 'codechicken.nei.recipe.ShapedRecipeHandler'
+    const hammer = { ore: 'craftingToolHardHammer', n: 1, any: [[P.hammer.id, P.hammer.meta]], more: 0 }
+    // 新导出的一本：多一条手工的，和搅拌机那条（#6：三样粉 + 编程电路 2 → 3 个）一样的料、一样出 3 个
+    const HAND = RECIPES.length
+    s.reexport([...RECIPES, { h: SHAPELESS, in: dusts, out: [{ ...P.darkDust, n: 3 }] }])
+    await s.teach()
+    const darkDust = async () => (await s.total({ ...P.blades, count: 3 })).lines.find((line) => line.includes('玄钢粉 [gregtech:gt.metaitem.01/2364]'))
+    // 还没记这条：照总的先后（工业高炉 > 搅拌机）走搅拌机
+    assert.equal(await darkDust(), `  - #${R.mixDark} × 2 → 6× 玄钢粉 [gregtech:gt.metaitem.01/2364]; 2 left over [base order: 搅拌机]`)
+    await s.run('set_base_method', { use: '无序合成', over: '搅拌机', noTools: true, by: 'owner', why: '料一样，手工不耗电' })
+    // 手工那两条里，#7 出 2 个（料不一样，不算），新的那条出 3 个：用它
+    assert.equal(await darkDust(), `  - #${HAND} × 2 → 6× 玄钢粉 [gregtech:gt.metaitem.01/2364]; 2 left over [base rule: same ingredients → 无序合成]`)
+    // 换一本：同样的料、同样出 3 个，可手工那条要锤子
+    s.reexport([...RECIPES, { h: SHAPED, in: [hammer, ...dusts], out: [{ ...P.darkDust, n: 3 }] }])
+    await s.run('set_base_method', { use: '有序合成', over: '搅拌机', noTools: true, by: 'owner' })
+    assert.equal(await darkDust(), `  - #${R.mixDark} × 2 → 6× 玄钢粉 [gregtech:gt.metaitem.01/2364]; 2 left over [base order: 搅拌机]`)
+    // 不要“不用工具”这个条件：用手工那条
+    await s.run('set_base_method', { use: '有序合成', over: '搅拌机', by: 'owner' })
+    assert.equal(await darkDust(), `  - #${HAND} × 2 → 6× 玄钢粉 [gregtech:gt.metaitem.01/2364]; 2 left over [base rule: same ingredients → 有序合成]`)
+  })
+
   it('一个结果装不下全部活儿时：没定的、还缺的在最前，活儿能列几条列几条，写明一共多少、剩下的怎么拿；程序拿到的 data 是全的', async (t) => {
     const s = setup(t)
     await s.teach()

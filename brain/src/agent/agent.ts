@@ -326,6 +326,8 @@ const ABOUT_CHARS = 100
 /** 一轮里最近几步工具调用留着给 worker_status 看，每个结果留多长。 */
 const PEEK_STEPS_KEPT = 8
 const PEEK_RESULT_CHARS = 600
+/** 对话线这一步写了字又调了工具：工具结果后面附这一句。 */
+export const SAID_NOTE = '[系统] 你这一步写的字已经在公共聊天里说出去了，大家都看到了。'
 
 const NOT_WOKEN_NOTES: Partial<Record<WakeDecision['reason'], string>> = {
   not_addressed: '没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内。',
@@ -1171,8 +1173,9 @@ export class Agent {
       const calls = result.message.content.filter((p) => p.type === 'tool_call')
       // 对话线写的文字就是它说的话：这一步一回来就说出去（和工具调用同一步时先说再调）。干活线的文字只进日志。
       let unsaid: string | undefined
+      let said: string | undefined
       if (text.length > 0) {
-        if (talk) unsaid = await this.speak(text, turnId, steps)
+        if (talk) ({ trouble: unsaid, said } = await this.speak(text, turnId, steps))
         else this.log.add({ kind: 'model_text', turn: turnId, step: steps, text })
       }
       if (calls.length === 0) {
@@ -1245,6 +1248,9 @@ export class Agent {
         if (canSee && images.length > 0) part.images = images.map((image) => ({ label: image.label, mediaType: image.mediaType, data: image.data.toString('base64') }))
         results.push(part)
       }
+      // 这一步写的字已经在公共聊天里说出去了：接在工具结果后面照实说一句（它在等工具结果，容易以为那段字还没说、再写一遍）。
+      // 那段字就在它上面那条消息里，这里不再复述一遍
+      if (said !== undefined) results.push({ type: 'text', text: SAID_NOTE })
       // 这一步写的话没说全：接在工具结果后面告诉它
       if (unsaid !== undefined) results.push({ type: 'text', text: `[系统] 你这一步写的那段话：${unsaid}` })
       turnMessages.push({ role: 'user', content: results })
@@ -1296,9 +1302,9 @@ export class Agent {
 
   /**
    * 对话线：把这一步写的文字在公共聊天里说出去（去掉 markdown 记号、压成一行）。发出去的结果照实记进日志。
-   * 返回值是要让模型知道的不寻常之处（没说出去、截了尾、丢了几行）；一切正常是 undefined。
+   * 返回：said 是真的说出去了的那段话（一行）；trouble 是要让模型知道的不寻常之处（没说出去、截了尾、丢了几行）。
    */
-  private async speak(text: string, turn: number, step: number): Promise<string | undefined> {
+  private async speak(text: string, turn: number, step: number): Promise<{ said?: string; trouble?: string }> {
     const botName = this.deps.settings().botName
     const notSaid = (why: string): void => {
       this.log.add({ kind: 'model_text', turn, step, text })
@@ -1309,12 +1315,12 @@ export class Agent {
       if (spoken.outcome === 'empty') {
         // 只有记号、清理完什么都不剩：没有可说的
         this.log.add({ kind: 'model_text', turn, step, text })
-        return undefined
+        return {}
       }
       const trouble = spokenTrouble(spoken)
       if (spoken.outcome === 'unsent') {
         notSaid(trouble ?? '')
-        return trouble
+        return trouble !== undefined ? { trouble } : {}
       }
       this.turnSpoke = true
       const odd = spoken.cutChars > 0 || spoken.droppedLines > 0
@@ -1327,13 +1333,14 @@ export class Agent {
         ...(trouble !== undefined ? { detail: trouble } : {}),
         ...(odd ? { sent: { ...(spoken.lines !== undefined ? { lines: spoken.lines } : {}), ...(spoken.cutChars > 0 ? { cutChars: spoken.cutChars } : {}), ...(spoken.droppedLines > 0 ? { droppedLines: spoken.droppedLines } : {}) } } : {}),
       })
-      this.deps.chatLog?.add({ time: this.now(), kind: 'said', who: botName, text: spoken.cutChars > 0 ? spoken.text.slice(0, Math.max(0, spoken.text.length - spoken.cutChars)) : spoken.text })
-      return trouble
+      const said = spoken.cutChars > 0 ? spoken.text.slice(0, Math.max(0, spoken.text.length - spoken.cutChars)) : spoken.text
+      this.deps.chatLog?.add({ time: this.now(), kind: 'said', who: botName, text: said })
+      return { said, ...(trouble !== undefined ? { trouble } : {}) }
     } catch (e) {
       const why = e instanceof BridgeError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)
       notSaid(why)
       const hint = e instanceof BridgeError ? bridgeHint(e.code, e.message) : undefined
-      return `这段话没有说出去（${why}${hint !== undefined ? `；${hint}` : ''}）。`
+      return { trouble: `这段话没有说出去（${why}${hint !== undefined ? `；${hint}` : ''}）。` }
     }
   }
 

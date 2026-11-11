@@ -753,7 +753,7 @@ describe('面板：对话、AI 玩家、记忆', () => {
     })
     const s = await setup(t, {}, { dir, packdata })
     await s.login()
-    assert.deepEqual((await s.call('GET', '/api/methods')).json, { available: true, total: 0, counts: { part: 0, order: 0, thing: 0, machine: 0 }, entries: [] })
+    assert.deepEqual((await s.call('GET', '/api/methods')).json, { available: true, total: 0, counts: { part: 0, ready: 0, same: 0, order: 0, thing: 0, machine: 0 }, entries: [] })
     // 记四条：一类零件、总的先后、一样具体的东西、一台机器
     const plate = await s.call('PUT', '/api/methods', { part: 'plate', way: '卷板机', from: 'ingot', why: '一锭一板' })
     assert.equal(plate.status, 200)
@@ -762,14 +762,21 @@ describe('面板：对话、AI 玩家、记忆', () => {
     await s.call('PUT', '/api/methods', { order: ['有序合成', '压模机'] })
     await s.call('PUT', '/api/methods', { ...P.pin, recipe: R.furnacePin, why: '最省' })
     await s.call('PUT', '/api/methods', { machine: { x: 16, y: 64, z: -8 }, does: '专门压板', feed: { x: 16, y: 65, z: -8 }, keep: '电路别动' })
+    // 新的两种：当现成的、同料时用哪种
+    await s.call('PUT', '/api/methods', { ready: 'ingot', why: '从零算时停在锭' })
+    const rule = (await s.call('PUT', '/api/methods', { use: '有序合成', over: '压模机', noTools: true })).json.entry
+    assert.deepEqual([rule.key, rule.kind, rule.use, rule.over, rule.noTools, rule.stale], ['same:有序合成>压模机', 'same', '有序合成', '压模机', true, false])
     const listed = (await s.call('GET', '/api/methods')).json
-    assert.deepEqual([listed.total, listed.counts], [4, { part: 1, order: 1, thing: 1, machine: 1 }])
-    assert.deepEqual(listed.entries.map((m: { key: string }) => m.key), ['part:plate', 'order', 'thing:demo:pin/0', 'machine:16,64,-8'])
-    assert.match(listed.entries[2].line, new RegExp(`^钢销 ← #${R.furnacePin} 烧制: 1× 钢锭 → 8× 钢销 — your owner, [\\d-]+: 最省 \\[key thing:demo:pin/0\\]$`))
-    assert.deepEqual([listed.entries[3].does, listed.entries[3].feed, listed.entries[3].keep], ['专门压板', { x: 16, y: 65, z: -8 }, '电路别动'])
+    assert.deepEqual([listed.total, listed.counts], [6, { part: 1, ready: 1, same: 1, order: 1, thing: 1, machine: 1 }])
+    assert.deepEqual(listed.entries.map((m: { key: string }) => m.key), ['part:plate', 'ready:ingot', 'same:有序合成>压模机', 'order', 'thing:demo:pin/0', 'machine:16,64,-8'])
+    // 每一条带着现在还对不对得上（stale）；具体东西的配方带着现在的编号（recipeNow）
+    assert.deepEqual(listed.entries.map((m: { stale?: boolean }) => m.stale), [false, false, false, false, false, false])
+    assert.equal(listed.entries[4].recipeNow, R.furnacePin)
+    assert.match(listed.entries[4].line, new RegExp(`^钢销 ← #${R.furnacePin} 烧制: 1× 钢锭 → 8× 钢销 — your owner, [\\d-]+: 最省 \\[key thing:demo:pin/0\\]$`))
+    assert.deepEqual([listed.entries[5].does, listed.entries[5].feed, listed.entries[5].keep], ['专门压板', { x: 16, y: 65, z: -8 }, '电路别动'])
     // 改：同一个键再写一次
     const changed = await s.call('PUT', '/api/methods', { part: 'plate', way: '有序合成', why: '卷板机坏了' })
-    assert.deepEqual([changed.json.replaced, changed.json.entry.way, (await s.call('GET', '/api/methods')).json.total], [true, '有序合成', 4])
+    assert.deepEqual([changed.json.replaced, changed.json.entry.way, (await s.call('GET', '/api/methods')).json.total], [true, '有序合成', 6])
     // 写错的：和工具同一套查对
     const wrong = await s.call('PUT', '/api/methods', { part: 'plate', way: '水力压裂' })
     assert.deepEqual([wrong.status, wrong.json.error.code], [400, 'bad_request'])
@@ -780,7 +787,9 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual((await s.call('DELETE', '/api/methods', { key: 'order' })).json, { removed: false })
     // 落在数据目录的 methods.json 里
     const saved = JSON.parse(fs.readFileSync(path.join(dir.dir, 'methods.json'), 'utf8'))
-    assert.deepEqual(saved.entries.map((m: { key: string; by: string }) => [m.key, m.by]), [['part:plate', 'owner'], ['thing:demo:pin/0', 'owner'], ['machine:16,64,-8', 'owner']])
+    assert.deepEqual(saved.entries.map((m: { key: string; by: string }) => [m.key, m.by]), [['part:plate', 'owner'], ['ready:ingot', 'owner'], ['same:有序合成>压模机', 'owner'], ['thing:demo:pin/0', 'owner'], ['machine:16,64,-8', 'owner']])
+    // 存下来的文件里不带 recipeNow、stale（那是每次照现在的配方册算的）
+    assert.equal(JSON.stringify(saved).includes('recipeNow') || JSON.stringify(saved).includes('stale'), false)
   })
 
   it('这个服务器叫什么、这里的规矩：在 /api/bot 里能看能改（存进配置），/api/status 里带着；名字最多 40 字、规矩最多 4000 字，多的截掉', async (t) => {

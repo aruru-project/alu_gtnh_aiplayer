@@ -413,10 +413,11 @@ interface ProviderConfig {
 
 **8c. 基地的做法**（这个基地怎么做东西的记录：主人教的、它自己定过的；`store/methods.ts`，存在数据目录的 `methods.json`，实现在 `panel/data-api.ts`）。和模型用的 `set_base_method` 是同一套查对。
 
-- `GET /api/methods` → `{ available, total, counts: { part, order, thing, machine }, entries: [条目 + line] }`。条目照种类排（一类零件、总的先后、具体的东西、机器），每种里先记的在前。`line` 是给人看的一行，和模型用 `base_methods` 看到的一样（具体东西的配方对回了现在的编号，对不回来写着 `NO LONGER IN THE RECIPE BOOK`）。
-  - 公共字段：`key`（`part:plate`、`part:stick:Steel`、`order`、`thing:<东西的键>`、`machine:x,y,z`；写同一个键就是改）、`kind`、`by`（`owner` / `self`）、`at`（epoch ms）、`why`。
-  - `part`：`prefix`、`material?`、`way`（配方页的名字）、`from?`。`order`：`ways`。`thing`：`thing`（`ore:plateSteel`、`id/meta`、`fluid:注册名`）、`name`、`recipe: { ref, way, wayName, in, out, fin, fout, text }`（`ref` 是记下那时的编号）。`machine`：`x y z`、`name?`、`does`、`feed?`、`collect?`、`keep?`。
-- `PUT /api/methods` body 和工具一样：`{ part, way, from?, material?, why? }`、`{ id, meta?, recipe, why? }`（流体给 `fluid`）、`{ order: [做法…], why? }`、`{ machine: {x,y,z}, does, feed?, collect?, keep?, why? }`；`by` 不给是 `owner`（面板上写的算主人定的）。→ `{ entry, replaced }`。写错的（做法名认不出、配方做不出那样东西、没有这条配方……）400 `bad_request`，`message` 是和工具一样的那句英文。
+- `GET /api/methods` → `{ available, total, counts: { part, ready, same, order, thing, machine }, entries: [条目 + line + recipeNow? + stale?] }`。条目照种类排（一类零件、当现成的、同料时用哪种、总的先后、具体的东西、机器），每种里先记的在前（同一时刻记的照键排）。`line` 是给人看的一行，和模型用 `base_methods` 看到的一样（具体东西的配方对回了现在的编号，对不回来写着 `NO LONGER IN THE RECIPE BOOK`；别的几种对不上时带 `[NOT FOUND ANY MORE …]`）。
+  - 公共字段：`key`（`part:plate`、`part:stick:Steel`、`ready:ingot`、`ready:minecraft:stone/0`、`same:有序合成>组装机`、`order`、`thing:<东西的键>`、`machine:x,y,z`；写同一个键就是改）、`kind`、`by`（`owner` / `self`）、`at`（epoch ms）、`why`。
+  - `part`：`prefix`、`material?`、`way`（配方页的名字）、`from?`。`ready`：`match`（`prefix` 矿辞前缀 / `ore` 一个矿辞名 / `item` 一样物品）、`text`（前缀、矿辞名或物品 id）、`meta?`、`name?`。`same`：`use`、`over`（两种做法的名字：两种都做得出一样东西、用的料一样时用 `use`）、`noTools?`（只在 `use` 那条不用工具时）。`order`：`ways`。`thing`：`thing`（`ore:plateSteel`、`id/meta`、`fluid:注册名`）、`name`、`recipe: { ref, way, wayName, in, out, fin, fout, text }`（`ref` 是记下那时的编号）。`machine`：`x y z`、`name?`、`does`、`feed?`、`collect?`、`keep?`。
+  - **判断失效**（照现在这份配方册、物品表算的，不存进文件；没有配方册时都不带）：`stale: boolean`——这条记录说的东西现在找不到了：具体东西的配方对不回来；`part`、`same`、`order` 里的做法名不在配方册里了；`ready` 的物品、矿辞名或前缀不在物品表里了；`machine` 总是 `false`。`thing` 另带 `recipeNow: number | null`：现在对回的配方编号，对不回来是 `null`。
+- `PUT /api/methods` body 和工具一样：`{ part, way, from?, material?, why? }`、`{ ready: "ingot" | "ingotSteel" | "mod:name/meta", why? }`、`{ use, over, noTools?, why? }`、`{ id, meta?, recipe, why? }`（流体给 `fluid`）、`{ order: [做法…], why? }`、`{ machine: {x,y,z}, does, feed?, collect?, keep?, why? }`；`by` 不给是 `owner`（面板上写的算主人定的）。→ `{ entry, replaced }`，`entry` 带着 `line`、`recipeNow?`、`stale?`。写错的（做法名认不出、配方做不出那样东西、没有这条配方、前缀没有对上的矿辞名……）400 `bad_request`，`message` 是和工具一样的那句英文。
 - `DELETE /api/methods { key }` → `{ removed }`。
 
 **9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面还没做）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。

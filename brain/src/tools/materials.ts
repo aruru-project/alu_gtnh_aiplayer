@@ -3,7 +3,9 @@
 // 每样要做的东西用哪条配方，按这个先后定——都是别人定好的，这里不替它选：
 //   1. 这一次调用里点了名的（recipes、chisel）；
 //   2. “基地的做法”里给这样东西记的那条配方；
+//      （基地的做法说它“当现成的”：不往下做，记成要现成的原料）
 //   3. “基地的做法”里它这一类零件的做法（plate ← 卷板机，从 ingot）；
+//      “两种做法用的料一样时用哪一种”（有序合成胜过组装机，只在手工不用工具时）：条件对上了就用那一种；
 //   4. “基地的做法”里总的先后：排在最前、做得出它的那种做法；
 //   5. 只有一种做法、只有一条配方：没得选；
 //   6. 都不是：不展开，列进“没定过做法的”，把它的几种做法摆出来。它定了（记进基地的做法，或者这一次点名）再算一次，就接着往下走。
@@ -18,15 +20,16 @@ import type { FluidInfo, Recipe, RecipeHandler, RecipeSlot } from '../packdata/i
 import type { ItemTable } from '../packdata/items.ts'
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, MachineInfo, StockQuery } from '../bridge/protocol.ts'
-import type { MachineMethod, Method, PartMethod, ThingMethod } from '../store/methods.ts'
+import type { MachineMethod, Method, PartMethod, ReadyMethod, SameMethod, ThingMethod } from '../store/methods.ts'
 import { CHISEL_COST } from './chisel.ts'
 import { formatPos, itemKey } from './format.ts'
 import { MaterialTree, TREE_MAX_THINGS, isRecycling } from './material-tree.ts'
 import type { Choose, Options, TreeResult, TreeThing } from './material-tree.ts'
-import { comesFrom, handlersOf, methodSource, oresOfThing, partMethodFor, recipeText, resolveMark } from './methods.ts'
+import { comesFrom, handlersOf, methodSource, oresOfThing, partMethodFor, readyMethodFor, recipeText, resolveMark, sameIngredients } from './methods.ts'
 import type { MethodAccess } from './methods.ts'
 import {
   MACHINES_REACH,
+  isTool,
   availability,
   carried,
   fluidInside,
@@ -72,7 +75,7 @@ const isChiselStep = (r: Recipe): boolean => r.ref < 0
 
 // ── 每样东西用哪条配方 ──
 
-type Rule = 'named' | 'thing' | 'part' | 'order' | 'only'
+type Rule = 'named' | 'thing' | 'part' | 'same' | 'order' | 'only'
 
 interface Note {
   /** 照哪一条定的。 */
@@ -89,6 +92,8 @@ interface Note {
   partMiss?: PartMethod
   /** 只有它操作不了的页做得出它（在世界里发生的事、信息页）。 */
   onlyOther?: string[]
+  /** 基地的做法说它当现成的：不往下做。 */
+  ready?: ReadyMethod
 }
 
 /** 它自己操作得了的做法（合成格、机器），回收的页不算。 */
@@ -98,7 +103,8 @@ function chooseByMethods(chosen: readonly Recipe[], methods: MethodAccess | unde
   const makes = new Map<number, string>()
   const all = methods?.list() ?? []
   const order = methods?.order()
-  return (thing, options) => {
+  const rules = all.filter((m): m is SameMethod => m.kind === 'same')
+  return (thing, options, asked) => {
     // 1. 这一次点了名的：一条配方只当一样产物的做法
     for (const recipe of chosen) {
       const y = options.yield(recipe)
@@ -116,6 +122,9 @@ function chooseByMethods(chosen: readonly Recipe[], methods: MethodAccess | unde
     }
     // 流体到此为止：没点名、没记配方的，是要现成的
     if (thing.fluid) return { note }
+    // 当现成的：不往下做（目标自己除外）
+    const ready = asked.target ? undefined : readyMethodFor(all, thing, env.items)
+    if (ready) return { note: { ...note, ready } }
     // 3. 它这一类零件的做法
     const part = partMethodFor(all, oresOfThing(thing, env.items))
     if (part) {
@@ -123,6 +132,17 @@ function chooseByMethods(chosen: readonly Recipe[], methods: MethodAccess | unde
       const recipe = options.recipes(PART_SCAN, (way) => ways.has(way)).find((r) => part.entry.from === undefined || comesFrom(r, part.entry.from, part.material, env.items))
       if (recipe) return { recipe, note: { ...note, rule: 'part', method: part.entry } }
       note.partMiss = part.entry
+    }
+    // 3b. 两种做法用的料一样时用哪一种：两种都做得出它，有一对配方料一样（use 那条要不用工具时，它不用工具）
+    for (const rule of rules) {
+      const useWays = new Set(handlersOf(env.book, rule.use))
+      const overWays = new Set(handlersOf(env.book, rule.over))
+      const over = options.recipes(PART_SCAN, (way) => overWays.has(way))
+      if (over.length === 0) continue
+      for (const recipe of options.recipes(PART_SCAN, (way) => useWays.has(way))) {
+        if (rule.noTools && recipe.in.some(isTool)) continue
+        if (over.some((other) => sameIngredients(recipe, other, options.yield(recipe).n, options.yield(other).n, env.items))) return { recipe, note: { ...note, rule: 'same', method: rule } }
+      }
     }
     // 4. 总的先后
     for (const way of order?.ways ?? []) {
@@ -281,6 +301,7 @@ function ruleText(note: Note | undefined): string {
   if (note?.rule === 'named') return 'named by you'
   if (note?.rule === 'thing') return `base method for it (${note.method!.by === 'owner' ? 'owner' : 'you'})`
   if (note?.rule === 'part') return `base method ${note.method!.key}`
+  if (note?.rule === 'same') return `base rule: same ingredients → ${(note.method as SameMethod).use}`
   if (note?.rule === 'order') return `base order: ${note.orderWay}`
   return 'only recipe'
 }
@@ -388,7 +409,7 @@ export const totalMaterials: Tool = {
     const unusedChisel = chosen.filter((r) => !used.has(r.ref) && isChiselStep(r)).map((r) => nm.label(r.out[0]!.id, r.out[0]!.meta))
     const usesChisel = jobs.some((t) => isChiselStep(t.recipe!))
     const byRule = (rule: Rule): number => jobs.filter((t) => t.note?.rule === rule).length
-    const byMethod = byRule('thing') + byRule('part') + byRule('order')
+    const byMethod = byRule('thing') + byRule('part') + byRule('same') + byRule('order')
 
     // 先后：一样东西的原料都是现成的（原料、库存）就是第 1 批；要等别的做出来的，排在它们后面一批
     const wave = new Map<TreeThing<Note>, number>()
@@ -482,7 +503,8 @@ export const totalMaterials: Tool = {
       if (missing.length > 0) {
         out.push(`${held ? 'Raw materials still missing after storage' : 'Raw materials needed'} (${missing.length}):`)
         const groups: [string, (t: TreeThing<Note>) => boolean, (t: TreeThing<Note>) => string][] = [
-          ['nothing in the recipe book makes it', (t) => !t.loop && !t.unfit && !t.cut && !t.note?.onlyOther, () => ''],
+          ['taken ready-made, by the base\'s methods', (t) => t.note?.ready !== undefined, (t) => ` [${t.note!.ready!.key}]`],
+          ['nothing in the recipe book makes it', (t) => !t.loop && !t.unfit && !t.cut && !t.note?.onlyOther && !t.note?.ready, () => ''],
           ['only made by something you cannot run', (t) => t.note?.onlyOther !== undefined, (t) => ` (${t.note!.onlyOther!.join(', ')})`],
           ['its recipe needs something above it in the tree (loop)', (t) => t.loop !== undefined, (t) => ` (#${t.loop!.recipe.ref} ${t.loop!.recipe.handler.name} needs ${t.loop!.needs === t ? 'itself' : thingName(t.loop!.needs, nm, false)})`],
           ['the recipe given for it does not make it', (t) => t.unfit !== undefined, (t) => ` (#${t.unfit!.ref})`],
@@ -620,7 +642,7 @@ export const totalMaterials: Tool = {
       }
       return { recipe: r.ref, way: r.handler.name, rounds: t.rounds, makes, needed: t.needed, ...rule }
     }
-    const why = (t: TreeThing<Note>): string => (t.note?.undecided ? 'undecided' : t.loop ? 'loop' : t.unfit ? 'unfit' : t.cut ? 'limit' : t.note?.onlyOther ? 'cannot run' : 'none')
+    const why = (t: TreeThing<Note>): string => (t.note?.undecided ? 'undecided' : t.note?.ready ? 'ready' : t.loop ? 'loop' : t.unfit ? 'unfit' : t.cut ? 'limit' : t.note?.onlyOther ? 'cannot run' : 'none')
     const steps = jobs.map(jobData)
     return {
       content: lines.join('\n'),

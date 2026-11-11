@@ -401,7 +401,14 @@ describe('view_area：看世界里的一块地方', () => {
       assert.equal(res.images, undefined)
     }
     await refused({ x1: 0, z1: 0, x2: 5, z2: 5 }, /Give all of x1, y1, z1, x2, y2, z2 \(two opposite corners\), or none of them/)
-    await refused({ x1: 0, y1: 0, z1: 0, x2: 64, y2: 10, z2: 10 }, /The box is 65×11×11 \(x × y × z\); each side can be at most 64\. Look at it in several pieces\./)
+    await refused({ x1: 0, y1: 0, z1: 0, x2: 64, y2: 10, z2: 10 }, /^The box is 65×11×11 \(x × y × z\); one picture covers at most 64 on each side, so this box is 2 pictures: \(0, 0, 0\)–\(63, 10, 10\); \(64, 0, 0\)–\(64, 10, 10\)\.$/)
+    // 一个基地那么大（161×31×161）：照实说要几张、每张的两个角，不用一次次试；太多时列前 16 张并说还有几张
+    const base = await s.run('view_area', { x1: -80, y1: 60, z1: -80, x2: 80, y2: 90, z2: 80 })
+    assert.equal(base.isError, true)
+    assert.match(base.content, /^The box is 161×31×161 \(x × y × z\); one picture covers at most 64 on each side, so this box is 9 pictures: \(-80, 60, -80\)–\(-17, 90, -17\); \(-16, 60, -80\)–\(47, 90, -17\); \(48, 60, -80\)–\(80, 90, -17\); \(-80, 60, -16\)–\(-17, 90, 47\); /)
+    assert.match(base.content, /; \(48, 60, 48\)–\(80, 90, 80\)\.$/)
+    const huge = await s.run('view_area', { x1: 0, y1: 0, z1: 0, x2: 300, y2: 10, z2: 300 })
+    assert.match(huge.content, /so this box is 25 pictures: .*; … 9 more in the same pattern\.$/)
     assert.equal(s.game.callsOf('world.blocks').length, 0)
     const box = { x1: 0, y1: 60, z1: 0, x2: 3, y2: 63, z2: 3 }
     await refused({ ...box, view: 'layer' }, /For a layer picture give "layer": the y of the layer to look at \(60 to 63 here\)/)

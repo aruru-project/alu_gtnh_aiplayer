@@ -230,7 +230,10 @@ describe('模型拿到的工具清单', () => {
   //   “基地的做法”之后：两条线各多两个工具，base_methods（看，约 750）和 set_base_method（记、改、删，约 2,260：四种条目的参数都在这一个里），
   //           加上库函数索引里 total_materials 那一行长了约 120。干活线实际 52,580、上限 50,000 → 53,000；对话线实际 25,820、上限 23,000 → 26,200。
   //           主人在聊天里教的做法对话线要能直接记，所以两条线都有；做成库函数的话模型看不到参数，记不对。
-  for (const [line, ceiling] of [['work', 53_000], ['talk', 26_200]] as const) {
+  //   “当现成的”“同料时用哪种”和看一个基地那么大之后：干活线实际 53,133、上限 53,000 → 53,600；对话线实际 26,373、上限 26,200 → 26,800。
+  //           多的是 set_base_method（+约 500：ready、use、over、noTools 四个参数和说明里的两句），find_in_storage、list_containers 的
+  //           radius 说明写明最大到 160（各 +几十）。
+  for (const [line, ceiling] of [['work', 53_600], ['talk', 26_800]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -487,7 +490,9 @@ describe('图纸里有什么（read_blueprint）', () => {
     const h = withBlueprints(t)
     const status = h.game.handlers['bot.status']!
     h.game.handlers['bot.status'] = (p) => ({ ...(status(p) as object), inventory: [{ slot: 0, id: 'minecraft:stonebrick', meta: 0, count: 10, name: 'Stone Bricks' }] })
-    h.game.handlers['world.stock'] = (p) => ({ containersLookedInto: 1, items: (p.items as { id: string }[]).map((q) => (q.id === 'minecraft:stonebrick' ? { ...q, total: 25, places: [{ x: 12, y: 64, z: -4, container: 'Chest', count: 25 }] } : { ...q, total: 0, places: [] })) })
+    // 像身体那样只看得到中心周围 radius 格以内的：那个箱子在 (12,64,-4)
+    const sees = (p: Record<string, unknown>): boolean => typeof p.x !== 'number' || Math.max(Math.abs(12 - Number(p.x)), Math.abs(64 - Number(p.y)), Math.abs(-4 - Number(p.z))) <= Number(p.radius)
+    h.game.handlers['world.stock'] = (p) => !sees(p) ? { containersLookedInto: 0, items: (p.items as object[]).map((q) => ({ ...q, total: 0, places: [] })) } : ({ containersLookedInto: 1, items: (p.items as { id: string }[]).map((q) => (q.id === 'minecraft:stonebrick' ? { ...q, total: 25, places: [{ x: 12, y: 64, z: -4, container: 'Chest', count: 25 }] } : { ...q, total: 0, places: [] })) })
     assert.deepEqual((await returned(h, example('算一张图纸的材料'))).split('\n'), ['40× Stone Bricks：身上 10，仓库 25，还差 5', '1× Chest：得主人自己放（it holds contents or settings）'])
   })
 

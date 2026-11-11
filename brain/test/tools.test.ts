@@ -261,7 +261,7 @@ describe('观察', () => {
     const s = setup(t)
     const res = await s.run('scan_area', { x1: 0, z1: 0, x2: 64, z2: 10 })
     assert.equal(res.isError, true)
-    assert.match(res.content, /65×11; at most 64×64/)
+    assert.equal(res.content, 'The area is 65×11; one scan covers at most 64×64, so this area is 2 scans: (0, 0)–(63, 10); (64, 0)–(64, 10).')
     assert.equal(s.game.callsOf('world.scan').length, 0)
   })
 
@@ -341,8 +341,11 @@ describe('观察', () => {
     assert.equal((await s.run('list_stock')).content, `No containers within 16 blocks of you.${hint}`)
     assert.equal((await s.run('find_blocks', { ids: ['minecraft:chest'] })).content, `No minecraft:chest within 24 blocks of you.${hint}`)
     assert.match((await s.run('find_machines')).content, /^No GregTech machine within 32 blocks of you .* give "at"\.$/)
-    // find_in_storage 不给范围时看的是整个基地（往四周错开四个点各查 64 格）：五十格外的那个箱子它看得到
-    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }] })).content, /^Looked into 1 container\(s\) within 112 blocks of you \(the whole base, as far as chunks are loaded\)\.[^\n]*\n- minecraft:dirt \(any meta\): 27 in total\n  - \(61,64,-4\) Chest: 27$/)
+    // find_in_storage 不给范围时看的是整个基地（它周围 160 格，切成身体一次看得了的几块）：五十格外的那个箱子它看得到
+    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }] })).content, /^Looked into 1 container\(s\) within 160 blocks of you \(looked in 18 piece\(s\) of 129×129×129 blocks covering x -183\.\.203, y 0\.\.241, z -197\.\.189\)\.[^\n]*\n- minecraft:dirt \(any meta\): 27 in total\n  - \(61,64,-4\) Chest: 27$/)
+    // list_containers、list_stock 给大半径也一样：切成每块每个方向 32 格的几块（每个方向 100 格：x、z 各 201 格凑成 4 块，上下 0–164 是 3 块）
+    assert.match((await s.run('list_containers', { radius: 100 })).content, /^Within 100 blocks of you \(looked in 48 piece\(s\) of 65×65×65 blocks covering x -119\.\.140, y 0\.\.179, z -133\.\.126\): 1 container\(s\)\.\n- \(61,64,-4\) Chest/)
+    assert.match((await s.run('list_stock', { radius: 100 })).content, /^Looked into 1 chest\(s\) and drawer\(s\) within 100 blocks of you \(looked in 48 piece\(s\) of 65×65×65 blocks covering x -119\.\.140, y 0\.\.179, z -133\.\.126\): 1 kind\(s\) of item\./)
     // 给了半径就只看身边那么远：没有，并说可以换个中心
     assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], radius: 32 })).content, /^There is no container within 32 blocks of you .*give "at" \(the position of a chest or drawer controller there, or where your owner stands\), or go there\.$/)
     assert.match((await s.run('look_around')).content, /\nContainers: none near you \(to look around another place, give "at"\)\n/)
@@ -1054,7 +1057,9 @@ describe('物品、配方、库存、合成', () => {
 
   it('find_in_storage：每样东西一共多少、在哪几处（坐标、容器、是不是抽屉、数量、具体是哪种物品）；没有的也说明', async (t) => {
     const s = setup(t)
-    s.game.handlers['world.stock'] = () => ({
+    // 像身体那样：只有中心周围 radius 格以内的才看得到。这些箱子都在 (-51..-45, 99, -87..-83) 一带
+    const sees = (p: Record<string, unknown>): boolean => Math.max(Math.abs(-48 - Number(p.x)), Math.abs(99 - Number(p.y)), Math.abs(-85 - Number(p.z))) <= Number(p.radius) - 3
+    s.game.handlers['world.stock'] = (p) => !sees(p) ? { items: (p.items as unknown[]).map((q) => ({ ...(q as object), total: 0, places: [] })), containersLookedInto: 0 } : ({
       items: [
         { id: 'IC2:itemRecipePart', meta: 12, total: 9, places: [{ x: -51, y: 99, z: -87, container: 'Chest', count: 8 }, { x: -47, y: 99, z: -83, container: 'Iron Chest', count: 1 }], morePlaces: 2 },
         {
@@ -1071,12 +1076,14 @@ describe('物品、配方、库存、合成', () => {
     })
     const res = await s.run('find_in_storage', { items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }] })
     assert.equal(res.isError, undefined)
-    // 没说看哪、看多远：看整个基地——以它站的 (10,64,-4) 为中心往四个斜方向各错开 48 格，各查 64 格；不带 meta 的就不带 meta（任何变体都算）
+    // 没说看哪、看多远：看整个基地——它站在 (10,64,-4)，每个方向 160 格。身体一次最多看 64 格，切成 129 格见方的块：
+    // x、z 各 3 块（321 格凑成 387 格，两头各多 33 格），上下 0–224 是 2 块；每块问一次。不带 meta 的就不带 meta（任何变体都算）
     const wanted = [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }]
-    assert.deepEqual(s.game.callsOf('world.stock'), [[-38, -52], [-38, 44], [58, -52], [58, 44]].map(([x, z]) => ({ x, y: 64, z, dim: 0, items: wanted, radius: 64 })))
+    const centers = [48, 177].flatMap((y) => [-119, 10, 139].flatMap((x) => [-133, -4, 125].map((z) => ({ x, y, z }))))
+    assert.deepEqual(s.game.callsOf('world.stock'), centers.map((c) => ({ ...c, dim: 0, items: wanted, radius: 64 })))
     const lines = res.content.split('\n')
-    // 四次查询看到的是同一批容器：一个容器只算一次，数量不翻倍
-    assert.match(lines[0]!, /^Looked into 37 container\(s\) within 112 blocks of you \(the whole base, as far as chunks are loaded\)\./)
+    // 块挨着不重叠：一个容器只在一块里，数量照实加
+    assert.match(lines[0]!, /^Looked into 37 container\(s\) within 160 blocks of you \(looked in 18 piece\(s\) of 129×129×129 blocks covering x -183\.\.203, y 0\.\.241, z -197\.\.189\)\./)
     assert.deepEqual(lines.slice(1), [
       '- IC2:itemRecipePart/12: 9 in total',
       '  - (-51,99,-87) Chest: 8',
@@ -1087,6 +1094,31 @@ describe('物品、配方、库存、合成', () => {
       '  - (-51,99,-87) Chest: 4 (3× gregtech:gt.metaitem.01/27305 "Steel Screw", 1× TConstruct:toughRod/16 "Steel Tough Tool Rod")',
       '- minecraft:wool (any meta): none in storage here',
     ])
+  })
+
+  it('find_in_storage 给一个比身体一次看得远的半径（100）：切成每块每个方向 64 格的几块，各块里的数加起来；同一样东西在两头的两个箱子都列出来', async (t) => {
+    const s = setup(t)
+    // 它站在 (10,64,-4)。一个箱子在西边 (-60,64,-4)、一个在东边 (80,70,0)：每个方向 100 格，x 切成 -118..10 和 11..139 两块，
+    // 上下 0–164 凑成两块（-46..82、83..211）
+    // 西边还有一个只放了 3 个的小箱子：身体每样东西只列放得最多的那一处（这里假装一处），其余的只算进总数、记在 morePlaces 里
+    const boxes = [
+      { x: -60, y: 64, z: -4, container: 'Chest', count: 27 },
+      { x: -61, y: 64, z: -4, container: 'Chest', count: 3 },
+      { x: 80, y: 70, z: 0, container: 'Iron Chest', count: 5 },
+    ]
+    s.game.handlers['world.stock'] = (p) => {
+      const seen = boxes.filter((b) => Math.max(Math.abs(b.x - Number(p.x)), Math.abs(b.y - Number(p.y)), Math.abs(b.z - Number(p.z))) <= Number(p.radius))
+      return { containersLookedInto: seen.length, items: [{ id: 'minecraft:dirt', total: seen.reduce((n, b) => n + b.count, 0), places: seen.slice(0, 1), ...(seen.length > 1 ? { morePlaces: seen.length - 1 } : {}) }] }
+    }
+    const res = await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], radius: 100 })
+    assert.deepEqual(res.content.split('\n'), [
+      'Looked into 3 container(s) within 100 blocks of you (looked in 8 piece(s) of 129×129×129 blocks covering x -118..139, y 0..211, z -132..125). withdraw_items takes things out (container = the position, items = the exact id/meta).',
+      '- minecraft:dirt (any meta): 35 in total',
+      '  - (-60,64,-4) Chest: 27',
+      '  - (80,70,0) Iron Chest: 5',
+      '  - … and 1 more place(s) holding less',
+    ])
+    assert.equal(s.game.callsOf('world.stock').length, 8)
   })
 
   it('find_in_storage：附近一个容器都没有时提醒先去仓库；每一项只能是物品 id 或矿辞名之一', async (t) => {

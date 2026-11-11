@@ -126,6 +126,15 @@ export function methodsSection(methods: readonly Method[]): string {
     lines.push(`一类零件怎么做（${parts.length} 条，写的是矿辞前缀）：`)
     for (const m of parts) lines.push(`- ${m.prefix}${m.material ? `（只管 ${m.material}）` : ''} ← ${m.way}${m.from ? `，从 ${m.from}` : ''}（${who(m)}${m.why ? `：${m.why}` : ''}）`)
   }
+  const ready = methods.filter((m): m is Extract<Method, { kind: 'ready' }> => m.kind === 'ready')
+  if (ready.length > 0) {
+    const what = (m: Extract<Method, { kind: 'ready' }>): string => (m.match === 'prefix' ? `${m.text}（这一类）` : m.match === 'ore' ? m.text : `${m.name ?? m.text}（${m.meta !== undefined ? `${m.text}/${m.meta}` : m.text}）`)
+    lines.push(`当现成的、不往下做：${ready.map((m) => `${what(m)}（${who(m)}${m.why ? `：${m.why}` : ''}）`).join('；')}`)
+  }
+  for (const m of methods) {
+    if (m.kind !== 'same') continue
+    lines.push(`两种做法用的料一样时（工具不算料）：用 ${m.use}，不用 ${m.over}${m.noTools ? `；只在 ${m.use} 那条不用工具时` : ''}（${who(m)}${m.why ? `：${m.why}` : ''}）`)
+  }
   if (order) lines.push(`没有更具体的记录时，做法的先后：${order.ways.join(' > ')}（${who(order)}${order.why ? `：${order.why}` : ''}）`)
   if (things > 0 || machines > 0) lines.push(`另外记着${[things > 0 ? ` ${things} 样具体的东西各用哪条配方` : '', machines > 0 ? ` ${machines} 台机器各是干什么的` : ''].filter(Boolean).join('、')}：base_methods 看。`)
   return lines.join('\n')

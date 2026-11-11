@@ -9,7 +9,7 @@ import type { StockQuery, StockResult } from '../bridge/protocol.ts'
 import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey, nameOf, tankText } from './format.ts'
 import type { OtherMachineLine } from './format.ts'
 import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
-import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, spread, whereItStands } from './recipe-book.ts'
+import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
 import { guideNote, itemOfBlock } from './guide.ts'
 import { thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
@@ -17,6 +17,7 @@ import { methodNoteForMachine, methodNoteForThing } from './methods.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
+import { BASE_RADIUS, eachPiece, pieces, piecesText, spotOf } from './reach.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At } from './where.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -29,7 +30,8 @@ export const CRAFT_MAX_COUNT = 2304
 export const CRAFT_MAX_ROUNDS = 64
 export const MACHINES_MAX_RADIUS = 64
 /** find_in_storage 看整个基地时，四个查询点各往斜方向错开这么多格。 */
-const WIDE_STOCK_STEP = 48
+/** 看一大片时，文字里每样东西列最多的这么几处（data 里是全的）。 */
+const STOCK_PLACES_SHOWN = 6
 /** 身体不认识的机器是从容器里认出来的，容器一次最多看 32 格。 */
 const OTHER_MACHINES_RADIUS = 32
 export const MACHINES_MAX_LIMIT = 60
@@ -161,7 +163,7 @@ export const findInStorage: Tool = {
         obj({ id: str(), meta: int(undefined, { min: 0 }), ore: str() }),
         { min: 1, max: STOCK_MAX_ITEMS },
       ),
-      radius: int('Search radius in blocks. Without it and without "at": the whole base, about 110 blocks each way.', { min: 1, max: STOCK_MAX_RADIUS }),
+      radius: int(`Search radius in blocks, up to ${BASE_RADIUS}. Without it: 32 around "at"; without both, the whole base (${BASE_RADIUS} each way).`, { min: 1, max: BASE_RADIUS }),
       at: AT,
     },
     ['items'],
@@ -173,27 +175,32 @@ export const findInStorage: Tool = {
       if (it.ore !== undefined) wanted.push({ ore: it.ore })
       else wanted.push(it.meta === undefined ? { id: it.id! } : { id: it.id!, meta: it.meta })
     }
-    // 没说看哪、看多远：看整个基地——身体一次最多看 64 格，往四周错开四个点各查一次再合起来（每个方向一百来格）
-    const me = i.radius === undefined && i.at === undefined ? await whereItStands(ctx) : undefined
-    if (me) {
-      const answers = await Promise.all(spread(me, WIDE_STOCK_STEP).map((c) => ctx.bridge.worldStock(c, { items: wanted, radius: STOCK_MAX_RADIUS })))
+    // 没说看多远：给了 at 看它周围 32 格；也没给 at 是看整个基地（它周围 BASE_RADIUS 格）
+    const radius = i.radius ?? (i.at === undefined ? BASE_RADIUS : 32)
+    // 比身体一次看得了的远：切成每个方向 64 格的几块，各查一次再合起来（块挨着不重叠，同一个容器只会在一块里）
+    if (radius > STOCK_MAX_RADIUS) {
+      const where = await spotOf(ctx, i.at)
+      if (!where) return fail(`${ctx.botName} is not in the game world, so there is no "around you" to look at: give "at".`)
+      const started = Date.now()
+      const cut = pieces(where.spot, radius, STOCK_MAX_RADIUS)
+      const answers = await eachPiece(cut.centers, (center) => ctx.bridge.worldStock(center, { items: wanted, radius: STOCK_MAX_RADIUS }))
       const merged: StockResult = {
-        containersLookedInto: Math.max(0, ...answers.map((a) => a.containersLookedInto ?? 0)),
+        containersLookedInto: answers.reduce((n, a) => n + (a.containersLookedInto ?? 0), 0),
         items: wanted.map((q, n) => {
-          // 四次查询的范围有重叠：同一个容器只算一次
-          const places = new Map<string, NonNullable<NonNullable<StockResult['items']>[number]['places']>[number]>()
           // 同一个方块自己的格子和它各个面上的覆盖板是不同的存放点
+          const places = new Map<string, NonNullable<NonNullable<StockResult['items']>[number]['places']>[number]>()
           for (const a of answers) for (const place of a.items?.[n]?.places ?? []) places.set(`${place.x},${place.y},${place.z},${place.kind === 'cover' ? (place.side ?? '') : ''}`, place)
           const listed = [...places.values()].sort((x, y) => y.count - x.count)
-          const total = Math.max(listed.reduce((sum, place) => sum + place.count, 0), ...answers.map((a) => a.items?.[n]?.total ?? 0))
-          // 身体每样最多列几处：还有没列出来的照实带上
-          const more = Math.max(0, ...answers.map((a) => a.items?.[n]?.morePlaces ?? 0))
-          return { ...q, total, places: listed, ...(more > 0 ? { morePlaces: more } : {}) }
+          const total = answers.reduce((sum, a) => sum + (a.items?.[n]?.total ?? 0), 0)
+          // 每一块最多列几处：没列出来的照实带上
+          const more = answers.reduce((sum, a) => sum + (a.items?.[n]?.morePlaces ?? 0), 0)
+          return { ...q, total: Math.max(total, listed.reduce((sum, p) => sum + p.count, 0)), places: listed, ...(more > 0 ? { morePlaces: more } : {}) }
         }),
       }
-      return { content: formatStock(merged, WIDE_STOCK_STEP + STOCK_MAX_RADIUS, { of: 'you (the whole base, as far as chunks are loaded)', hint: '' }), data: merged }
+      // 文字里每样东西列最多的几处（data 里是全的）
+      const shown: StockResult = { ...merged, items: merged.items!.map((it) => ({ ...it, places: (it.places ?? []).slice(0, STOCK_PLACES_SHOWN), ...((it.places ?? []).length > STOCK_PLACES_SHOWN || it.morePlaces ? { morePlaces: (it.morePlaces ?? 0) + Math.max(0, (it.places ?? []).length - STOCK_PLACES_SHOWN) } : {}) })) }
+      return { content: formatStock(shown, radius, { of: where.of, hint: '', looked: `looked ${piecesText(cut, Date.now() - started)}` }), data: merged }
     }
-    const radius = i.radius ?? 32
     const from = await lookFrom(ctx, i.at)
     const res = await ctx.bridge.worldStock(from.center, { items: wanted, radius })
     // data：给程序用的原样结果（每样东西的 total 和 places）

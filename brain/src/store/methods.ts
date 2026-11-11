@@ -1,8 +1,11 @@
 // “基地的做法”：这个基地怎么做东西的记录——主人教的，和它自己定过的。结构化、落盘（methods.json）、会越记越多，
 // 重启和压缩历史都不丢。total_materials 展开材料时按它走；它本来会看的地方（查做法、看机器）也带上相关的那一条。
 //
-// 四种条目：
+// 六种条目：
 //   part     一类零件怎么做：按矿辞前缀（plate、stick……，可以再限定材料）→ 用哪种做法、从哪种料来（plate ← 卷板机，从 ingot）。
+//   ready    当现成的、不往下做：矿辞前缀（ingot）、矿辞名（ingotSteel）或者一样具体的物品。从零算“整条线要多少资源”时停在锭、粉。
+//   same     有条件的先后：两种做法做同一样东西、用的料一样（工具不算料）时用哪一种；可以加“只在那一种不用工具时”。
+//            （“马达在组装机和工作台上材料一样，组装机还要耗电，手工做就行”）
 //   thing    一样具体的东西用哪条配方。配方册重新导出以后编号会变，所以存的是认得回来的特征（做法 + 原料 + 产物 + 流体），
 //            用的时候对回现在的编号；对不回来的照实说失效了。
 //   order    没有更具体的规矩时，几种做法谁先谁后（只有一条）。
@@ -38,6 +41,29 @@ export interface PartMethod extends Common {
   way: string
   /** 从哪种料来：另一个矿辞前缀（ingot）。不给就是这种做法里列在最前的那条。 */
   from?: string
+}
+
+/** 当现成的、不往下做的东西。 */
+export interface ReadyMethod extends Common {
+  kind: 'ready'
+  /** 怎么认：prefix 矿辞前缀（ingot 管 ingotSteel、ingotCopper……）；ore 一个矿辞名；item 一样物品（meta 不给是任何 meta）。 */
+  match: 'prefix' | 'ore' | 'item'
+  /** 前缀、矿辞名，或者物品的 id。 */
+  text: string
+  meta?: number
+  /** 物品叫什么（写下来那时候的中文名）。 */
+  name?: string
+}
+
+/** 两种做法用的料一样时用哪一种。 */
+export interface SameMethod extends Common {
+  kind: 'same'
+  /** 用这一种（配方页的名字）。 */
+  use: string
+  /** 不用这一种。 */
+  over: string
+  /** 只在 use 那一种的配方不用工具时才算。 */
+  noTools?: true
 }
 
 /** 一条配方的特征：编号变了还认得出它。 */
@@ -91,14 +117,16 @@ export interface MachineMethod extends Common, MethodPos {
   keep?: string
 }
 
-export type Method = PartMethod | ThingMethod | OrderMethod | MachineMethod
+export type Method = PartMethod | ReadyMethod | SameMethod | ThingMethod | OrderMethod | MachineMethod
 
 export const partKey = (prefix: string, material?: string): string => (material ? `part:${prefix}:${material}` : `part:${prefix}`)
 export const thingKey = (thing: string): string => `thing:${thing}`
 export const ORDER_KEY = 'order'
 export const machineKey = (p: MethodPos): string => `machine:${p.x},${p.y},${p.z}`
+export const readyKey = (text: string, meta?: number): string => `ready:${text}${meta !== undefined ? `/${meta}` : ''}`
+export const sameKey = (use: string, over: string): string => `same:${use}>${over}`
 
-const KIND_ORDER: Record<Method['kind'], number> = { part: 0, order: 1, thing: 2, machine: 3 }
+const KIND_ORDER: Record<Method['kind'], number> = { part: 0, ready: 1, same: 2, order: 3, thing: 4, machine: 5 }
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 const pos = (v: unknown): MethodPos | undefined => (isRecord(v) && typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number' ? { x: v.x, y: v.y, z: v.z } : undefined)
@@ -121,6 +149,10 @@ function parse(raw: unknown): Method | undefined {
       recipe: { ref: r.ref as number, way: r.way as string, wayName: str(r.wayName, 200), in: pairs(r.in), out: pairs(r.out), fin: pairs(r.fin), fout: pairs(r.fout), text: str(r.text, 2000) },
     }
   }
+  if (raw.kind === 'ready' && typeof raw.text === 'string' && (raw.match === 'prefix' || raw.match === 'ore' || raw.match === 'item')) {
+    return { ...common, kind: 'ready', match: raw.match, text: raw.text, ...(typeof raw.meta === 'number' ? { meta: raw.meta } : {}), ...(typeof raw.name === 'string' && raw.name ? { name: str(raw.name, 200) } : {}) }
+  }
+  if (raw.kind === 'same' && typeof raw.use === 'string' && typeof raw.over === 'string') return { ...common, kind: 'same', use: raw.use, over: raw.over, ...(raw.noTools === true ? { noTools: true as const } : {}) }
   if (raw.kind === 'order' && Array.isArray(raw.ways)) return { ...common, kind: 'order', key: ORDER_KEY, ways: raw.ways.filter((w): w is string => typeof w === 'string' && w.trim().length > 0) }
   const at = pos(raw)
   if (raw.kind === 'machine' && at && typeof raw.does === 'string') {
@@ -156,7 +188,7 @@ export class MethodStore {
     }
   }
 
-  /** 全部条目：一类零件、总的先后、具体的东西、机器；每种里先记的在前。 */
+  /** 全部条目：一类零件、当现成的、同料时的先后、总的先后、具体的东西、机器；每种里先记的在前。 */
   list(): Method[] {
     return [...this.entries.values()].sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.at - b.at || a.key.localeCompare(b.key))
   }

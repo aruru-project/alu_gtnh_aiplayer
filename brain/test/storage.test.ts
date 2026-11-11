@@ -243,11 +243,11 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
     assert.equal((await s.run('list_stock', { page: 3 })).content, 'There is no page 3: 50 item(s), 2 page(s).')
     assert.match((await s.run('list_stock', { contains: 'nothing-like-this' })).content, /None containing "nothing-like-this"\.$/)
 
-    // 500 个容器：只读最近的 400 个，说明不全
-    s.game.handlers['world.containers'] = paged(Array.from({ length: 500 }, (_, n) => chest(n, [{ ...COAL, count: 1 }])))
+    // 3100 个容器：一次最多读 3000 个，说明不全
+    s.game.handlers['world.containers'] = paged(Array.from({ length: 3100 }, (_, n) => chest(n, [{ ...COAL, count: 1 }])))
     const many = await s.run('list_stock', {})
-    assert.match(many.content, /Only the nearest 400 of 500 containers were read: the totals are not complete\. Use a smaller radius\./)
-    assert.match(many.content, /\n- 400× Coal \[minecraft:coal\]: /)
+    assert.match(many.content, /Only 3000 of 3100 containers were read \(at most 3000 at a time\): the totals are not complete\. Use a smaller radius, or "at" where the storage is\./)
+    assert.match(many.content, /\n- 3000× Coal \[minecraft:coal\]: /)
   })
 })
 
@@ -324,7 +324,8 @@ describe('中文名：只有英文名、或者只有 id 的地方', () => {
     s.game.handlers['world.containers'] = paged([chest(1, [], { attached: [{ x: 1, y: 65, z: 0, name: 'Brass Item Pipe', kind: 'item pipe' }, { x: 2, y: 64, z: 0, name: 'Hopper', kind: 'hopper' }] })])
     assert.equal((await s.run('list_containers')).content.split('\n')[1], '- (1,64,0) 箱子 [minecraft:chest] 0/27 slots used (AUTOMATED: 黄铜物品管道 at (1,65,0), Hopper at (2,64,0) feeds or drains it): empty')
 
-    s.game.handlers['world.stock'] = () => ({
+    // 像身体那样只看得到中心周围 radius 格以内的（不给范围是整个基地，切成几块各问一次：只有一块看得到这两处）
+    s.game.handlers['world.stock'] = (p) => Math.max(Math.abs(5 - Number(p.x)), Math.abs(64 - Number(p.y)), Math.abs(5 - Number(p.z))) > Number(p.radius) ? { containersLookedInto: 0, items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, total: 0, places: [] }] } : ({
       containersLookedInto: 3,
       items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, total: 9, places: [{ x: 5, y: 64, z: 5, container: 'Compressed Chest', count: 8 }, { x: 6, y: 64, z: 5, container: 'Advanced Extruder', count: 1 }] }],
     })
