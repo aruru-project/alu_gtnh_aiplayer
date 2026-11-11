@@ -215,14 +215,14 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 ```jsonc
 {
   "format": 1,
-  "generatedAt": "2026-11-11T16:17:48+08:00",
+  "generatedAt": "2026-11-11T16:33:55+08:00",
   "cell": 32, "columns": 64, "rows": 64,        // 一格的边长；每张图几列几行
-  "count": 63676,                               // 图标的个数 = items.jsonl 的行数
-  "itemsSha1": "b97b89db…",                     // 这些图标是照哪一份 items.jsonl 画的，见下
+  "count": 63678,                               // 图标的个数 = items.jsonl 的行数
+  "itemsSha1": "87dc659f…",                     // 这些图标是照哪一份 items.jsonl 画的，见下
   "files": ["icons-000.png", "icons-001.png", …],
   "missing": [726, 727, 941, …],                // 画出来是空的那些行号，升序；它们的格子全透明
   "failed": 1,                                  // missing 里有几个是画的时候出错的
-  "errors": [[56894, "java.lang.NullPointerException: …"]],   // 出错的行号和原因，最多 200 条；没有出错的就没有这一项
+  "errors": [[57528, "java.lang.NullPointerException: …"]],   // 出错的行号和原因，最多 200 条；没有出错的就没有这一项
   "cutShort": 61440,                            // 只在超时没画完时才有：从这一行起都没画（它们也在 missing 里）
   "seconds": 11.2                               // 画这些图标用了多久
 }
@@ -238,7 +238,7 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 - 张内第 `i = n % 4096` 格，左上角的像素是 `x = (i % 64) × 32`，`y = ⌊i / 64⌋ × 32`。
 
 例：`minecraft:chest/0` 在第 93 行 → `icons-000.png` 的 (928, 32)；`gregtech:gt.metaitem.01/11305`（钢锭）在第 32241 行 → `icons-007.png`（32241 = 7×4096 + 3569）的 (1568, 1760)。
-行号只对这一份 `items.jsonl` 有效，重新导出以后会变。
+行号只对这一份 `items.jsonl` 有效：每次整套导出，物品表的行数和顺序都会差一点（配方里随机举例的那些物品不一样），图标是跟着同一次导出一起画的。
 
 手里的东西按 `id` + `meta` 找不到行的时候：
 
@@ -253,22 +253,22 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 ### 画的是什么
 
 - 画的是物品栏里一格的样子，走的是游戏画物品栏时的同一个调用，所以各个 mod 自己的画法（GregTech 的机器和按材料染色的零件、箱子、匠魂工具、带光晕的物品）都在。
-  不画数量、耐久条、电量条；附魔的闪光不画。会动的贴图是导出那一刻的那一帧。
+  不画数量、耐久条、电量条；附魔的闪光不画。会动的东西（流体、闪烁的矿石、GregTech 里会抖会转的高阶零件）是导出那一刻的那一帧，所以两次导出有两千来个图标不完全一样。
 - 一行只有一个图标，可同一个 `id` + `meta` 下的东西不一定只有一种样子。画的是 NEI 物品列表里这个 `id` + `meta` 的第一种（它的名字就是 `items.jsonl` 里的 `name`）；
   NEI 不列出的（只在配方里出现过的）画的是不带附加数据（NBT）的那一种。所以：
-  - 带 `variants` 的行（这个整合包里 340 行：神秘时代 178、原版 43——药水和附魔书、匠魂 26、其余零散）图标只是其中一种。
+  - 带 `variants` 的行（这个整合包里 340 行：神秘时代 178，几乎都是法杖；原版 43，是配方里带着附魔或名字出现过的工具和护甲、玩家头颅之类；匠魂 26；其余零散）图标只是其中一种。
     匠魂的镐画的是“精金镐”（白的），背包里那把是别的材质时颜色就对不上；
-  - GregTech 的“流体显示”（配方里代表流体的那个物品）画的是流体本身，没有数量。
+  - 配方里代表流体的那个物品（`NotEnoughItems:neiFluidDisplay`，1475 行）画的是流体的贴图铺满一格，没有数量。
 - 界面里超出一格的东西（Avaritia 那类物品的光晕）在格子边上被裁掉，不会画到旁边的格子里。
 
 ### 哪些没有图标
 
-这个整合包 63,676 行里有 21 行是空的（`missing`）：
+这个整合包六万三千多行里有 21 行是空的（`missing`）：
 
 | 原因 | 行数 | 例子 |
 |---|---|---|
-| 本来就看不见的方块：空气一类、光源、传送门 | 12 | `Botania:fakeAir`、`Thaumcraft:blockHole`、`ThaumicHorizons:light`、`AWWayofTime:bloodLight`、`WitchingGadgets:WG_CustomAir` |
-| 样子全靠 NBT，不带就什么也画不出来 | 7 | `StevesCarts:ModularCart`、`ArchitectureCraft:cladding`、`littletiles:BlockLittleTiles`、`malisisdoors:item.custom_door`、`EnderIO:blockConduitFacade` |
+| 本来就看不见的方块（空气一类、光源、传送门），和只是“某样东西放下去以后”的占位方块 | 12 | `Botania:fakeAir`、`Thaumcraft:blockHole`、`ThaumicHorizons:light`、`AWWayofTime:bloodLight`、`WitchingGadgets:WG_CustomAir`、`TConstruct:HeldItemBlock` |
+| 样子全靠 NBT 或当时的状态，不带就什么也画不出来 | 7 | `StevesCarts:ModularCart`、`ArchitectureCraft:cladding`、`littletiles:BlockLittleTiles`、`malisisdoors:item.custom_door`、`EnderIO:blockConduitFacade`、`WR-CBE\|Addons:triangulator` |
 | 图标就是空的 | 1 | `dreamcraft:Nothing`（“你什么都没得到”） |
 | 画的时候 mod 自己出错 | 1 | `Genetics:serumArray/16`（空的血清阵列，Binnie 的代码里空指针） |
 
