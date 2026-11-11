@@ -296,8 +296,10 @@ export function buildTimeline(entries) {
         id: entry.id,
         time: entry.time,
         agent: entry.agent,
-        // tell 交事或带话 | report 中途汇报 | question 提问、在等回答 | result 一轮结束留下的话 | trouble 出了状况 | stop 叫停
+        // tell 交事或带话 | report 中途汇报 | question 提问、在等回答 | result 停下来了、留下的话 | progress 还在干（等任务或例程）、留的话 | trouble 出了状况 | stop 叫停
         kind: relay.type ?? 'tell',
+        // progress：它还在等什么（“在等它开的任务结束：t5（withdraw）”）
+        waiting: typeof relay.waiting === 'string' ? relay.waiting : undefined,
         from: relay.from ?? entry.agent ?? 'talk',
         to: relay.to ?? (entry.agent === 'work' ? 'talk' : 'work'),
         quotes: relay.quotes ?? 0,
@@ -560,7 +562,7 @@ export function buildTimeline(entries) {
           turn.cacheReadTokens += call.cacheReadTokens ?? 0
         }
         if (typeof call.ms === 'number') turn.modelMs += call.ms
-        // 被叫停打断的那一步（errorKind 是 aborted）不是模型出了错，不算进“几处出错”
+        // 不算进“几处出错”的：被叫停的那一步（halted，旧日志里是 failed + aborted），大脑进程要停时中止的那一次（failed + aborted）
         if (call.state === 'failed' && call.errorKind !== 'aborted') turn.errors++
       }
     }
@@ -618,7 +620,7 @@ export function toolHistogram(calls) {
 }
 
 /** 两条线之间一次往来的叫法。 */
-export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', trouble: '干活线出了状况', stop: '叫停' }
+export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', progress: '干活线留话', trouble: '干活线出了状况', stop: '叫停' }
 
 /**
  * “现在”页的“最近几步”：时间线最后的若干样东西，摊平成一行一件事（新的在后）。

@@ -84,6 +84,8 @@ bridge.players = [
   { name: 'Steve', uuid: 'uuid-steve', dim: 0, pos: { x: -560.5, y: 71, z: 90.5 } },
   { name: 'Exporter', uuid: 'uuid-exp', dim: -1, pos: { x: 0.5, y: 64, z: 0.5 } },
 ]
+/** 走开了的真人（POST /__dev/bot { players: false }）。 */
+let awayPlayers: typeof bridge.players = []
 /** 它身上开着的界面（null 是没开）。 */
 let openScreen: Json | null = null
 
@@ -862,11 +864,18 @@ const proxy = http.createServer((req, res) => {
       return json(res, 200, { scene })
     }
     if (url.pathname === '/__dev/bot' && req.method === 'POST') {
-      // 改身体：{ health?, food?, online? }
+      // 改身体：{ health?, food?, screen?, players? }。players: false 是服务器上的真人都走了（看“自动上下线”），true 是回来
       const body = await readBody(req)
       if (typeof body.health === 'number') bot.health = body.health
       if (typeof body.food === 'number') bot.food = body.food
       if (typeof body.screen === 'boolean') setScreen(body.screen)
+      if (body.players === false) {
+        awayPlayers = awayPlayers.length > 0 ? awayPlayers : [...bridge.players]
+        for (const p of awayPlayers) bridge.playerLeave(p.name)
+      } else if (body.players === true) {
+        for (const p of awayPlayers) bridge.playerJoin(p.name)
+        awayPlayers = []
+      }
       return json(res, 200, { ok: true })
     }
     if (SHAPE !== 'real' && url.pathname.startsWith('/api/') && ['/api/status', '/api/log', '/api/events', '/api/runs', '/api/runs/records', '/api/command', '/api/routine/stop', '/api/tasks/cancel', '/api/work/stop'].includes(url.pathname)) {
@@ -908,6 +917,42 @@ async function seedBrain(): Promise<void> {
   }
 }
 
+/**
+ * “基地的做法”：几条主人教的、几条它自己定的，四种都有；一条“具体的东西”故意弄成配方册里对不回来的（看失效的样子）。
+ * 直接写数据目录里的 methods.json（大脑起来时读），这样能定谁定的、什么时候。
+ */
+async function seedMethods(packdata: ReturnType<typeof import('../src/packdata/index.ts')['loadPackData']>): Promise<void> {
+  if (fs.existsSync(path.join(DATA_DIR, 'methods.json')) || !packdata.recipes) return
+  const { buildMethod } = await import('../src/tools/methods.ts')
+  const { MethodStore } = await import('../src/store/methods.ts')
+  {
+    const store = new MethodStore(DATA_DIR)
+    const env = { book: packdata.recipes, items: packdata.items, fluids: packdata.fluids }
+    const day = 24 * 3600 * 1000
+    const now = Date.now()
+    const plans: [Record<string, unknown>, number][] = [
+      [{ part: 'plate', way: '卷板机', from: 'ingot', by: 'owner', why: '卷板机一锭一板，比锤子省一半' }, 6],
+      [{ part: 'stick', material: 'Steel', way: '车床', from: 'ingot', by: 'self', why: '车床还多出小堆粉；压模机的模头还没做' }, 4],
+      [{ part: 'screw', way: '车床', from: 'bolt', by: 'owner', why: '' }, 3],
+      [{ order: ['卷板机', '车床', '压模机', '有序合成'], by: 'owner', why: '能用机器就别手搓' }, 5],
+      [{ id: 'gregtech:gt.metaitem.01', meta: 23305, recipe: 198685, by: 'self', why: '车床一锭一杆' }, 2],
+      [{ id: 'gregtech:gt.metaitem.01', meta: 17305, recipe: 206332, by: 'owner', why: '钢块切成板，九块一次' }, 1],
+      [{ machine: { x: -510, y: 70, z: 84 }, does: '只做钢板：别拿去做别的', feed: { x: -510, y: 71, z: 84 }, collect: { x: -509, y: 70, z: 84 }, keep: '别拆它侧面的输出覆盖板', by: 'owner', why: '主人专门搭的' }, 0.5],
+    ]
+    for (const [input, daysAgo] of plans) {
+      const built = buildMethod(input as never, { ...env, now: now - daysAgo * day, ...(input.machine ? { machineName: '基础卷板机' } : {}) })
+      if ('error' in built) {
+        console.log(`[dev] 一条基地的做法没放进去：${built.error}`)
+        continue
+      }
+      // 钢板那一条：改成配方册里对不回来的样子（像配方册重新导出以后那样）
+      if (built.entry.kind === 'thing' && built.entry.thing === 'ore:plateSteel') built.entry.recipe = { ...built.entry.recipe, ref: 999_999, in: built.entry.recipe.in.map(([k, n]) => [k, n + 1] as [string, number]) }
+      store.set(built.entry)
+    }
+    console.log(`[dev] 放了 ${store.list().length} 条基地的做法。`)
+  }
+}
+
 /** 样本里那张简图的编号（没做成是空的）。 */
 let samplePicture = ''
 
@@ -917,7 +962,9 @@ async function seedData(): Promise<void> {
   const { loadPackData } = await import('../src/packdata/index.ts')
   const { MemoryStore } = await import('../src/store/memory.ts')
   const { FeedbackStore } = await import('../src/store/feedback.ts')
-  const design = new DesignWorkspace({ dataDir: DATA_DIR, packdata: loadPackData(PACKDATA, () => {}) })
+  const packdata = loadPackData(PACKDATA, () => {})
+  const design = new DesignWorkspace({ dataDir: DATA_DIR, packdata })
+  await seedMethods(packdata)
   if (design.drafts.list().length === 0) {
     const hut = `const b = blueprint(9, 7, 7)
 b.fill(0, 0, 0, 8, 0, 6, 'minecraft:cobblestone')

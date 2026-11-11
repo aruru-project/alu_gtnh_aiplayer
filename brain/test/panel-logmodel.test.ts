@@ -147,14 +147,16 @@ describe('对话页的时间线：新形状的日志', () => {
     assert.deepEqual([t.calls, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.modelMs, t.legacy], [2, 2200, 40, 1900, 10000, false])
   })
 
-  it('一轮“几处出错”：模型接口真的失败算一处；想到一半被叫停打断的那一步（aborted）不算', () => {
+  it('一轮“几处出错”：模型接口真的失败算一处；想到一半被叫停的（halted）、大脑进程要停时中止的（failed + aborted）都不算', () => {
     const { turns } = model.buildTimeline([
+      e('turn', '第 6 轮开始', { turn: 6 }),
+      e('model_call', '第 2 步：想到一半被叫停了（4.3 秒）', { turn: 6, step: 2, call: { state: 'halted', step: 2, stop: 'halted', ms: 4300 } }),
       e('turn', '第 7 轮开始', { turn: 7 }),
-      e('model_call', '第 1 步：模型调用失败（aborted，4.3 秒）：…', { turn: 7, step: 1, isError: true, call: { state: 'failed', step: 1, stop: 'error', errorKind: 'aborted', error: '这次调用被中止了', ms: 4300 } }),
+      e('model_call', '第 1 步：模型调用失败（aborted，4.3 秒）：…', { turn: 7, step: 1, isError: true, call: { state: 'failed', step: 1, stop: 'error', errorKind: 'aborted', error: '大脑在停，这次调用被中止了', ms: 4300 } }),
       e('turn', '第 8 轮开始', { turn: 8 }),
       e('model_call', '第 1 步：模型调用失败（http，1 秒）：502', { turn: 8, step: 1, isError: true, call: { state: 'failed', step: 1, stop: 'error', errorKind: 'http', error: '502', ms: 1000 } }),
     ])
-    assert.deepEqual([turns.get(7)!.errors, turns.get(8)!.errors], [0, 1])
+    assert.deepEqual([turns.get(6)!.errors, turns.get(7)!.errors, turns.get(8)!.errors], [0, 0, 1])
   })
 
   it('“正在想”的那一条回来以后是同一个 id 的新样子：换掉原来那条，这一步从在想变成有结果', () => {
@@ -212,6 +214,13 @@ describe('对话页的时间线：新形状的日志', () => {
     const [tell, question] = items.filter((i) => i.type === 'relay')
     assert.deepEqual([tell!.kind, tell!.to, tell!.text, tell!.quotes, tell!.detail, tell!.background], ['tell', 'work', '把他指着的那个箱子拆了', 1, '全文', false])
     assert.deepEqual([question!.kind, question!.to, question!.text], ['question', 'talk', '箱子里还有东西，先搬到哪？'])
+  })
+
+  it('干活线还在等自己开的任务时留的话（progress）：是一条往来，带着它在等什么', () => {
+    const { items } = model.buildTimeline([
+      e('relay', '干活线 → 对话线（只作背景，没有叫醒它）：先取了一组钢锭，还在取', { agent: 'work', turn: 9, relay: { type: 'progress', from: 'work', to: 'talk', waiting: '在等它开的任务结束：t5（withdraw）' } }),
+    ])
+    assert.deepEqual(items.map((i) => [i.type, i.kind, i.to, i.text, i.waiting]), [['relay', 'progress', 'talk', '先取了一组钢锭，还在取', '在等它开的任务结束：t5（withdraw）']])
   })
 
   it('两条线空转时的那一条往来（正文开头写着“只作背景，没有叫醒它”）：照样是一条往来，标出它没叫醒对方；面板叫停的没有 agent', () => {
