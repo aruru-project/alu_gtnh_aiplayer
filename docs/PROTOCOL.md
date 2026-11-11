@@ -60,7 +60,7 @@
 |---|---|---|
 | `server.info` | – | `{tick, tps, tickMs, worldTime, dayTime, isDay, raining, difficulty, players:[{name,uuid,dim,pos,isBot}], bots:[name]}` |
 | `world.player` | `{name}` | 一个在线玩家（真人或 bot）站在哪、朝哪看、指着什么：`{name, isBot}` 加上下面的 PlayerView。不在线返回 `not_found` |
-| `world.block` | `{dim?,x,y,z}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory,covers?,tanks?}`；区块没加载时只有 `{loaded:false}`。`covers`、`tanks` 见下面“覆盖板和流体罐” |
+| `world.block` | `{dim?,x,y,z, detail?=false, path?}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory,covers?,tanks?}`；区块没加载时只有 `{loaded:false}`。`covers`、`tanks` 见下面“覆盖板和流体罐”。**`detail:true` 把这个方块自己知道的全部给出来**，见下面“一个方块的全部数据” |
 | `world.blocks` | `{dim?,x1,y1,z1,x2,y2,z2}`，每边最多 64 格 | 一个范围里的全部方块，画图用，见下 |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
@@ -89,6 +89,22 @@ Container：
 - 抽屉（Storage Drawers）的 `count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数。
 - 抽屉管理器自己不装东西：`items` 为空，`drawers` 是它管着几个抽屉方块，`slots`/`usedSlots` 是这些抽屉合计的格数。它管的东西用 `world.drawers` 看。
 - 带 `attached` 的箱子多半是自动化的一环（进货口、出货口），往里放的东西可能马上被抽走。
+
+**一个方块的全部数据**（`world.block` 带 `detail:true` 或 `path`）。不按方块的种类做任何假设：凡是存着东西的方块（里面有什么、怎么设置的、正在干什么），存档时都把自己的全部状态写成一棵树，这里把那棵树原样给出来；会对扫描器“自报家门”的方块再把那几行话给出来。所以没见过的机器、没人为它写过读取代码的状态（输出仓锁定了哪种流体、机器的各种开关、覆盖板的设置……）都在这里。
+
+```jsonc
+{ …world.block 原有的字段…,
+  "class":"gregtech.api.metatileentity.BaseMetaTileEntity",
+  "says":[ "Output Hatch", "Stored Fluid: No Fluid", "0 L 16,000 L", "Locked to fluid.gas_gas" ],   // 它对扫描器说的话（GregTech 的机器有；别的没有就不带）
+  "saved":{ "lockedFluidName":"gas_gas", "mMode":9, "mFacing":5, "Inventory":[], … },           // 它存档里的全部数据
+  "savedCut":true            // saved 里有被省略的部分（太深、列表太长、总量太大），省略处写着怎么要
+}
+```
+
+- `saved` 的键是方块自己起的内部名字（`mMode`、`lockedFluidName`、`gt.covers`……），值是原样的。物品在存档里是一个只在本服有意义的数字编号，这里换成了看得懂的 `{item, meta, count, name, …其余原样}`。
+- 默认给到 6 层深、每个列表 40 项、一共约 4 万字符；超出的地方写着“ask for this path”。`path` 指定只看其中一部分并放宽限制（12 层、200 项、6 万字符），写法如 `gt.covers`、`Inventory[3].tag`（键名里本身带点的照写；列表用 `[n]`）。路径不存在时带 `pathNotFound:true` 并给出顶层。
+- 没有自己数据的方块（普通方块）只有原有字段，外加一句说明。
+- 这是读，不是动；怎么操作它仍然是界面和右键那一套。
 
 **覆盖板和流体罐**（`world.block`、`world.containers` 的每个容器、`world.machines` 的每台机器都带，没有就不带这个字段）：
 

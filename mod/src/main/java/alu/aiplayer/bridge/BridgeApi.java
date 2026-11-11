@@ -47,7 +47,9 @@ public final class BridgeApi {
 
         bridge.register("world.block", p -> {
             WorldServer w = world(p);
-            return WorldQueries.block(w, J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z"));
+            int x = J.reqCoord(p, "x"), y = J.reqHeight(p, "y"), z = J.reqCoord(p, "z");
+            if (J.bool(p, "detail", false) || J.has(p, "path")) return WorldQueries.blockDetail(w, x, y, z, J.str(p, "path", null));
+            return WorldQueries.block(w, x, y, z);
         });
         bridge.register(
             "world.scan",

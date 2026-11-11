@@ -74,6 +74,44 @@ public final class WorldQueries {
         return o;
     }
 
+    /**
+     * Everything a block knows about itself, with nothing assumed about its kind: what it tells a scanner, if it
+     * is one that does, and its own saved data. {@code path} picks a part of the saved data to see in full.
+     */
+    public static JsonObject blockDetail(World w, int x, int y, int z, String path) {
+        JsonObject o = block(w, x, y, z);
+        TileEntity te = y < 0 || y > 255 || !w.blockExists(x, y, z) ? null : w.getTileEntity(x, y, z);
+        if (te == null) {
+            o.addProperty("detail", "this block keeps no data of its own: its id and meta are all there is");
+            return o;
+        }
+        o.addProperty("class", te.getClass().getName());
+        JsonArray says = Machines.says(te);
+        if (says.size() > 0) o.add("says", says);
+        try {
+            net.minecraft.nbt.NBTTagCompound tag = new net.minecraft.nbt.NBTTagCompound();
+            te.writeToNBT(tag);
+            net.minecraft.nbt.NBTBase part = alu.aiplayer.util.Nbt.at(tag, path);
+            alu.aiplayer.util.Nbt.Limits limits = new alu.aiplayer.util.Nbt.Limits();
+            if (path != null && !path.trim().isEmpty()) {
+                o.addProperty("path", path.trim());
+                limits.depth = 12;
+                limits.list = 200;
+                limits.chars = 60_000;
+                if (part == null) {
+                    o.addProperty("pathNotFound", true);
+                    part = tag;
+                    limits.depth = 2;
+                }
+            }
+            o.add("saved", alu.aiplayer.util.Nbt.json(part, limits));
+            if (limits.cut) o.addProperty("savedCut", true);
+        } catch (Throwable t) {
+            o.addProperty("savedError", String.valueOf(t));
+        }
+        return o;
+    }
+
     public static String blockName(Block b, int meta) {
         try {
             Item item = Item.getItemFromBlock(b);

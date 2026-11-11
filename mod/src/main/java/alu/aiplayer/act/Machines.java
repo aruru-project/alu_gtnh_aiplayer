@@ -152,6 +152,44 @@ public final class Machines {
         return out;
     }
 
+    /**
+     * What a block says about itself to a scanner: the lines a player reads off a portable scanner held to it.
+     * Machines that give such information write them themselves, so nothing is known here about any kind.
+     */
+    public static com.google.gson.JsonArray says(TileEntity te) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        if (te == null) return out;
+        try {
+            Class<?> info = Class.forName("gregtech.api.interfaces.tileentity.IGregTechDeviceInformation");
+            if (!info.isInstance(te)) return out;
+            if (!(Boolean) info.getMethod("isGivingInformation")
+                .invoke(te)) return out;
+            String[] lines = (String[]) info.getMethod("getInfoData")
+                .invoke(te);
+            if (lines == null) return out;
+            Method toComponent = null;
+            try {
+                toComponent = info.getMethod("toComponent", String.class);
+            } catch (Throwable ignored) {}
+            for (String line : lines) {
+                if (line == null) continue;
+                String text = line;
+                // Lines may carry a translation key in place of text; the game turns it into words.
+                if (toComponent != null) {
+                    try {
+                        Object c = toComponent.invoke(null, line);
+                        if (c instanceof net.minecraft.util.IChatComponent) text = ((net.minecraft.util.IChatComponent) c).getUnformattedText();
+                    } catch (Throwable ignored) {}
+                }
+                // (The game's own stripping of colour codes exists on the client only.)
+                String plain = text.replaceAll("\u00a7.", "")
+                    .trim();
+                if (!plain.isEmpty() && out.size() < 60) out.add(new com.google.gson.JsonPrimitive(plain));
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
     /** What a block's tanks hold, for anything that handles fluids: [{fluid, name, amount, capacity}]. */
     public static com.google.gson.JsonArray tanks(TileEntity te) {
         com.google.gson.JsonArray out = new com.google.gson.JsonArray();
