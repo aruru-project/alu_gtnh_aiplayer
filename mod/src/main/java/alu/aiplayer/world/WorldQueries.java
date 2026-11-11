@@ -368,6 +368,17 @@ public final class WorldQueries {
                     o.addProperty("count", slot.count);
                     o.addProperty("room", slot.room);
                 }
+                // Where a player clicks for this slot: the face the fronts are on, and a point of it.
+                int front = Drawers.front(d);
+                float[] hit = front < 0 ? null : Drawers.hit(d, slot.index);
+                if (hit != null) {
+                    o.addProperty("front", SIDE_NAMES[front]);
+                    JsonObject h = new JsonObject();
+                    h.addProperty("x", hit[0]);
+                    h.addProperty("y", hit[1]);
+                    h.addProperty("z", hit[2]);
+                    o.add("hit", h);
+                }
                 slots.add(o);
             }
         }
@@ -454,6 +465,8 @@ public final class WorldQueries {
         o.addProperty("unloaded", unloaded);
         return o;
     }
+
+    private static final String[] SIDE_NAMES = { "down", "up", "north", "south", "west", "east" };
 
     public static JsonObject containers(World w, int cx, int cy, int cz, int radius, int offset, int limit,
         int kinds) {

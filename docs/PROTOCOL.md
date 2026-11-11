@@ -97,7 +97,8 @@ Container：
   "drawers":120,                            // 抽屉方块数
   "slotsTotal":353, "slotsUsed":166,        // 全部格数、有货的格数（不受 below 和翻页影响）
   "slots":[
-    {"x":-515,"y":70,"z":86,"slot":0,"id":"gregtech:gt.metaitem.01","meta":11054,"name":"Silver Ingot","count":4,"room":2044},
+    {"x":-515,"y":70,"z":86,"slot":0,"id":"gregtech:gt.metaitem.01","meta":11054,"name":"Silver Ingot","count":4,"room":2044,
+     "front":"south","hit":{"x":0.25,"y":0.75,"z":1.0}},   // 玩家点这一格时点的面和位置，可以原样交给 use 任务的 side / hit
     {"x":-516,"y":69,"z":91,"slot":0,"empty":true}        // 没指定物品的空格
   ],
   "total":54, "offset":0                    // 符合条件的格数；slots 是其中从 offset 起的一页
@@ -164,7 +165,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `bot.remove` | `{bot}` | `{}`。忘掉一个离线的 bot（玩家存档不删，以后同名的 bot 会接着用） |
 | `bot.status` | `{bot}` | `BotStatus` |
 | `bot.configure` | `{bot, settings:{invulnerable?,hunger?}}` | `{settings}` |
-| `bot.chat` | `{bot, message}` | `{}`。以该玩家身份在公共聊天说话，超过 100 字自动分行，约每秒一行；一次最多 1000 字，排队最多 20 行，超出的丢弃。每一行开头的 `/` 和空白都会被去掉，聊天内容不会被当成指令 |
+| `bot.chat` | `{bot, message}` | `{lines, droppedLines?, cutChars?}`：排进去了几行；队列满了没排进去的行数；超过 1000 字被截掉的字数。以该玩家身份在公共聊天说话，超过 100 字自动分行（尽量在标点或空格后面断开，不把一句话从中间切开），约每秒一行；一次最多 1000 字，排队最多 20 行，超出的丢弃。每一行开头的 `/` 和空白都会被去掉，聊天内容不会被当成指令 |
 | `bot.command` | `{bot, command}` | `{output:[string]}`。以该玩家身份执行指令（不带 `/`，连斜杠最多 100 字符，超出返回 `bad_request`）。`output` 是执行当下服务器回给它的消息；之后才到的走 `bot.message` 事件。指令必须以 mod 配置 `allowedCommands` 里某一项的全部单词开头，否则 `denied`。短时间内说话和指令加起来超过大约 8 条也返回 `denied`（再多会被服务器当刷屏踢掉），等几秒再试 |
 | `bot.look` | `{bot, x,y,z}` | `{}` |
 | `bot.drop` | `{bot, items:[ItemFilter]\|all:true}` | `{dropped:n}`，丢在面前 |
@@ -333,6 +334,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 |---|---|---|
 | `blueprint.list` | – | `{blueprints:[{name, size:{x,y,z}, blocks} \| {name, error}], folder}` |
 | `blueprint.check` | `{name, x,y,z, bot?\|dim?, layers?=true}` + 下面的范围和方块选项 | 把世界和图纸逐格对比，见下。只读，不动任何东西 |
+| `blueprint.read` | `{name, from?:{x,y,z}, to?:{x,y,z}, cells?=true}` | 图纸本身的内容，和世界无关。`{name, size:{x,y,z}, blocks, materials:[{id, meta, name, count, item?, byHand?}], x,y,z, sx,sy,sz, palette:[…], runs:[…]}`。`materials` 永远是整张图纸的材料，多的在前：`id`/`meta` 是方块；放它用的物品和方块不同名时带 `item:{id,meta}`；身体不放、留给人的带 `byHand`（原因）。`palette` + `runs` 和 `world.blocks` 同一种写法（下标 = (y*sz + z)*sx + x，`palette[0]` 是空），是 `from`..`to` 这个盒子里的格子；两个角都是**图纸内部**的位置，从最低角的 0 数起，两头都含，不给就是整张。一次最多 262144 格，超了 `too_large`，分块读。`cells:false` 只要材料、不要格子 |
 | `blueprint.put` | `{name, data}`，`data` 是文件内容的 base64，最大 2 MiB | `{name, size, blocks}`。同名覆盖；不是能用的图纸时 `bad_request` 并说明原因 |
 | `blueprint.remove` | `{name}` | `{removed:bool}` |
 
@@ -431,7 +433,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
-| `use` | `{item:{id,meta?}, on?:{x,y,z}, sneak?=false}` | 把身上的一件东西拿到手里右键用一下：不给 `on` 是对着空中用（吃、喝、穿戴、打开它自己的界面），给了是对着那个方块用（会先走过去）。见下 |
+| `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -449,7 +451,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 - **`flatten` 的填充材料**按 `fillItems`（默认是配置的 `fillerBlocks`）的顺序，用背包里有的第一种；挖出来的泥土、圆石会被捡回来用上。坑比 `maxFillDepth` 深的列不填，记入 skipped。
 - **箱子**：空手右键打开箱子界面，用 shift 点击转移。点击被领地保护之类拒绝时以 `denied` 失败。
   点击没被拒绝却没有界面的储物方块（桶）按漏斗的方式存取。
-- **抽屉**（Storage Drawers）按玩家的方式用：站到正面，左键拍出一组或一个，右键把手里的东西放进去；数量精确。
+- **抽屉**（Storage Drawers）按玩家的方式用：站到正面，左键拍出一组或一个，右键把手里的东西放进去；数量精确。身上某一种东西要全部放进去、又不止一组时，放完第一组马上再点一下（双击），剩下的同类一次全进去；只放一部分时仍是一组一组放。
   `deposit`/`withdraw`/`haul`/`supply`/`dropoff` 的箱子位置都可以是抽屉。封箱的抽屉、被保护的抽屉以 `denied` 失败。
   往抽屉里放：已经装着同一种的那格优先，其次是还没指定物品的空格；都没有就算放不下。
 - **`blueprint`**：
@@ -474,6 +476,9 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
   - 吃喝这类要举着一会儿的，会等到用完（最多 8 秒）。
   - 右键打开了界面的（背包）会被马上关掉并带 `openedScreen:true`；要往里放、往外拿，用上一条说的 `deposit` / `withdraw`。
   - `sneak:true` 是蹲着右键，有些东西蹲着用是另一个意思（比如穿到身上而不是打开）。
+  - **点哪里**（只在给了 `on` 时有意义）：`side` 是 `down`/`up`/`north`/`south`/`west`/`east` 之一，指方块的哪个面；给了水平的面，它会先走到那个面的正前方（走不到就 `out_of_reach`）。不给 `side` 时点朝着它的那个面。`hit` 是点在方块里的哪一点，三个数各 0–1、从方块最低的角算起，和游戏自己发的一样；不给是那个面的正中间。只认正面、按点的位置分格子的方块（抽屉的每一格、面板上的按钮）靠这两个参数。
+  - **连点**：`times` 是右键几下，`every` 是两下之间隔几 tick——就是玩家按住右键。手里的东西中途用光了，后面几下照样点（手里是空的）。中途打开了界面就不再点。例：手里拿着一组东西对抽屉正面 `times:2`，第二下是“双击”，身上所有同类的都放进去。
+  - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。
 - **`process`**：
   - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。

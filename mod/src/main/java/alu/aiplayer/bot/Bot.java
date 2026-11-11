@@ -159,17 +159,46 @@ public final class Bot implements BotConnection.Listener {
 
     // ---- chat -----------------------------------------------------------------------------------------------
 
-    /** Queues text for public chat, split into lines a client could send. */
-    public void say(String message) {
-        if (message.length() > MAX_SAY_CHARS) message = message.substring(0, MAX_SAY_CHARS);
+    private static final int CHAT_LINE = 100;
+    private static final String BREAK_AFTER = "\u3002\uff01\uff1f\uff1b\uff0c\u3001\uff1a\uff09,.!?;:) ";
+
+    /**
+     * Queues text for public chat, split into lines a client could send. A long text is broken after punctuation
+     * or a space where there is one in the last part of a line, so that no line stops in the middle of a word.
+     * Returns {lines queued, lines dropped because the queue was full, characters cut off the end}.
+     */
+    public int[] say(String message) {
+        int cut = Math.max(0, message.length() - MAX_SAY_CHARS);
+        if (cut > 0) message = message.substring(0, MAX_SAY_CHARS);
+        int queued = 0, dropped = 0;
         for (String part : message.split("\\r?\\n")) {
             String rest = part.trim();
-            while (rest.length() > 100 && chatOut.size() < MAX_QUEUED_LINES) {
-                chatOut.add(rest.substring(0, 100));
-                rest = rest.substring(100);
+            while (!rest.isEmpty()) {
+                int end = rest.length();
+                if (end > CHAT_LINE) {
+                    end = CHAT_LINE;
+                    for (int i = CHAT_LINE; i > CHAT_LINE * 6 / 10; i--) {
+                        if (BREAK_AFTER.indexOf(rest.charAt(i - 1)) >= 0) {
+                            end = i;
+                            break;
+                        }
+                    }
+                    if (Character.isHighSurrogate(rest.charAt(end - 1))) end--;
+                }
+                String line = rest.substring(0, end)
+                    .trim();
+                rest = rest.substring(end)
+                    .trim();
+                if (line.isEmpty()) continue;
+                if (chatOut.size() < MAX_QUEUED_LINES) {
+                    chatOut.add(line);
+                    queued++;
+                } else {
+                    dropped++;
+                }
             }
-            if (!rest.isEmpty() && chatOut.size() < MAX_QUEUED_LINES) chatOut.add(rest);
         }
+        return new int[] { queued, dropped, cut };
     }
 
     private void flushChat() {

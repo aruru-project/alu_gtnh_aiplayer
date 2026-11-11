@@ -44,6 +44,14 @@ public final class ContainerSession {
         int wanted(ItemStack stack);
 
         void moved(ItemStack type, int count);
+
+        /**
+         * Whether everything of this kind the bot still carries ({@code carried} items) is to go in. Only then
+         * may a drawer be double-clicked, which empties the whole inventory of that kind into it at once.
+         */
+        default boolean wholeKind(ItemStack type, int carried) {
+            return false;
+        }
     }
 
     private static final int CLICK_INTERVAL = 3;
@@ -51,6 +59,7 @@ public final class ContainerSession {
     /** Two right-clicks on a drawer within ten ticks count as a double click, which empties the whole inventory
      * of that kind into it. */
     private static final int DRAWER_PUT_INTERVAL = 12;
+    private static final int DRAWER_DOUBLE_CLICK = 2;
 
     private final Bot bot;
     private final int x, y, z;
@@ -61,6 +70,9 @@ public final class ContainerSession {
     private int interval = CLICK_INTERVAL;
     private final Set<ItemStack> unplaceable = Collections.newSetFromMap(new IdentityHashMap<ItemStack, Boolean>());
     private final Set<Integer> deadDrawers = new HashSet<>();
+    /** Set after a click put a stack into a drawer when the rest of that kind may follow with a second click. */
+    private ItemStack dumpType;
+    private float[] dumpHit;
     /** For a processing machine, its input and output slots as {first, count}. */
     private int[] machineIn, machineOut;
     private boolean fromInputs;
@@ -243,6 +255,32 @@ public final class ContainerSession {
         int front = Drawers.front(te);
         if (deposit != null) {
             ItemStack[] mine = p.inventory.mainInventory;
+            if (dumpType != null) {
+                // The second click of a double click: the drawer takes everything of that kind the bot carries.
+                ItemStack type = dumpType;
+                float[] hit = dumpHit;
+                dumpType = null;
+                ItemFilter kind = exact(type);
+                int before = Inventories.count(p, kind);
+                int slot = -1;
+                for (int i = 0; i < mine.length && slot < 0; i++) if (mine[i] != null && kind.matches(mine[i])) slot = i;
+                if (slot >= 0) {
+                    Inventories.hold(bot, slot);
+                    Motion.face(p, x + hit[0], y + hit[1], z + hit[2]);
+                    bot.conn()
+                        .useOnBlock(x, y, z, front, hit[0], hit[1], hit[2]);
+                    bot.conn()
+                        .swingArm();
+                    int gone = before - Inventories.count(p, kind);
+                    if (gone > 0) {
+                        moved += gone;
+                        deposit.moved(type, gone);
+                    }
+                    // What did not fit is found, stack by stack, by the steps that follow.
+                    interval = DRAWER_PUT_INTERVAL;
+                    return true;
+                }
+            }
             for (int i = 0; i < mine.length; i++) {
                 ItemStack stack = mine[i];
                 if (stack == null || unplaceable.contains(stack)) continue;
@@ -292,6 +330,13 @@ public final class ContainerSession {
                     if (left != null) unplaceable.add(left);
                 }
                 interval = DRAWER_PUT_INTERVAL;
+                int still = Inventories.count(p, exact(type));
+                if (gone == offered && still > 0 && deposit.wholeKind(type, still)) {
+                    // As a player does with many stacks of one thing: click again at once and all of it goes in.
+                    dumpType = type;
+                    dumpHit = hit;
+                    interval = DRAWER_DOUBLE_CLICK;
+                }
                 return true;
             }
             deposit = null;
@@ -383,14 +428,18 @@ public final class ContainerSession {
 
     /** Right-clicks a block as if nothing were held; see the instance method. */
     public static void clickEmptyHanded(Bot bot, int x, int y, int z) {
+        clickEmptyHanded(bot, x, y, z, Reach.facingSide(bot.player(), x, y, z), 0.5F, 0.5F, 0.5F);
+    }
+
+    /** A right-click with nothing in hand on one face of a block, at a point of it. */
+    public static void clickEmptyHanded(Bot bot, int x, int y, int z, int side, float hx, float hy, float hz) {
         EntityPlayerMP p = bot.player();
         int slot = p.inventory.currentItem;
         ItemStack held = p.inventory.mainInventory[slot];
         p.inventory.mainInventory[slot] = null;
         try {
-            int side = Reach.facingSide(p, x, y, z);
             bot.conn()
-                .useOnBlock(x, y, z, side, 0.5F, 0.5F, 0.5F);
+                .useOnBlock(x, y, z, side, hx, hy, hz);
         } finally {
             if (p.inventory.mainInventory[slot] == null) {
                 p.inventory.mainInventory[slot] = held;

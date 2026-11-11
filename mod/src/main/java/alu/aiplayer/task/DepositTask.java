@@ -46,6 +46,11 @@ public final class DepositTask extends Task {
 
             @Override
             public void moved(ItemStack type, int count) {}
+
+            @Override
+            public boolean wholeKind(ItemStack type, int carried) {
+                return wanted(type) < 0;
+            }
         };
     }
 
@@ -74,6 +79,12 @@ public final class DepositTask extends Task {
             public void moved(ItemStack type, int count) {
                 int i = index(type);
                 if (i >= 0 && left[i] > 0) left[i] = Math.max(0, left[i] - count);
+            }
+
+            @Override
+            public boolean wholeKind(ItemStack type, int carried) {
+                int i = index(type);
+                return i >= 0 && (left[i] < 0 || left[i] >= carried);
             }
         };
     }

@@ -154,6 +154,17 @@ public final class BridgeApi {
             Bot b = J.has(p, "bot") ? bots.requireOnline(J.reqStr(p, "bot")) : null;
             return plan.survey(world(p), b == null ? null : b.player(), J.bool(p, "layers", true));
         });
+        bridge.register("blueprint.read", p -> {
+            JsonObject from = J.object(p, "from"), to = J.object(p, "to");
+            return AiPlayerMod.blueprints()
+                .read(
+                    J.reqStr(p, "name"),
+                    from == null ? null : new int[] { J.i(from, "x", 0), J.i(from, "y", 0), J.i(from, "z", 0) },
+                    to == null ? null
+                        : new int[] { J.i(to, "x", Integer.MAX_VALUE), J.i(to, "y", Integer.MAX_VALUE),
+                            J.i(to, "z", Integer.MAX_VALUE) },
+                    J.bool(p, "cells", true));
+        });
         bridge.register("blueprint.put", p -> {
             byte[] bytes;
             try {
@@ -267,9 +278,13 @@ public final class BridgeApi {
             return o;
         });
         bridge.register("bot.chat", p -> {
-            bots.requireOnline(J.reqStr(p, "bot"))
+            int[] sent = bots.requireOnline(J.reqStr(p, "bot"))
                 .say(J.reqStr(p, "message"));
-            return null;
+            JsonObject o = new JsonObject();
+            o.addProperty("lines", sent[0]);
+            if (sent[1] > 0) o.addProperty("droppedLines", sent[1]);
+            if (sent[2] > 0) o.addProperty("cutChars", sent[2]);
+            return o;
         });
         bridge.register("bot.command", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));

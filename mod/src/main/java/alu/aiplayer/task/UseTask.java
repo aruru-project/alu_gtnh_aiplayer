@@ -21,23 +21,34 @@ import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 
 /**
- * Takes an item in hand and right-clicks with it: in the air (eat, drink, put on something worn, open what the
- * item opens) or on a block. What that does is the item's business; the task reports what changed, so that the
- * caller can tell. This is the player's one general way of using a thing, for all the things nobody wrote a
- * special task for.
+ * A right-click, the way a player makes one: with an item in hand or with an empty hand, in the air (eat, drink,
+ * put on something worn, open what the item opens) or on a block, on the face and at the point of it the caller
+ * chooses, once or several times in a row, sneaking or not. What that does is the item's and the block's
+ * business; the task reports what changed, so that the caller can tell. This is the player's one general way of
+ * using a thing, for all the things nobody wrote a special task for.
  */
 public final class UseTask extends Task {
 
     private static final int SETTLE = 6;
     private static final int LONGEST_USE = 20 * 8;
+    private static final int MOST_CLICKS = 64;
+    private static final String[] SIDES = { "down", "up", "north", "south", "west", "east" };
 
+    /** Null for an empty hand. */
     private final ItemFilter item;
     private final int[] on;
     private final boolean sneak;
+    /** The face to click, 0 down .. 5 east; -1 for the one turned towards the bot. */
+    private final int side;
+    /** Where on the block, each 0..1 from its lowest corner; null for the middle of the face. */
+    private final float[] hit;
+    private final int times;
+    private final int every;
 
     private Navigator nav;
     private int stage;
     private int wait;
+    private int clicks;
     private Map<String, Integer> before;
     private String heldBefore;
     private boolean screen;
@@ -46,10 +57,36 @@ public final class UseTask extends Task {
     public UseTask(JsonObject params) {
         super("use", params);
         JsonObject it = J.object(params, "item");
-        if (it == null) throw new IllegalArgumentException("item must be {id, meta?}");
-        item = new ItemFilter(J.reqStr(it, "id"), J.has(it, "meta") ? J.i(it, "meta", 0) : -1, 1);
+        item = it == null ? null : new ItemFilter(J.reqStr(it, "id"), J.has(it, "meta") ? J.i(it, "meta", 0) : -1, 1);
         on = J.has(params, "on") ? Params.pos(params, "on") : null;
+        if (item == null && on == null) {
+            throw new IllegalArgumentException("give item {id, meta?}, or on {x,y,z} to click a block with an empty hand, or both");
+        }
         sneak = J.bool(params, "sneak", false);
+        side = side(params);
+        JsonObject h = J.object(params, "hit");
+        if (h == null) {
+            hit = null;
+        } else {
+            hit = new float[] { part(h, "x"), part(h, "y"), part(h, "z") };
+        }
+        if ((side >= 0 || hit != null) && on == null) throw new IllegalArgumentException("side and hit belong to a block: give on {x,y,z}");
+        times = Math.max(1, Math.min(MOST_CLICKS, J.i(params, "times", 1)));
+        every = Math.max(1, Math.min(40, J.i(params, "every", 4)));
+    }
+
+    private static int side(JsonObject params) {
+        if (!J.has(params, "side")) return -1;
+        String name = J.str(params, "side", "");
+        for (int i = 0; i < SIDES.length; i++) if (SIDES[i].equalsIgnoreCase(name)) return i;
+        throw new IllegalArgumentException("side is one of down, up, north, south, west, east");
+    }
+
+    private static float part(JsonObject h, String key) {
+        float v = h.has(key) ? h.get(key)
+            .getAsFloat() : 0.5F;
+        if (!(v >= 0F && v <= 1F)) throw new IllegalArgumentException("hit is {x,y,z}, each from 0 to 1 across the block");
+        return v;
     }
 
     @Override
@@ -59,7 +96,62 @@ public final class UseTask extends Task {
             if (!withinTravel(on[0], on[2])) return;
             phase = "going there";
             nav = new Navigator(bot);
-            nav.go(Goal.reach(on[0], on[1], on[2], false), Rules.NATURAL_ONLY, false);
+            // A face is clicked from the side it looks at.
+            Goal goal = side >= 2 ? Goal.reachFacing(on[0], on[1], on[2], side) : Goal.reach(on[0], on[1], on[2], false);
+            nav.go(goal, Rules.NATURAL_ONLY, false);
+        }
+    }
+
+    /** One right-click. Returns false when the item asked for is not carried. */
+    private boolean click(EntityPlayerMP p) {
+        if (item != null) {
+            ItemStack held = p.inventory.getCurrentItem();
+            if (held == null || !item.matches(held)) {
+                int slot = -1;
+                for (int i = 0; i < Inventories.CARRY_SLOTS && slot < 0; i++) {
+                    ItemStack s = p.inventory.mainInventory[i];
+                    if (s != null && item.matches(s)) slot = i;
+                }
+                // The first click needs the item; later ones go on with what the hand holds, as a held button does.
+                if (slot >= 0) Inventories.hold(bot, slot);
+                else if (clicks == 0) return false;
+            }
+        }
+        if (on == null) {
+            bot.conn()
+                .useItem();
+        } else {
+            int face = side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2]);
+            float[] at = hit != null ? hit : side >= 0 ? middle(face) : new float[] { 0.5F, 0.5F, 0.5F };
+            Motion.face(p, on[0] + at[0], on[1] + at[1], on[2] + at[2]);
+            if (item == null) {
+                alu.aiplayer.act.ContainerSession.clickEmptyHanded(bot, on[0], on[1], on[2], face, at[0], at[1], at[2]);
+                clicks++;
+                return true;
+            }
+            bot.conn()
+                .useOnBlock(on[0], on[1], on[2], face, at[0], at[1], at[2]);
+        }
+        bot.conn()
+            .swingArm();
+        clicks++;
+        return true;
+    }
+
+    private static float[] middle(int face) {
+        switch (face) {
+            case 0:
+                return new float[] { 0.5F, 0F, 0.5F };
+            case 1:
+                return new float[] { 0.5F, 1F, 0.5F };
+            case 2:
+                return new float[] { 0.5F, 0.5F, 0F };
+            case 3:
+                return new float[] { 0.5F, 0.5F, 1F };
+            case 4:
+                return new float[] { 0F, 0.5F, 0.5F };
+            default:
+                return new float[] { 1F, 0.5F, 0.5F };
         }
     }
 
@@ -86,37 +178,41 @@ public final class UseTask extends Task {
                         fail("out_of_reach", "the block is out of reach");
                         return;
                     }
-                }
-                int slot = -1;
-                for (int i = 0; i < Inventories.CARRY_SLOTS && slot < 0; i++) {
-                    ItemStack s = p.inventory.mainInventory[i];
-                    if (s != null && item.matches(s)) slot = i;
-                }
-                if (slot < 0) {
-                    fail("no_material", "the bot carries no such item");
-                    return;
+                    if (side >= 0 && !alu.aiplayer.act.Drawers.inFront(p, on[0], on[1], on[2], side)) {
+                        fail("out_of_reach", "the bot could not get to where the " + SIDES[side] + " face of that block can be clicked");
+                        return;
+                    }
                 }
                 if (p.openContainer != p.inventoryContainer) bot.conn()
                     .closeWindow();
-                Inventories.hold(bot, slot);
                 before = carried(p);
-                ItemStack held = p.inventory.getCurrentItem();
-                heldBefore = held == null ? null : Names.displayName(held);
                 phase = "using it";
                 wasSneaking = p.isSneaking();
                 if (sneak) p.setSneaking(true);
-                if (on != null) {
-                    Motion.face(p, on[0] + 0.5, on[1] + 0.5, on[2] + 0.5);
-                    bot.conn()
-                        .useOnBlock(on[0], on[1], on[2], Reach.facingSide(p, on[0], on[1], on[2]), 0.5F, 0.5F, 0.5F);
-                } else {
-                    bot.conn()
-                        .useItem();
+                if (item != null) {
+                    for (int i = 0; i < Inventories.CARRY_SLOTS && heldBefore == null; i++) {
+                        ItemStack s = p.inventory.mainInventory[i];
+                        if (s != null && item.matches(s)) heldBefore = Names.displayName(s);
+                    }
                 }
-                bot.conn()
-                    .swingArm();
+                if (!click(p)) {
+                    fail("no_material", "the bot carries no such item");
+                    return;
+                }
                 stage = 1;
                 wait = 0;
+                break;
+            }
+            case 1: {
+                // The further clicks of a held button, until a screen opens.
+                if (clicks >= times || p.openContainer != p.inventoryContainer) {
+                    stage = 2;
+                    wait = 0;
+                    return;
+                }
+                if (++wait < every) return;
+                wait = 0;
+                click(p);
                 break;
             }
             default: {
@@ -163,7 +259,11 @@ public final class UseTask extends Task {
             if (fewer > 0) lost.add(change(e.getKey(), fewer));
         }
         // Honest about what it knows: the click was made; these are the traces it left on the bot.
-        o.addProperty("used", heldBefore == null ? "nothing" : heldBefore);
+        o.addProperty("used", heldBefore == null ? "an empty hand" : heldBefore);
+        o.addProperty("clicks", clicks);
+        if (on != null && clicks > 0) {
+            o.addProperty("side", SIDES[side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2])]);
+        }
         o.add("gained", gained);
         o.add("lost", lost);
         if (screen) o.addProperty("openedScreen", true);

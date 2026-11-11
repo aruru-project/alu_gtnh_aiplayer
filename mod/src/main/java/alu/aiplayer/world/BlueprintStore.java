@@ -6,14 +6,19 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import alu.aiplayer.AiPlayerMod;
+import alu.aiplayer.bridge.RpcException;
+import alu.aiplayer.util.J;
 
 /**
  * The plans a bot can build from: the {@code .schematic} files in {@code config/aiplayer/schematics}. Files may be
@@ -121,6 +126,103 @@ public final class BlueprintStore {
         o.add("blueprints", out);
         o.addProperty("folder", dir.getPath());
         return o;
+    }
+
+    /** At most this many cells are written out by one read; a larger plan is read a part at a time. */
+    private static final int MAX_READ_CELLS = 64 * 64 * 64;
+
+    /**
+     * What a plan holds, as data: every kind of block in it with its count, and the cells themselves in the
+     * palette-and-runs form world.blocks uses, for the box from..to inside the plan (both counted from its lowest
+     * corner, both included; the whole plan when not given).
+     */
+    public JsonObject read(String name, int[] from, int[] to, boolean cells) {
+        Blueprint b = get(name);
+        JsonObject o = new JsonObject();
+        o.addProperty("name", b.name);
+        describe(o, b);
+        List<Blueprint.Kind> kinds = new ArrayList<>();
+        for (Blueprint.Kind k : b.kinds) if (!k.empty() && k.count > 0) kinds.add(k);
+        Collections.sort(kinds, (x, y) -> y.count - x.count);
+        JsonArray materials = new JsonArray();
+        for (Blueprint.Kind k : kinds) {
+            JsonObject m = kind(k);
+            m.addProperty("count", k.count);
+            materials.add(m);
+        }
+        o.add("materials", materials);
+        if (!cells) return o;
+        int x1 = from == null ? 0 : from[0], y1 = from == null ? 0 : from[1], z1 = from == null ? 0 : from[2];
+        int x2 = to == null ? b.sx - 1 : Math.min(to[0], b.sx - 1), y2 = to == null ? b.sy - 1 : Math.min(to[1], b.sy - 1),
+            z2 = to == null ? b.sz - 1 : Math.min(to[2], b.sz - 1);
+        if (x1 < 0 || y1 < 0 || z1 < 0 || x2 < x1 || y2 < y1 || z2 < z1) {
+            throw RpcException.badRequest(
+                "from and to are positions inside the plan, counted from 0 at its lowest corner; it is " + b.sx
+                    + " x "
+                    + b.sy
+                    + " x "
+                    + b.sz);
+        }
+        long count = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+        if (count > MAX_READ_CELLS) {
+            throw RpcException.tooLarge(
+                "that is " + count
+                    + " cells; one read gives at most "
+                    + MAX_READ_CELLS
+                    + ": give from and to and read the plan a part at a time (cells:false gives the materials alone)");
+        }
+        int[] index = new int[b.kinds.length];
+        Arrays.fill(index, -1);
+        index[0] = 0;
+        JsonArray palette = new JsonArray();
+        JsonObject air = new JsonObject();
+        air.addProperty("id", "minecraft:air");
+        air.addProperty("meta", 0);
+        palette.add(air);
+        JsonArray runs = new JsonArray();
+        int last = -1, run = 0;
+        for (int y = y1; y <= y2; y++) for (int z = z1; z <= z2; z++) for (int x = x1; x <= x2; x++) {
+            Blueprint.Kind k = b.at(x, y, z);
+            if (index[k.index] < 0) {
+                palette.add(kind(k));
+                index[k.index] = palette.size() - 1;
+            }
+            int i = index[k.index];
+            if (i == last) {
+                run++;
+            } else {
+                if (run > 0) {
+                    runs.add(J.prim(last));
+                    runs.add(J.prim(run));
+                }
+                last = i;
+                run = 1;
+            }
+        }
+        if (run > 0) {
+            runs.add(J.prim(last));
+            runs.add(J.prim(run));
+        }
+        o.addProperty("x", x1);
+        o.addProperty("y", y1);
+        o.addProperty("z", z1);
+        o.addProperty("sx", x2 - x1 + 1);
+        o.addProperty("sy", y2 - y1 + 1);
+        o.addProperty("sz", z2 - z1 + 1);
+        o.add("palette", palette);
+        o.add("runs", runs);
+        return o;
+    }
+
+    private static JsonObject kind(Blueprint.Kind k) {
+        JsonObject m = new JsonObject();
+        m.addProperty("id", k.blockId);
+        m.addProperty("meta", k.meta);
+        m.addProperty("name", k.name);
+        // The item that places it, when that is not simply the block under the same name.
+        if (k.item != null && !(k.item.id.equals(k.blockId) && k.item.meta == k.meta)) m.add("item", k.item.toJson());
+        if (k.byHand != null) m.addProperty("byHand", k.byHand);
+        return m;
     }
 
     private static void describe(JsonObject o, Blueprint b) {
