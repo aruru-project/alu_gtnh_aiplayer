@@ -4,6 +4,16 @@ import crypto from 'node:crypto'
 import type http from 'node:http'
 
 export const SESSION_COOKIE = 'aiplayer_session'
+
+/**
+ * 这个面板的会话 cookie 叫什么。浏览器按主机名存 cookie，不分端口：同一台机器上开两个面板（测试服一个、正式服一个）
+ * 用同一个名字的话，登录一个就把另一个的会话盖掉。所以名字里带上浏览器访问的端口。
+ */
+export function sessionCookieName(req: http.IncomingMessage): string {
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  const port = /:(\d{1,5})$/.exec(host)?.[1] ?? String(req.socket?.localPort ?? '')
+  return port ? `${SESSION_COOKIE}_${port}` : SESSION_COOKIE
+}
 export const SESSION_TTL_MS = 30 * 24 * 3600 * 1000
 
 function sign(secret: string, password: string, expires: number): string {
@@ -48,9 +58,9 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out
 }
 
-export function sessionCookie(value: string, opts: { secure: boolean; clear?: boolean }): string {
+export function sessionCookie(value: string, opts: { secure: boolean; clear?: boolean; name?: string }): string {
   const attrs = [
-    `${SESSION_COOKIE}=${opts.clear ? '' : value}`,
+    `${opts.name ?? SESSION_COOKIE}=${opts.clear ? '' : value}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Strict',

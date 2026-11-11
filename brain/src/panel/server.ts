@@ -40,7 +40,7 @@ import type { ItemIcons } from '../packdata/icons.ts'
 import { PanelLive } from './live.ts'
 import {
   LoginLimiter,
-  SESSION_COOKIE,
+  sessionCookieName,
   checkPassword,
   createSessionValue,
   originAllowed,
@@ -332,7 +332,7 @@ export class PanelServer {
 
   private hasSession(req: http.IncomingMessage): boolean {
     const panel = this.deps.config.get().panel
-    return verifySessionValue(parseCookies(req.headers.cookie)[SESSION_COOKIE], panel.sessionSecret, panel.password, this.now())
+    return verifySessionValue(parseCookies(req.headers.cookie)[sessionCookieName(req)], panel.sessionSecret, panel.password, this.now())
   }
 
   private async readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES, tooLarge = '提交的内容太大'): Promise<Record<string, unknown>> {
@@ -377,7 +377,7 @@ export class PanelServer {
     if (!this.hasSession(req)) throw new HttpError(401, 'unauthorized', '请先登录')
 
     if (route === '/logout' && method === 'POST') {
-      res.setHeader('Set-Cookie', sessionCookie('', { secure: this.isSecure(req), clear: true }))
+      res.setHeader('Set-Cookie', sessionCookie('', { secure: this.isSecure(req), clear: true, name: sessionCookieName(req) }))
       this.json(res, 200, { ok: true })
       return
     }
@@ -446,7 +446,7 @@ export class PanelServer {
     this.limiter.succeed(key)
     res.setHeader(
       'Set-Cookie',
-      sessionCookie(createSessionValue(panel.sessionSecret, panel.password, now), { secure: this.isSecure(req) }),
+      sessionCookie(createSessionValue(panel.sessionSecret, panel.password, now), { secure: this.isSecure(req), name: sessionCookieName(req) }),
     )
     this.json(res, 200, { ok: true })
   }
@@ -1447,7 +1447,7 @@ export class PanelServer {
       c.panel.password = next
     }).panel
     this.deps.log.add({ kind: 'info', text: '面板口令已在面板上修改，其他地方的登录都已失效。' })
-    res.setHeader('Set-Cookie', sessionCookie(createSessionValue(updated.sessionSecret, updated.password, now), { secure: this.isSecure(req) }))
+    res.setHeader('Set-Cookie', sessionCookie(createSessionValue(updated.sessionSecret, updated.password, now), { secure: this.isSecure(req), name: sessionCookieName(req) }))
     this.json(res, 200, { ok: true })
   }
 
