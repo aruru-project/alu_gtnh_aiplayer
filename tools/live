@@ -47,6 +47,13 @@ running() { systemctl --user is-active --quiet "$UNIT"; }
 current() { [[ -L $LIVE/current ]] && basename "$(readlink "$LIVE/current")" || true; }
 describe() { [[ -n $1 && -f $LIVE/releases/$1/VERSION ]] && tr '\n' ' ' <"$LIVE/releases/$1/VERSION" || printf '%s' "${1:-nothing}"; }
 
+CLEAN=
+cleanup() { # the temporary checkout a deploy or a mod build was made in
+    [[ -n $CLEAN ]] || return 0
+    git -C "$ROOT" worktree remove --force "$CLEAN/src" 2>/dev/null || true
+    rm -rf "$CLEAN"
+}
+
 setup() {
     need_root
     [[ -n $SERVER ]] || die "say where the game server is: AIPLAYER_LIVE_SERVER=... in tools/local.env"
@@ -137,7 +144,7 @@ deploy() {
 
     # A clean checkout of exactly that commit: what is tested is what gets released.
     local work; work=$(mktemp -d "${TMPDIR:-/tmp}/aiplayer-deploy.XXXXXX")
-    trap 'git -C "$ROOT" worktree remove --force "$work/src" 2>/dev/null || true; rm -rf "$work"' EXIT
+    CLEAN=$work; trap cleanup EXIT
     git -C "$ROOT" worktree add -q --detach "$work/src" "$commit"
     [[ -f $work/src/brain/src/main.ts ]] || die "$ref has no brain/src/main.ts"
     if [[ $tests == yes ]]; then
@@ -187,7 +194,7 @@ mod() {
     local out=$LIVE/mod/aiplayer-$short.jar
     if [[ ! -f $out ]]; then
         local work; work=$(mktemp -d "${TMPDIR:-/tmp}/aiplayer-mod.XXXXXX")
-        trap 'git -C "$ROOT" worktree remove --force "$work/src" 2>/dev/null || true; rm -rf "$work"' EXIT
+        CLEAN=$work; trap cleanup EXIT
         git -C "$ROOT" worktree add -q --detach "$work/src" "$short"
         printf 'building the mod of %s ...\n' "$short"
         (cd "$work/src" && tools/gradle build -q >"$work/build.log" 2>&1) || { tail -n 20 "$work/build.log"; die "the mod of $short did not build"; }
