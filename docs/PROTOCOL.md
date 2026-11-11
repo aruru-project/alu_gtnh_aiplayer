@@ -64,7 +64,7 @@
 | `world.blocks` | `{dim?,x1,y1,z1,x2,y2,z2}`，每边最多 64 格 | 一个范围里的全部方块，画图用，见下 |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
-| `world.containers` | `{radius?(≤32), offset?=0, limit?=40(≤100)}` + 中心 | `{containers:[Container…], total, offset}`，由近到远。**`total` 是范围里的总数，`containers` 只是从 `offset` 起的一页**，要看全就翻页。Container 见下 |
+| `world.containers` | `{radius?(≤32), offset?=0, limit?=40(≤100), kinds?=60(≤2000)}` + 中心 | `{containers:[Container…], total, offset}`，由近到远。**`total` 是范围里的总数，`containers` 只是从 `offset` 起的一页**，要看全就翻页。Container 见下 |
 | `world.drawers` | `{dim?,x,y,z, below?, offset?=0, limit?=200(≤500)}` | 一个抽屉管理器管着的全部抽屉（给的位置是普通抽屉时只有它自己），逐格列出，见下 |
 | `world.entities` | `{radius?(≤64)}` + 中心 | `{entities:[{type:"player"\|"mob"\|"animal"\|"item"\|"other",name,pos,dist,item?}], total}` |
 
@@ -77,7 +77,7 @@ Container：
   "x":-509,"y":69,"z":90, "id":"IronChest:BlockIronChest", "name":"Compressed Chest",
   "kind":"drawers",              // 没有：普通容器；"drawers"：抽屉；"drawer_controller"：抽屉管理器；"machine"：GregTech 机器
   "slots":243, "usedSlots":28,
-  "items":[Item…],               // 按物品合并，最多列 60 种；还有没列的时带 "moreKinds":n
+  "items":[Item…],               // 按物品合并，最多列 kinds 种（默认 60）；还有没列的时带 "moreKinds":n。要把一个大箱子看全：以它为中心、radius 0、kinds 给大
   "attached":[                   // 紧挨着它、会自己往里送或往外抽东西的方块；没有就不带这个字段
     {"x":-516,"y":71,"z":85,"name":"Brass Item Pipe","kind":"item pipe"}   // kind：hopper、item pipe、fluid pipe、pipe（其他 mod 的管道类）
   ],

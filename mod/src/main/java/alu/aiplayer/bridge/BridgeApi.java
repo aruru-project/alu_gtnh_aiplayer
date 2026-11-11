@@ -182,7 +182,8 @@ public final class BridgeApi {
                 c[2],
                 Math.max(0, J.i(p, "radius", 12)),
                 Math.max(0, J.i(p, "offset", 0)),
-                Math.max(1, Math.min(100, J.i(p, "limit", 40))));
+                Math.max(1, Math.min(100, J.i(p, "limit", 40))),
+                Math.max(1, Math.min(2000, J.i(p, "kinds", 60))));
         });
         bridge.register(
             "world.drawers",

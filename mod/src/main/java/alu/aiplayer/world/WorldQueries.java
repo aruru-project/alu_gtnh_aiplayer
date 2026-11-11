@@ -455,7 +455,8 @@ public final class WorldQueries {
         return o;
     }
 
-    public static JsonObject containers(World w, int cx, int cy, int cz, int radius, int offset, int limit) {
+    public static JsonObject containers(World w, int cx, int cy, int cz, int radius, int offset, int limit,
+        int kinds) {
         if (radius > 32) throw RpcException.tooLarge("radius is limited to 32");
         List<TileEntity> found = new ArrayList<>();
         for (TileEntity te : tileEntities(w, cx - radius, cz - radius, cx + radius, cz + radius)) {
@@ -476,7 +477,7 @@ public final class WorldQueries {
         JsonArray list = new JsonArray();
         for (int i = Math.max(0, offset); i < found.size() && list.size() < limit; i++) {
             TileEntity te = found.get(i);
-            JsonObject c = describeContainer(w, te);
+            JsonObject c = describeContainer(w, te, kinds);
             TileEntity controller = controllerOf.get(packed(te.xCoord, te.yCoord, te.zCoord));
             if (controller != null) c.add("controller", J.pos(controller.xCoord, controller.yCoord, controller.zCoord));
             JsonArray attached = attached(w, te);
@@ -681,7 +682,8 @@ public final class WorldQueries {
         k.addProperty("count", had + count);
     }
 
-    public static JsonObject describeContainer(World w, TileEntity te) {
+    /** {@code kinds}: how many different items are listed at most; what is left out is counted in moreKinds. */
+    public static JsonObject describeContainer(World w, TileEntity te, int kinds) {
         IInventory inv = (IInventory) te;
         JsonObject c = J.pos(te.xCoord, te.yCoord, te.zCoord);
         Block b = te.getBlockType();
@@ -748,7 +750,7 @@ public final class WorldQueries {
         c.addProperty("usedSlots", used);
         JsonArray items = new JsonArray();
         for (JsonObject item : merged.values()) {
-            if (items.size() >= 60) break;
+            if (items.size() >= kinds) break;
             items.add(item);
         }
         c.add("items", items);
