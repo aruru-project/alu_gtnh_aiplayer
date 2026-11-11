@@ -148,16 +148,18 @@ export const inspectBlock: Tool = {
   },
 }
 
+/** 库函数（不在发给模型的清单里）。data 是身体的原样回答（bot.probe）。 */
 export const probeBlock: Tool = {
   name: 'probe_block',
+  brief: '{x, y, z}: can you dig it, with what, how long -> canDig, digTicks, candidates[]',
   description:
     'Check whether you could dig a block right now: which of your tools would be used, how long it takes, and whether it is within reach. Use it before a digging task when you are unsure your tools can break that kind of block.',
   inputSchema: obj({ x: int('x'), y: int('y', { min: 0, max: 255 }), z: int('z') }, ['x', 'y', 'z']),
-  async run(ctx, input: BlockPos) {
+  async run(ctx, input: BlockPos): Promise<ToolResult | string> {
     const p = await ctx.bridge.botProbe(ctx.botName, input)
     const lines = [describeBlock(input, p)]
-    if (p.loaded === false || typeof p.id !== 'string') return lines[0]!
-    if (p.air) return `${lines[0]!}\nNothing to dig there.`
+    if (p.loaded === false || typeof p.id !== 'string') return { content: lines[0]!, data: p }
+    if (p.air) return { content: `${lines[0]!}\nNothing to dig there.`, data: p }
     const candidates = p.candidates ?? []
     // excluded：一次挖多格的工具（匠魂锤、挖掘铲、伐木斧等），身体不会用它们
     const usable = candidates.filter((c) => !c.excluded && c.harvest !== false && typeof c.ticks === 'number' && c.ticks > 0)
@@ -186,7 +188,7 @@ export const probeBlock: Tool = {
           .join('; ')}`,
       )
     }
-    return lines.join('\n')
+    return { content: lines.join('\n'), data: p }
   },
 }
 

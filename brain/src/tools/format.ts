@@ -315,7 +315,7 @@ export function formatContainer(c: ContainerInfo, itemLimit: number): string {
   const head = `${formatPos(c)} ${nameOf(c, { block: true }) ?? c.id} [${c.id}]${kind}${slots}`
   const notes: string[] = []
   // 抽屉管理器自己不装东西：它管的东西用 list_drawers 看
-  if (c.kind === 'drawer_controller') notes.push(`manages ${c.drawers ?? '?'} drawer block(s); see what they hold with list_drawers at this position`)
+  if (c.kind === 'drawer_controller') notes.push(`manages ${c.drawers ?? '?'} drawer block(s); the library function list_drawers lists what they hold, given this position`)
   if (c.controller) notes.push(`managed by the drawer controller at ${formatPos(c.controller)}`)
   const auto = attachedText(c.attached)
   if (auto) notes.push(auto)

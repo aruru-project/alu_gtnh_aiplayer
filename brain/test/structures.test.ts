@@ -1,5 +1,5 @@
 // 多方块机器的结构（玩家说的“投影”）：本地资料加载、程序里拿数据、库函数（查结构、对着世界里那台比、读一个盒子的方块）。
-// 库函数只在它写的程序里能调，不是发给模型的工具。数据是自造的小样本（fixture-structures.ts），世界是按方法名应答的假服务器。
+// 库函数不在发给模型的工具清单里，在它写的程序里调。数据是自造的小样本（fixture-structures.ts），世界是按方法名应答的假服务器。
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -10,7 +10,7 @@ import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData } from '../src/packdata/index.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
-import { ALL_TOOLS, LIBRARY_TOOLS, QUERY_TOOLS, programTools, runTool, toToolSpecs } from '../src/tools/index.ts'
+import { ALL_TOOLS, QUERY_TOOLS, modelToolSpecs, runTool } from '../src/tools/index.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
@@ -61,9 +61,9 @@ function setup(t: { after(fn: () => void): void }, opts: { structures?: boolean;
       return { ok: res.isError !== true, text: res.content, ...(res.data !== undefined ? { data: res.data } : {}) }
     },
   }
-  /** 程序里调一个库函数走的就是这一步（agent.ts、routine.ts 用 programTools 拿工具表）。 */
-  const lib = (name: string, input: unknown = {}): Promise<ToolResult> => runTool(programTools(ALL_TOOLS), ctx, name, input, { maxResultChars: 20_000 })
-  const model = (name: string, input: unknown = {}): Promise<ToolResult> => runTool(ALL_TOOLS, ctx, name, input, { maxResultChars: 20_000 })
+  /** 程序里调一个库函数走的就是这一步（agent.ts、routine.ts 都是 runTool：按名字找，工具、库函数都找得到）。 */
+  const lib = (name: string, input: unknown = {}): Promise<ToolResult> => runTool(ALL_TOOLS, ctx, name, input, { maxResultChars: 20_000 })
+  const model = lib
   /** 模型用 run_program 跑一段程序；失败了就让测试带着它的报错失败。 */
   const program = async (code: string): Promise<string> => {
     const res = await model('run_program', { code })
@@ -94,16 +94,18 @@ function buildFacingWest(put: (x: number, y: number, z: number, b: Block | null)
 }
 
 describe('多方块结构：本地资料', () => {
-  it('structures.jsonl 在就加载（认不出来的行跳过并说明），不在就当没有；库函数不在发给模型的工具里，只在程序里调得到', (t) => {
+  it('structures.jsonl 在就加载（认不出来的行跳过并说明），不在就当没有；三个库函数不在发给模型的工具清单里，程序里（连只许查询的 run_program）调得到', (t) => {
     const s = setup(t, { badLine: true })
     assert.ok(s.said.includes('多方块结构：4 台机器、10 种等级的结构（1 行认不出来，跳过了）。'), s.said.join('\n'))
     assert.deepEqual(s.packdata.structures!.get(S.centrifuge.id, S.centrifuge.meta)!.rows.map((r) => [r.tiers, r.size, r.blocks.map((b) => b.n)]), [[[1], [3, 2, 3], [15, 1, 1]], [[2], [3, 2, 3], [15, 1, 1]]])
     const none = setup(t, { structures: false })
     assert.equal(none.packdata.structures, undefined)
     assert.equal(none.said.some((m) => m.includes('多方块')), false)
-    // 模型的工具清单里没有它们；程序里（连只许查询的 run_program）调得到
-    const offered = toToolSpecs(ALL_TOOLS).map((x) => x.name)
-    for (const tool of LIBRARY_TOOLS) assert.deepEqual([offered.includes(tool.name), QUERY_TOOLS.includes(tool.name), programTools(ALL_TOOLS).some((x) => x.name === tool.name)], [false, true, true], tool.name)
+    // 模型的工具清单里没有它们（能不能看图都一样）；run_program 里许调
+    for (const canSee of [true, false]) {
+      const offered = modelToolSpecs(ALL_TOOLS, { canSee }).map((x) => x.name)
+      for (const name of ['find_structure', 'check_structure', 'read_blocks']) assert.deepEqual([offered.includes(name), QUERY_TOOLS.includes(name)], [false, true], name)
+    }
   })
 
   it('程序里把它当数据拿：data.structure 按中文名或主机的 id/meta 取一台机器各等级的结构、材料、说明；重名的要给 id/meta', async (t) => {
@@ -141,8 +143,6 @@ describe('多方块结构：本地资料', () => {
 describe('多方块结构：库函数（程序里 await tool(…) 调）', () => {
   it('find_structure：有哪些等级、各要什么方块、机器自己的结构说明、两个等级之间差什么；等级多的把“每级都一样的”和“随等级变的”分开说；重名的列出来让它挑', async (t) => {
     const s = setup(t)
-    // 模型自己调不到
-    assert.match((await s.model('find_structure', { name: '大型蒸汽离心机' })).content, /^There is no tool named "find_structure"\./)
     const overview = (await s.lib('find_structure', { name: '蒸汽离心' })).content.split('\n')
     assert.deepEqual(overview, [
       '大型蒸汽离心机 [gregtech:gt.blockmachines/31080]: a multiblock machine with 2 tier(s) (1–2; the tier is how many Multiblock Structure Hologram Projectors are stacked when it is built).',

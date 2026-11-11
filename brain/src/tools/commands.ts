@@ -21,6 +21,12 @@ export const COMMANDS = {
   joinTeam: (team: string): string => `team join ${team}`,
 } as const
 
+/**
+ * 身体的指令允许列表（mod 配置 allowedCommands）的默认内容，照 docs/PROTOCOL.md 抄的。一项可以是几个词（team join）。
+ * 协议里没有读现行列表的接口：这份只在指令被拒绝时给模型参考，并写明主人可能改过。
+ */
+export const DEFAULT_ALLOWED_COMMANDS: readonly string[] = ['home', 'sethome', 'delhome', 'homes', 'spawn', 'back', 'tell', 'msg', 'w', 'tpa', 'tpaccept', 'team join']
+
 /** 一条指令最多这么长（身体的限制是连斜杠 100 个字符）。 */
 export const COMMAND_MAX_CHARS = 99
 

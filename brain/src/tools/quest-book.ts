@@ -51,9 +51,21 @@ async function progressFor(ctx: ToolContext, given: string | undefined): Promise
   }
 }
 
-export async function listQuestLinesLocal(ctx: ToolContext, book: QuestBook, given: string | undefined): Promise<string> {
+/** list_quest_lines 给程序的 data：每章一项；complete / available 只在看得到某个玩家的进度时有。 */
+export interface QuestLinesData {
+  /** 任务书一共多少个任务。 */
+  quests?: number
+  /** 看的是谁的进度；没有进度可看时没有这一项。 */
+  player?: string
+  lines: { name: string; en?: string; quests: number; complete?: number; available?: number }[]
+  /** 做完了、奖励还没领的任务有几个（有进度时）。 */
+  unclaimed?: number
+}
+
+export async function listQuestLinesLocal(ctx: ToolContext, book: QuestBook, given: string | undefined): Promise<ToolResult> {
   const progress = await progressFor(ctx, given)
   const { done } = progress
+  const data: QuestLinesData = { quests: book.size, ...(done && progress.player !== undefined ? { player: progress.player } : {}), lines: [] }
   const head =
     `The quest book has ${book.size} quests in ${book.lines.length} chapters, in the book's order. ` +
     (done
@@ -61,14 +73,19 @@ export async function listQuestLinesLocal(ctx: ToolContext, book: QuestBook, giv
       : `Quests per chapter${progress.why === undefined ? ' (no player given, so no progress)' : ''}:`)
   const rows = book.lines.map((line) => {
     const name = line.en ? `${line.name} (${line.en})` : line.name
+    const entry: QuestLinesData['lines'][number] = { name: line.name, ...(line.en ? { en: line.en } : {}), quests: line.quests.length }
+    data.lines.push(entry)
     if (!done) return `- ${name}: ${line.quests.length}`
     const { complete, available } = book.progressOf(line, done)
+    entry.complete = complete
+    entry.available = available
     return `- ${name}: ${complete} / ${available} / ${line.quests.length}`
   })
   // 奖励没领的：提醒主人去领
   const waiting = done ? book.find({ state: 'unclaimed', done, ...(progress.unclaimed ? { unclaimed: progress.unclaimed } : {}) }).matches.length : 0
   const rewards = waiting > 0 ? `\n${waiting} finished quest(s) still have a reward ${progress.player} has not collected: find_quests with state "unclaimed" lists them.` : ''
-  return `${head}\n${rows.join('\n')}${rewards}${progress.note}`
+  if (done) data.unclaimed = waiting
+  return { content: `${head}\n${rows.join('\n')}${rewards}${progress.note}`, data }
 }
 
 export interface FindQuestsInput {
@@ -99,7 +116,7 @@ export async function findQuestsLocal(ctx: ToolContext, book: QuestBook, i: Find
     ...(progress.unclaimed ? { unclaimed: progress.unclaimed } : {}),
   })
   if (found.lines && found.lines.length === 0) {
-    return fail(`No chapter of the quest book has "${line}" in its name (Chinese or English). list_quest_lines shows the chapters.`)
+    return fail(`No chapter of the quest book has "${line}" in its name (Chinese or English). The library function list_quest_lines shows the chapters.`)
   }
 
   const filters: string[] = []

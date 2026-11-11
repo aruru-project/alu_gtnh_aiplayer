@@ -528,7 +528,7 @@ describe('view_draft 的 picture、view_image', () => {
     const p = pixelsOf(res.images![0]!.data)
     assert.deepEqual([p.width, p.height], [32, 32])
     assert.deepEqual([p.at(8, 8), p.at(24, 8), p.at(24, 24), p.at(8, 24)], [[255, 0, 0], [0, 0, 255], [255, 0, 0], [255, 255, 255]])
-    assert.deepEqual([(await s.run('view_image', { name: 'nope' })).isError, (await s.run('view_image', { name: 'nope' })).content], [true, 'There is no image named "nope". list_images shows the ones there are.'])
+    assert.deepEqual([(await s.run('view_image', { name: 'nope' })).isError, (await s.run('view_image', { name: 'nope' })).content], [true, 'There is no image named "nope". list_designs shows the ones there are.'])
 
     const blind = setup(t)
     blind.design.images.save('flag', png)

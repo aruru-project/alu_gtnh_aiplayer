@@ -1,6 +1,8 @@
 // 看图：把世界里的一块地方画成简图（view_area），看主人传的图片（view_image）；草稿的图在 design.ts 的 view_draft。
 // 图都从工具结果的 images 走，上层统一决定给不给模型看（模型要能看图，而且图只在这一轮里附带）。
 // 模型看不了图时，同样的工具照常返回文字说明：尺寸、图例、一层一层的概要。
+// 这两个都标着 picture：模型能看图时才进工具清单；不能看图时列在库函数的索引里（程序里调，拿文字和 data），
+// 模型直接调也照常执行。
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { PlayerInfo } from '../bridge/protocol.ts'
@@ -14,6 +16,7 @@ import {
   GridError,
   Raster,
   SIDES,
+  UNLOADED_ID,
   blocksOfGrid,
   colorName,
   cropGrid,
@@ -152,6 +155,8 @@ const MARKED_PLAYERS_MAX = 4
 
 export const viewArea: Tool = {
   name: 'view_area',
+  picture: true,
+  brief: '{x1..z2 | radius?}: a box of the world in words, layer by layer -> kinds[]',
   description:
     `Get a picture of a box of the world, drawn from block colours: the shape of a building, the lay of the land, whether what you built looks right. Give two opposite corners (each side at most ${AREA_MAX_SIDE} blocks), or none to look around yourself. It is a schematic drawing, not a screenshot, and costs a lot of context: use it for shape and layout, not for what the query tools answer exactly. If your model cannot see pictures you get a description in words. Details: pictures manual.`,
   inputSchema: obj({
@@ -225,12 +230,15 @@ export const viewArea: Tool = {
       ...(empty ? ['There is nothing but air in it.'] : [`${spec.view === 'layer' ? 'In that layer' : 'In it'} (most common first):`, ...legendLines(picture.legend, names)]),
       SCHEMATIC_NOTE,
     ]
-    return pictureResult(
+    const result = pictureResult(
       ctx,
       text,
       toImage(picture, `${viewWords(spec, area)} of the world at ${where}`, grid),
       () => (empty ? [] : ['Layer by layer, from the bottom up:', ...layerLines(spec.view === 'layer' ? cropGrid(area, { y1: spec.layer, y2: spec.layer }) : area, names)]),
     )
+    // data：给程序用的——看的是哪个盒子、里面各种方块各多少（每一格是什么用 read_blocks）
+    const kinds = picture.legend.filter((e) => !e.look.marker && e.kind.id !== UNLOADED_ID).map((e) => ({ id: e.kind.id, meta: e.kind.meta, ...(names(e.kind) ? { name: names(e.kind) } : {}), count: e.count }))
+    return { ...result, data: { x: o.x, y: o.y, z: o.z, sx: s.x, sy: s.y, sz: s.z, unloaded: area.unloaded, kinds } }
   },
 }
 
@@ -276,26 +284,30 @@ export function showableImage(png: Buffer): { png: Buffer; width: number; height
 
 export const viewImage: Tool = {
   name: 'view_image',
+  picture: true,
+  brief: '{name}: an uploaded image in words -> width, height, colors[]',
   description:
-    'Look at an image your owner uploaded on the panel (list_images shows which there are): to see what it shows before making pixel art of it, or to use it as a reference for a design. Small images are enlarged so you can see them. If your model cannot see pictures you get its size and main colours instead; a program can still read its pixels with image(name).',
-  inputSchema: obj({ name: str('Image name as list_images shows it.', { maxLength: 60 }) }, ['name']),
+    'Look at an image your owner uploaded on the panel (list_designs shows which there are): to see what it shows before making pixel art of it, or to use it as a reference for a design. Small images are enlarged so you can see them. If your model cannot see pictures you get its size and main colours instead; a program can still read its pixels with image(name).',
+  inputSchema: obj({ name: str('Image name as list_designs shows it.', { maxLength: 60 }) }, ['name']),
   async run(ctx, i: { name: string }): Promise<ToolResult | string> {
     if (!ctx.design) return fail('Images are not set up on this brain.')
     const name = i.name.trim()
     const info = ctx.design.images.list().find((image) => image.name === name)
     const png = info ? ctx.design.images.png(name) : undefined
-    if (!info || !png) return fail(`There is no image named "${name}". list_images shows the ones there are.`)
+    if (!info || !png) return fail(`There is no image named "${name}". list_designs shows the ones there are.`)
     const shown = showableImage(png)
     const pixels = info.width * info.height
     const text = [
       `Image "${name}": ${info.width}×${info.height} pixels${canSee(ctx) && shown.scale > 1 ? `, shown enlarged ${shown.scale}× (${shown.width}×${shown.height} px)` : ''}.`,
       ...(shown.transparent > 0 ? [`${Math.round((shown.transparent / pixels) * 100)}% of it is transparent${canSee(ctx) ? ' (drawn as a grey and white checker)' : ''}.`] : []),
     ]
-    return pictureResult(
+    const result = pictureResult(
       ctx,
       text,
       { label: `the uploaded image "${name}"`, mediaType: 'image/png', data: shown.png },
       () => [`Main colours: ${shown.colors.join(', ') || 'none (all transparent)'}.`, 'A program can read every pixel with image(name) (see the "design" manual).'],
     )
+    // data：尺寸、透明的占多少（0–1）、主要颜色（“颜色名 百分比”）。每个像素程序自己用 image(name) 读
+    return { ...result, data: { name, width: info.width, height: info.height, transparent: shown.transparent / pixels, colors: shown.colors } }
   },
 }

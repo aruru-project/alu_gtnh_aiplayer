@@ -12,7 +12,7 @@ import type { DesignWorkspace, ProgramRun } from '../design/index.ts'
 import type { ProgramCall, ProgramCallResult } from '../script/sandbox.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
 import { clip, compactJson, formatTask } from '../tools/format.ts'
-import { programTools, runTool } from '../tools/index.ts'
+import { DEFAULT_RESULT_MAX_CHARS, runTool } from '../tools/index.ts'
 import type { Tool, ToolContext, ToolResult } from '../tools/index.ts'
 
 export interface RoutineLimits {
@@ -75,10 +75,18 @@ export interface RoutineView {
   recent: RoutineCall[]
   /** 程序 log 出来的最近几行。 */
   logs: string[]
+  /** 更早的日志行有多少条没留下（只留最近 LOGS_KEPT 行）。 */
+  logsDropped?: number
+  /** 程序的日志满了（一共只留这么多字符）：这以后 log 的都没留下，上面那几行不是最新的。数字是那个上限。 */
+  logFull?: number
+  /** 日志满了以后没留下（或者只留下开头）的有多少条；例程结束时才知道。 */
+  logLost?: number
   /** 为什么结束（英文，给模型看）。 */
   ending?: string
-  /** 程序 return 的值。 */
+  /** 程序 return 的值（太长时只有开头，见 valueLength）。 */
   value?: string
+  /** 程序 return 的值原来多长；只在它比 value 长（被截了）时有。 */
+  valueLength?: number
   /** 它存下的图纸草稿。 */
   drafts?: string[]
 }
@@ -99,8 +107,8 @@ export interface RoutineDeps {
   /** 扣下的任务事件送回 agent 的事件入口（这时谁开的任务已经清楚了）。 */
   redeliver(ev: RoutineTaskEvent): void
   limits?: Partial<RoutineLimits>
-  /** 一个工具结果最多给程序多少字符的文字（data 不受这个限制）。 */
-  maxResultChars?: number
+  /** “单个工具结果上限”现在是多少：一个工具结果最多给程序这么多字符的文字（data 不受限制），程序 return 的值也照它截。 */
+  maxResultChars?(): number
 }
 
 interface Running {
@@ -208,9 +216,16 @@ export class RoutineRunner {
           onCall: (call) => this.call(run, call),
           onLog: (text) => {
             view.logs.push(clip(text, LOG_LINE_CHARS))
-            if (view.logs.length > LOGS_KEPT) view.logs.splice(0, view.logs.length - LOGS_KEPT)
+            if (view.logs.length > LOGS_KEPT) {
+              view.logsDropped = (view.logsDropped ?? 0) + view.logs.length - LOGS_KEPT
+              view.logs.splice(0, view.logs.length - LOGS_KEPT)
+            }
+          },
+          onLogFull: () => {
+            view.logFull = this.deps.design.logChars
           },
         },
+        valueChars: this.resultMax(),
       })
       .then(
         (result) => this.programEnded(run, result),
@@ -230,6 +245,10 @@ export class RoutineRunner {
     if (!run) return false
     this.finish(run, 'stopped', reason)
     return true
+  }
+
+  private resultMax(): number {
+    return this.deps.maxResultChars?.() ?? DEFAULT_RESULT_MAX_CHARS
   }
 
   // ── 程序调工具 ──
@@ -258,7 +277,7 @@ export class RoutineRunner {
     try {
       res = ROUTINE_BLOCKED_TOOLS.includes(call.name)
         ? { content: `${call.name} cannot be called from inside a routine`, isError: true }
-        : await runTool(programTools(this.deps.tools), ctx, call.name, call.input, { maxResultChars: this.deps.maxResultChars ?? 6000 })
+        : await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: this.resultMax() })
     } finally {
       run.calling--
     }
@@ -333,8 +352,10 @@ export class RoutineRunner {
     if (run.ended) return
     const o = result.outcome
     if (result.saved.length > 0) run.view.drafts = result.saved.map((d) => d.name)
+    if (o.logDropped > 0) run.view.logLost = o.logDropped
     if (o.status === 'ok') {
       if (o.value !== undefined) run.view.value = o.value
+      if (o.valueLength !== undefined) run.view.valueLength = o.valueLength
       return this.finish(run, 'done', 'the program finished')
     }
     if (o.status === 'error') {
@@ -378,12 +399,27 @@ export function describeRoutine(view: RoutineView, now: number): string {
   const took = Math.max(0, Math.round(((view.endedAt ?? now) - view.startedAt) / 1000))
   lines.push(`Routine ${view.id} ("${view.name}") ${STATUS_WORDS[view.status]}${view.ending && view.status !== 'running' ? `: ${view.ending}` : ''}. ${view.calls} tool call(s), ${view.actions} task(s), ${took} s ${view.status === 'running' ? 'so far' : 'in all'}.`)
   if (view.current) lines.push(`Now waiting for: ${view.current.tool} ${view.current.input}${view.current.taskId ? ` (task ${view.current.taskId})` : ''}, for ${Math.round((now - view.current.since) / 1000)} s.`)
-  if (view.value !== undefined) lines.push(`It returned: ${view.value}`)
+  if (view.value !== undefined) {
+    // 返回值太长时只有开头：写明一共多少、给了多少、剩下的怎么拿
+    lines.push(
+      view.valueLength !== undefined && view.valueLength > view.value.length
+        ? `It returned (CUT: this is only the first ${view.value.length} of ${view.valueLength} characters, the most a returned value holds. To get the rest, have the program return less: the fields it needs from r.data, or a summary): ${view.value}`
+        : `It returned: ${view.value}`,
+    )
+  }
   if (view.drafts && view.drafts.length > 0) lines.push(`It saved draft(s): ${view.drafts.join(', ')}.`)
   if (view.recent.length > 0) {
-    lines.push(`Last ${view.recent.length} call(s):`)
+    // 每次调用只留结果的第一行；调用多了只留最近的几次
+    lines.push(`Last ${view.recent.length}${view.calls > view.recent.length ? ` of ${view.calls}` : ''} call(s), the first line of each result:`)
     for (const c of view.recent) lines.push(`- #${c.n} ${c.tool} ${c.input} → ${c.ok ? '' : 'FAILED: '}${c.result}`)
   }
-  if (view.logs.length > 0) lines.push(`Its log (last ${view.logs.length} line(s)):`, ...view.logs.map((l) => `  ${l}`))
+  if (view.logs.length > 0) {
+    const earlier = view.logsDropped ?? 0
+    lines.push(`Its log (last ${view.logs.length}${earlier > 0 ? ` of ${view.logs.length + earlier}` : ''} line(s)${earlier > 0 ? '; the earlier ones are not kept' : ''}):`, ...view.logs.map((l) => `  ${l}`))
+  }
+  // 日志满了：上面的不是它最后说的话
+  if (view.logFull !== undefined) {
+    lines.push(`  … (its log is full: a program's log holds ${view.logFull} characters in all, so ${view.logLost !== undefined ? `${view.logLost} line(s)` : 'the lines'} it logged after this point were cut short or dropped)`)
+  }
   return lines.join('\n')
 }

@@ -234,6 +234,35 @@ describe('例程', () => {
     assert.match(woken, /Its log \(last 1 line\(s\)\):\n {2}going/)
   })
 
+  it('例程的日志只留最近 40 行、return 的值太长只给开头：叫醒它的消息里写明留了多少、一共多少，不让它把半截当成全部', async (t) => {
+    const h = setup(t)
+    await modelCalls(h, 'start_routine', { code: `for (let i = 0; i < 60; i++) log('step ' + i)\nawait tool('get_status')\nreturn 'z'.repeat(9000)`, name: '话多' })
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done')
+    await waitFor('the model was woken', () => /你启动的例程有结果了/.test(h.llm.lastUserText(h.llm.requests.length - 1)))
+    const woken = h.llm.lastUserText(h.llm.requests.length - 1)
+    // 返回值：最多和一个工具结果一样长（这里是 6000）
+    assert.match(woken, /\nIt returned \(CUT: this is only the first 6000 of 9000 characters, the most a returned value holds\. To get the rest, have the program return less: the fields it needs from r\.data, or a summary\): z{6000}\n/)
+    assert.match(woken, /\nLast 1 call\(s\), the first line of each result:\n- #1 get_status \{\} → /)
+    assert.match(woken, /\nIts log \(last 40 of 60 line\(s\); the earlier ones are not kept\):\n {2}step 20\n {2}step 21\n/)
+    assert.match(woken, /\n {2}step 58\n {2}step 59\n/)
+  })
+
+  it('例程的日志满了（一共 4000 字符）以后再 log 的不留：它中途看进度、最后被叫醒时都被告知，上面那几行不是程序最后说的话', async (t) => {
+    const h = setup(t)
+    // 100 行、每行一百来个字符：四千字符只放得下前四十行左右
+    await modelCalls(h, 'start_routine', { code: `for (let i = 0; i < 100; i++) log('line ' + i + ' ' + 'x'.repeat(92))\nawait tool('go_to', { x: 5, z: 5 })\nreturn 'there'` })
+    await taskStarted(h, 1)
+    const status = await modelCalls(h, 'routine_status', {}, 'Alu 做到哪了')
+    assert.match(status, /\n {2}line 0 x+\n/)
+    assert.match(status, /\n {2}… \(its log is full: a program's log holds 4000 characters in all, so the lines it logged after this point were cut short or dropped\)$/)
+    assert.doesNotMatch(status, /line 99 /)
+    h.agent.handleEvent(taskEnded('t1', 'done', { type: 'goto' }))
+    await waitFor('the model was woken', () => /你启动的例程有结果了/.test(h.llm.lastUserText(h.llm.requests.length - 1)))
+    const lost = /\n {2}… \(its log is full: a program's log holds 4000 characters in all, so (\d+) line\(s\) it logged after this point were cut short or dropped\)\n/.exec(h.llm.lastUserText(h.llm.requests.length - 1))
+    assert.ok(lost, h.llm.lastUserText(h.llm.requests.length - 1).slice(-400))
+    assert.ok(Number(lost[1]) >= 60 && Number(lost[1]) <= 62, lost[1])
+  })
+
   it('run_program 的程序也能调工具，但只许查询的：结果当场回来；想开任务会被拒绝并指到 start_routine', async (t) => {
     const h = setup(t)
     const result = await modelCalls(h, 'run_program', {

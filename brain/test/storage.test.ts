@@ -82,7 +82,7 @@ describe('list_containers：容器一页一页列', () => {
     assert.equal((await s.run('list_containers')).content, 'No containers within 16 blocks of you. If it is at some other place (where your owner is, or a position they named), look around that place: give "at".')
   })
 
-  it('接着漏斗、管道的容器标成 AUTOMATED；抽屉写明归哪个管理器管；抽屉管理器自己不装东西，指到 list_drawers；服务器没列全的种类如实说', async (t) => {
+  it('接着漏斗、管道的容器标成 AUTOMATED；抽屉写明归哪个管理器管；抽屉管理器自己不装东西，指到库函数 list_drawers；服务器没列全的种类如实说', async (t) => {
     const s = setup(t)
     s.game.handlers['world.containers'] = paged([
       chest(1, [{ ...COAL, count: 5 }], { attached: [{ x: 1, y: 65, z: 0, name: 'Hopper', kind: 'hopper' }, { x: 2, y: 64, z: 0, name: 'Brass Item Pipe', kind: 'item pipe' }] }),
@@ -94,7 +94,7 @@ describe('list_containers：容器一页一页列', () => {
       'Within 16 blocks of you: 4 container(s).',
       '- (1,64,0) Chest [minecraft:chest] 1/27 slots used (AUTOMATED: Hopper at (1,65,0), Brass Item Pipe at (2,64,0) feeds or drains it): 5× minecraft:coal "Coal"',
       '- (5,64,0) Oak Drawers 1x2 [StorageDrawers:fullDrawers2] [drawers] 1/2 drawer slots used (managed by the drawer controller at (9,64,0)): 12800× minecraft:coal "Coal"',
-      '- (9,64,0) Drawer Controller [StorageDrawers:controller] [drawer controller] 166/353 drawer slots used (manages 120 drawer block(s); see what they hold with list_drawers at this position)',
+      '- (9,64,0) Drawer Controller [StorageDrawers:controller] [drawer controller] 166/353 drawer slots used (manages 120 drawer block(s); the library function list_drawers lists what they hold, given this position)',
       '- (3,64,0) Chest [minecraft:chest] 1/27 slots used: 1× minecraft:coal "Coal", … and 7 more kinds the server did not list',
     ])
   })

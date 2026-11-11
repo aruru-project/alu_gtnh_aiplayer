@@ -13,7 +13,7 @@ import { cleanChatText } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
-import { QUERY_TOOLS, QuestProgressCache, SurroundingsCache, programTools, runTool, toToolSpecs } from '../tools/index.ts'
+import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
 import type { ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, historyMessages } from './compaction.ts'
 import { buildSnapshot, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
@@ -259,7 +259,8 @@ export class Agent {
           },
           redeliver: (ev) => this.handleEvent(ev),
           ...(deps.routineLimits ? { limits: deps.routineLimits } : {}),
-          maxResultChars: this.deps.settings().toolResultMaxChars,
+          // 每次现问：主人在面板上改了“单个工具结果上限”，例程里的工具结果和程序的返回值跟着变
+          maxResultChars: () => this.deps.settings().toolResultMaxChars,
         })
       : undefined
     const saved = deps.persist?.load()
@@ -494,11 +495,13 @@ export class Agent {
   /** run_program 的程序里调一个工具：只许查询类的，走和模型调工具同一条路，记进日志。 */
   private async queryFromProgram(name: string, input: unknown): Promise<ProgramToolResult> {
     if (!QUERY_TOOLS.includes(name)) {
-      return { ok: false, text: `${name} cannot be called from run_program: a program there can only look things up (${QUERY_TOOLS.join(', ')}). To act, start the program with start_routine.` }
+      // 列出来的是现在的名字；合并掉的旧名字照样能调，只是不再提
+      const lookups = QUERY_TOOLS.filter((query) => !LEGACY_TOOLS.some((old) => old.name === query))
+      return { ok: false, text: `${name} cannot be called from run_program: a program there can only look things up (${lookups.join(', ')}). To act, start the program with start_routine.` }
     }
     const args = compactJson(input, 160)
     this.deps.log.add({ kind: 'tool_call', who: name, text: `[程序] ${args}` })
-    const res = await runTool(programTools(this.deps.tools), this.toolContext(this.deps.settings().botName), name, input, { maxResultChars: this.deps.settings().toolResultMaxChars })
+    const res = await runTool(this.deps.tools, this.toolContext(this.deps.settings().botName), name, input, { maxResultChars: this.deps.settings().toolResultMaxChars })
     const line = firstLine(res.content)
     const entry: Parameters<ActivityLog['add']>[0] = { kind: 'tool_result', who: name, text: `[程序] ${line}` }
     if (line !== res.content) entry.detail = res.content
@@ -669,7 +672,8 @@ export class Agent {
       memory: this.deps.memory.render(),
       manuals,
     })
-    const toolSpecs = toToolSpecs(this.deps.tools)
+    // 清单按这一轮用的模型给：看图的工具只发给能看图的模型；库函数不在清单里，在 run_program 说明后面的索引里
+    const toolSpecs = modelToolSpecs(this.deps.tools, { canSee })
     const ctx = this.toolContext(settings.botName, canSee)
     let prior = this.priorMessages()
     this.turnSpoke = false
@@ -762,6 +766,7 @@ export class Agent {
             isError: true,
           }
         } else {
+          // 不在清单里的名字（库函数、合并掉的旧名字、不能看图时的看图工具）runTool 一样找得到，照常执行
           res = await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: settings.toolResultMaxChars })
         }
         this.turnTrace.calls.push({
@@ -1008,6 +1013,7 @@ export class Agent {
     return {
       botName,
       canSeeImages: () => canSee,
+      maxResultChars: () => this.deps.settings().toolResultMaxChars,
       bridge: this.deps.bridge,
       memory: this.deps.memory,
       reminders: this.deps.reminders,

@@ -1,4 +1,4 @@
-// 一个纯计算的帮手（库函数，只在程序里能调）：模型自己选定了每一层用哪条配方之后，把总原料算出来。
+// 一个纯计算的帮手（库函数：不在发给模型的工具清单里，程序里调）：模型自己选定了每一层用哪条配方之后，把总原料算出来。
 // 数量沿树相乘，一轮出几个按轮数取整，模具、工具这类不消耗的只算一个。
 // 它不替模型选任何一步：路线（哪样东西用哪条配方）全由调用的人给；没给配方的东西就算成“要现成的”。
 
@@ -27,6 +27,7 @@ function serves(slot: RecipeSlot, out: { id: string; meta: number }, items: Item
 
 export const totalMaterials: Tool = {
   name: 'total_materials',
+  brief: '{id, meta?, count?, recipes}: adds up recipes you chose -> steps[], raw[], kept[]',
   description:
     'Pure arithmetic over recipes YOU chose: for a target item and count, and the # number of the recipe you decided to use for each thing that is to be made, it multiplies the amounts down the tree (rounds are rounded up; molds and tools that are not used up count once) and lists how many rounds of each recipe, what has to come from storage, what is kept, and the fluids. It chooses nothing: a thing you gave no recipe for is counted as taken ready-made.',
   inputSchema: obj(

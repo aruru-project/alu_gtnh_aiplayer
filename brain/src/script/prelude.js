@@ -438,7 +438,7 @@
   let nextCall = 1
   function tool(name, input) {
     if (config.limits.tools !== true) return Promise.reject(new Error('this program cannot call tools'))
-    if (typeof name !== 'string' || name.length === 0) return Promise.reject(new TypeError('tool: give the name of a tool, e.g. tool("list_drawers", { x, y, z })'))
+    if (typeof name !== 'string' || name.length === 0) return Promise.reject(new TypeError('tool: give the name of a tool or library function, e.g. tool("list_drawers", { x, y, z })'))
     let request
     const id = nextCall++
     try {
@@ -476,7 +476,12 @@
     promise.then(
       (value) => {
         outcome.state = 'done'
-        if (value !== undefined) outcome.value = show(value).slice(0, config.limits.valueChars)
+        if (value !== undefined) {
+          // 太长的只交开头那一段，连同原来一共多长：那一头好写明截了多少
+          const text = show(value)
+          outcome.value = text.slice(0, config.limits.valueChars)
+          if (text.length > outcome.value.length) outcome.valueLength = text.length
+        }
         outcome.drafts = [...saved.values()]
       },
       (error) => {

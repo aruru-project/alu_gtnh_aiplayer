@@ -204,24 +204,34 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 ### 工具一览
 
-现在一共 66 个工具，连参数 schema 一起发给模型的是六万三千字符左右。另有 4 个**库函数**（`read_blocks`、`find_structure`、`check_structure`、`total_materials`）：只在它写的程序里能调，不发给模型，不占这个数（见 `docs/SCRIPTS.md` 的“库函数”）。细节不写在工具说明里：说明只讲这个工具给什么、要什么，怎么用好写在手册里。
+模型能用的东西分三层（`tools/index.ts`，细节见 `docs/SCRIPTS.md` 的“库函数”）：
 
-| 一类 | 工具 |
-|---|---|
-| 说话 | `say` `whisper` |
-| 看 | `get_status` `look_around` `scan_area` `view_area` `inspect_block` `probe_block` `find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器） |
-| 仓库 | `list_containers`（一页页列，标出接着管道的）`list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页）`find_in_storage`（某几样东西在哪） |
-| 走动 | `go_to` `go_to_player` `follow_player` `go_home` `set_home` `list_homes` `join_team` |
-| 地形 | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` |
-| 图纸 | `list_blueprints` `check_blueprint` `build_blueprint` |
-| 写程序 | `run_program`（当场跑完，只能调查询类的工具）`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`list_images` `view_image` `list_drafts` `view_draft` `publish_draft` `delete_draft` |
-| 物品 | `deposit_items` `withdraw_items`（位置，或者身上的一个包）`haul_items` `collect_items` `give_items` `use_item`（拿在手里右键） |
-| 制作 | `find_item` `find_recipes` `find_uses` `find_machines` `craft_item` `process_items` |
-| 界面（通用） | `open_screen` `click_slot` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用） |
-| 任务书 | `list_quest_lines` `find_quests` `get_quest` |
-| 任务、记忆、手册、意见簿 | `task_status` `cancel_task` `remember` `forget` `set_reminder` `list_manuals` `read_manual` `write_manual`（把主人教的做法写成自己的手册）`report_problem` |
+- **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。现在能看图的模型拿到 55 个、五万五千八百字符左右；不能看图的模型拿到 53 个、五万两千六百字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。瘦身之前是 66 个、六万两千五百字符。
+- **库函数**（11 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 1500 字符），模型靠它知道这些函数存在。
+- **旧名字**（6 个）：合并掉的工具原来的名字，不发、不提，只为已经存着的例程、笔记和它自己写的手册还能用。
 
-**看周围的工具可以换中心。** `look_around`、`find_blocks`、`list_containers`、`list_stock`、`find_in_storage`、`find_machines` 默认以它自己为中心；给 `at`（一个坐标）就以那个地方为中心看（`tools/where.ts`）。主人说的是某个地方的东西时该这么用：实测它站在五十格外、以自己为中心查了一圈没找到目标箱子，就停下来问主人要坐标了。所以以自己为中心什么都没找到时，结果里会提醒一句“可以给 at 看别处”。`view_area`、`scan_area` 本来就是给范围的，`list_drawers` 给的是抽屉管理器的坐标。
+不在清单里不等于调不到：模型直接调了一个库函数或旧名字，和调工具一样照常执行。说明只讲这个工具给什么、要什么，怎么用好写在手册里。`test/tool-list.test.ts` 有一条防回涨的测试：发给模型的清单总字符数超过上限就失败，并列出各工具的大小。
+
+| 一类 | 工具 | 库函数（程序里调） |
+|---|---|---|
+| 说话 | `say` `whisper` | |
+| 看 | `get_status` `look_around` `scan_area` `inspect_block` `find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
+| 仓库 | `list_containers`（一页页列，标出接着管道的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
+| 走动 | `go_to` `go_to_player` `follow_player` `go_home` | |
+| 服务器指令 | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明） | |
+| 地形 | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` | |
+| 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）`build_blueprint` | `check_blueprint`（动手前对比） |
+| 写程序 | `run_program`（当场跑完，只能调查询类的）`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`view_draft` `publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |
+| 物品 | `deposit_items` `withdraw_items`（位置，或者身上的一个包）`collect_items` `give_items` `use_item`（拿在手里右键） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
+| 制作 | `find_item` `find_recipes` `find_machines` `craft_item` `process_items` | `find_uses`（一样东西能拿来做什么）`total_materials`（把选好的配方的总原料算出来） |
+| 界面（通用） | `open_screen` `click_slot` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用） | |
+| 任务书 | `find_quests` `get_quest` | `list_quest_lines`（各章和进度） |
+| 多方块结构 | | `find_structure` `check_structure` |
+| 任务、记忆、手册、意见簿 | `task_status` `cancel_task` `remember` `forget` `set_reminder` `list_manuals` `read_manual` `write_manual`（把主人教的做法写成自己的手册）`report_problem` | |
+
+旧名字：`list_blueprints` `list_drafts` `list_images`（现在是 `list_designs`），`set_home` `list_homes` `join_team`（现在是 `run_command`）。
+
+**看周围的工具可以换中心。** `look_around`、`find_blocks`、`list_containers`、`list_stock`、`find_in_storage`、`find_machines` 默认以它自己为中心；给 `at`（一个坐标）就以那个地方为中心看（`tools/where.ts`）。主人说的是某个地方的东西时该这么用：实测它站在五十格外、以自己为中心查了一圈没找到目标箱子，就停下来问主人要坐标了。所以以自己为中心什么都没找到时，结果里会提醒一句“可以给 at 看别处”。`view_area`、`scan_area` 本来就是给范围的，`list_drawers` 给的是抽屉管理器的坐标（`list_stock`、`list_drawers` 是库函数）。
 
 ### 机器：身体读得懂的，和照配方册认的
 
@@ -237,7 +247,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 `packdata/structures.jsonl`（真实导出 334 台多方块、1426 种等级的结构）启动时读进来，文件不在就当没有。没有为它加给模型的工具：
 
 - **程序里的数据**：`data.structures()`、`data.structure(名字或 id, meta)`——一台机器每个等级的尺寸、材料清单、每一格是什么、机器自己的说明。
-- **库函数**（`tools/structures.ts`，只在程序里能调）：`find_structure`（等级、材料、相邻两级差什么，整理成一段话）、`check_structure`（对着世界里那台比：四个水平朝向都试，列出每个要换的位置和材料还差多少；机器零件占着机械方块的位置算对）、`read_blocks`（世界里一个盒子的全部方块）。
+- **库函数**（`tools/structures.ts`，不在工具清单里，程序里调）：`find_structure`（等级、材料、相邻两级差什么，整理成一段话）、`check_structure`（对着世界里那台比：四个水平朝向都试，列出每个要换的位置和材料还差多少；机器零件占着机械方块的位置算对）、`read_blocks`（世界里一个盒子的全部方块）。
 - **手册 `multiblocks`**：怎么取、怎么比，带一段完整的示例程序（和 `check_structure` 做的是同一件事，模型想换一种比法就照着改；有测试把手册里那段程序照抄着跑一遍）；怎么搭、怎么升级的三条路（告诉主人清单、一块块换没有朝向的方块、还没验证的全息投影仪）。
 - **面板**：“图纸”页最下面“多方块结构”，按名字搜，点一台看每一级的材料和三维预览（和草稿的预览同一个查看器）。
 
@@ -248,7 +258,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 现在是这样：
 
 - **事实**：`find_recipes` 把一样东西的做法按加工方式一种种列（照配方册的先后，不排好坏），每种写着基地里有没有做它的机器、那台机器什么状况（没电、电压或炉温不够、结构不完整、身体读不到状态），配方要的流体多方块看得到的写出仓里有多少、单方块的写明看不到。结尾写明“CAN RUN NOW”到底判断了什么、没判断什么。`find_in_storage` 不给范围时看整个基地（往四周错开四个点各查 64 格，同一个容器只算一次）。
-- **一个只做乘法的帮手**（库函数 `total_materials`，只在程序里能调）：模型自己选定每一层用哪条配方之后，把总原料算出来。它不查库存、不替模型选任何一步。
+- **一个只做乘法的帮手**（库函数 `total_materials`，不在工具清单里，程序里调）：模型自己选定每一层用哪条配方之后，把总原料算出来。它不查库存、不替模型选任何一步。
 - **手册 `crafting`** 写的是“玩家挑做法时会想什么”（每个成品耗多少料、要不要为它新做模具、会不会用掉现成的机器、流体从哪来、哪些是主人的自动化），和一个一层层往下查的走法示例。是参考，不是规则。
 - **卡住了**（核心提示词）：把已经查到的链、卡在哪、试过什么告诉主人，问他；主人教的记下来。
 - **它自己写手册**（`write_manual`）：主人教的成套做法，它写成一篇自己的手册（最多 20 本、每本 4000 字符，盖不了默认的和主人写的），之后和别的手册一样列得出、读得到；面板“手册”页上标着“它自己写的”，主人能看、能改、能删。
@@ -259,6 +269,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 - `run_program`：程序在模型的这一轮里跑完，里面可以 `await tool(名字, 参数)` 调**查询类**的工具（`tools/index.ts` 的 `QUERY_TOOLS`），适合一次查很多再汇总。
 - `start_routine`：程序在后台跑（“例程”），几乎所有工具都能调；会开任务的工具等任务结束才返回。模型启动它以后这一轮就结束，例程做完、出错、被停掉或者碰到上限时再把模型叫醒，带上每一步和程序的日志。
+- 程序 `return` 的值最多和一个工具结果一样长（跟面板上“单个工具结果上限”那个设置走，默认 6000 字符），所以 `return (await tool('list_stock', {})).text` 看到的和直接调一样多。这条路上凡是会截短的地方都写明截了多少：返回值（一共多少、给了多少、剩下的怎么拿）、程序的日志满了、例程只留最近 40 行日志和最近 12 次调用（每次只留结果的第一行）。
 - 例程里调的每个工具和模型自己调走同一条路（`runTool`）：同样的参数校验，同样记进对话日志，面板概览页看得到进度，主人可以点“停止例程”；它正在做的任务被人取消也算叫它停下。
 - 上限（`agent/routine.ts` 的 `DEFAULT_ROUTINE_LIMITS`）：总时长 30 分钟（启动时可以给到 180），最多调 400 次工具、开 150 个任务，连着 3 次工具失败就停；程序自己的计算时间 20 秒，等工具结果的时间不算在内。同一时间只跑一个。
 - 例程不落盘：大脑重启时它会停下、正在做的任务被取消，重启后模型被告知它停在哪一步。
@@ -266,7 +277,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 ### 看图：简图怎么画、怎么给模型
 
-它“看”东西靠三个工具，返回的都是一张 PNG 加一段文字说明：
+它“看”东西靠三个工具，返回的都是一张 PNG 加一段文字说明。它们只在当前模型开了“能看图”时才进工具清单；模型不能看图时 `view_area`、`view_image` 成了库函数（程序里调，拿文字和数据），`view_draft` 留在清单里、只出文字（见 `docs/SCRIPTS.md` 的“库函数”）：
 
 | 工具 | 看什么 |
 |---|---|
@@ -299,6 +310,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 `src/tools/commands.ts` 集中放着以 bot 身份执行的指令字符串（`tell`、`sethome`、`home list`、`team join`）和判断私聊有没有送到的回显样式，
 按 GTNH 自带的 ServerUtilities 写的，回显都在测试服上实测过。换了指令 mod 改这一个文件。这些指令还得在身体那边的允许列表里，否则 `bot.command` 返回 `denied`。
+现在用到这些字符串的是 `whisper` 和三个旧名字（`set_home`、`list_homes`、`join_team`）；模型自己发指令走通用的 `run_command`，指令是它自己写的，这个文件只给它留了一份“默认允许哪些”的列表（`DEFAULT_ALLOWED_COMMANDS`，照 `docs/PROTOCOL.md` 抄的），在指令被拒绝时写进结果——身体不告诉大脑现行的允许列表。服务器换了指令 mod 时要改的是 `travel`、`failures` 手册和 `run_command` 说明里的例子。
 
 身体对说话和指令有两条限制，工具已经照着做了：一条指令连斜杠最多 100 个字符（长的私聊会拆成几条 `tell`）；
 短时间内说话加指令太多会被拒绝（`denied: too many chat lines and commands…`），这时工具告诉模型“等几秒再说”，和“这条指令不让用”分开。

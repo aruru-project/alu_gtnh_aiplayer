@@ -5,7 +5,7 @@ import { BridgeError } from '../src/bridge/protocol.ts'
 import path from 'node:path'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
-import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
+import { ALL_TOOLS, LEGACY_TOOLS, LIBRARY_TOOLS, programTools, runTool } from '../src/tools/index.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
 import { tmpDir } from './helpers.ts'
@@ -58,25 +58,13 @@ function setup(t: { after(fn: () => void): void }) {
   return { game, memory, manuals, who, reminders, spoke, started, cancels, open: () => ({ cancels: cancelsOpen, commands: commandsOpen }), run }
 }
 
-describe('工具清单', () => {
-  it('规格里列出的第一版工具都在，名字不重复，参数 schema 都是对象', () => {
-    const expected = [
-      'say', 'whisper', 'get_status', 'look_around', 'scan_area', 'view_area', 'inspect_block', 'probe_block', 'find_blocks', 'list_containers', 'list_drawers', 'list_stock',
-      'get_player_position', 'go_to', 'go_to_player', 'follow_player', 'go_home', 'set_home', 'list_homes', 'join_team',
-      'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
-      'list_blueprints', 'check_blueprint', 'build_blueprint',
-      'run_program', 'start_routine', 'routine_status', 'stop_routine', 'list_images', 'view_image', 'list_drafts', 'view_draft', 'publish_draft', 'delete_draft',
-      'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'close_screen',
-      'find_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
-      'list_quest_lines', 'find_quests', 'get_quest',
-      'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
-      'list_manuals', 'read_manual', 'write_manual',
-      'report_problem',
-    ]
-    const names = ALL_TOOLS.map((x) => x.name)
-    assert.deepEqual([...names].sort(), [...expected].sort())
-    assert.equal(new Set(names).size, names.length)
-    for (const tool of ALL_TOOLS) {
+// 模型拿到哪些工具、库函数怎么调、旧名字还能不能用：见 tool-list.test.ts。这里只查每个工具自己写得合不合规。
+describe('工具的写法', () => {
+  it('按名字调得到的每一个（工具、库函数、旧名字）：名字不重复，参数 schema 是对象，说明是英文', () => {
+    const all = programTools(ALL_TOOLS)
+    assert.equal(all.length, ALL_TOOLS.length + LIBRARY_TOOLS.length + LEGACY_TOOLS.length)
+    assert.equal(new Set(all.map((x) => x.name)).size, all.length)
+    for (const tool of all) {
       assert.equal(tool.inputSchema.type, 'object', tool.name)
       assert.ok(tool.description.length > 10 && /^[\x20-\x7e×≤–—“”’]+$/.test(tool.description), `${tool.name} description should be English`)
     }
@@ -88,7 +76,7 @@ describe('工具清单', () => {
       'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'craft_item', 'process_items',
     ]
     for (const name of taskTools) {
-      const tool = ALL_TOOLS.find((x) => x.name === name)!
+      const tool = programTools(ALL_TOOLS).find((x) => x.name === name)!
       assert.equal(tool.inputSchema.properties.queue?.type, 'boolean', name)
     }
   })
@@ -396,7 +384,7 @@ describe('观察', () => {
 
   it('模型看到的工具说明里写明：存取、搬运、补给和卸货的位置都可以是抽屉', () => {
     // 用户实测时模型说“抽屉不一定能识别成容器”，根本没去试；它只能从这些说明里知道行不行
-    const tool = (name: string) => ALL_TOOLS.find((x) => x.name === name)!
+    const tool = (name: string) => programTools(ALL_TOOLS).find((x) => x.name === name)!
     for (const name of ['deposit_items', 'withdraw_items', 'haul_items', 'list_containers', 'look_around']) {
       assert.match(tool(name).description, /drawers/i, name)
     }
@@ -1394,6 +1382,45 @@ describe('任务书（本地没有资料，问服务器）', () => {
   })
 })
 
+describe('发服务器指令（run_command）', () => {
+  it('设家、列家、加入队伍都是它：指令原样发出去（开头的 / 去掉），服务器的回显原样给它，程序拿到的是数据', async (t) => {
+    const s = setup(t)
+    const replies: Record<string, string[]> = { 'sethome base': ["Home 'base' set!"], 'home list': ['Alu: 2 / 99: base, mine'], 'team join steves_base': ["You joined team 'steves_base'"], 'team join nope': ["Team 'nope' not found!"] }
+    s.game.handlers['bot.command'] = (p) => ({ output: replies[String(p.command)] ?? [] })
+    assert.deepEqual(await s.run('run_command', { command: 'sethome base' }), { content: "Ran /sethome base. The server replied: Home 'base' set!", data: { command: 'sethome base', output: ["Home 'base' set!"] } })
+    assert.equal((await s.run('run_command', { command: '/home list' })).content, 'Ran /home list. The server replied: Alu: 2 / 99: base, mine')
+    assert.equal((await s.run('run_command', { command: 'team join steves_base' })).content, "Ran /team join steves_base. The server replied: You joined team 'steves_base'")
+    // 成没成只有回显知道：原话给它，不替它判断
+    assert.deepEqual(await s.run('run_command', { command: 'team join nope' }), { content: "Ran /team join nope. The server replied: Team 'nope' not found!", data: { command: 'team join nope', output: ["Team 'nope' not found!"] } })
+    assert.deepEqual(s.game.callsOf('bot.command').map((p) => p.command), ['sethome base', 'home list', 'team join steves_base', 'team join nope'])
+    assert.equal((await s.run('run_command', { command: 'back' })).content, 'Ran /back. The server printed nothing (a late reply would show up as a system message).')
+    assert.deepEqual(s.open(), { cancels: 0, commands: 0 })
+  })
+
+  it('不在服务器允许列表里的指令：被拒绝时结果写明原因、默认允许哪些、重试没用', async (t) => {
+    const s = setup(t)
+    // 真实 mod 的原话
+    s.game.handlers['bot.command'] = (p) => {
+      throw new BridgeError('denied', `command is not on the bot allow list: ${String(p.command)}`)
+    }
+    const res = await s.run('run_command', { command: 'team leave' })
+    assert.equal(res.isError, true)
+    assert.equal(
+      res.content,
+      'The game server refused "/team leave": it is not on its allow list of commands for bots. Asking again gives the same answer. ' +
+        "The list is in the mod's config (allowedCommands) and cannot be read from here; unless your owner changed it, it holds: home, sethome, delhome, homes, spawn, back, tell, msg, w, tpa, tpaccept, team join. A player can run the command, or your owner can add it to the list.",
+    )
+  })
+
+  it('空的、带换行的、太长的指令不发出去', async (t) => {
+    const s = setup(t)
+    for (const command of ['/', 'sethome a\nop Steve', `tell Steve ${'x'.repeat(95)}`]) assert.equal((await s.run('run_command', { command })).isError, true, command)
+    assert.equal(s.game.callsOf('bot.command').length, 0)
+  })
+})
+
+// set_home、list_homes、join_team 是并进 run_command 之前的名字：不在发给模型的清单里了，
+// 已经存着的例程、笔记里调到它们（或者模型照旧习惯直接调）照常执行。
 describe('home、记忆、提醒', () => {
   it('set_home 执行 sethome 指令，并把地点和用途记进记忆', async (t) => {
     const s = setup(t)

@@ -7,7 +7,7 @@
   - `data.structures()`：全部机器 `[{ id, meta, name, tiers }]`。按名字找：`data.structures().filter((m) => m.name.includes('离心'))`。
   - `data.structure('大型蒸汽离心机')` 或 `data.structure(id, meta)`：一台机器。`m.tiers` 有哪些等级，`m.info`、`m.structureInfo` 是机器自己的说明（中文，写着哪些位置能放仓：“任意机械方块”），`m.tier(2)` 是第 2 级的搭法。重名的机器会报错并列出各自的 id/meta。
   - 一种搭法 `row`：`row.size` 是 [x, y, z] 各几格，`row.blocks` 是材料清单 `[{ id, meta, name, n }]`，`row.controller` 是主机在盒子里的位置，`row.palette[row.cells[(y * row.size[2] + z) * row.size[0] + x]]` 是 (x, y, z) 那一格的方块（空的是 minecraft:air）。**数据里主机正面朝南（+z）。**
-- 现成的库函数（也只在程序里能调）：
+- 现成的库函数（不在工具清单里，在程序里调；run_program 的说明后面有一份全部库函数的索引）：
   - `await tool('find_structure', { name })`：这台机器的等级、材料、说明、相邻两级差什么，已经整理成一段话（r.text）。加 `tier` 看一级，加 `from` 和 `tier` 看两级之差。
   - `await tool('check_structure', { at: 主机坐标, tier })`：对着世界里那台比，r.text 是结论，r.data.changes 是每个要换的位置 `{ x, y, z, from, to }`，r.data.need 是要的方块和还差多少。
   - `await tool('read_blocks', { x1, y1, z1, x2, y2, z2 })`：世界里一个盒子的全部方块，r.data 是 `{ x, y, z, sx, sy, sz, palette, cells }`，下标同上。

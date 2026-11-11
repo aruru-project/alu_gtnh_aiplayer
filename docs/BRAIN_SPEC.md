@@ -158,6 +158,8 @@ interface ProviderConfig {
 
 任务类工具都带可选参数 `queue: boolean`（对应 `mode: "append"`）。
 
+上面是第一版的清单，留着当记录。现在的工具分三层：发给模型的工具、不发给模型而在它写的程序里调的**库函数**、合并掉的工具的**旧名字**（`set_home` / `list_homes` 现在是通用的 `run_command`，`haul_items` 是库函数……）；看图的工具只发给能看图的模型。现在的清单见 `brain/README.md` 的“工具一览”，三层怎么分、库函数各给什么见 `docs/SCRIPTS.md` 的“库函数”。
+
 ## bridge 客户端 `bridge/`
 
 - 连接、`hello`、断线指数退避重连、带 `serverEpoch` + `lastSeq` 续传（落盘）、请求超时、事件分发。

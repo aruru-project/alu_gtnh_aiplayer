@@ -44,6 +44,7 @@ export interface ProgramLimits {
   maxKinds: number
   maxDrafts: number
   maxPixels: number
+  /** 程序 return 的值最多交回来多少字符（更长的只交开头，并在结果里说明原来多长）。 */
   valueChars: number
 }
 
@@ -92,6 +93,8 @@ export interface SandboxHooks {
   onCall?(call: ProgramCall): Promise<ProgramCallResult>
   /** 程序 log 了一行。 */
   onLog?(text: string): void
+  /** 程序的日志满了（logChars）：这以后 log 的都不再留下。只报一次。 */
+  onLogFull?(): void
   /** 中途把程序停掉（主人取消、总时长到了）。 */
   signal?: AbortSignal
 }
@@ -99,17 +102,20 @@ export interface SandboxHooks {
 export type SandboxOutcome = {
   /** 程序 log 出来的行（到被杀为止的也在）。 */
   logs: string[]
-  /** 超出上限没留下的 log 条数。 */
+  /** 超出上限没留下（或者只留下了开头）的 log 条数。 */
   logDropped: number
   durationMs: number
 } & (
-  | { status: 'ok'; value?: string; drafts: unknown[] }
+  /** valueLength：程序 return 的值原来多长；只在它比交回来的 value 长（被截了）时有。 */
+  | { status: 'ok'; value?: string; valueLength?: number; drafts: unknown[] }
   | { status: 'error'; error: ProgramError }
   /** timeout 算得太久；memory 内存超了；output 输出太多；stopped 被这一头停掉了；crashed 子进程自己死了（detail 是它最后说的话）。 */
   | { status: 'timeout' | 'memory' | 'output' | 'stopped' | 'crashed'; detail?: string }
 )
 
 const SCRIPT_DIR = import.meta.dirname
+/** 程序报错的那句话最多留这么长。 */
+const PROGRAM_ERROR_MESSAGE_CHARS = 1000
 const RUNNER = path.join(SCRIPT_DIR, 'runner.mjs')
 /** vm 自己的超时没拦住（比如卡在收尾）时，过这么久由这边硬杀。 */
 const KILL_GRACE_MS = 1500
@@ -236,6 +242,8 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
       if (m.t === 'log' && typeof m.text === 'string') {
         logs.push(m.text)
         hooks.onLog?.(m.text)
+      } else if (m.t === 'logFull') {
+        hooks.onLogFull?.()
       } else if (m.t === 'done') {
         done = m
       } else if (m.t === 'call' && typeof m.id === 'number' && typeof m.name === 'string') {
@@ -281,6 +289,7 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
           ...base(),
           status: 'ok',
           ...(typeof done.value === 'string' ? { value: done.value } : {}),
+          ...(typeof done.value === 'string' && typeof done.valueLength === 'number' && done.valueLength > done.value.length ? { valueLength: done.valueLength } : {}),
           drafts: Array.isArray(done.drafts) ? done.drafts : [],
         })
       }
@@ -299,10 +308,15 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
 
 function programError(raw: unknown): ProgramError {
   const r = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const error: ProgramError = { name: typeof r.name === 'string' ? r.name.slice(0, 80) : 'Error', message: typeof r.message === 'string' ? r.message.slice(0, 1000) : 'unknown error' }
+  const message = typeof r.message === 'string' ? r.message : 'unknown error'
+  const error: ProgramError = {
+    name: typeof r.name === 'string' ? r.name.slice(0, 80) : 'Error',
+    // 报错的话太长时只留开头，并写明留了多少
+    message: message.length > PROGRAM_ERROR_MESSAGE_CHARS ? `${message.slice(0, PROGRAM_ERROR_MESSAGE_CHARS)}… [only the first ${PROGRAM_ERROR_MESSAGE_CHARS} of the ${message.length} characters of this message are kept]` : message,
+  }
   if (typeof r.line === 'number') error.line = r.line
   if (typeof r.column === 'number') error.column = r.column
-  if (typeof r.source === 'string') error.source = r.source.slice(0, 400)
+  if (typeof r.source === 'string') error.source = r.source.length > 400 ? `${r.source.slice(0, 400)}… [the rest of this source line is not shown]` : r.source
   if (Array.isArray(r.frames)) error.frames = r.frames.filter((f): f is string => typeof f === 'string').slice(0, 6).map((f) => f.slice(0, 200))
   return error
 }

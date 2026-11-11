@@ -7,10 +7,10 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import { formatQuest, formatQuestLines, formatQuestSearch } from './format.ts'
 import { findQuestsLocal, getQuestLocal, listQuestLinesLocal } from './quest-book.ts'
-import type { FindQuestsInput } from './quest-book.ts'
+import type { FindQuestsInput, QuestLinesData } from './quest-book.ts'
 import { int, obj, str } from './schema.ts'
 import { ToolFailure, fail } from './types.ts'
-import type { Tool, ToolContext } from './types.ts'
+import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 export const QUEST_SEARCH_MAX_LIMIT = 60
 
@@ -77,16 +77,25 @@ async function findQuestsOnServer(ctx: ToolContext, i: FindQuestsInput): Promise
   )
 }
 
+/** 库函数（不在发给模型的清单里：程序里调，模型直接调也照常执行）。 */
 export const listQuestLines: Tool = {
   name: 'list_quest_lines',
+  brief: '{player?}: quest book chapters, progress -> lines[{name, quests, complete, available}]',
   description:
     "The chapters of the quest book (BetterQuesting), in the book's order, with their Chinese and English names: how many quests each has, and for a player how many are done and how many can be done now. Read-only: you cannot hand in quests or claim rewards for anyone.",
   inputSchema: obj({ player }),
-  async run(ctx, i: { player?: string }) {
+  async run(ctx, i: { player?: string }): Promise<ToolResult> {
     const book = ctx.packdata?.quests
     if (book) return listQuestLinesLocal(ctx, book, i.player)
     const { res, player: who, note } = await askQuestBook(ctx, i.player, (p) => ctx.bridge.questLines(p))
-    return formatQuestLines(res, who) + note
+    const lines = res.lines ?? []
+    // 服务器那本是英文的，只有一个名字；data 的形状和读本地资料时一样
+    const data: QuestLinesData = {
+      ...(typeof res.quests === 'number' ? { quests: res.quests } : {}),
+      ...(who !== undefined && lines.some((l) => typeof l.complete === 'number') ? { player: who } : {}),
+      lines: lines.map((l) => ({ name: l.name, quests: l.quests, ...(typeof l.complete === 'number' ? { complete: l.complete } : {}), ...(typeof l.available === 'number' ? { available: l.available } : {}) })),
+    }
+    return { content: formatQuestLines(res, who) + note, data }
   },
 }
 

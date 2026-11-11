@@ -1,4 +1,16 @@
-// 模型可用的全部工具，以及执行一次工具调用的统一入口。
+// 模型能用的全部东西，分三层，以及执行一次调用的统一入口（runTool）：
+//
+//   1. 工具（ALL_TOOLS）：连说明和参数 schema 每一轮都发给模型，模型直接调。看图的那几个（Tool.picture）只在当前模型
+//      能看图时才发，见 modelToolSpecs。
+//   2. 库函数（LIBRARY_TOOLS）：不发给模型，不占每一轮的工具清单。模型从 run_program 的说明里那份索引知道它们存在
+//      （每个一行：名字、参数要点、data 里有什么），在它写的程序里 await tool(名字, 参数) 调。
+//   3. 旧名字（LEGACY_TOOLS）：合并掉的工具原来的名字。不发、不列在索引里，只为已经存着的例程、笔记、它自己写的手册还能用。
+//
+// 不在清单里不等于调不到：runTool 按名字找的时候三层都找，所以模型直接调了一个库函数或旧名字，和调工具一样照常执行
+// （同样的参数校验、同样的结果）。旧习惯、旧笔记、小模型的误调都不该变成一次失败。
+//
+// 往清单里加一个工具之前先想：通用能力（走、挖放、用物品、开界面点格子、存取、写程序）加上模型自己的脑子做得到的事，
+// 不做成专用工具；“查一查、算一算”的做成库函数。test/tool-list.test.ts 里有一条按字符数防回涨的测试。
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
@@ -6,7 +18,7 @@ import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
 import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
 import { totalMaterials } from './materials.ts'
-import { deleteDraft, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
+import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
 import { reportProblem } from './feedback.ts'
 import { clip } from './format.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
@@ -41,6 +53,7 @@ import {
   joinTeam,
   listHomes,
   placeBlocks,
+  runCommand,
   setHome,
   taskStatus,
   useItem,
@@ -48,13 +61,18 @@ import {
 } from './tasks.ts'
 import { clickSlot, closeScreen, openScreen } from './screen.ts'
 import { checkStructure, findStructure, readBlocks } from './structures.ts'
-import { ToolFailure } from './types.ts'
+import { DEFAULT_RESULT_MAX_CHARS, ToolFailure } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 export type { FeedbackAccess, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, RoutineAccess, Tool, ToolContext, ToolHooks, ToolImage, ToolResult } from './types.ts'
+export { DEFAULT_RESULT_MAX_CHARS } from './types.ts'
 export { QuestProgressCache } from './quest-progress.ts'
 export { SurroundingsCache } from './recipe-book.ts'
 
+/**
+ * 发给模型、它直接调的工具。带 picture 的三个按模型给（modelToolSpecs）：view_area、view_image 只发给能看图的模型，
+ * view_draft 在模型不能看图时换成只出文字的那份说明。
+ */
 export const ALL_TOOLS: readonly Tool[] = [
   say,
   whisper,
@@ -63,40 +81,31 @@ export const ALL_TOOLS: readonly Tool[] = [
   scanArea,
   viewArea,
   inspectBlock,
-  probeBlock,
   findBlocks,
   listContainers,
-  listDrawers,
-  listStock,
   getPlayerPosition,
   goTo,
   goToPlayer,
   followPlayer,
   goHome,
-  setHome,
-  listHomes,
-  joinTeam,
+  runCommand,
   flattenArea,
   clearArea,
   fillArea,
   digBlocks,
   placeBlocks,
-  listBlueprints,
-  checkBlueprint,
+  listDesigns,
   buildBlueprint,
   runProgramTool,
   startRoutine,
   routineStatus,
   stopRoutine,
-  listImages,
   viewImage,
-  listDrafts,
   viewDraft,
   publishDraft,
   deleteDraft,
   depositItems,
   withdrawItems,
-  haulItems,
   collectItems,
   giveItems,
   useItem,
@@ -105,12 +114,10 @@ export const ALL_TOOLS: readonly Tool[] = [
   closeScreen,
   findItem,
   findRecipes,
-  findUses,
   findInStorage,
   findMachines,
   craftItem,
   processItems,
-  listQuestLines,
   findQuests,
   getQuest,
   taskStatus,
@@ -125,50 +132,116 @@ export const ALL_TOOLS: readonly Tool[] = [
 ]
 
 /**
- * 只看不动的工具：run_program 的程序里可以调（它在模型的这一轮里跑完，不能去开任务）。
- * 会开任务、说话、改记忆的不在里面：那些要用 start_routine（后台例程）。
+ * 库函数：不发给模型，不占每一轮的工具清单；在它写的程序里 await tool(名字, 参数) 调，返回 { ok, text, data }。
+ * “查一查、把结果算一算”这类事放在这里。每个都要有 brief（索引里的那一行）和结构化的 data。
+ * 只查不动手的进下面的 QUERY_TOOLS（run_program 里也能调）；会开任务的（haul_items）只能在例程里调。
  */
-/**
- * 库函数：只在它写的程序里能调（await tool(名字, 参数)），不是发给模型的工具——不占每一轮的工具清单。
- * “查本地资料、把结果算一算”这类事放在这里：模型要用的时候写几行程序。都是只查不动手的，run_program 里也能调。
- */
-export const LIBRARY_TOOLS: readonly Tool[] = [readBlocks, findStructure, checkStructure, totalMaterials]
+export const LIBRARY_TOOLS: readonly Tool[] = [
+  listStock,
+  listDrawers,
+  findUses,
+  listQuestLines,
+  probeBlock,
+  checkBlueprint,
+  haulItems,
+  readBlocks,
+  findStructure,
+  checkStructure,
+  totalMaterials,
+]
 
-/** 程序里调得到的全部：模型的工具，加上库函数。 */
+/**
+ * 旧名字：合并掉的工具（列图纸 / 草稿 / 图片并成了 list_designs，设家 / 列家 / 加入队伍并成了 run_command）。
+ * 不发给模型，也不列在库函数的索引里；程序里、模型直接调都照常执行，免得已经存着的例程和笔记用不了。
+ */
+export const LEGACY_TOOLS: readonly Tool[] = [listBlueprints, listDrafts, listImages, setHome, listHomes, joinTeam]
+
+/** 按名字调得到的全部：模型的工具，加上库函数和旧名字。程序里 tool() 和模型直接调，找的都是这一张表。 */
 export function programTools(tools: readonly Tool[]): Tool[] {
-  return [...tools, ...LIBRARY_TOOLS.filter((lib) => !tools.some((t) => t.name === lib.name))]
+  return [...tools, ...[...LIBRARY_TOOLS, ...LEGACY_TOOLS].filter((hidden) => !tools.some((t) => t.name === hidden.name))]
 }
 
+/** 库函数里会开任务的：不是“只看不动”，run_program 里调不了，只能在例程里调。 */
+const LIBRARY_TASKS: readonly string[] = [haulItems.name]
+
+/**
+ * 只看不动的：run_program 的程序里可以调（它在模型的这一轮里跑完，不能去开任务）。
+ * 会开任务、说话、发指令、改记忆的不在里面：那些要用 start_routine（后台例程）。
+ */
 export const QUERY_TOOLS: readonly string[] = [
   'get_status',
   'look_around',
   'scan_area',
+  'view_area',
   'inspect_block',
-  'probe_block',
   'find_blocks',
   'list_containers',
-  'list_drawers',
-  'list_stock',
   'get_player_position',
-  'list_homes',
-  'list_blueprints',
-  'check_blueprint',
-  'list_images',
-  'list_drafts',
+  'list_designs',
+  'view_image',
+  'view_draft',
   'find_item',
   'find_recipes',
-  'find_uses',
   'find_in_storage',
   'find_machines',
-  'list_quest_lines',
   'find_quests',
   'get_quest',
   'task_status',
-  ...LIBRARY_TOOLS.map((t) => t.name),
+  ...LIBRARY_TOOLS.map((t) => t.name).filter((name) => !LIBRARY_TASKS.includes(name)),
+  // 旧名字里只查不动的
+  'list_blueprints',
+  'list_drafts',
+  'list_images',
+  'list_homes',
 ]
 
 export function toToolSpecs(tools: readonly Tool[]): ToolSpec[] {
   return tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))
+}
+
+/** 发给模型的清单随什么变：现在只有“当前模型能不能看图”。 */
+export interface ModelView {
+  canSee: boolean
+}
+
+/** 这个工具对这个模型来说在不在清单里。看图的工具在模型不能看图时不在（除非它有一份只讲文字的说明）。 */
+function listedFor(tool: Tool, view: ModelView): boolean {
+  return view.canSee || tool.picture !== true || tool.textOnly !== undefined
+}
+
+/**
+ * 库函数的索引里有哪些：LIBRARY_TOOLS，加上因为模型不能看图而没进清单的看图工具（它们给的文字和 data 照样拿得到）。
+ */
+export function libraryFor(tools: readonly Tool[], view: ModelView): Tool[] {
+  return [...LIBRARY_TOOLS.filter((lib) => !tools.some((t) => t.name === lib.name)), ...tools.filter((t) => !listedFor(t, view))]
+}
+
+export const LIBRARY_INDEX_HEAD =
+  'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data'
+
+/**
+ * 库函数的索引：run_program 的说明后面带着它，模型靠它知道这些函数存在（start_routine 的说明指到这里，不重复）。
+ * 每个一行（Tool.brief）。整份不超过 1500 字符（test/tool-list.test.ts 看着）：它每一轮都发，写长了就把挪走工具省下的
+ * 又花回去了；各自的参数和 data 的细节在 routines 手册的“库函数”一节。
+ */
+export function libraryIndex(tools: readonly Tool[], view: ModelView): string {
+  return [LIBRARY_INDEX_HEAD, ...libraryFor(tools, view).map((t) => `- ${t.name} ${t.brief ?? ''}`.trimEnd())].join('\n')
+}
+
+/**
+ * 发给模型的工具清单。和 toToolSpecs 的差别：
+ *   - 看图的工具（view_area、view_image）只给能看图的模型；view_draft 的文字那一半谁都用得上，不能看图时换成不提图的说明；
+ *   - run_program 的说明后面带上库函数的索引。
+ */
+export function modelToolSpecs(tools: readonly Tool[], view: ModelView): ToolSpec[] {
+  const specs: ToolSpec[] = []
+  for (const t of tools) {
+    if (!listedFor(t, view)) continue
+    const shown = !view.canSee && t.picture === true && t.textOnly ? t.textOnly : t
+    const description = t.name === runProgramTool.name ? `${shown.description}\n${libraryIndex(tools, view)}` : shown.description
+    specs.push({ name: t.name, description, inputSchema: shown.inputSchema })
+  }
+  return specs
 }
 
 /** bridge 错误码 → 给模型的补充说明。 */
@@ -205,6 +278,7 @@ export function bridgeHint(code: string, message: string): string | undefined {
 /**
  * 执行一次工具调用：按名字找工具 → 校验参数 → 运行 → 截断结果。
  * 任何失败都变成 isError 的结果回给模型，不向外抛。
+ * tools 是发给模型的那些；库函数和旧名字不用另外传，按名字一样找得到（见文件开头）。
  */
 export async function runTool(
   tools: readonly Tool[],
@@ -213,10 +287,14 @@ export async function runTool(
   input: unknown,
   opts: { maxResultChars?: number } = {},
 ): Promise<ToolResult> {
-  const max = opts.maxResultChars ?? 6000
-  const tool = tools.find((t) => t.name === name)
+  const max = opts.maxResultChars ?? DEFAULT_RESULT_MAX_CHARS
+  // 三层都找：模型直接调了一个库函数或旧名字，照常执行
+  const tool = programTools(tools).find((t) => t.name === name)
   if (!tool) {
-    return { content: `There is no tool named "${name}". Available: ${tools.map((t) => t.name).join(', ')}`, isError: true }
+    const view: ModelView = { canSee: ctx.canSeeImages?.() === true }
+    const direct = modelToolSpecs(tools, view).map((t) => t.name)
+    const library = libraryFor(tools, view).map((t) => t.name)
+    return { content: `There is no tool named "${name}". Your tools: ${direct.join(', ')}. Library functions (in a program: await tool(name, input)): ${library.join(', ')}.`, isError: true }
   }
   const checked = validate(tool.inputSchema, input)
   if (!checked.ok) return { content: `Invalid arguments for ${name}: ${checked.errors.join('; ')}`, isError: true }

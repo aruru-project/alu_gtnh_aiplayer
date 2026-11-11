@@ -80,6 +80,10 @@ const images = new Map(request.images.map((i) => [i.name, i]))
 const dataFiles = new Map(Object.entries(request.data))
 let logged = 0
 let logDropped = 0
+/** 日志第一次放不下时告诉那一头一声（只说一次）：例程跑得久，模型中途看进度时要知道后面的日志没留下。 */
+function logOverflowed() {
+  if (logDropped++ === 0) send({ t: 'logFull' })
+}
 
 function hostCall(op, arg) {
   try {
@@ -87,13 +91,13 @@ function hostCall(op, arg) {
       const text = String(arg)
       const room = request.limits.logChars - logged
       if (room <= 0) {
-        logDropped++
+        logOverflowed()
         return 'V'
       }
       const kept = text.length > room ? text.slice(0, room) : text
       logged += kept.length + 1
-      if (kept.length < text.length) logDropped++
       send({ t: 'log', text: kept })
+      if (kept.length < text.length) logOverflowed()
       return 'V'
     }
     if (op === 'image') {
@@ -229,7 +233,7 @@ try {
 }
 const codeLines = request.code.split('\n').length
 if (outcome.state === 'done') {
-  finishWith({ ok: true, ...(outcome.value !== undefined ? { value: outcome.value } : {}), drafts: outcome.drafts })
+  finishWith({ ok: true, ...(outcome.value !== undefined ? { value: outcome.value } : {}), ...(typeof outcome.valueLength === 'number' ? { valueLength: outcome.valueLength } : {}), drafts: outcome.drafts })
 } else if (outcome.state === 'failed') {
   const { name, message, stack } = outcome.error
   // 栈里只留程序自己的那几帧

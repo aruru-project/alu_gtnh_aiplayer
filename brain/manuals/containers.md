@@ -3,7 +3,8 @@
 # 能存取的容器
 - 两类：有界面的储物方块（箱子、铁箱子、各种 mod 的箱子），和抽屉（Storage Drawers）。多方块机器的总线和仓也可以当容器存取。
 - 抽屉你是像玩家那样用的：身体会走到抽屉正面，左键取、右键存，数量精确。这些动作由任务替你做，你只要把抽屉的坐标当成容器坐标交给工具。
-- deposit_items（存）、withdraw_items（取）、haul_items（在两个容器之间来回搬）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
+- deposit_items（存）、withdraw_items（取）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
+- 在两个容器之间来回搬（要跑几趟就跑几趟，你背包里原有的东西不动）：库函数 haul_items。它不在工具清单里，会开任务，所以写在例程里：start_routine 的程序里 `await tool("haul_items", { from: { x, y, z }, to: { x, y, z }, items: [{ id, meta, count }] })`（不给 items 就是全搬）。只搬一两样时，自己先 withdraw_items 再 deposit_items 也一样。
 - 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。
 - 机器也能当容器，哪个 mod 的都行（界面里有“放不进东西的格子”的就是机器）：deposit_items 是放进它能放东西的格子；withdraw_items 默认只从产物格取，给 fromInputs:true 才取其余格子里的（主人留在里面的模具、模头、燃料）。那是主人摆好的，取之前先问，用完放回去。
 - 存取任务对付不了的界面（要放进指定的某一格、要一格格点的）：open_screen 打开自己点，见 screens 手册。
@@ -11,9 +12,9 @@
 # 看仓库
 - **主人说的是某个地方的东西，就以那个地方为中心看，不要以自己为中心。**下面这几个工具（还有 look_around、find_blocks、find_machines）默认看的是你身边；给 at（一个坐标）就改成看那个地方的周围。“我这边的箱子”：先 get_player_position 找到主人，at 给他的位置。“抽屉管理器旁边那个箱子”：at 给抽屉管理器的坐标。你站在几十格外时，以自己为中心什么也看不到，这不等于没有。
 - 只想知道某几样东西放在哪：find_in_storage，可以按 id 或矿辞名一次查好几样。
-- 想知道这片仓库一共有什么：list_stock，把范围里所有箱子和抽屉的东西合成一张总表，多的在前；contains 按名字筛，below 只看少于某个数的。
+- 想知道这片仓库一共有什么：库函数 list_stock，把范围里所有箱子和抽屉的东西合成一张总表，多的在前；contains 按名字筛，below 只看少于某个数的。库函数不在工具清单里，用 run_program 写一行程序调：`return (await tool("list_stock", { contains: "钢" })).text`；要接着算就用 r.data.items（见 routines 手册的“库函数”）。
 - 一个个容器看：list_containers，由近到远一页 20 个。
-- 抽屉管理器（[drawer controller]）自己不装东西，它管着一片抽屉：list_drawers 给它的坐标，列出它管的每一格是什么、真实有多少、在哪个抽屉方块；below 只列少于某个数的。从抽屉取货时，容器坐标用那一格所在的抽屉方块。
+- 抽屉管理器（[drawer controller]）自己不装东西，它管着一片抽屉：库函数 list_drawers 给它的坐标，列出它管的每一格是什么、真实有多少、在哪个抽屉方块；below 只列少于某个数的。一样用 run_program 调：`return (await tool("list_drawers", { x, y, z, below: 128 })).text`。从抽屉取货时，容器坐标用那一格所在的抽屉方块。
 - 这些结果都是分页的，开头写着一共多少、这是第几到第几个。要看全就翻页，不要把一页当成全部。
 - 抽屉的数量是真实库存（一格可以上万）。
 

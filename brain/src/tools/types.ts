@@ -127,6 +127,11 @@ export interface ToolContext {
   hooks: ToolHooks
   /** 现在用的模型能不能看图。上层没提供时等于不能：带图的工具只给文字说明。 */
   canSeeImages?(): boolean
+  /**
+   * “单个工具结果上限”（面板上的那个设置）现在是多少。run_program 的程序 return 的值也照它截（截了会写明）。
+   * 上层没提供时按 DEFAULT_RESULT_MAX_CHARS。
+   */
+  maxResultChars?(): number
   now(): number
   /**
    * 查任务书进度时，模型没说看谁的就看这个玩家的：主人名单里的第一个；没有名单时是刚才跟它说话的那个玩家；都没有就是 undefined。
@@ -147,7 +152,24 @@ export interface Tool {
   inputSchema: ObjectSchema
   /** input 已按 inputSchema 校验过。返回字符串等同于 { content }。 */
   run(ctx: ToolContext, input: any): Promise<ToolResult | string>
+  /**
+   * 库函数索引里的一行（英文，接在名字后面）：参数要点、做什么、data 里有什么。
+   * 不进工具清单的（库函数；看图的工具在模型不能看图时）靠这一行让模型知道它存在，所以都要写。
+   */
+  brief?: string
+  /**
+   * 看图的工具：当前模型能看图时才进工具清单。不能看图时它照样能调（程序里、模型直接调都照常执行，给的是文字）。
+   */
+  picture?: boolean
+  /**
+   * 看图的工具在模型不能看图时留在清单里的那份说明和参数：只讲它给的文字，不提图。
+   * 没有这一项的看图工具，不能看图时整个不进清单，改列在库函数的索引里。
+   */
+  textOnly?: { description: string; inputSchema: ObjectSchema }
 }
+
+/** 没人说“单个工具结果上限”是多少时用的数（和配置的默认值一样）。 */
+export const DEFAULT_RESULT_MAX_CHARS = 6000
 
 export function fail(content: string): ToolResult {
   return { content, isError: true }

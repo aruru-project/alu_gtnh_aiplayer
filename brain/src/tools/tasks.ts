@@ -1,7 +1,10 @@
 // 启动任务的工具。任务是异步的：这里只负责启动，结果以后通过事件回来。
+// 还有以它的身份发服务器指令的 run_command（设家、列家、加入队伍都是它；旧的 set_home、list_homes、join_team
+// 不在清单里了，调到照常执行）。haul_items 是库函数：不在清单里，例程里调，模型直接调也照常开任务。
 
+import { BridgeError } from '../bridge/protocol.ts'
 import type { TaskSpec } from '../bridge/protocol.ts'
-import { COMMANDS, COMMAND_REPLY_WAIT_MS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE } from './commands.ts'
+import { COMMANDS, COMMAND_MAX_CHARS, COMMAND_REPLY_WAIT_MS, DEFAULT_ALLOWED_COMMANDS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE } from './commands.ts'
 import { formatPos, formatTask } from './format.ts'
 import { botBlock } from './observe.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
@@ -50,7 +53,7 @@ export const overflow = str('When your inventory is full and there is no dropoff
  * 以 bot 身份执行一条指令并拿到服务器的回显。
  * 回显通常在 output 里；当下什么都没有时，再等一小会儿看有没有晚到的系统消息。
  */
-async function runCommand(ctx: ToolContext, command: string): Promise<string[]> {
+async function sendCommand(ctx: ToolContext, command: string): Promise<string[]> {
   const since = ctx.now()
   ctx.hooks.commandStart?.()
   try {
@@ -161,7 +164,7 @@ export const followPlayer: Tool = {
 export const goHome: Tool = {
   name: 'go_home',
   description:
-    'Teleport to one of your homes with /home (task). The fastest way to travel far. Homes are set with set_home. Fails with "invalid" if there is no home of that name.',
+    'Teleport to one of your homes with /home (task). The fastest way to travel far. Homes are set with run_command ("sethome <name>"). Fails with "invalid" if there is no home of that name.',
   inputSchema: obj({ name: str('Home name.'), queue }, ['name']),
   async run(ctx, i: { name: string; queue?: boolean }) {
     if (!HOME_NAME_RE.test(i.name)) return fail('home names may only contain letters, digits, _ and -')
@@ -169,6 +172,42 @@ export const goHome: Tool = {
   },
 }
 
+/**
+ * 以它的身份发一条服务器指令，把服务器的回显原样给它。能发哪些由身体的允许列表定（mod 配置的 allowedCommands）：
+ * 协议里没有读这份列表的接口，所以说明里只说“不在列表里的会被拒绝、结果会说明”，被拒绝时把默认的列表写给它参考。
+ * 指令成没成只有回显知道，这里不替它判断。
+ */
+export const runCommand: Tool = {
+  name: 'run_command',
+  description:
+    'Run one server command as yourself and get what the server replies. Which commands a bot may run is set by an allow list on the game server; you cannot read that list, and a command that is not on it is refused with a result that says so. Examples: "sethome base" saves where you stand as a home that go_home teleports to; "home list" lists your homes; "team join <team>" joins a ServerUtilities team whose owner invited you (being on their team lets you dig, build and open chests in their claim).',
+  inputSchema: obj({ command: str('The command line, without the leading "/", e.g. "sethome base".', { maxLength: COMMAND_MAX_CHARS + 1 }) }, ['command']),
+  async run(ctx, i: { command: string }): Promise<ToolResult> {
+    const command = i.command.trim().replace(/^\/+\s*/, '')
+    if (command.length === 0) return fail('The command is empty.')
+    if (/[\u0000-\u001f\u007f\u00a7]/.test(command)) return fail('A command is one line of plain text: no line breaks, control characters or colour codes.')
+    if (command.length > COMMAND_MAX_CHARS) return fail(`The command is ${command.length} characters; the game server takes at most ${COMMAND_MAX_CHARS}.`)
+    let output: string[]
+    try {
+      output = await sendCommand(ctx, command)
+    } catch (e) {
+      // 不在允许列表里：照实说，并把默认的列表给它参考（现在的列表身体不告诉我们）
+      if (e instanceof BridgeError && e.code === 'denied' && /allow list/i.test(e.message)) {
+        return fail(
+          `The game server refused "/${command}": it is not on its allow list of commands for bots. Asking again gives the same answer. ` +
+            `The list is in the mod's config (allowedCommands) and cannot be read from here; unless your owner changed it, it holds: ${DEFAULT_ALLOWED_COMMANDS.join(', ')}. A player can run the command, or your owner can add it to the list.`,
+        )
+      }
+      throw e
+    }
+    return {
+      content: output.length > 0 ? `Ran /${command}. The server replied: ${output.join(' | ')}` : `Ran /${command}. The server printed nothing (a late reply would show up as a system message).`,
+      data: { command, output },
+    }
+  },
+}
+
+/** 旧名字：不在发给模型的清单里（并进了 run_command），程序里、旧笔记里调到它照常执行（它还顺手把地点记进记忆）。 */
 export const setHome: Tool = {
   name: 'set_home',
   description:
@@ -183,7 +222,7 @@ export const setHome: Tool = {
   async run(ctx, i: { name: string; note?: string }) {
     if (!HOME_NAME_RE.test(i.name)) return fail('home names may only contain letters, digits, _ and -')
     const me = await botBlock(ctx)
-    const output = (await runCommand(ctx, COMMANDS.setHome(i.name))).join(' | ')
+    const output = (await sendCommand(ctx, COMMANDS.setHome(i.name))).join(' | ')
     let remembered = ''
     try {
       ctx.memory.set(`home:${i.name}`, `${formatPos(me)} dim ${me.dim ?? '?'}${i.note ? ` — ${i.note}` : ''}`)
@@ -196,6 +235,7 @@ export const setHome: Tool = {
   },
 }
 
+/** 旧名字，同上。 */
 export const joinTeam: Tool = {
   name: 'join_team',
   description:
@@ -203,19 +243,20 @@ export const joinTeam: Tool = {
   inputSchema: obj({ team: str('Team id, as the owner tells you.', { maxLength: 35 }) }, ['team']),
   async run(ctx, i: { team: string }) {
     if (!TEAM_ID_RE.test(i.team)) return fail('team ids may only contain letters, digits, _ and -')
-    const output = (await runCommand(ctx, COMMANDS.joinTeam(i.team))).join(' | ')
+    const output = (await sendCommand(ctx, COMMANDS.joinTeam(i.team))).join(' | ')
     // 成没成只有服务器的回显知道。实测：队伍不存在时回 Team '名字' not found!
     if (/not found|not invited|can(?:'|no)t|denied|permission/i.test(output)) return fail(`Could not join. The server replied: ${output}`)
     return `Ran /team join ${i.team}. The server replied: ${output || '(nothing)'}`
   },
 }
 
+/** 旧名字，同上。 */
 export const listHomes: Tool = {
   name: 'list_homes',
   description: 'List the homes you have set on the server.',
   inputSchema: obj({}),
   async run(ctx) {
-    const output = await runCommand(ctx, COMMANDS.listHomes())
+    const output = await sendCommand(ctx, COMMANDS.listHomes())
     return output.length > 0
       ? `Server replied: ${output.join(' | ')}`
       : 'The server printed nothing (maybe no homes are set; a late reply would show up as a system message).'
@@ -370,6 +411,7 @@ export const withdrawItems: Tool = {
 
 export const haulItems: Tool = {
   name: 'haul_items',
+  brief: '{from, to, items?}: task, routines only: carry between two containers -> task, state, result',
   description:
     'Carry items from one container to another (chests or similar, or Storage Drawers), in as many trips as it takes (task). Without "items": everything in the source. Your own inventory is not touched.',
   inputSchema: obj(

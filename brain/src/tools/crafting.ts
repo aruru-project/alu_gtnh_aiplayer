@@ -61,7 +61,7 @@ const recipeQuery = {
   id: str('Item id, e.g. "gregtech:gt.metaitem.01".'),
   meta: int('Item meta (default 0).', { min: 0 }),
   way: str('Only this way: a name from the summary, e.g. "卷板机".', { maxLength: 120 }),
-  contains: str('Only recipes with an ingredient (for find_uses: or a product) whose name, id or ore name contains this, e.g. "钢".', { maxLength: 60 }),
+  contains: str('Only recipes with an ingredient whose name, id or ore name contains this, e.g. "钢".', { maxLength: 60 }),
   page: int('Page of the recipes (10 per page).', { min: 1 }),
 }
 
@@ -104,11 +104,13 @@ export const planItem: Tool = {
   run: (ctx, i: { id: string; meta?: number; count?: number; page?: number; borrow?: boolean }) => planItemLocal(ctx, i),
 }
 
+/** 库函数（不在发给模型的清单里：程序里调，模型直接调也照常执行）。 */
 export const findUses: Tool = {
   name: 'find_uses',
+  brief: '{id, meta?, way?, contains?, page?}: recipes that use an item -> ways[], or recipes[] of a way',
   description:
     'What an item is used for (NEI\'s "U"): the ways that take it as an ingredient and how many recipes each has. With "way", "contains" or "page": the exact recipes.',
-  inputSchema: obj(recipeQuery, ['id']),
+  inputSchema: obj({ ...recipeQuery, contains: str('Only recipes with a product or another ingredient whose name, id or ore name contains this, e.g. "钢".', { maxLength: 60 }) }, ['id']),
   async run(ctx, i: { id: string; meta?: number; way?: string; contains?: string; page?: number }) {
     if (!ctx.packdata?.recipes) return fail('There is no recipe book on this brain, so uses cannot be looked up. find_recipes still works (it asks the game server).')
     return findUsesLocal(ctx, i)

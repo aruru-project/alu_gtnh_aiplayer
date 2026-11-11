@@ -2,8 +2,8 @@
 // 以及对着世界里现成的那台比——哪些位置现在是什么、要换成什么，材料还差多少。
 // 数据是本地的 structures.jsonl（packdata/structures.ts）；世界里的方块用 world.blocks 读。
 //
-// 这里的三个都是**库函数**，不是给模型直接调的工具（见 tools/index.ts 的 LIBRARY_TOOLS）：只在它写的程序里能调
-// （await tool('find_structure', …)），不占每一轮发给模型的工具清单。结构数据本身在程序里也能直接拿（data.structure），
+// 这里的三个都是**库函数**（见 tools/index.ts 的 LIBRARY_TOOLS）：不在每一轮发给模型的工具清单里，在它写的程序里调
+// （await tool('find_structure', …)）；模型直接调了也照常执行。结构数据本身在程序里也能直接拿（data.structure），
 // 模型想自己算等级差异、自己对世界时用得上。
 //
 // 对着世界比的规矩：
@@ -102,6 +102,7 @@ function rowLine(row: StructureRow): string {
 
 export const findStructure: Tool = {
   name: 'find_structure',
+  brief: '{name | id, meta, tier?, from?}: how a multiblock is built -> tiers, rows[{size, blocks}]',
   description:
     'How a multiblock machine is built (what players see as its hologram projection): its tiers, the size and the list of blocks of each tier, the machine\'s own structure notes, and what changes from one tier to another. Give the machine by name or by the id and meta of its controller; "tier" for one tier in full, "from" and "tier" for the difference between two. To compare with a machine that already stands in the world use check_structure.',
   inputSchema: obj({
@@ -339,6 +340,7 @@ export async function structureAt(ctx: ToolContext, book: StructureBook, at: At,
 
 export const checkStructure: Tool = {
   name: 'check_structure',
+  brief: '{at, tier}: a standing multiblock against a tier -> facing, changes[], need[]',
   description:
     'Compare a multiblock machine that stands in the world with how one of its tiers is built: which positions hold what now and what they have to become, and how many of each block that takes against what you carry and what is in storage. Give the position of its controller and the tier you want (for an upgrade: the new tier). Buses and hatches standing where the projection shows a casing count as right.',
   inputSchema: obj(
@@ -423,6 +425,7 @@ export const checkStructure: Tool = {
 /** 读世界里一个盒子的全部方块（world.blocks）：程序自己对结构、数方块时用。 */
 export const readBlocks: Tool = {
   name: 'read_blocks',
+  brief: '{x1, y1, z1, x2, y2, z2}: every block of a box -> palette[], cells[]',
   description: 'Every block of a box of the world (two opposite corners, each side at most 64). In a program: data is { x, y, z, sx, sy, sz, palette: [{ id, meta, name }], cells } where the box starts at (x, y, z), cells[(dy * sz + dz) * sx + dx] is an index into palette, and palette[0] is air.',
   inputSchema: obj(
     { x1: int('x of one corner'), y1: int('y of one corner', { min: 0, max: 255 }), z1: int('z of one corner'), x2: int('x of the opposite corner'), y2: int('y of the opposite corner', { min: 0, max: 255 }), z2: int('z of the opposite corner') },

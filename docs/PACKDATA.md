@@ -174,7 +174,7 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 
 ### 大脑怎么用
 
-- `list_quest_lines` / `find_quests` / `get_quest` 的内容全部来自这两个文件，不问服务器。搜索在名称和描述的中文、英文里都找。
+- `find_quests` / `get_quest` 和库函数 `list_quest_lines` 的内容全部来自这两个文件，不问服务器。搜索在名称和描述的中文、英文里都找。
 - 进度问服务器：`quest.progress {player}` → `{player, completed: [id…], unclaimed: [id…]}`（见 `docs/PROTOCOL.md`），结果缓存 20 秒。
   “做完了 / 现在能做 / 没解锁”由大脑拿 `completed` 和上面的 `pre`、`logic` 算；`unclaimed` 里的显示成“做完了，奖励没领”。
 - 这两个文件不在时，三个工具整个退回去问服务器的 `quest.lines` / `quest.search` / `quest.get`（英文，不能翻页）。
@@ -356,7 +356,7 @@ tools/make-packdata.py textures \
 - 排序：现在做得了的在前（其中机器先于手工）；手工工具配方（原料里有 `craftingTool…`）在这个物品另有机器做法时排在后面并注明“有机器就别用”；然后是有机器但现在不行的（写明差在哪）、附近没有的、它操作不了的（既不是合成台类、也不是 `read` 为 `gregtech` 的页）。
 - 一种方式下配方多（工具每种材质一条）时汇总里只举两条，写明还有多少；给 `way`（页名或页的 `key`）、`contains`（原料的中英文名、id、矿辞名里的一段）、`page` 看具体的，一页 10 条，写明一共多少条、这是第几页。
 
-**查用途**（`find_uses`，NEI 的 U）同样按页汇总、可筛可翻页。
+**查用途**（库函数 `find_uses`，NEI 的 U：不在发给模型的工具清单里，程序里调，见 `docs/SCRIPTS.md` 的“库函数”）同样按页汇总、可筛可翻页。
 
 **同一种东西两个 id。** GregTech 把登记在同一个“材料件”矿辞名下的物品当成一种（`ingotDarkSteel` 下有 EnderIO 的和 GregTech 的两个玄钢锭；机器配方点名的、高炉产出的常常是 EnderIO 那个）。只对 `ingot`、`plate`、`dust`、`gem`、`stick`、`bolt`、`screw`、`ring`、`gear`、`foil`、`rotor`、`spring`、`round`、`wireFine`、`lens`、`nugget`、`block` 这些前缀的矿辞名这样办（`UNIFIED_ORE`）：查其中一个的做法时把做另一个的配方也算上并说明；机器配方里点名的那格标 `(or any 矿辞名)`；`process_items` 身上是哪种就放哪种。手工合成里点名某个 id 的格子不这样办。
 
@@ -394,7 +394,7 @@ tools/make-packdata.py textures \
 - 有的机器除了等级还有别的可调项（线圈、玻璃等级），这里只导了默认的那一档；高炉这类“等级就是线圈”的，每种线圈一行。
 - 这份数据是让游戏在一个临时世界里把结构真的搭一遍再读出来的（和 NEI 预览同一段代码），不是抄的说明文字。
 
-**大脑怎么用。** 启动时整个读进来（334 台机器、1426 行，四五十毫秒，多占 30 MB 左右；文件不在就当没有）。它不是模型的工具，是模型写的程序里的数据：`data.structure(名字或 id, meta)`，加上三个只在程序里能调的库函数（`find_structure`、`check_structure`、`read_blocks`），见 `docs/SCRIPTS.md` 的“库函数”；面板“图纸”页最下面可以按名字搜一台机器，看它每一级的材料和三维预览。对着世界里的机器比的时候要知道：主机、各种仓和总线在世界里是同一个方块（`gregtech:gt.blockmachines`），`world.blocks` 给的 meta 分不出是哪一种，所以“预览是机器零件、世界里也是机器零件”就算对。
+**大脑怎么用。** 启动时整个读进来（334 台机器、1426 行，四五十毫秒，多占 30 MB 左右；文件不在就当没有）。它不是模型的工具，是模型写的程序里的数据：`data.structure(名字或 id, meta)`，加上三个库函数（`find_structure`、`check_structure`、`read_blocks`：不在发给模型的工具清单里，程序里调），见 `docs/SCRIPTS.md` 的“库函数”；面板“图纸”页最下面可以按名字搜一台机器，看它每一级的材料和三维预览。对着世界里的机器比的时候要知道：主机、各种仓和总线在世界里是同一个方块（`gregtech:gt.blockmachines`），`world.blocks` 给的 meta 分不出是哪一种，所以“预览是机器零件、世界里也是机器零件”就算对。
 
 ### 怎么导出
 

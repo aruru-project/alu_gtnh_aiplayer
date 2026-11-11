@@ -7,6 +7,7 @@ import { blockColors } from '../packdata/index.ts'
 import type { PackData } from '../packdata/index.ts'
 import { DEFAULT_SANDBOX_LIMITS, runProgram } from '../script/sandbox.ts'
 import type { SandboxHooks, SandboxLimits, SandboxOutcome } from '../script/sandbox.ts'
+import { DEFAULT_RESULT_MAX_CHARS } from '../tools/types.ts'
 import { DRAFT_MAX_CELLS, DRAFT_MAX_KINDS, DRAFT_MAX_SIDE, DraftError, blockCount, parseDraft } from './draft.ts'
 import type { DraftKind } from './draft.ts'
 import { DesignStoreError, DraftStore, IMAGE_MAX_SIDE, ImageStore } from './store.ts'
@@ -72,6 +73,11 @@ export class DesignWorkspace {
     return this.packdata?.items?.get(kind.id, kind.meta)?.name ?? blockColors(this.packdata).find((b) => b.id === kind.id && b.meta === kind.meta)?.name
   }
 
+  /** 程序的日志一共留多少字符（写“日志满了”的说明时用）。 */
+  get logChars(): number {
+    return this.limits.logChars
+  }
+
   /** 方块颜色表（面板画预览也用它）。 */
   colors(): ReturnType<typeof blockColors> {
     return blockColors(this.packdata)
@@ -96,8 +102,9 @@ export class DesignWorkspace {
    * 只有上一个程序还没跑完时抛 DesignBusyError。
    * hooks：程序调工具时怎么办、中途怎么停（见 script/sandbox.ts）。background：这是后台的例程，不占“同时只跑一个程序”的位子
    * （例程要跑很久，不能让它挡着模型临时算点东西；例程自己同时只有一个，由 agent/routine.ts 管）。
+   * valueChars：程序 return 的值最多交回来多少字符。调用的人给的是“单个工具结果上限”那个设置现在的值，不另设一个数。
    */
-  async run(code: string, opts: { timeoutMs?: number; hooks?: SandboxHooks; background?: boolean } = {}): Promise<ProgramRun> {
+  async run(code: string, opts: { timeoutMs?: number; hooks?: SandboxHooks; background?: boolean; valueChars?: number } = {}): Promise<ProgramRun> {
     if (!opts.background && this.running) throw new DesignBusyError()
     if (!opts.background) this.running = true
     try {
@@ -115,7 +122,7 @@ export class DesignWorkspace {
             maxKinds: DRAFT_MAX_KINDS,
             maxDrafts: PROGRAM_MAX_DRAFTS,
             maxPixels: IMAGE_MAX_SIDE * IMAGE_MAX_SIDE * 4,
-            valueChars: 2000,
+            valueChars: Math.max(1, Math.floor(opts.valueChars ?? DEFAULT_RESULT_MAX_CHARS)),
           },
         },
         { ...this.limits, timeoutMs },

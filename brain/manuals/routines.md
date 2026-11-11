@@ -1,4 +1,4 @@
-同样的步骤要重复很多遍（一样样搬几十种东西、做一串中间件、挨个检查一批容器），或者要一次查很多东西再算的时候看：怎么写程序调工具。
+同样的步骤要重复很多遍（一样样搬几十种东西、做一串中间件、挨个检查一批容器），要一次查很多东西再算，或者要用库函数（不在工具清单里的那些）的时候看：怎么写程序调工具。
 
 # 两种跑法
 - run_program：程序在你这一轮里跑完，结果当场回来。程序里只能调“查询”类的工具（看状态、看仓库、查配方这些），不能开任务。适合一次查很多再汇总。
@@ -13,15 +13,31 @@
 - 开任务的工具（withdraw_items、deposit_items、go_to、craft_item、process_items……）返回时任务已经结束：r.ok 是任务成没成，r.data 是 { task, state, result, error }，和任务结束时你看到的内容一样（比如 withdraw 的 r.data.result.moved、r.data.result.missing）。
 - 一步一步来：一次 await 一个开任务的工具。不用传 queue。
 - 用 log 记下每一步的要紧结果（搬了什么、跳过了什么、为什么）。你被叫醒时主要靠这份日志知道发生了什么。
+- return 的值最多和一个工具结果一样长（和你直接调工具时看到的一样多），更长的只给开头，并写明一共多少字符、给了多少。日志一共留 4000 字符，满了以后的不留，也会写明。结果比这长时：从 r.data 里挑要的字段，用工具自己的筛选和 page 参数缩小，或者分几次返回 r.text 的不同段。
+
+# 库函数
+- 有些“查一查、算一算”的函数不在你的工具清单里，叫库函数。run_program 的说明后面有一份索引（每个一行：名字、参数、data 里有什么）。在程序里和工具一样调：`await tool("名字", { 参数 })`，一样返回 r.ok、r.text、r.data。
+- 只想看一眼结果：run_program 写一行 `return (await tool("list_stock", { contains: "钢" })).text`。要拿它的数据接着算，用 r.data。
+- 只查不动的在 run_program 和例程里都能调。haul_items 会开任务，只能在例程里调。
+- 各自的参数和 data：
+  - list_stock { radius?, contains?, below?, at?, page? }：周围所有箱子和抽屉合成一张存货表。r.data.items 是 [{ id, meta, name, count, automated, places: [{ x, y, z, count, kind, automated }] }]（全部，不分页；r.text 一页 40 行）。at 是 { x, y, z }：以那个地方为中心看。
+  - list_drawers { x, y, z, below?, page? }：抽屉管理器（或一个抽屉方块）的每一格。r.data.slots 是 [{ x, y, z, slot, id, meta, name, count, room }]（空格是 { empty: true }），r.data.total 是符合条件的总格数（一页 60 格，多了翻 page）。
+  - find_uses { id, meta?, way?, contains?, page? }：一样东西能拿来做什么。只给 id/meta：r.data.ways 是 [{ way, name, recipes }]（每种方式几条）。给了 way、contains 或 page：r.data.recipes 是这一页的配方 [{ recipe, way, in: [{ id, meta, name, count } 或 { ore, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, eut?, ticks? }]，r.data.page、r.data.pages 是第几页、共几页。
+  - list_quest_lines { player? }：任务书各章。r.data.lines 是 [{ name, en, quests, complete, available }]（后两项要有玩家的进度才有），r.data.unclaimed 是做完没领奖励的个数。
+  - probe_block { x, y, z }：现在能不能挖这一格。r.data 是 { id, meta, canDig, digTicks, toolSlot, inReach, candidates: [{ slot, item, harvest, ticks, excluded }] }。
+  - check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }（参数和 build_blueprint 一样）：世界和图纸对比，什么都不动。r.data 是 { cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }。
+  - haul_items { from, to, items? }：在两个容器之间来回搬，搬完为止（任务；只能在例程里调）。r.data 是 { task, state, result, error }。
+  - read_blocks、find_structure、check_structure：见 multiblocks 手册。total_materials：见 crafting 手册。
+  - 你的模型不能看图时还有 view_area { x1…z2 或 radius }（世界里一个盒子的文字说明，r.data.kinds 是 [{ id, meta, name, count }]）和 view_image { name }（一张图片的尺寸和主要颜色，r.data 是 { width, height, transparent, colors }）。
 
 # 常用的 data
-- list_drawers：r.data.slots 是 [{ x, y, z, slot, id, meta, name, count, room }]（空格是 { empty: true }），r.data.total 是符合条件的总格数（一页 60 格，多了要翻 page）。
 - list_containers：r.data.containers 是 [{ x, y, z, id, name, kind, slots, usedSlots, items: [{ id, meta, count, name }], attached }]，r.data.total 是总数。
-- list_stock：r.data.items 是 [{ id, meta, count, automated, places: [{ x, y, z, count }] }]（全部，不分页）。
 - get_player_position：r.data 里有 block、facing、lookingAt、ahead。
 - get_status：r.data 是你的原样状态（block、inventory: [{ slot, id, meta, count, name }]、freeSlots……）。
 - find_in_storage：r.data.items 和你问的一一对应，每项有 total 和 places: [{ x, y, z, count }]。
-- 多方块结构是程序里的数据和库函数（data.structure、find_structure、check_structure、read_blocks），见 multiblocks 手册。
+- list_designs：r.data 里有 blueprints: [{ name, size, blocks }]、drafts: [{ name, size, blocks, kinds }]、images: [{ name, width, height }]（问了哪几样就有哪几样）。
+- run_command：r.data 是 { command, output: [服务器回显的每一行] }。发指令不算只查不动，只能在例程里调。
+- 库函数的 data 见上一节。多方块结构还有程序里的数据（data.structure），见 multiblocks 手册。
 - 别的工具没有 data 时，从 r.text 里看。拿不准某个工具给什么，先用 run_program 调一次、return JSON.stringify(r.data) 看一眼。
 
 # 例子：把抽屉里不到 128 个的东西都搬到一个箱子里

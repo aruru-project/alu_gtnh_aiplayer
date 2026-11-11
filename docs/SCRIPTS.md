@@ -3,7 +3,7 @@
 AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 - **出设计**：程序画出**图纸草稿**；主人在面板上看过同意了，草稿才发布成服务器上的图纸，之后照现有的办法盖。
-- **调工具**：程序里 `await tool(名字, 参数)` 调它自己的工具。`run_program` 当场跑完，只能调查询类的；`start_routine` 在后台跑（“例程”），能调动作，一步步做完再把模型叫醒。见下面“程序调工具”一节。
+- **调工具**：程序里 `await tool(名字, 参数)` 调它自己的工具，和不在工具清单里的**库函数**（见“库函数”一节）。`run_program` 当场跑完，只能调查询类的；`start_routine` 在后台跑（“例程”），能调动作，一步步做完再把模型叫醒。见下面“程序调工具”一节。
 
 ```
 模型写程序 ──run_program──▶ 沙箱子进程 ──▶ 草稿（数据目录 drafts/）──▶ 面板“图纸”页给主人看
@@ -18,11 +18,10 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 | 工具 | 做什么 |
 |---|---|
-| `run_program(code, timeout?)` | 跑一段程序，这一轮里就拿到结果：日志、`return` 的值、存下的每张草稿的尺寸和材料表；草稿小的话直接带预览。出错时给报错、行号和调用栈。程序里能调查询类的工具 |
+| `run_program(code, timeout?)` | 跑一段程序，这一轮里就拿到结果：日志、`return` 的值、存下的每张草稿的尺寸和材料表；草稿小的话直接带预览。出错时给报错、行号和调用栈。程序里能调查询类的工具。它的说明后面带着库函数的索引 |
 | `start_routine(code, name?, minutes?)` | 把程序放到后台跑（例程）：能调动作类的工具。立刻返回；结束时把模型叫醒 |
 | `routine_status()` / `stop_routine()` | 例程做到哪了（状态、正等着的那一步、最近几次调用、程序的日志）/ 停掉它 |
-| `list_images()` | 主人在面板上传的图片：名字、宽高 |
-| `list_drafts()` | 草稿：名字、尺寸、方块数 |
+| `list_designs(kind?)` | 三样一起列，或者只列一样：`blueprints` 服务器上的图纸、`drafts` 草稿（名字、尺寸、方块数）、`images` 主人在面板上传的图片（名字、宽高）。旧的三个名字 `list_blueprints` / `list_drafts` / `list_images` 不在清单里了，调到照常执行 |
 | `view_draft(name, along?, x1…z2?, program?)` | 看一张草稿：材料表，加一片片的字符画（带图例）。`along` 是 `y`（一层层俯视）、`z`（从南面看的竖切面）、`x`（从西面看）；不给就沿最薄的方向。大草稿按约 4000 字符的预算画，画不下的写明没画哪些，用 `x1…z2` 指定范围再看。`program: true` 把生成它的程序也给出来 |
 | `publish_draft(name, as?)` | 把草稿转成 `.schematic`，经 `blueprint.put` 发给身体（同名覆盖） |
 | `delete_draft(name)` | 删草稿（不影响已经发布的图纸） |
@@ -56,7 +55,8 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `data.structures()` | 全部多方块机器：`[{ id, meta, name, tiers }]`（`structures.jsonl`） |
 | `data.structure(名字)` 或 `data.structure(id, meta)` | 一台多方块机器：`{ id, meta, name, tiers, info, structureInfo, rows, tier(n) }`。`rows` 的每一项是一种搭法 `{ tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }`，`palette[cells[(y * size[2] + z) * size[0] + x]]` 是那一格的方块，主机正面朝南；`tier(n)` 是第 n 级的搭法。没有是 `null`，重名的抛错并列出各自的 id/meta |
 | `log(…)`，`console.log(…)` | 打日志。一共留 4000 字符，多的丢掉并说明丢了几条 |
-| `await tool(名字, 参数)` | 调一个工具，参数和模型自己调时一样。返回 `{ ok, text, data }`：成没成、模型会看到的那段文字、同一个结果的数据形式（有些工具没有）。工具失败不抛错，只是 `ok` 为 `false` |
+| `await tool(名字, 参数)` | 调一个工具或库函数，参数和模型自己调时一样。返回 `{ ok, text, data }`：成没成、模型会看到的那段文字、同一个结果的数据形式（有些工具没有）。工具失败不抛错，只是 `ok` 为 `false` |
+| `return 值` | 显示在结果里。最多和一个工具结果一样长（面板上的“单个工具结果上限”，默认 6000 字符）；更长的只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
 
 没有的东西：`import`、`require`、`process`、文件、网络、定时器、`eval` / `new Function`。
 
@@ -69,14 +69,14 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | | `run_program` | `start_routine`（例程） |
 |---|---|---|
 | 什么时候跑完 | 模型的这一轮里，结果当场回来 | 后台。模型启动它以后这一轮就结束 |
-| 能调哪些工具 | 只有查询类的（`brain/src/tools/index.ts` 的 `QUERY_TOOLS`：看状态、看仓库、查配方、查任务书……） | 除了 `run_program` 和例程自己的三个工具以外的全部 |
+| 能调哪些工具 | 只有查询类的（`brain/src/tools/index.ts` 的 `QUERY_TOOLS`：看状态、看仓库、查配方、查任务书……，只查不动的库函数也在里面） | 除了 `run_program` 和例程自己的三个工具以外的全部，库函数和旧名字也算 |
 | 开任务的工具 | 调不了（结果是失败，并指到 `start_routine`） | 等任务结束才返回：`ok` 是任务成没成，`data` 是 `{ task, state, result, error }` |
 | 总时长 | 90 秒（连等查询结果的时间） | 默认 30 分钟，`minutes` 最多 180 |
 | 程序自己的计算时间 | 默认 10 秒，`timeout` 最多 30 | 20 秒 |
 | 别的上限 | – | 最多调 400 次工具、其中最多开 150 个任务；连着 3 次工具失败就停 |
 | 同时几个 | 一个 | 一个（例程在跑时，模型还可以另跑一个 `run_program`） |
 
-**同一条路。** 程序调的每个工具都交给大脑的 `runTool`：和模型自己调是同一份校验、同一个执行函数，结果一样被截到“单个工具结果上限”（`data` 不截）。每一次调用和结果都记进对话日志（前面标着 `[程序]` 或 `[例程 r1]`），例程开的任务一样出现在面板的任务列表里。
+**同一条路。** 程序调的每个工具都交给大脑的 `runTool`：和模型自己调是同一份校验、同一个执行函数，结果一样被截到“单个工具结果上限”（截了会写明截掉多少；`data` 不截）。每一次调用和结果都记进对话日志（前面标着 `[程序]` 或 `[例程 r1]`），例程开的任务一样出现在面板的任务列表里。
 
 **例程怎么和模型配合**（`brain/src/agent/routine.ts`）：
 
@@ -88,20 +88,50 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **计时分两种。** 程序等工具结果的时候，沙箱子进程是停着的（读标准输入等那一行结果），这段时间不算进“程序自己的计算时间”；等一个任务做完可能要几分钟，由总时长管。所以一个不调工具的死循环，20 秒内就会被停掉。
 
-## 库函数：只在程序里能调的
+## 库函数：不在工具清单里的
 
-有些事是“查本地资料，再算一算”，模型不常用，用的时候写几行程序就行。它们不做成发给模型的工具（每个工具的说明每一轮都要发给模型，现在一共六万多字符），而是**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，但只在程序里调得到。登记在 `brain/src/tools/index.ts` 的 `LIBRARY_TOOLS`；都是只查不动手的，所以 `run_program` 里也能调。模型自己直接调会得到“没有这个工具”。
+每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
+
+| | 发给模型 | 模型怎么知道它存在 | 怎么调 |
+|---|---|---|---|
+| 工具（`ALL_TOOLS`） | 每一轮，连说明和 schema | 工具清单 | 直接调；程序里也能调 |
+| 库函数（`LIBRARY_TOOLS`） | 不发 | `run_program` 的说明后面有一份**索引**：每个一行（名字、参数要点、`data` 里有什么），整份不超过 1500 字符；`start_routine` 的说明指过去。细节在 `routines` 手册的“库函数”一节 | 程序里 `await tool(名字, 参数)` |
+| 旧名字（`LEGACY_TOOLS`） | 不发 | 不提（只为已经存着的例程、笔记、它自己写的手册还能用） | 同上 |
+
+**挪走不等于拿掉能力。** `runTool` 按名字找的时候三层都找：模型直接调了一个库函数或旧名字，和调工具一样**照常执行**（同样的参数校验、同样的结果），不回“没有这个工具”，也不回“请写程序”。旧习惯、旧笔记、小模型的误调都不会变成一次失败。调了真不存在的名字时，报错里分两组列出能调的：它的工具，和库函数。
+
+只查不动手的库函数在 `QUERY_TOOLS` 里，`run_program` 和例程里都能调；`haul_items` 会开任务，只能在例程里调（模型直接调时照常开任务）。
+
+**看图的工具按模型给**（`Tool.picture`，`modelToolSpecs`）。`view_area`、`view_image`、`view_draft` 的图只有能看图的模型用得上：
+
+- 当前模型能看图：三个都在工具清单里。
+- 不能看图：`view_area`、`view_image` 不进清单，列在库函数的索引里（程序里调，拿文字和 `data`）；`view_draft` 的文字那一半（尺寸、材料表、字符画、生成它的程序）谁都用得上，所以留在清单里，换成不提图的那份说明，少了 `picture`、`from`、`layer` 三个参数（`Tool.textOnly`）。直接调照常执行，给文字。
+
+现在的库函数（`text` 都是整理好的一段话，下面只写 `data`）：
 
 | | |
 |---|---|
+| `list_stock { radius?, contains?, below?, at?, page? }` | 周围所有箱子和抽屉合成一张存货表。`data`：`{ items: [{ id, meta, name?, count, automated, places: [{ x, y, z, count, kind?, automated? }] }] }`（全部，不分页；`text` 一页 40 行） |
+| `list_drawers { x, y, z, below?, page? }` | 一个抽屉管理器（或一个抽屉方块）的每一格。`data` 是身体 `world.drawers` 的原样回答：`{ controller?, drawers, slotsTotal, slotsUsed, slots: [{ x, y, z, slot, id, meta, name, count, room } 或 { x, y, z, slot, empty: true }], total, offset }` |
+| `find_uses { id, meta?, way?, contains?, page? }` | 一样东西能拿来做什么（NEI 的 U）。只给 id/meta：`{ item: { id, meta, name }, total, ways: [{ way, name, recipes }] }`（`way` 是可以回填给 `way` 参数的写法）。给了 `way` / `contains` / `page`：`{ item, total, page, pages, recipes: [{ recipe, way, in: [{ id, meta?, name, count } 或 { ore, name, count } 或 { any, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, fluidsOut?, eut?, ticks? }] }`（`count` 为 0 的原料是放进去但不消耗的） |
+| `list_quest_lines { player? }` | 任务书各章和进度。`data`：`{ quests, player?, lines: [{ name, en?, quests, complete?, available? }], unclaimed? }`（进度那几项要看得到某个玩家的进度才有） |
+| `probe_block { x, y, z }` | 现在能不能挖这一格、用哪件工具、要多久。`data` 是身体 `bot.probe` 的原样回答：`{ id, meta, …, canDig, digTicks, toolSlot, inReach, candidates: [{ slot, item, harvest, strength, ticks, excluded? }] }` |
+| `check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }` | 世界和图纸对比，什么都不动。`data` 是身体 `blueprint.check` 的原样回答：`{ name, origin, box, cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }` |
+| `haul_items { from, to, items?, queue? }` | 在两个容器之间来回搬（任务）。只能在例程里调，等任务结束才返回：`data` 是 `{ task, state, result?, error? }` |
 | `read_blocks { x1, y1, z1, x2, y2, z2 }` | 世界里一个盒子的全部方块（每边最多 64）。`data`：`{ x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells, unloaded }`，盒子从 `(x, y, z)` 起，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格（`palette[0]` 是空气） |
-| `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么（`text` 是整理好的一段话）。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
-| `total_materials { id, meta?, count?, recipes: [#…] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed }], raw, kept, fluids, unused }` |
+| `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
 | `check_structure { at, tier, id?, meta? }` | 把世界里 `at` 那台主机周围的方块和它 `tier` 级的搭法对一遍（四个水平朝向都试，取对得最上的；机器零件占着机械方块的位置算对）。`data`：`{ machine, tier, facing, looksLike, total, right, changes: [{ x, y, z, from, to }], need: [{ id, meta, name, count, carried, stored, short }] }` |
+| `total_materials { id, meta?, count?, recipes: [#…] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed }], raw, kept, fluids, unused }` |
+| `view_area { x1…z2 \| radius, view?, from?, layer? }`（模型不能看图时） | 世界里一个盒子的文字说明：范围、各种方块各多少、一层层各有什么。`data`：`{ x, y, z, sx, sy, sz, unloaded, kinds: [{ id, meta, name?, count }] }` |
+| `view_image { name }`（模型不能看图时） | 主人传的一张图片的文字说明：尺寸、透明的占多少、主要颜色。`data`：`{ name, width, height, transparent（0–1）, colors: ["颜色名 百分比"] }` |
 
-加一个库函数：写成一个 `Tool`（`brain/src/tools/structures.ts` 是例子），放进 `LIBRARY_TOOLS`。结果里的 `data` 是给程序用的，`text` 是模型把结果 `return` 出来时看的。模型的工具有不少还没有 `data`（只有文字）；给程序用得上的陆续补（现在有的见 `brain/manuals/routines.md` 的“常用的 data”）。
+合并掉的旧名字（程序里照样能调）：`list_blueprints`、`list_drafts`、`list_images`（现在是 `list_designs`，`data` 是 `{ blueprints?, drafts?, images? }`）；`set_home`、`list_homes`、`join_team`（现在是 `run_command`：发一条服务器指令，`data` 是 `{ command, output: [回显的每一行] }`。能发哪些由身体的允许列表定，协议里没有读这份列表的接口，所以被拒绝时结果里写明原因和默认的列表）。
 
-按场景的示例程序在手册里：`routines`（一样样搬东西）、`multiblocks`（这台多方块升到某一级要换什么——取结构、读世界、试朝向、列差异、对库存）。手册里的示例都有测试照抄着跑一遍。
+**加一个库函数**：写成一个 `Tool`（`brain/src/tools/structures.ts` 是例子），放进 `LIBRARY_TOOLS`，写上 `brief`（索引里的那一行，尽量短：整份索引有 1500 字符的上限，有测试看着）和结构化的 `data`，把 `data` 的形状补进上面这张表和 `routines` 手册。只查不动的自动进 `QUERY_TOOLS`；会开任务的要另外登记在 `LIBRARY_TASKS`（那样它只能在例程里调）。`test/tool-list.test.ts` 里有一条防回涨的测试：发给模型的工具清单总字符数超过上限就失败，并列出各工具的大小——往 `ALL_TOOLS` 里加东西之前先想能不能做成库函数。
+
+**程序里看长结果。** `return` 的值最多和一个工具结果一样长（跟“单个工具结果上限”那个设置走），更长的只给开头，并写明一共多少字符、给了多少、剩下的怎么拿（从 `r.data` 里挑、用工具自己的筛选和翻页参数、分段返回 `r.text`）。同一条路上别的会截短的地方也都写明：程序的日志满了（4000 字符）、例程只留最近 40 行日志和最近 12 次调用（每次只留结果的第一行）、报错的话超过 1000 字符。
+
+按场景的示例程序在手册里：`routines`（一样样搬东西；库函数各自的参数和 `data`）、`multiblocks`（这台多方块升到某一级要换什么——取结构、读世界、试朝向、列差异、对库存）。手册里这两段示例程序都有测试照抄着跑一遍；手册里出现的每一个 `tool("名字", …)` 也有测试看着它确实调得到。
 
 ## 草稿和图片
 
@@ -138,7 +168,8 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | JS 堆 | 256 MiB（`--max-old-space-size`） | V8 自己中止子进程 |
 | 常驻内存（大数组不在 JS 堆里） | 512 MiB | 大脑每 25 毫秒看一次 `/proc/<pid>/statm`，超了就杀。**只在 Linux 上有** |
 | 标准输出（草稿从这里回来） | 16 MiB | 杀掉 |
-| 日志 / 返回值 | 4000 / 2000 字符 | 截断并说明 |
+| 日志 | 4000 字符 | 截断，并写明后面有多少条没留下 |
+| 返回值 | 和“单个工具结果上限”一样（默认 6000 字符） | 只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
 
 程序交回来的草稿当作不可信的 JSON，在大脑这边逐项检查（`brain/src/design/draft.ts`：名字不能带路径、尺寸和格子数要对得上、方块写法要合规）过了才落盘。
 
@@ -179,7 +210,8 @@ brain/src/script/runner.mjs     子进程入口：收紧自己、建 vm 上下�
 brain/src/script/prelude.js     程序能用的 API，在 vm 上下文里求值（纯 JavaScript）
 brain/src/design/               草稿的检查和存取、文字预览、.schematic、PNG 解码、图片存取
 brain/src/agent/routine.ts      例程：程序调工具时怎么执行、怎么等任务、各项上限、怎么结束
-brain/src/tools/design.ts       run_program、例程的三个工具、草稿和图片的六个工具（view_draft 加 picture 可以把草稿画成图）
+brain/src/tools/design.ts       run_program、例程的三个工具、list_designs、草稿的三个工具（view_draft 加 picture 可以把草稿画成图）
+brain/src/tools/index.ts        工具、库函数、旧名字三层；发给模型的清单（按模型能不能看图）；库函数的索引
 brain/src/tools/pictures.ts     看图的工具：view_area（世界）、view_image（主人传的图片）
 brain/src/render/               简图：把草稿、世界里的一块地方按方块颜色画成 PNG（见 brain/README.md 的“看图”）
 brain/src/packdata/blocks.ts    方块颜色表和内置的小表

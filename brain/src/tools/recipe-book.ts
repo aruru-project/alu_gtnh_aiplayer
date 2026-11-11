@@ -749,7 +749,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   const twins = (same?.others ?? []).filter((o) => recipes.makesOf(o.id, o.meta).length > 0)
   const refs = twins.length === 0 ? recipes.makesOf(target.id, target.meta) : [...new Set([...recipes.makesOf(target.id, target.meta), ...twins.flatMap((o) => recipes.makesOf(o.id, o.meta))])].sort((a, b) => a - b)
   if (refs.length === 0) {
-    return `No recipe makes ${label}: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). find_uses shows what it is used for.`
+    return `No recipe makes ${label}: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). The library function find_uses shows what it is used for.`
   }
   const wanted = { id: target.id, meta: target.meta, same: twins }
   const twinNote = twins.length > 0 ? ` Recipes that make ${twins.map((o) => nm.label(o.id, o.meta)).join(', ')} are included: under the ore name ${same!.ore} it is the same thing (GregTech machines and "any ${same!.ore}" recipes take either).` : ''
@@ -833,6 +833,30 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   return { content: lines.join('\n'), keepWhole: true }
 }
 
+/** 一条配方的数据形式，给程序用（find_uses 的 data.recipes）。count 为 0 的原料是要放进去但不消耗的（编程电路、模具）。 */
+export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
+  const slot = (s: RecipeSlot): Record<string, unknown> => ({
+    ...(s.kind === 'item' ? { id: s.id, ...(s.meta === ANY_META ? {} : { meta: s.meta }) } : s.kind === 'ore' ? { ore: s.ore } : { any: s.any.map(([id, meta]) => itemKey({ id, meta })) }),
+    name: slotName(s, nm, false),
+    count: s.n,
+  })
+  const fluid = (f: { f: string; name: string; mb: number }): Record<string, unknown> => ({ fluid: f.f, name: f.name, mb: f.mb })
+  return {
+    recipe: r.ref,
+    way: r.handler.name,
+    in: mergedSlots(r.in).map(slot),
+    out: r.out.map((o) => ({ id: o.id, meta: o.meta, name: o.name ?? nm.name(o.id, o.meta), count: o.n, ...(o.chance !== undefined ? { chance: o.chance } : {}) })),
+    ...(r.fin.length > 0 ? { fluidsIn: r.fin.map(fluid) } : {}),
+    ...(r.fout.length > 0 ? { fluidsOut: r.fout.map(fluid) } : {}),
+    ...(r.eut !== undefined ? { eut: r.eut } : {}),
+    ...(r.ticks !== undefined ? { ticks: r.ticks } : {}),
+  }
+}
+
+/**
+ * 查用途。data（给程序用）：item 是问的那样东西，total 是用到它的配方数；
+ * 只给 id/meta 时 ways 是每种方式各有几条（全部方式，不止文字里列出来的那些）；给了 way / contains / page 时 recipes 是这一页的配方。
+ */
 export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes } = requireBook(ctx)
   const nm = namer(items)
@@ -843,7 +867,8 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   const same = nm.interchangeable(target.id, target.meta)
   const own = recipes.usesOf(target.id, target.meta, target.info?.ores ?? [])
   const refs = same ? [...new Set([...own, ...same.others.flatMap((o) => recipes.usesOf(o.id, o.meta))])].sort((a, b) => a - b) : own
-  if (refs.length === 0) return `Nothing in the recipe book uses ${label} as an ingredient.`
+  const item = { id: target.id, meta: target.meta, name: nm.name(target.id, target.meta) }
+  if (refs.length === 0) return { content: `Nothing in the recipe book uses ${label} as an ingredient.`, data: { item, total: 0, ways: [] } }
   // 用到它的配方可以上万条：分组只看每条属于哪一页，不读配方本身
   const groups = new Map<RecipeHandler, number[]>()
   for (const ref of refs) {
@@ -880,16 +905,19 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
         return hit
       })
     }
-    if (list.length === 0) return `No recipe uses ${label}${scope} (${inWays} before the "contains" filter; ${refs.length} in all).`
+    if (list.length === 0) return { content: `No recipe uses ${label}${scope} (${inWays} before the "contains" filter; ${refs.length} in all).`, data: { item, total: 0, page: 1, pages: 1, recipes: [] } }
     const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
     if (!paged) return fail(`There is no page ${input.page}: ${list.length} recipe(s)${scope}, ${Math.ceil(list.length / RECIPES_PER_PAGE)} page(s).`)
     const lines: string[] = []
+    const shown: Record<string, unknown>[] = []
     for (const ref of paged.shown) {
       const r = loaded?.get(ref) ?? recipes.get(ref)
-      if (r) lines.push(`${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm)}`)
+      if (!r) continue
+      lines.push(`${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm)}`)
+      shown.push(recipeData(r, nm))
     }
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
-    return { content: [`Recipes that use ${label}${scope}: ${range}.`, ...lines].join('\n'), keepWhole: true }
+    return { content: [`Recipes that use ${label}${scope}: ${range}.`, ...lines].join('\n'), data: { item, total: list.length, page: paged.page, pages: paged.pages, recipes: shown }, keepWhole: true }
   }
 
   const lines: string[] = [`${label} is an ingredient of ${refs.length} recipe(s), in ${ways.length} way(s) (the same recipe can be listed more than once in the book):`]
@@ -907,7 +935,7 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   }
   if (ways.length > USE_WAYS_SHOWN) lines.push(`- … and ${ways.length - USE_WAYS_SHOWN} more way(s) with ${ways.slice(USE_WAYS_SHOWN).reduce((n, w) => n + w.refs.length, 0)} recipe(s): ${ways.slice(USE_WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`)
   lines.push('See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient), page by page.')
-  return { content: lines.join('\n'), keepWhole: true }
+  return { content: lines.join('\n'), data: { item, total: refs.length, ways: ways.map((w) => ({ way: wayLabel(w.handler, ways), name: w.handler.name, recipes: w.refs.length })) }, keepWhole: true }
 }
 
 // ── 把一条配方变成任务的参数 ──

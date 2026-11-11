@@ -10,8 +10,9 @@
 
 # home 和传送
 - 服务器允许随便 /sethome 和 /home。go_home 传送到你设过的 home，是走远路最快的办法。
-- 以后还会回来的地方（仓库、工地、主人的基地），到了就用 set_home 记下来并写明用途；它会同时记进你的记忆。list_homes 看设过哪些。
-- go_home 去一个不存在的 home 会以 invalid 失败：先 list_homes 看名字。
+- 设 home、看有哪些 home 都是发服务器指令：run_command。以后还会回来的地方（仓库、工地、主人的基地），到了就 run_command 发 `sethome 名字`（名字只用字母、数字、_ 和 -），再用 remember 记一条（键写成 home:名字，内容是坐标和用途）：指令本身不会替你记。`home list` 看设过哪些。
+- go_home 去一个不存在的 home 会以 invalid 失败：先 run_command 发 `home list` 看名字。
+- run_command 能发哪些指令由服务器的允许列表定，你读不到那份列表；不在列表里的会被拒绝，结果里会写明。被拒绝了不要重试，告诉主人。
 
 # 走不到的时候
 - unreachable：没有路，或者太远。太远就先传送到附近；否则换一个能到的目标，或者问人。

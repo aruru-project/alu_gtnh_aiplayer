@@ -1,5 +1,6 @@
 // 看仓库：附近的容器一个个列（list_containers），一个抽屉管理器管着的每一格（list_drawers），
 // 一片仓库合成一张存货总表（list_stock）。都只读。
+// list_drawers 和 list_stock 是库函数（tools/index.ts 的 LIBRARY_TOOLS）：不在发给模型的清单里，程序里调；模型直接调也照常执行。
 // 身体一次只给一页（world.containers 的 total / offset），所以每个结果都写明“这是 N 个里的第几到第几个”，不悄悄截断。
 // 带 attached 的容器（旁边接着漏斗、管道）是主人自动化的一环，结果里标出来。
 
@@ -57,6 +58,7 @@ function drawerSlotLine(s: DrawerSlot): string {
 
 export const listDrawers: Tool = {
   name: 'list_drawers',
+  brief: '{x, y, z, below?, page?}: slots of a drawer controller -> slots[{x, y, z, id, meta, count}]',
   description:
     'Every drawer slot a Storage Drawers controller manages, with the real count in each (or the slots of one drawer block). "below" lists only slots holding fewer than that many. Each line gives the drawer block to withdraw from.',
   inputSchema: obj(
@@ -117,6 +119,7 @@ async function allContainers(ctx: ToolContext, from: LookFrom, radius: number): 
 
 export const listStock: Tool = {
   name: 'list_stock',
+  brief: '{radius?, contains?, below?, at?}: everything stored around -> items[{id, meta, count, places}]',
   description: `Everything stored around you, or around a place you give ("at"), as one table: each item with its total and where most of it is, summed over all chests and drawers within the radius, most first. Filter with "contains" (a word of the name or id) and "below" (items you have fewer than that of). Machines and drawer controllers are not counted; what sits in automated containers is marked.`,
   inputSchema: obj({
     radius: int('Search radius in blocks (default 16).', { min: 1, max: CONTAINERS_MAX_RADIUS }),
@@ -129,7 +132,7 @@ export const listStock: Tool = {
     const radius = i.radius ?? 16
     const from = await lookFrom(ctx, i.at)
     const { containers, total } = await allContainers(ctx, from, radius)
-    if (total === 0) return `No containers within ${radius} blocks of ${from.of}.${from.hint}`
+    if (total === 0) return { content: `No containers within ${radius} blocks of ${from.of}.${from.hint}`, data: { items: [] } }
     const storage = containers.filter((c) => c.kind !== 'machine' && c.kind !== 'drawer_controller')
     const merged = new Map<string, StockLine>()
     let truncated = 0

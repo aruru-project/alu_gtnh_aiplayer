@@ -146,7 +146,7 @@ describe('写程序出设计', () => {
     ])
     // 草稿在大脑这边；游戏那边什么都没收到
     assert.deepEqual(s.game.calls, [])
-    assert.match((await s.run('list_drafts')).content, /^1 draft\(s\), newest first:\n- hut: 3×2×3 \(x east-west × y up × z north-south\), 16 block\(s\) of 2 kind\(s\), saved 0 min ago$/)
+    assert.match((await s.run('list_designs', { kind: 'drafts' })).content, /^1 draft\(s\), newest first:\n- hut: 3×2×3 \(x east-west × y up × z north-south\), 16 block\(s\) of 2 kind\(s\), saved 0 min ago$/)
   })
 
   it('实心盒子、空心盒子、四面墙、连线各画出什么', async (t) => {
@@ -181,7 +181,7 @@ describe('写程序出设计', () => {
     const badBlock = await s.run('run_program', { code: "blueprint(2, 2, 2).set(0, 0, 0, 'stone')" })
     assert.match(badBlock.content, /TypeError: "stone" is not a block: write a registry name such as "minecraft:planks"/)
     // 出错的程序之前 save 过的也不算数
-    assert.match((await s.run('list_drafts')).content, /^There are no drafts\./)
+    assert.match((await s.run('list_designs', { kind: 'drafts' })).content, /^There are no drafts\./)
   })
 
   it('像素画：读主人传的图片，一个像素一个颜色最接近的方块，透明的地方空着', async (t) => {
@@ -194,7 +194,7 @@ describe('写程序出设计', () => {
         [[210, 178, 161, 255], [26, 22, 22, 255], [151, 52, 49, 255]],
       ]),
     )
-    assert.equal((await s.run('list_images')).content, '1 image(s) (name: width×height in pixels):\n- flag: 3×2')
+    assert.equal((await s.run('list_designs', { kind: 'images' })).content, '1 image(s) (name: width×height in pixels):\n- flag: 3×2')
     const res = await s.program(`
       const img = image('flag')
       const b = blueprint(img.width, img.height, 1)
@@ -310,7 +310,7 @@ describe('写程序出设计', () => {
     assert.ok(res.content.endsWith(`Program that made it:\n${code}`), res.content)
     assert.equal((await s.run('delete_draft', { name: 'dot' })).content, 'Deleted draft "dot".')
     assert.equal((await s.run('delete_draft', { name: 'dot' })).isError, true)
-    assert.match((await s.run('list_drafts')).content, /^There are no drafts\./)
+    assert.match((await s.run('list_designs', { kind: 'drafts' })).content, /^There are no drafts\./)
   })
 
   it('手册里的两个例子照抄就能跑：小屋和像素画各存下一张草稿', async (t) => {
@@ -339,7 +339,7 @@ describe('发布草稿', () => {
     `)
     const res = await s.run('publish_draft', { name: 'corner', as: 'corner-v2' })
     assert.equal(res.isError, undefined, res.content)
-    assert.match(res.content, /^Published draft "corner" as blueprint "corner-v2" on the server \(4×3×2, 11 blocks\)\. Next: check_blueprint with name "corner-v2"/)
+    assert.match(res.content, /^Published draft "corner" as blueprint "corner-v2" on the server \(4×3×2, 11 blocks\)\. build_blueprint builds it, given name "corner-v2" and the x, y, z where its lowest corner goes; check_blueprint \(a library function, same arguments\) shows beforehand/)
     assert.deepEqual(s.game.calls.map((c) => [c.method, c.params.name]), [['blueprint.put', 'corner-v2']])
 
     const got = s.published.get('corner-v2')!
@@ -360,7 +360,7 @@ describe('发布草稿', () => {
       }
     }
     // 草稿还在，可以接着改
-    assert.match((await s.run('list_drafts')).content, /^1 draft\(s\)/)
+    assert.match((await s.run('list_designs', { kind: 'drafts' })).content, /^1 draft\(s\)/)
   })
 
   it('用了三百种方块的草稿（数字 id 超过一个字节）也能发布并原样读回', async (t) => {
@@ -581,15 +581,34 @@ describe('沙箱', () => {
     })
   })
 
-  it('日志打得太多只留开头并说明丢了多少；返回的东西太长会被截短', async (t) => {
+  it('日志打得太多只留开头，返回的东西太长只给开头：两样都写明一共多少、留了多少、剩下的怎么拿，不悄悄截掉', async (t) => {
     const s = setup(t)
     const res = await s.program("for (let i = 0; i < 5000; i++) log('line ' + i)\nreturn 'y'.repeat(100000)")
-    const log = /^Log:\n([\s\S]*?)\n… \((\d+) more log line\(s\) were dropped: the log is full\)$/m.exec(res)
+    const log = /^Log:\n([\s\S]*?)\n… \(the log is full: it holds 4000 characters in all, so (\d+) log line\(s\) after this point were cut short or dropped\. Log less, or return what you need\)$/m.exec(res)
     assert.ok(log, res.slice(0, 300))
     assert.ok(log[1]!.startsWith('line 0\nline 1\n'))
     assert.ok(log[1]!.length <= 4000)
     assert.ok(Number(log[2]) > 4000)
-    assert.ok(/^Returned: y+$/m.exec(res)![0].length < 2100)
+    // 返回值：一个结果最多 6000 字符（没人另说时的“单个工具结果上限”），前面的日志占了四千多
+    const returned = /^Returned \(CUT: this is only the first (\d+) of 100000 characters; one result holds at most 6000 characters, the log above included\. To get the rest, return less at a time: pick the fields you need from r\.data, narrow the tool call with its own filters or its page argument, or return a later slice of the text\): (y+)$/m.exec(res)
+    assert.ok(returned, res.slice(-600))
+    assert.equal(returned[2]!.length, Number(returned[1]))
+    assert.ok(Number(returned[1]) > 1000 && res.length <= 6000, `${returned[1]} shown, ${res.length} in all`)
+  })
+
+  it('程序报错的那句话太长时只留开头，并写明留了多少', async (t) => {
+    const s = setup(t)
+    const res = await s.run('run_program', { code: "throw new Error('e'.repeat(3000))" })
+    assert.equal(res.isError, true)
+    assert.match(res.content, /^The program failed at line 1, column \d+: Error: e{1000}… \[only the first 1000 of the 3000 characters of this message are kept\]\n/)
+  })
+
+  it('返回的东西只要放得下一个工具结果就整段给：五千字符的文字不会被截', async (t) => {
+    const s = setup(t)
+    const res = await s.program("return 'line of a long table\\n'.repeat(250)")
+    assert.equal(res.split('\n').filter((line) => line === 'line of a long table').length, 249)
+    assert.match(res, /^Returned: line of a long table$/m)
+    assert.doesNotMatch(res, /CUT/)
   })
 
   it('一次只跑一个程序：上一个还没完，第二个被告知等着', async (t) => {

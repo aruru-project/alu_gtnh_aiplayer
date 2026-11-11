@@ -18,7 +18,7 @@ import { HistoryStore } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { ALL_TOOLS } from '../src/tools/index.ts'
-import { tmpDir } from './helpers.ts'
+import { tmpDir, waitFor } from './helpers.ts'
 
 type Json = Record<string, unknown>
 
@@ -254,6 +254,21 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     cleanup: tmp.cleanup,
   }
   return harness
+}
+
+/**
+ * 让模型在一轮里调一个工具（有人跟它说了句话 → 它调这个工具 → 看到结果 → 结束这一轮），返回它看到的那个结果。
+ * 走的是 agent 的整条路：工具清单按当前模型给，调用经 runTool，结果照“单个工具结果上限”截。
+ */
+export async function modelCalls(h: AgentHarness, name: string, input: unknown = {}, said = 'Alu 干活'): Promise<{ content: string; isError: boolean }> {
+  const before = h.llm.requests.length
+  h.llm.enqueue(reply('', [{ id: `c${before}`, name, input }]), reply(''))
+  h.agent.handleEvent(chat('Steve', said))
+  await waitFor(`the model saw the result of ${name}`, () => h.llm.requests.length >= before + 2)
+  const messages = h.llm.requests[before + 1]!.messages
+  const part = messages[messages.length - 1]!.content.find((p) => p.type === 'tool_result' && p.toolCallId === `c${before}`)
+  await h.agent.whenIdle()
+  return part && part.type === 'tool_result' ? { content: part.content, isError: part.isError === true } : { content: '', isError: true }
 }
 
 export function chat(player: string, message: string, time = Date.now()) {

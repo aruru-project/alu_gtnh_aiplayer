@@ -267,7 +267,7 @@ it('端到端：大脑进程重启后，重启期间结束的任务照样把它�
   assert.equal(await brain.exited, 0, diag())
 })
 
-it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比再动手 → 材料不够时它被叫醒，看到每种还缺多少', async (t) => {
+it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比（库函数，写一行程序调）再动手 → 材料不够时它被叫醒，看到每种还缺多少', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })
   const llm = new MockLlm()
@@ -321,9 +321,9 @@ it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比再
   chest.items.push({ id: 'minecraft:stonebrick', meta: 0, count: 25, name: 'Stone Bricks' })
   const supply = [{ x: chest.x, y: chest.y, z: chest.z }]
 
-  // 3. 主人叫它盖：它先对比，再启动任务
+  // 3. 主人叫它盖：它先对比（check_blueprint 是库函数，写一行程序调），再启动任务
   llm.enqueue(
-    { toolCalls: [{ name: 'check_blueprint', input: { name: 'cabin', x: 30, y: 65, z: 30 } }] },
+    { toolCalls: [{ name: 'run_program', input: { code: 'return (await tool("check_blueprint", { name: "cabin", x: 30, y: 65, z: 30 })).text' } }] },
     { toolCalls: [{ name: 'build_blueprint', input: { name: 'cabin', x: 30, y: 65, z: 30, supply } }] },
     { text: '' },
   )
@@ -683,7 +683,7 @@ it('端到端：大脑带着本地任务书资料启动，主人问“任务书�
   assert.equal(await brain.exited, 0, diag())
 })
 
-it('端到端：主人在面板传一张图，叫它做成像素画 → 它写程序出草稿、报给主人 → 主人同意后发布成图纸、对比、开工', async (t) => {
+it('端到端：主人在面板传一张图，叫它做成像素画 → 它写程序出草稿、报给主人 → 主人同意后发布成图纸、对比、开工（它照旧习惯直接调了两个已经不在工具清单里的名字，照常执行）', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })
   const llm = new MockLlm()
@@ -726,6 +726,8 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   const uploaded = await call('POST', '/images', { name: 'heart', data: heart.toString('base64') })
   assert.equal(uploaded.status, 200, JSON.stringify(uploaded.json))
 
+  // 这一场里它照旧习惯直接调两个已经不在工具清单里的名字：list_images（并进了 list_designs 的旧名字）和
+  // check_blueprint（库函数）。两个都照常执行，和以前一样的结果——旧笔记、旧例程、小模型的误调不会变成一次失败。
   // 2. 主人叫它做成像素画：它看有哪些图 → 写程序出草稿 → 把样子、材料告诉主人，等他点头
   const program = [
     "const img = image('heart')",
@@ -750,6 +752,9 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
   // 提示词里指了路：手册目录里有 design
   assert.match(JSON.stringify(llm.requests[0]!.body.messages[0]), /- design：[^\\]+/)
+  // 这两个名字都不在发给它的工具清单里
+  const offered = (llm.requests[0]!.body.tools as { function: { name: string } }[]).map((tool) => tool.function.name)
+  assert.deepEqual([offered.includes('list_images'), offered.includes('check_blueprint'), offered.includes('list_designs'), offered.includes('build_blueprint')], [false, false, true, true])
   assert.match(seen(1), /1 image\(s\) \(name: width×height in pixels\):\\n- heart: 3×3/)
   assert.match(seen(2), /Saved draft \\"heart-art\\": 3×3×1 \(x east-west × y up × z north-south\), 6 block\(s\) of 1 kind\(s\)\./)
   assert.match(seen(2), /- 6× minecraft:wool\/14 \\"红色羊毛\\"/)
@@ -941,7 +946,7 @@ it('端到端：一个服务商配两个模型，主人在面板上换了模型 
   assert.equal(await brain.exited, 0, diag())
 })
 
-it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的模型真的收到这张图（下一轮不再重发）；换成看不了图的模型就只给文字；面板上看得到它看的图', async (t) => {
+it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的模型真的收到这张图（下一轮不再重发）；换成看不了图的模型，工具清单里就没有看图的工具了，它照旧直接调也只给文字；面板上看得到它看的图', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })
   const llm = new MockLlm()
@@ -1024,9 +1029,15 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   assert.equal(shown.headers.get('content-type'), 'image/png')
   assert.deepEqual(Buffer.from(await shown.arrayBuffer()), sent.bytes)
 
-  // 4. 换成看不了图的模型（OpenAI 兼容）：同一个工具只给文字，请求里一张图都没有
+  // 能看图的模型，工具清单里有看图的三个
+  const namesIn = (request: (typeof first)[number]): string[] => (request.body.tools as { name?: string; function?: { name: string } }[]).map((tool) => tool.name ?? tool.function!.name)
+  assert.deepEqual(['view_area', 'view_image', 'view_draft'].map((name) => namesIn(first[0]!).includes(name)), [true, true, true])
+
+  // 4. 换成看不了图的模型（OpenAI 兼容）：工具清单里没有 view_area、view_image 了（view_draft 留着，只出文字）；
+  //    它照旧习惯直接调 view_area 也照常执行，只给文字，请求里一张图都没有
   assert.equal((await call('POST', '/models/use', { providerId: 'oa', modelId: 'text' })).status, 200)
   const blind = await look('现在呢', { radius: 6 })
+  assert.deepEqual(['view_area', 'view_image', 'view_draft'].map((name) => namesIn(blind[0]!).includes(name)), [false, false, true])
   assert.deepEqual(llm.rejected, [], diag())
   assert.deepEqual(blind.map((r) => [r.api, imagesInRequest(r).length]), [['openai', 0], ['openai', 0], ['openai', 0]])
   const words = blind[1]!.body.messages.at(-1)
@@ -1131,7 +1142,7 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   assert.equal(await brain.exited, 0, diag())
 })
 
-it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里” → 它看清哪个箱子没接管道、列出不到 128 的格子、写一个例程一样样搬 → 例程在后台跑完才把它叫醒 → 东西真的搬过去了', async (t) => {
+it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里” → 它看清哪个箱子没接管道、写一行程序调库函数列出不到 128 的格子、写一个例程一样样搬 → 例程在后台跑完才把它叫醒 → 东西真的搬过去了', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'] })
   const llm = new MockLlm()
@@ -1175,10 +1186,11 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
   const code = example.replace(/const controller = \{[^}]*\}/, `const controller = ${JSON.stringify(CONTROLLER)}`).replace(/const chest = \{[^}]*\}/, `const chest = ${JSON.stringify(CHEST)}`)
   assert.notEqual(code, example)
 
-  // 1. 一轮里：看附近的容器 → 看抽屉管理器管着的、不到 128 的格子 → 启动例程 → 结束这一轮
+  // 1. 一轮里：看附近的容器 → 看抽屉管理器管着的、不到 128 的格子 → 启动例程 → 结束这一轮。
+  //    list_drawers 是库函数，不在它的工具清单里：它照 run_program 说明后面的索引，写一行程序调
   llm.enqueue(
     { toolCalls: [{ name: 'list_containers', input: {} }] },
-    { toolCalls: [{ name: 'list_drawers', input: { ...CONTROLLER, below: 128 } }] },
+    { toolCalls: [{ name: 'run_program', input: { code: `return (await tool("list_drawers", ${JSON.stringify({ ...CONTROLLER, below: 128 })})).text` } }] },
     { toolCalls: [{ name: 'start_routine', input: { code, name: '整理抽屉' } }] },
     { text: '' },
   )
@@ -1191,9 +1203,13 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
   assert.match(seen(0), /Steve 站在 \(12,64,3\) 面朝北，指着 Compressed Chest \(12,64,-4\)［容器］；面前还有：/)
   assert.match(seen(0), /Compressed Chest \(6,66,-6\)［容器］（接着Brass Item Pipe）/)
   assert.match(seen(1), /\n- \(6,66,-6\) Compressed Chest \[IronChest:BlockIronChest\] 0\/243 slots used \(AUTOMATED: Brass Item Pipe at \(6,66,-7\) feeds or drains it\): empty/)
-  assert.match(seen(1), /\n- \(14,66,-6\) Drawer Controller \[StorageDrawers:controller\] \[drawer controller\] 4\/4 drawer slots used \(manages 2 drawer block\(s\); see what they hold with list_drawers at this position\)/)
-  assert.deepEqual(seen(2).split('\n'), [
-    'The drawer controller at (14,66,-6) manages 2 drawer block(s): 4 of 4 slots hold something. 2 slots holding fewer than 128:',
+  // 它拿到的工具清单里没有 list_drawers；它是从 run_program 说明后面的库函数索引、和 list_containers 的结果里知道有这个函数的
+  const offered = llm.requests[0]!.body.tools as { name: string; description: string }[]
+  assert.equal(offered.some((tool) => tool.name === 'list_drawers'), false)
+  assert.match(offered.find((tool) => tool.name === 'run_program')!.description, /\n- list_drawers \{x, y, z, below\?, page\?\}: /)
+  assert.match(seen(1), /\n- \(14,66,-6\) Drawer Controller \[StorageDrawers:controller\] \[drawer controller\] 4\/4 drawer slots used \(manages 2 drawer block\(s\); the library function list_drawers lists what they hold, given this position\)/)
+  assert.deepEqual(seen(2).split('\n').slice(1), [
+    'Returned: The drawer controller at (14,66,-6) manages 2 drawer block(s): 4 of 4 slots hold something. 2 slots holding fewer than 128:',
     '- (15,64,-6) slot 0: 40× Coal [minecraft:coal], room for 2008 more',
     '- (16,64,-6) slot 0: 7× Steel Ingot [gregtech:gt.metaitem.01/11305], room for 2041 more',
   ])
