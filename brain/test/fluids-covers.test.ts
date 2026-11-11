@@ -231,11 +231,11 @@ describe('覆盖板里的东西', () => {
     ])
     const machines = (await modelCalls(h, 'find_machines', { radius: 32 })).content.split('\n')
     assert.deepEqual(machines.slice(1, 6), [
-      '- (-525,70,41) "基础流体固化器": runs "流体固化器" recipes, tier LV, has power (4000 EU stored), idle, 3 blocks away',
+      '- (-525,70,41) "基础流体固化器": runs "流体固化器" recipes, tier LV, 1 input slot(s), has power (4000 EU stored), idle, 3 blocks away',
       '    tank: 144 of 16000 mB 熔融钢 [fluid molten.steel]',
       `    ${WEST}`,
       `    ${SOUTH}`,
-      '- (-527,70,41) "基础流体提取机": runs "流体提取机" recipes, tier LV, has power (4000 EU stored), idle, 5 blocks away',
+      '- (-527,70,41) "基础流体提取机": runs "流体提取机" recipes, tier LV, 1 input slot(s), has power (4000 EU stored), idle, 5 blocks away',
     ])
     assert.equal(machines[6], '    tank: empty (holds up to 16000 mB)')
     assert.equal(machines.at(-1), COVER_NOTE)

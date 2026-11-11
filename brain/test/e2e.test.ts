@@ -1218,8 +1218,8 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   bridge.whisper('Alu', 'Steve', '车两根钢杆')
   await waitFor('first turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.match(seen(1), /Lathe, LV \(16 EU\/t\), 8 s: 1× gregtech:gt\.metaitem\.01\/11305 \\"Steel Ingot\\" -> 1× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\" \+ 2× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"/)
-  assert.match(seen(2), /- \(16,64,-4\) \\"Advanced Lathe\\": runs Lathe recipes, tier MV, has power \(51200 EU stored\), idle, 6 blocks away/)
-  assert.match(seen(2), /- \(18,64,-4\) \\"Basic Assembling Machine\\": runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle/)
+  assert.match(seen(2), /- \(16,64,-4\) \\"Advanced Lathe\\": runs Lathe recipes, tier MV, 1 input slot\(s\), has power \(51200 EU stored\), idle, 6 blocks away/)
+  assert.match(seen(2), /- \(18,64,-4\) \\"Basic Assembling Machine\\": runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle/)
   assert.deepEqual(
     bridge.requestsOf('task.start').map((p) => p.task),
     [
@@ -1254,7 +1254,7 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   assert.equal(talk.requests.some((r) => JSON.stringify(r.body.messages).includes('任务 t3')), false)
   assert.match(failed, /需要你处理的事/)
   assert.match(failed, /任务 t3（process）失败了：invalid — the machine did not start/)
-  assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle\. It has no power/)
+  assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle\. It has no power/)
   // 原料拿回来了：两根钢杆还在身上，钢锭用掉了
   const carried = (meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === GT && i.meta === meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual([carried(23305), carried(1305), carried(11305)], [2, 4, 0])

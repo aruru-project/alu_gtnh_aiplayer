@@ -644,7 +644,7 @@ describe('agent 的一轮决策', () => {
     await h.agent.whenIdle()
     const unpowered = h.llm.lastUserText(1)
     assert.match(unpowered, /任务 t14（process）失败了：invalid — the machine did not start/)
-    assert.match(unpowered, /machine "Basic Assembling Machine" at \(-38,99,-80\): runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle\. It has no power, so it cannot run anything: tell the owner/)
+    assert.match(unpowered, /machine "Basic Assembling Machine" at \(-38,99,-80\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle\. It has no power, so it cannot run anything: tell the owner/)
     assert.match(unpowered, /已完成的部分：put 7 item\(s\) into the machine; took out: nothing; freeSlots 20/)
 
     // 有电又空闲却没开工：问题出在配方上（缺电路、缺流体、不是这台机器的配方……）

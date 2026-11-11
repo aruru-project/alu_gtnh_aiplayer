@@ -1230,10 +1230,10 @@ describe('物品、配方、库存、合成', () => {
     const lines = res.content.split('\n')
     assert.match(lines[0]!, /^4 GregTech machine\(s\) within 32 blocks of you \(9 in range, the nearest 4 shown: give "name" or a smaller radius to see the others\), nearest first\./)
     assert.deepEqual(lines.slice(1), [
-      '- (-40,99,-80) "Advanced Lathe": runs Lathe recipes, tier MV, has power (51200 EU stored), idle, 5 blocks away',
-      '- (-38,99,-80) "Basic Assembling Machine": runs Assembler recipes, tier LV, NO POWER (0 EU stored), idle, 7 blocks away',
-      '- (-36,99,-80) "Basic Macerator": runs Macerator recipes, tier LV, has power (900 EU stored), BUSY (37% of the current item done), 9 blocks away',
-      '- (-34,99,-80) "Basic Wiremill": runs Wiremill recipes, tier LV, has power (300 EU stored), SWITCHED OFF, idle, 11 blocks away',
+      '- (-40,99,-80) "Advanced Lathe": runs Lathe recipes, tier MV, 1 input slot(s), has power (51200 EU stored), idle, 5 blocks away',
+      '- (-38,99,-80) "Basic Assembling Machine": runs Assembler recipes, tier LV, 6 input slot(s), NO POWER (0 EU stored), idle, 7 blocks away',
+      '- (-36,99,-80) "Basic Macerator": runs Macerator recipes, tier LV, 1 input slot(s), has power (900 EU stored), BUSY (37% of the current item done), 9 blocks away',
+      '- (-34,99,-80) "Basic Wiremill": runs Wiremill recipes, tier LV, 1 input slot(s), has power (300 EU stored), SWITCHED OFF, idle, 11 blocks away',
     ])
 
     const none = await s.run('find_machines', { name: ' Centrifuge ', radius: 48, limit: 5 })

@@ -303,6 +303,36 @@ public final class Machines {
         }
     }
 
+    /**
+     * What a slot of a GregTech machine or bus is for, by its index in the machine's inventory: "input" (where a
+     * recipe's ingredients go), "output" (where products appear), "special" (the one extra slot some machines read,
+     * such as a mold or a data stick), "circuit" (the programmed-circuit setting), "battery" (a battery that powers
+     * the machine, or that it charges); null when it is none of these.
+     */
+    public static String slotRole(TileEntity te, int index) {
+        Object m = meta(te);
+        if (m == null) return null;
+        int[] in = inputSlots(te), out = outputSlots(te);
+        boolean bus = in != null && out != null && in[0] == out[0] && in[1] == out[1];
+        if (!bus && in != null && index >= in[0] && index < in[0] + in[1]) return "input";
+        if (!bus && out != null && index >= out[0] && index < out[0] + out[1]) return "output";
+        if (bus && index >= in[0] && index < in[0] + in[1]) return portKind(te) != null && portKind(te).startsWith("output") ? "output" : "input";
+        try {
+            if (basicClass.isInstance(m)) {
+                if (index == (Integer) m.getClass()
+                    .getMethod("getSpecialSlotIndex")
+                    .invoke(m)) return "special";
+                if (index == (Integer) m.getClass()
+                    .getMethod("getCircuitSlot")
+                    .invoke(m)) return "circuit";
+                if (index == (Integer) m.getClass()
+                    .getMethod("rechargerSlotStartIndex")
+                    .invoke(m)) return "battery";
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     public static boolean isActive(TileEntity te) {
         try {
             return meta(te) != null && (Boolean) active.invoke(te);
@@ -393,6 +423,9 @@ public final class Machines {
                 long volts = 8L << (2 * t);
                 o.addProperty("tier", RecipeBook.tier((int) Math.min(Integer.MAX_VALUE, volts)));
                 o.addProperty("inputSlots", inputCount.getInt(m));
+                try {
+                    o.addProperty("outputSlots", ((Object[]) outputItems.get(m)).length);
+                } catch (Throwable ignored) {}
             }
             boolean busy = (Boolean) active.invoke(te);
             o.addProperty("active", busy);

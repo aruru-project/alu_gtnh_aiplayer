@@ -235,6 +235,46 @@ describe('界面上格子以外的控件', () => {
     assert.deepEqual(h.game.callsOf('screen.set'), [{ bot: 'Alu', key: 'item_slot:ghost_circuit:0', value: 0 }])
   })
 
+  it('GregTech 机器的格子按用途标出来（主人那次：它猜组装机能放 16 格、9 格减电路、9 格，三次说法不一样）：几个原料格、产物格、特殊格、电池格，编号各是哪几个；编程电路是设置，不占原料格；list_containers 也按原料格、产物格数，不再用整个物品栏的大小', async (t) => {
+    const h = setup(t)
+    const P = 'basicmachine.assembler.tier.03'
+    // 测试服上进阶组装机的界面照实抄下来的样子：0 特殊格（机器里第 3 格）、1 电池格（第 1 格）、2–10 原料格（第 5–13 格）、11 产物格（第 14 格）
+    h.game.handlers['screen.open'] = () => ({
+      open: true,
+      screen: 'ModularContainer',
+      slotCount: 48,
+      slots: [
+        { slot: 0, index: 3, role: 'special' },
+        { slot: 1, index: 1, role: 'battery' },
+        ...Array.from({ length: 9 }, (_, n) => ({ slot: 2 + n, index: 5 + n, role: 'input', ...(n === 0 ? { item: { id: 'minecraft:gravel', meta: 0, count: 64, name: 'Gravel' } } : {}) })),
+        { slot: 11, index: 14, role: 'output', takesNothing: true },
+      ],
+      controls: [{ panel: P, key: 'auto_sync:basicmachine.assembler.tier.03:2', kind: 'circuit', value: 24, range: '0 (none) or 1-24' }],
+    })
+    const lines = (await modelCalls(h, 'open_screen', { at: EXTRACTOR })).content.split('\n')
+    assert.deepEqual(lines.slice(1, 8), [
+      'Its slots (12):',
+      'Of these, by what the machine uses them for: 9 input (slots 2–10), 1 output (slot 11), 1 special (slot 0), 1 battery (slot 1). The programmed circuit is not one of them: it is a setting of its own (the [programmed circuit] control below), so it takes no input slot.',
+      '- slot 0 (SPECIAL: the one extra item some recipes read, such as a mold or a data stick; not an input slot): empty',
+      '- slot 1 (BATTERY: a battery that powers the machine or that it charges; not an input slot): empty',
+      '- slot 2 (INPUT): 64× Gravel [minecraft:gravel]',
+      '- slots 3–10 (INPUT): empty (8)',
+      '- slot 11 (OUTPUT: products appear here): empty',
+    ])
+    h.game.handlers['world.containers'] = () => ({
+      containers: [
+        { x: -536, y: 69, z: 40, id: 'gregtech:gt.blockmachines', name: 'Advanced Assembling Machine II', kind: 'machine', slots: 16, usedSlots: 1, machineSlots: { inputs: 9, inputsUsed: 1, outputs: 1, outputsUsed: 0, circuit: 24 }, items: [{ id: 'minecraft:gravel', meta: 0, count: 64, name: 'Gravel' }] },
+        { x: -535, y: 69, z: 40, id: 'gregtech:gt.blockmachines', name: 'Output Bus (LV)', kind: 'machine', slots: 4, usedSlots: 0, machineSlots: { slots: 4, slotsUsed: 0 }, items: [] },
+      ],
+      total: 2,
+      offset: 0,
+    })
+    const listed = (await modelCalls(h, 'list_containers', { at: { x: -536, y: 69, z: 40 }, radius: 2 })).content
+    assert.match(listed, /\(-536,69,40\) Advanced Assembling Machine II \[gregtech:gt\.blockmachines\] \[machine\] input slots 1\/9 used, output slots 0\/1 used \(programmed circuit 24 set \(a setting of its own, not in a slot\)\): 64× minecraft:gravel "Gravel"/)
+    assert.match(listed, /\(-535,69,40\) Output Bus \(LV\) \[gregtech:gt\.blockmachines\] \[machine\] 0\/4 slots used: empty/)
+    assert.equal(/16 slots/.test(listed), false)
+  })
+
   it('没有界面开着就去按：告诉它先打开界面', async (t) => {
     const h = setup(t)
     h.game.handlers['screen.press'] = () => {

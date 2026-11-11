@@ -412,12 +412,23 @@ export function formatContainer(c: ContainerInfo, itemLimit: number): string {
   // 抽屉（Storage Drawers）标出来：它的“格”是抽屉格，数量是真实库存，一格可以上万
   const drawers = c.kind === 'drawers' || c.kind === 'drawer_controller'
   const kind = c.kind === 'drawers' ? ' [drawers]' : c.kind === 'drawer_controller' ? ' [drawer controller]' : c.kind ? ` [${c.kind}]` : ''
-  const slots = c.slots !== undefined ? ` ${c.usedSlots ?? '?'}/${c.slots} ${drawers ? 'drawer slots' : 'slots'} used` : ''
+  // GregTech 的机器：原料格、产物格分开数（整个物品栏的大小还算上了玩家不放东西的格子，说明不了能放几样料）
+  const ms = c.machineSlots
+  const machineSlotText =
+    ms === undefined
+      ? undefined
+      : typeof ms.inputs === 'number' || typeof ms.outputs === 'number'
+        ? ` ${[typeof ms.inputs === 'number' ? `input slots ${ms.inputsUsed ?? '?'}/${ms.inputs} used` : '', typeof ms.outputs === 'number' ? `output slots ${ms.outputsUsed ?? '?'}/${ms.outputs} used` : ''].filter(Boolean).join(', ')}`
+        : typeof ms.slots === 'number'
+          ? ` ${ms.slotsUsed ?? '?'}/${ms.slots} slots used`
+          : undefined
+  const slots = machineSlotText ?? (c.slots !== undefined ? ` ${c.usedSlots ?? '?'}/${c.slots} ${drawers ? 'drawer slots' : 'slots'} used` : '')
   const head = `${formatPos(c)} ${nameOf(c, { block: true }) ?? c.id} [${c.id}]${kind}${slots}`
   const notes: string[] = []
   // 抽屉管理器自己不装东西：它管的东西用 list_drawers 看
   if (c.kind === 'drawer_controller') notes.push(`manages ${c.drawers ?? '?'} drawer block(s); the library function list_drawers lists what they hold, given this position`)
   if (c.controller) notes.push(`managed by the drawer controller at ${formatPos(c.controller)}`)
+  if (ms !== undefined && typeof ms.circuit === 'number') notes.push(ms.circuit > 0 ? `programmed circuit ${ms.circuit} set (a setting of its own, not in a slot)` : 'no programmed circuit set')
   const auto = attachedText(c.attached)
   if (auto) notes.push(auto)
   // 流体罐里现在有什么（机器的罐、储罐、超级缸）
@@ -1246,7 +1257,8 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
   else if (typeof m.recipes === 'string') parts.push(`runs ${m.recipes} recipes`)
   if (typeof m.tier === 'string') parts.push(`tier ${m.tier}${m.kind === 'multiblock' && typeof m.inputVoltage === 'number' ? ` (${m.inputVoltage} V)` : ''}`)
   if (typeof m.heat === 'number') parts.push(`coil heat ${m.heat} K`)
-  if (typeof m.circuit === 'number') parts.push(`programmed circuit ${m.circuit} set`)
+  if (typeof m.inputSlots === 'number') parts.push(`${m.inputSlots} input slot(s)${typeof m.outputSlots === 'number' ? `, ${m.outputSlots} output slot(s)` : ''}`)
+  if (typeof m.circuit === 'number') parts.push(`programmed circuit ${m.circuit} set${typeof m.inputSlots === 'number' ? ' (a setting of its own, not in an input slot)' : ''}`)
   // 蒸汽机器不烧电：0 EU 不是“没电”（它有没有蒸汽身体读不出来）
   const steam = m.steam === true || /\bSteam\b/.test(typeof m.name === 'string' ? m.name : '')
   if (steam) parts.push('steam-powered (whether it has steam cannot be read)')

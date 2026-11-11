@@ -82,9 +82,12 @@ Container：
   "attached":[                   // 紧挨着它、会自己往里送或往外抽东西的方块；没有就不带这个字段
     {"x":-516,"y":71,"z":85,"name":"Brass Item Pipe","kind":"item pipe"}   // kind：hopper、item pipe、fluid pipe、pipe（其他 mod 的管道类）
   ],
-  "controller":{"x":-511,"y":71,"z":86}   // 抽屉：管着它的抽屉管理器（在查询范围内才认得出）
+  "controller":{"x":-511,"y":71,"z":86},  // 抽屉：管着它的抽屉管理器（在查询范围内才认得出）
+  "machineSlots":{"inputs":9,"inputsUsed":1,"outputs":1,"outputsUsed":0,"circuit":24}   // GregTech 单方块机器；总线是 {"slots":4,"slotsUsed":0}
 }
 ```
+
+- `machineSlots`：GregTech 单方块机器、总线自己的格子。机器整个物品栏的 `slots` 还算上了玩家不放东西的格子（编程电路的设置、显示用的、电池格、特殊格），说明不了能放几样原料：进阶组装机 II 的 `slots` 是 16，原料格是 9。`circuit` 是现在的编程电路号（0 没有），它是设置，不占原料格。
 
 - 抽屉（Storage Drawers）的 `count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数。
 - 抽屉管理器自己不装东西：`items` 为空，`drawers` 是它管着几个抽屉方块，`slots`/`usedSlots` 是这些抽屉合计的格数。它管的东西用 `world.drawers` 看。
@@ -273,7 +276,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 |---|---|---|
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
-| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
+| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,outputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,cover?,side?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
@@ -349,7 +352,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `screen.set` | `{bot, key, panel?, value}` | 把一个开关、数字、文字或选项设成 `value`。只读的控件 `denied` |
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
 
-Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
+Slot：`{slot, own?, item?:Item, takesNothing?, ghost?, index?, role?}`。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
 
 常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 

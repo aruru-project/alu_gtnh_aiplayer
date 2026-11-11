@@ -252,6 +252,11 @@ export interface ContainerInfo {
   z: number
   id: string
   name?: string
+  /**
+   * GregTech 单方块机器、总线自己的格子：原料格（inputs）、产物格（outputs）各几个、用了几个；总线只有 slots。
+   * 编程电路是设置，不占格子（circuit 是现在的号，0 是没有）。slots 是它整个物品栏的大小，还算上了玩家不放东西的格子。
+   */
+  machineSlots?: { inputs?: number; inputsUsed?: number; outputs?: number; outputsUsed?: number; slots?: number; slotsUsed?: number; circuit?: number }
   slots?: number
   usedSlots?: number
   /** 按物品合并，最多列 world.containers 的 kinds 种（默认 60）；还有没列的时带 moreKinds。 */
@@ -440,6 +445,10 @@ export interface ScreenSlot {
   takesNothing?: boolean
   /** 只显示、里面没有真东西的格子（编程电路的设置）。 */
   ghost?: boolean
+  /** GregTech 机器、总线的界面：这一格在机器自己的格子里是第几个。 */
+  index?: number
+  /** 这一格是干什么的：input 原料格、output 产物格、special 特殊格（模具、数据棒）、battery 电池格、circuit 编程电路；别的不带。 */
+  role?: 'input' | 'output' | 'special' | 'battery' | 'circuit' | (string & {})
 }
 
 /**
@@ -512,7 +521,9 @@ export interface MachineInfo {
   outputHatches?: MachineHatch[]
   /** 机器的等级；要不低于配方的 tier。 */
   tier?: string
+  /** 单方块机器的原料格、产物格各几个（编程电路是设置，不占原料格）。 */
   inputSlots?: number
+  outputSlots?: number
   /** 正在加工。 */
   active?: boolean
   progress?: number

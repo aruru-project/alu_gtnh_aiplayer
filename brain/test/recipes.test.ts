@@ -444,7 +444,7 @@ describe('身体读不全状态的机器：照配方册认，可以试', () => {
     s.game.handlers['world.machines'] = () => ({ machines: [steamHammer], total: 1 })
     const way = async (): Promise<string> => (await s.run('find_recipes', PLATE)).content.split('\n').find((l) => / 锻造锤 — /.test(l))!
     assert.match(await way(), / CAN RUN NOW on Steam Forge Hammer at \(18,64,-4\) ULV \(steam-powered: whether it has steam, and whether this recipe is within its pressure, cannot be read — try it\)$/)
-    assert.match((await s.run('find_machines')).content, /\(18,64,-4\) "Steam Forge Hammer": runs "锻造锤" recipes, tier ULV, steam-powered \(whether it has steam cannot be read\), idle/)
+    assert.match((await s.run('find_machines')).content, /\(18,64,-4\) "Steam Forge Hammer": runs "锻造锤" recipes, tier ULV, 1 input slot\(s\), steam-powered \(whether it has steam cannot be read\), idle/)
     // 同一台锤子要是电动的（名字里没有 Steam）：0 EU 就是没电
     s.game.handlers['world.machines'] = () => ({ machines: [{ ...steamHammer, name: 'Basic Forge Hammer', tier: 'LV' }], total: 1 })
     assert.match(await way(), / machine here but not usable now: .*NO POWER$/)

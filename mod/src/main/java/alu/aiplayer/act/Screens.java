@@ -120,6 +120,11 @@ public final class Screens {
                 .getSimpleName());
         JsonArray slots = new JsonArray();
         ItemStack probe = new ItemStack(net.minecraft.init.Blocks.cobblestone);
+        // The block whose screen this is, if it was opened on one: a GregTech machine says what each of its slots is for.
+        int[] where = AT.get(bot.name);
+        net.minecraft.tileentity.TileEntity block = where == null || !p.worldObj.blockExists(where[0], where[1], where[2]) ? null
+            : p.worldObj.getTileEntity(where[0], where[1], where[2]);
+        boolean gt = block != null && Machines.inputSlots(block) != null;
         for (Object each : c.inventorySlots) {
             Slot s = (Slot) each;
             JsonObject j = new JsonObject();
@@ -132,6 +137,12 @@ public final class Screens {
                 j.add("item", item);
             }
             if (!own) {
+                if (gt) {
+                    // The slot's place in the machine's own inventory, and what that place is for.
+                    j.addProperty("index", s.getSlotIndex());
+                    String role = Machines.slotRole(block, s.getSlotIndex());
+                    if (role != null) j.addProperty("role", role);
+                }
                 if (ContainerSession.isGhostSlot(s)) j.addProperty("ghost", true);
                 else if (ContainerSession.slotTakesNothing(s, shown != null ? shown : probe)) j.addProperty("takesNothing", true);
             }

@@ -767,6 +767,47 @@ public final class WorldQueries {
         k.addProperty("count", had + count);
     }
 
+    /**
+     * A processing machine's or bus's own layout: how many slots take inputs and how many hold products, and how
+     * many of each are in use. Its inventory as a whole also counts slots a player never puts anything in (the
+     * programmed-circuit setting, display slots), so its size says little.
+     */
+    private static void machineSlots(JsonObject c, IInventory inv, TileEntity te) {
+        int[] in = Machines.inputSlots(te), out = Machines.outputSlots(te);
+        if (in == null && out == null) return;
+        JsonObject m = new JsonObject();
+        try {
+            if (in != null && out != null && in[0] == out[0] && in[1] == out[1]) {
+                // A bus: one set of slots, which way they go is the bus's kind.
+                m.addProperty("slots", in[1]);
+                m.addProperty("slotsUsed", usedIn(inv, in));
+            } else {
+                if (in != null) {
+                    m.addProperty("inputs", in[1]);
+                    m.addProperty("inputsUsed", usedIn(inv, in));
+                }
+                if (out != null) {
+                    m.addProperty("outputs", out[1]);
+                    m.addProperty("outputsUsed", usedIn(inv, out));
+                }
+            }
+            int circuit = Machines.circuit(te);
+            if (circuit >= 0) m.addProperty("circuit", circuit);
+        } catch (Throwable t) {
+            return;
+        }
+        c.add("machineSlots", m);
+    }
+
+    private static int usedIn(IInventory inv, int[] range) {
+        int used = 0;
+        for (int i = 0; i < range[1] && range[0] + i < inv.getSizeInventory(); i++) {
+            ItemStack s = inv.getStackInSlot(range[0] + i);
+            if (s != null && s.stackSize > 0) used++;
+        }
+        return used;
+    }
+
     /** {@code kinds}: how many different items are listed at most; what is left out is counted in moreKinds. */
     public static JsonObject describeContainer(World w, TileEntity te, int kinds) {
         IInventory inv = (IInventory) te;
@@ -833,6 +874,7 @@ public final class WorldQueries {
         }
         c.addProperty("slots", size);
         c.addProperty("usedSlots", used);
+        machineSlots(c, inv, te);
         JsonArray items = new JsonArray();
         for (JsonObject item : merged.values()) {
             if (items.size() >= kinds) break;

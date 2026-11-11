@@ -77,17 +77,19 @@ function stack(item: Item): string {
 /** 相邻的空格并成一段（“slots 3–8: empty”），有东西的一格一行。 */
 function slotLines(slots: readonly ScreenSlot[], note: (s: ScreenSlot) => string): string[] {
   const lines: string[] = []
+  // 连着的、同一种（说明一样）的空格并成一行
   let empty: number[] = []
+  let emptyTag = ''
   const flush = (): void => {
     if (empty.length === 0) return
-    lines.push(empty.length === 1 ? `- slot ${empty[0]}: empty` : `- slots ${empty[0]}–${empty.at(-1)}: empty (${empty.length})`)
+    lines.push(empty.length === 1 ? `- slot ${empty[0]}${emptyTag}: empty` : `- slots ${empty[0]}–${empty.at(-1)}${emptyTag}: empty (${empty.length})`)
     empty = []
   }
   for (const s of slots) {
     const tag = note(s)
-    if (!s.item && !tag) {
-      // 连着的编号才并
-      if (empty.length > 0 && s.slot !== empty.at(-1)! + 1) flush()
+    if (!s.item && !(tag && s.takesNothing === true && s.role === undefined)) {
+      if (empty.length > 0 && (s.slot !== empty.at(-1)! + 1 || tag !== emptyTag)) flush()
+      emptyTag = tag
       empty.push(s.slot)
       continue
     }
@@ -98,6 +100,26 @@ function slotLines(slots: readonly ScreenSlot[], note: (s: ScreenSlot) => string
   return lines
 }
 
+/** GregTech 机器的格子是干什么的（身体按它在机器里的位置认的）。 */
+const ROLE_TAGS: Record<string, string> = {
+  input: ' (INPUT)',
+  output: ' (OUTPUT: products appear here)',
+  special: ' (SPECIAL: the one extra item some recipes read, such as a mold or a data stick; not an input slot)',
+  battery: ' (BATTERY: a battery that powers the machine or that it charges; not an input slot)',
+  circuit: ' (the programmed-circuit setting)',
+}
+
+/** 格子按用途数一遍：几个原料格、几个产物格……（编号连着的写成一段）。 */
+function roleSummary(slots: readonly ScreenSlot[], circuitControl: boolean): string | undefined {
+  const by = new Map<string, number[]>()
+  for (const s of slots) if (s.role) by.set(s.role, [...(by.get(s.role) ?? []), s.slot])
+  if (by.size === 0) return undefined
+  const span = (n: number[]): string => (n.length === 1 ? `slot ${n[0]}` : n.at(-1)! - n[0]! === n.length - 1 ? `slots ${n[0]}–${n.at(-1)}` : `slots ${n.join(', ')}`)
+  const order = ['input', 'output', 'special', 'battery', 'circuit']
+  const parts = [...by.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([role, n]) => `${n.length} ${role} (${span(n)})`)
+  return `Of these, by what the machine uses them for: ${parts.join(', ')}.${circuitControl && !by.has('circuit') ? ' The programmed circuit is not one of them: it is a setting of its own (the [programmed circuit] control below), so it takes no input slot.' : ''}`
+}
+
 /** 界面现在的样子：它自己的格子（原料格、产物格、只显示的）和你背包里的格子分开列，物品用中文名。 */
 export function formatScreen(state: ScreenState): string {
   if (state.open !== true) return 'No screen is open right now.'
@@ -105,11 +127,20 @@ export function formatScreen(state: ScreenState): string {
   const theirs = slots.filter((s) => s.own !== true)
   const mine = slots.filter((s) => s.own === true)
   const lines: string[] = [`Screen "${state.screen ?? 'unknown'}" is open${typeof state.slotCount === 'number' ? ` (${state.slotCount} slots in all)` : ''}.`]
-  const tag = (s: ScreenSlot): string => (s.ghost === true ? ' (display only: nothing real in it, e.g. a programmed-circuit setting)' : s.takesNothing === true ? ' (OUTPUT: products appear here, nothing can be put in)' : '')
+  const tag = (s: ScreenSlot): string =>
+    s.role !== undefined && ROLE_TAGS[s.role] !== undefined
+      ? ROLE_TAGS[s.role]!
+      : s.ghost === true
+        ? ' (display only: nothing real in it, e.g. a programmed-circuit setting)'
+        : s.takesNothing === true
+          ? ' (OUTPUT: products appear here, nothing can be put in)'
+          : ''
   const controls = state.controls ?? []
   if (theirs.length === 0) lines.push(controls.length > 0 ? 'It has no slots of its own.' : 'It has no slots of its own, and lists no other controls (a screen whose buttons are not listed cannot be pressed from here).')
   else {
     lines.push(`Its slots (${theirs.length}):`)
+    const roles = roleSummary(theirs, controls.some((c) => c.kind === 'circuit'))
+    if (roles) lines.push(roles)
     lines.push(...slotLines(theirs.slice(0, SLOTS_SHOWN), tag))
     if (theirs.length > SLOTS_SHOWN) lines.push(`- … and ${theirs.length - SLOTS_SHOWN} more slots not shown`)
   }
