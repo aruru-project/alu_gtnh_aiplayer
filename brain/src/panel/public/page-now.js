@@ -55,6 +55,9 @@ function headline() {
   }
   const last = agents.map((a) => a.model?.lastCall?.time).filter((t) => typeof t === 'number').sort((x, y) => y - x)[0]
   if (!state.overview?.provider && state.overview) return { tone: 'bad', text: '还没配模型', sub: '到“设置 → 模型”添加一个，它才能思考。' }
+  // 两轮之间的那一小会儿：有事排着，它马上就开始下一轮
+  const queued = agents.reduce((n, a) => n + (a.pending > 0 ? a.pending : 0), 0)
+  if (queued > 0) return { tone: 'think', text: '马上开始下一轮', sub: `有 ${queued} 件事排着等它。` }
   return { tone: 'idle', text: '空闲', sub: last ? `上一次调模型是 ${when(last)}。` : '还没调用过模型。' }
 }
 
