@@ -98,7 +98,9 @@ public final class DepositTask extends Task {
         } else {
             if (!withinTravel(at[0], at[2])) return;
             phase = "going to the container";
-            trip = new ContainerTrip(bot, at[0], at[1], at[2]);
+            int[] face = Params.face(params, "container");
+            trip = face[0] >= 0 || face[1] == 1 ? new ContainerTrip(bot, at[0], at[1], at[2], face[0], face[1] == 1)
+                : new ContainerTrip(bot, at[0], at[1], at[2]);
         }
         trip.session.deposit(items.isEmpty() ? everythingBut(keep) : listed(items));
     }

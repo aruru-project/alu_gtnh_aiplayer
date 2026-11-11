@@ -206,7 +206,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 模型能用的东西分三层（`tools/index.ts`，细节见 `docs/SCRIPTS.md` 的“库函数”）：
 
-- **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。现在能看图的模型拿到 55 个、四万六千三百字符左右；不能看图的模型拿到 53 个、四万四千一百字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。瘦身之前是 66 个、六万两千五百字符。
+- **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。现在能看图的模型拿到 55 个、四万八千三百字符左右；不能看图的模型拿到 53 个、四万六千一百字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。瘦身之前是 66 个、六万两千五百字符。
 - **库函数**（12 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 2000 字符），模型靠它知道这些函数存在。
 - **旧名字**（6 个）：合并掉的工具原来的名字，不发、不提，只为已经存着的例程、笔记和它自己写的手册还能用。
 
@@ -223,16 +223,16 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 一类 | 工具 | 库函数（程序里调） |
 |---|---|---|
 | 说话 | `say` `whisper` | |
-| 看 | `get_status` `look_around` `scan_area` `inspect_block` `find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
+| 看 | `get_status` `look_around` `scan_area` `inspect_block`（一个方块是什么、罐里有什么流体、各面的覆盖板；带 `detail` 是它自己存的全部数据，原样给）`find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
 | 仓库 | `list_containers`（一页页列，标出接着管道的；一页里每个容器只列前 30 种，给 `at` 和 `radius: 0` 把一个容器看全，程序拿到的 `data` 一直是全的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
 | 走动 | `go_to` `go_to_player` `follow_player` `go_home` | |
 | 服务器指令 | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明；用它发 `tell` / `msg` / `w` 送到了也算“对人说过话”，兜底不会把它最后的文字再公开说一遍） | |
 | 地形 | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` | |
 | 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）`build_blueprint` | `check_blueprint`（图纸放在某处时现场差什么）`read_blueprint`（图纸或草稿里有什么：材料表和每一格，不用知道它放在哪） |
 | 写程序 | `run_program`（当场跑完，只能调查询类的）`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`view_draft` `publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |
-| 物品 | `deposit_items` `withdraw_items`（位置，或者身上的一个包）`collect_items` `give_items` `use_item`（右键：拿着身上的一件东西，或者空手；点方块的哪个面、哪一点、连点几下都能定——按钮、拉杆、抽屉的某一格） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
-| 制作 | `find_item` `find_recipes`（配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines` `craft_item` `process_items` | `find_uses`（一样东西能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步的总原料算出来） |
-| 界面（通用） | `open_screen` `click_slot` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用） | |
+| 物品 | `deposit_items` `withdraw_items`（位置，或者身上的一个包；位置带 `side` / `sneak` 是点那个面、蹲着开出来的界面——覆盖板里的东西这样存取）`collect_items` `give_items` `use_item`（右键：拿着身上的一件东西，或者空手；点方块的哪个面、哪一点、连点几下都能定——按钮、拉杆、抽屉的某一格） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
+| 制作 | `find_item`（物品和流体）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines` `craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
+| 界面（通用） | `open_screen` `click_slot` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲） | |
 | 任务书 | `find_quests` `get_quest` | `list_quest_lines`（各章和进度） |
 | 多方块结构 | | `find_structure` `check_structure` |
 | 任务、记忆、手册、意见簿 | `task_status` `cancel_task` `remember` `forget` `set_reminder` `list_manuals` `read_manual` `write_manual`（把主人教的做法写成自己的手册）`report_problem` | |
@@ -265,7 +265,10 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 
 现在是这样：
 
-- **事实**：`find_recipes` 把一样东西的做法按加工方式一种种列（照配方册的先后，不排好坏），每种写着基地里有没有做它的机器、那台机器什么状况（没电、电压或炉温不够、结构不完整、身体读不到状态），配方要的流体多方块看得到的写出仓里有多少、单方块的写明看不到。结尾写明“CAN RUN NOW”到底判断了什么、没判断什么。`find_in_storage` 不给范围时看整个基地（往四周错开四个点各查 64 格，同一个容器只算一次）。
+- **事实**：`find_recipes` 把一样东西的做法按加工方式一种种列（照配方册的先后，不排好坏），每种写着基地里有没有做它的机器、那台机器什么状况（没电、电压或炉温不够、结构不完整、身体读不到状态），配方要的流体写出做它的那台机器里现在有多少（多方块看输入仓，单方块看它自己的罐；身体没报罐的才说读不到）。结尾写明“CAN RUN NOW”到底判断了什么、没判断什么。`find_in_storage` 不给范围时看整个基地（往四周错开四个点各查 64 格，同一个容器只算一次）。
+- **一个方块自己知道的全部**（`inspect_block` 的 `detail`）：不按方块的种类挑“该给它看哪几项”。身体把这个方块对扫描器说的话、存档里的全部数据原样给出来（键是内部名字，值原样），模型自己读；放不下时写明每一项多长，用 `path` 往里看；程序里 `data.saved` 是全的。覆盖板、流体罐这些常用的仍然在各个结果里有摘要（搜库存也要用），但不再是唯一的窗口——没摘要到的状态（输出仓锁定了哪种流体、机器的各种开关）去这里看，不用再一项项给工具补字段。
+- **流体和物品一样能查**：`find_item` 搜得到流体；`find_recipes` / `find_uses` 给 `fluid` 查它怎么来、能做什么；`circuit` 按编程电路号筛（加工方式 + 输入里的一样东西 + 电路号 = 这台机器现在在做哪条）。罐里现在有什么写在 `inspect_block`、`list_containers`、`find_machines` 里，配方要的流体后面写着做它的机器里现在有多少。流体表没有单独的文件，见 `docs/PACKDATA.md` 的“流体”。
+- **覆盖板里的东西够得着**：机器某个面上的覆盖板（槽位扩展）里的东西不在机器自己的格子里；搜库存搜得到，存取时容器带 `side` 和 `sneak`（点那个面、蹲着，打开什么界面就往什么界面里存取）。
 - **一个只做乘法的帮手**（库函数 `total_materials`，不在工具清单里，程序里调）：模型自己选定每一层用哪条配方之后，把总原料算出来。它不查库存、不替模型选任何一步。
 - **手册 `crafting`** 写的是“玩家挑做法时会想什么”（每个成品耗多少料、要不要为它新做模具、会不会用掉现成的机器、流体从哪来、哪些是主人的自动化），和一个一层层往下查的走法示例。是参考，不是规则。
 - **卡住了**（核心提示词）：把已经查到的链、卡在哪、试过什么告诉主人，问他；主人教的记下来。

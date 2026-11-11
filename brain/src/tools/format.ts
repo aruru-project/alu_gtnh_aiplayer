@@ -9,6 +9,7 @@ import type {
   BlueprintObstacle,
   BotStatus,
   ContainerInfo,
+  Cover,
   EntityInfo,
   InventoryItem,
   Item,
@@ -26,6 +27,7 @@ import type {
   ScanResult,
   ServerInfo,
   StockResult,
+  Tank,
   TaskInfo,
 } from '../bridge/protocol.ts'
 
@@ -119,9 +121,58 @@ export interface LocalNames {
  */
 let localNames: LocalNames | undefined
 
-export function useLocalNames(names: LocalNames | undefined): void {
-  localNames = names
+/** 流体表里查名字用的接口（packdata 的 FluidTable 满足）：注册名 → 中文名、英文名。 */
+export interface LocalFluids {
+  get(fluid: string): { name: string; en?: string } | undefined
 }
+
+let localFluids: LocalFluids | undefined
+
+export function useLocalNames(names: LocalNames | undefined, fluids?: LocalFluids): void {
+  localNames = names
+  localFluids = fluids
+}
+
+/**
+ * 一种流体给模型看的名字：本地资料里有就用游戏里的中文名，没有就用身体给的（英文），再没有就是注册名。
+ * fluid 是注册名（molten.steel），given 是身体给的显示名。
+ */
+export function fluidName(fluid: string | undefined, given?: string): string {
+  return (fluid !== undefined ? localFluids?.get(fluid)?.name : undefined) ?? displayName(given) ?? fluid ?? 'fluid'
+}
+
+/** 一个流体罐：有多少、能装多少、是什么（带注册名，查配方用得上）；空罐只有容量。 */
+export function tankText(t: Tank): string {
+  const capacity = typeof t.capacity === 'number' ? t.capacity : undefined
+  if (t.fluid === undefined || !((t.amount ?? 0) > 0)) return `empty${capacity !== undefined ? ` (holds up to ${capacity} mB)` : ''}`
+  return `${t.amount}${capacity !== undefined ? ` of ${capacity}` : ''} mB ${fluidName(t.fluid, t.name)} [fluid ${t.fluid}]`
+}
+
+/** 一个方块的全部流体罐写成一句；没有罐是空串。 */
+export function tanksText(tanks: readonly Tank[] | undefined): string {
+  if (!tanks || tanks.length === 0) return ''
+  return `${tanks.length === 1 ? 'tank' : 'tanks'}: ${tanks.map(tankText).join('; ')}`
+}
+
+/** 覆盖板里的东西怎么拿：好几处结果的末尾用同一句。 */
+export const COVER_NOTE =
+  'What a cover holds is not in the block\'s own slots: it is behind the cover\'s own screen, opened by sneaking and right-clicking that face. deposit_items / withdraw_items reach it with container {x, y, z, side, sneak: true}; open_screen with "at", "side" and sneak: true shows it.'
+
+/** 一块覆盖板写成一句：哪个面、是什么、能装东西的还有装着什么。 */
+export function coverText(c: Cover, itemLimit = 12): string {
+  const what = c.id !== undefined ? `${nameOf(c) ?? c.id} [${itemKey({ id: c.id, meta: c.meta ?? 0 })}]` : (displayName(c.name) ?? 'a cover')
+  let s = `cover on its ${c.side} face: ${what}`
+  if (c.slots !== undefined) {
+    const merged = mergeItems(c.items ?? [])
+    const hidden = Math.max(0, merged.length - itemLimit) + count(c.moreKinds)
+    const listed = merged.slice(0, itemLimit).map(formatItem).join(', ')
+    s += `, ${c.usedSlots ?? '?'}/${c.slots} slots used: ${merged.length === 0 && hidden === 0 ? 'empty' : `${listed}${hidden > 0 ? `${listed ? ', ' : ''}… and ${hidden} more kinds` : ''}`}`
+  } else if (c.screen === true) s += ' (has a screen of its own)'
+  return s
+}
+
+/** 有没有哪块覆盖板是能装东西的（要不要在结果末尾说怎么拿）。 */
+export const holdsCoverItems = (x: { covers?: readonly Cover[] }): boolean => (x.covers ?? []).some((c) => c.slots !== undefined)
 
 /**
  * 一样东西给模型看的名字：有本地物品表就用中文名，否则是服务器给的英文名。
@@ -174,15 +225,31 @@ export function withLocalNames(value: unknown, depth = 0): unknown {
  * 只换本来就带着名字的：没有 name 的东西（一个只有 id、meta、count 的清单项）不添字段，形状不变。
  */
 export function dataWithLocalNames(value: unknown, depth = 0, key = ''): unknown {
-  if (!localNames || depth > 10 || value === null || typeof value !== 'object') return value
+  if ((!localNames && !localFluids) || depth > 10 || value === null || typeof value !== 'object') return value
+  // 一个方块自己存的数据、自己说的话（inspect_block 的 detail）是原文，一个字都不动
+  if (key === 'saved' || key === 'says') return value
   if (Array.isArray(value)) {
     // 一长串数字（每格一个下标的 cells、runs）不用看
     if (typeof value[0] === 'number') return value
     return value.map((v) => dataWithLocalNames(v, depth + 1, key))
   }
-  const thing = value as { id?: unknown; meta?: unknown; name?: unknown; en?: unknown; x?: unknown; count?: unknown }
+  const thing = value as { id?: unknown; meta?: unknown; name?: unknown; en?: unknown; x?: unknown; count?: unknown; fluid?: unknown; fluidName?: unknown; fluidEn?: unknown }
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(value)) out[k] = dataWithLocalNames(v, depth + 1, k)
+  // 流体（罐、输入输出仓里的）：同一个规矩，名字是游戏里的中文名，身体给的英文名留在 en（仓上是 fluidEn）
+  if (typeof thing.fluid === 'string') {
+    const local = localFluids?.get(thing.fluid)?.name
+    if (local !== undefined) {
+      if (typeof thing.fluidName === 'string') {
+        if (local !== thing.fluidName && thing.fluidEn === undefined) out.fluidEn = thing.fluidName
+        out.fluidName = local
+      } else if (typeof thing.name === 'string' && typeof thing.id !== 'string') {
+        if (local !== thing.name && thing.en === undefined) out.en = thing.name
+        out.name = local
+      }
+    }
+    if (typeof thing.id !== 'string') return out
+  }
   const named = typeof thing.id === 'string' && thing.id.includes(':')
   // 名字已经不是英文的（工具自己从本地资料里取的中文名、带着编号的写法）就不动它
   if (typeof thing.name === 'string' && /^[\x20-\x7e]*$/.test(thing.name) && (named || key === 'attached')) {
@@ -351,13 +418,18 @@ export function formatContainer(c: ContainerInfo, itemLimit: number): string {
   if (c.controller) notes.push(`managed by the drawer controller at ${formatPos(c.controller)}`)
   const auto = attachedText(c.attached)
   if (auto) notes.push(auto)
+  // 流体罐里现在有什么（机器的罐、储罐、超级缸）
+  const tanks = tanksText(c.tanks)
+  if (tanks) notes.push(tanks)
   const note = notes.length > 0 ? ` (${notes.join('; ')})` : ''
-  if (c.kind === 'drawer_controller') return `${head}${note}`
+  // 各个面上的覆盖板各占一行：能装东西的写出装着什么（这些东西不在它自己的格子里）
+  const covers = (c.covers ?? []).map((cover) => `\n  ${coverText(cover, Math.min(itemLimit, 12))}`).join('')
+  if (c.kind === 'drawer_controller') return `${head}${note}${covers}`
   // 没列出来的种数算在一起：这里只列前 itemLimit 种的，加上身体自己没给的（moreKinds）。怎么看全由调用的工具在结果里说
   const merged = mergeItems(c.items ?? [])
   const hidden = Math.max(0, merged.length - itemLimit) + count(c.moreKinds)
   const listed = merged.slice(0, itemLimit).map(formatItem).join(', ')
-  return `${head}${note}: ${merged.length === 0 && hidden === 0 ? 'empty' : `${listed}${hidden > 0 ? `${listed ? ', ' : ''}… and ${hidden} more kinds` : ''}`}`
+  return `${head}${note}: ${merged.length === 0 && hidden === 0 ? 'empty' : `${listed}${hidden > 0 ? `${listed ? ', ' : ''}… and ${hidden} more kinds` : ''}`}${covers}`
 }
 
 const SEEN_KINDS: Record<string, string> = { container: 'container', drawers: 'drawers', drawer_controller: 'drawer controller', machine: 'machine' }
@@ -964,6 +1036,7 @@ export function formatStock(res: StockResult, radius: number, from: { of: string
   const lines: string[] = [
     `Looked into ${looked} container(s) within ${radius} blocks of ${from.of}. withdraw_items takes things out (container = the position, items = the exact id/meta).`,
   ]
+  let inCover = false
   for (const it of items) {
     // 点名了 meta 的带上名字（不限 meta 的不带：那会是 meta 0 的名字，具体是哪几种下面每一处都写着）
     const what = typeof it.ore === 'string' ? `any ${it.ore} (ore name)` : `${idText(it)}${typeof it.meta === 'number' ? quoted(it) : ''}`
@@ -974,10 +1047,18 @@ export function formatStock(res: StockResult, radius: number, from: { of: string
     lines.push(`- ${what}: ${it.total} in total`)
     for (const p of it.places ?? []) {
       const exact = (p.items ?? []).map((x) => kindText(x.count, x)).join(', ')
+      if (p.kind === 'cover') {
+        // 在覆盖板里：不在那个方块自己的格子里，要点那个面、蹲着打开覆盖板的界面才拿得到
+        inCover = true
+        const side = p.side ?? '?'
+        lines.push(`  - ${formatPos(p)} ${nameOf({ name: p.container }) ?? 'block'}, in the cover "${nameOf({ name: p.cover }) ?? 'cover'}" on its ${side} face: ${p.count}${exact ? ` (${exact})` : ''} — container {x: ${p.x}, y: ${p.y}, z: ${p.z}, side: "${side}", sneak: true}`)
+        continue
+      }
       lines.push(`  - ${formatPos(p)} ${nameOf({ name: p.container }) ?? 'container'}${p.kind ? ` [${p.kind}]` : ''}: ${p.count}${exact ? ` (${exact})` : ''}`)
     }
     if (count(it.morePlaces) > 0) lines.push(`  - … and ${it.morePlaces} more place(s) holding less`)
   }
+  if (inCover) lines.push(`A place "in the cover … on its … face" is not the block's own slots: the cover has a screen of its own, opened by sneaking and right-clicking that face. withdraw_items / deposit_items take the container written after it.`)
   return lines.join('\n')
 }
 
@@ -1165,7 +1246,7 @@ function hatchLine(h: MachineHatch): string {
   const parts: string[] = [`${h.kind ?? 'hatch'} ${formatPos(h)}`]
   if (h.slots !== undefined) parts.push(`${h.usedSlots ?? '?'}/${h.slots} slots used`)
   if (typeof h.circuit === 'number') parts.push(`circuit ${h.circuit}`)
-  if (h.capacity !== undefined) parts.push(h.fluid ? `${h.amount ?? 0}/${h.capacity} mB ${h.fluidName ?? h.fluid}` : `empty (${h.capacity} mB)`)
+  if (h.capacity !== undefined) parts.push(h.fluid ? `${h.amount ?? 0}/${h.capacity} mB ${fluidName(h.fluid, h.fluidName)} [fluid ${h.fluid}]` : `empty (${h.capacity} mB)`)
   const passes = (h.passesTo ?? []).map((p) => `${nameOf(p, { block: true }) ?? 'container'} at ${formatPos(p)}`)
   if (passes.length > 0) parts.push(`keeps nothing: pushes into ${passes.join(', ')}`)
   const auto = attachedText(h.attached)
@@ -1217,16 +1298,31 @@ export function formatMachines(
   }
   const total = Math.max(count(res.total), machines.length)
   const lines: string[] = []
+  let coverItems = false
   for (const m of machines) {
     const far = typeof m.dist === 'number' ? `, ${Math.round(m.dist)} blocks away` : ''
     lines.push(`- ${formatPos(m)}${quoted(m) || ' machine'}: ${machineStateText(m, asked.wayName)}${far}`)
     for (const h of [...(m.inputBuses ?? []), ...(m.inputHatches ?? []), ...(m.outputBuses ?? []), ...(m.outputHatches ?? [])]) lines.push(hatchLine(h))
+    // 它自己的流体罐、各个面上的覆盖板
+    const tanks = tanksText(m.tanks)
+    if (tanks) lines.push(`    ${tanks}`)
+    for (const cover of m.covers ?? []) lines.push(`    ${coverText(cover)}`)
+    if (holdsCoverItems(m)) coverItems = true
+    // 它正在做（或者卡在）哪条配方：输入里有什么流体、设的几号电路都在上面了，拿去查就是那一条
+    const way = typeof m.recipeKey === 'string' ? asked.wayName?.(m.recipeKey) : undefined
+    const input = [...(m.inputHatches ?? [])].find((h) => h.fluid !== undefined && (h.amount ?? 0) > 0)
+    // 编程电路：单方块设在机器上，多方块设在输入总线上
+    const circuit = typeof m.circuit === 'number' ? m.circuit : (m.inputBuses ?? []).find((b) => typeof b.circuit === 'number')?.circuit
+    if (way !== undefined && input?.fluid !== undefined) {
+      lines.push(`    the recipe it is on, with all it takes and gives: the library function find_uses {fluid: "${input.fluid}", way: "${way}"${circuit !== undefined ? `, circuit: ${circuit}` : ''}}`)
+    }
   }
   const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown: give "name" or a smaller radius to see the others)` : ''
   return (
     `${machines.length} GregTech machine(s)${filter} within ${asked.radius} blocks of ${of}${more}, nearest first. ` +
     `A machine can run a recipe when it runs that kind of recipe, its tier is at least the recipe's, it has power and is idle:\n${lines.join('\n')}` +
-    (others.length > 0 ? `\n${others.join('\n')}` : '')
+    (others.length > 0 ? `\n${others.join('\n')}` : '') +
+    (coverItems ? `\n${COVER_NOTE}` : '')
   )
 }
 

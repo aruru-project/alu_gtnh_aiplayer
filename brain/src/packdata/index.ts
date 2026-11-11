@@ -6,6 +6,7 @@
 // 用它的工具自己退回去问服务器。
 
 import { CarvingBook } from './carving.ts'
+import { FluidTable } from './fluids.ts'
 import { StructureBook } from './structures.ts'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,6 +28,8 @@ export type { Recipe, RecipeFluid, RecipeHandler, RecipeSlot, RecipeStack } from
 export { ItemTable } from './items.ts'
 export { StructureBook, structureCells } from './structures.ts'
 export { CarvingBook } from './carving.ts'
+export { FLUID_DISPLAY_ID, FluidTable } from './fluids.ts'
+export type { FluidInfo } from './fluids.ts'
 export type { CarvingGroup, CarvingMatch, CarvingVariant } from './carving.ts'
 export type { Structure, StructurePart, StructureRow } from './structures.ts'
 export type { PackItemInfo } from './items.ts'
@@ -50,6 +53,8 @@ export interface PackData {
   structures?: StructureBook
   /** 凿子的组（carving.jsonl）：哪些方块能用凿子互相变。没有时查做法、查用途里不提凿子。 */
   carving?: CarvingBook
+  /** 流体表（从配方册和物品表拼出来的）：注册名 ↔ 中文名、英文名。没有配方册时没有。 */
+  fluids?: FluidTable
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -233,7 +238,15 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
   const textures = loadTextures(dir, log)
   if (textures) data.textures = textures
   const recipes = loadRecipes(dir, log)
-  if (recipes) data.recipes = recipes
+  if (recipes) {
+    data.recipes = recipes
+    // 流体没有单独的文件：配方册里出现过的流体，加上物品表里“流体展示”物品的英文名
+    const fluids = new FluidTable(recipes.fluidEntries(), items)
+    if (fluids.size > 0) {
+      data.fluids = fluids
+      log(`流体：配方册里有 ${fluids.size} 种。`)
+    }
+  }
   try {
     const loaded = StructureBook.load(dir)
     // 文件不在就当没有，不用说

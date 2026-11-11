@@ -5,11 +5,16 @@ Run once per version of the pack; takes about a quarter of an hour. Needs `tools
 built, and a server the client may join (it joins as "Exporter", who has to be on the whitelist).
 
   tools/export-packdata [--join HOST:PORT] [--out DIR]
+  tools/export-packdata --only icons [--join HOST:PORT] [--out DIR]
 
 The game is started twice: once in Chinese for everything, once in English for the names only, because some
-mods fix their names when the game starts.
+mods fix their names when the game starts. The first start also draws every item's icon (icons/).
+
+--only icons draws the icons again for the items.jsonl that is already in DIR and touches nothing else there
+(two minutes, most of it the game starting).
 """
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -65,11 +70,69 @@ def write_lines(path, rows):
     os.replace(path + ".part", path)
 
 
-def main():
-    join = opt("--join", "127.0.0.1:10186")
-    out = opt("--out", os.path.join(ROOT, "brain", "packdata"))
-    if running():
-        raise SystemExit("a client is already running (tools/client stop)")
+def items_sha1(path):
+    """What icons.json calls itemsSha1: the id and damage value of every line, in order."""
+    h = hashlib.sha1()
+    with open(path, encoding="utf8") as f:
+        for line in f.read().split("\n")[:-1]:
+            try:
+                row = json.loads(line)
+                h.update(("%s/%d\n" % (row["id"], row["meta"])).encode("utf8"))
+            except (ValueError, KeyError, TypeError):
+                h.update(b"/0\n")
+    return h.hexdigest()
+
+
+def icons_drawn(items):
+    """icons.json of the working directory, when it is there and is about exactly these items."""
+    try:
+        info = json.load(open(os.path.join(WORK, "icons", "icons.json"), encoding="utf8"))
+    except (OSError, ValueError):
+        return None
+    if info.get("itemsSha1") != items_sha1(items):
+        return None
+    if any(not os.path.exists(os.path.join(WORK, "icons", name)) for name in info["files"]):
+        return None
+    return info
+
+
+def draw_icons(join):
+    run_client(["--lang", "zh_CN", "-D", "aiplayer.export=" + WORK, "-D", "aiplayer.export.only=icons",
+                "-D", "aiplayer.export.join=" + join, "-D", "fml.readTimeout=180"], 20)
+
+
+def publish_icons(out):
+    """Put the icons next to the items.jsonl they belong to, or take away icons that belong to another one."""
+    info = icons_drawn(os.path.join(out, "items.jsonl"))
+    dest = os.path.join(out, "icons")
+    meta_path = os.path.join(out, "meta.json")
+    meta = json.load(open(meta_path, encoding="utf8")) if os.path.exists(meta_path) else {}
+    if info is None:
+        # Icons are found by line number, so the ones of another items.jsonl would be the wrong pictures.
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        meta.pop("icons", None)
+    else:
+        fresh = dest + ".part"
+        if os.path.isdir(fresh):
+            shutil.rmtree(fresh)
+        os.makedirs(fresh)
+        for name in info["files"] + ["icons.json"]:
+            shutil.copy2(os.path.join(WORK, "icons", name), os.path.join(fresh, name))
+        if os.path.isdir(dest):
+            os.rename(dest, dest + ".old")
+        os.rename(fresh, dest)
+        shutil.rmtree(dest + ".old", ignore_errors=True)
+        meta["icons"] = {"format": info["format"], "generatedAt": info["generatedAt"], "cell": info["cell"],
+                         "icons": info["count"], "sheets": len(info["files"]), "missing": len(info["missing"]),
+                         "seconds": info["seconds"]}
+    with open(meta_path + ".part", "w", encoding="utf8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    os.replace(meta_path + ".part", meta_path)
+    return info
+
+
+def install_mod():
     jars = [j for j in sorted(glob.glob(os.path.join(ROOT, "mod", "build", "libs", "*.jar")), key=os.path.getmtime)
             if not j.endswith(("-dev.jar", "-sources.jar", "-javadoc.jar"))]
     if not jars:
@@ -78,6 +141,38 @@ def main():
         os.remove(old)
     shutil.copy2(jars[-1], MODS)
     os.makedirs(WORK, exist_ok=True)
+
+
+def only_icons(join, out):
+    listed = os.path.join(out, "items.jsonl")
+    if not os.path.exists(listed):
+        raise SystemExit("no items.jsonl in %s; run the whole export first" % out)
+    install_mod()
+    # The game draws what the working directory lists; that has to be the list the icons will sit next to.
+    work = os.path.join(WORK, "items.jsonl")
+    if not os.path.exists(work) or items_sha1(work) != items_sha1(listed):
+        shutil.copy2(listed, work)
+    t0 = time.time()
+    draw_icons(join)
+    info = publish_icons(out)
+    if info is None:
+        raise SystemExit("the client finished but left no icons; see client/client.log")
+    print("done in %d s: %d icons on %d sheets, %d empty or failed (%s s of drawing)"
+          % (time.time() - t0, info["count"], len(info["files"]), len(info["missing"]), info["seconds"]))
+
+
+def main():
+    join = opt("--join", "127.0.0.1:10186")
+    out = opt("--out", os.path.join(ROOT, "brain", "packdata"))
+    only = opt("--only", None)
+    if only not in (None, "icons"):
+        raise SystemExit("--only takes: icons")
+    if running():
+        raise SystemExit("a client is already running (tools/client stop)")
+    if only == "icons":
+        only_icons(join, out)
+        return
+    install_mod()
 
     t0 = time.time()
     print("1/2 everything, in Chinese")
@@ -118,7 +213,22 @@ def main():
     with open(meta_path + ".part", "w", encoding="utf8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     os.replace(meta_path + ".part", meta_path)
+
+    # The first start drew the icons after everything else. If that went wrong, once more on its own; if that
+    # goes wrong too the export is still good, only without pictures.
+    if icons_drawn(os.path.join(out, "items.jsonl")) is None:
+        print("3/2 the icons did not get drawn with the rest, drawing them on their own")
+        try:
+            draw_icons(join)
+        except SystemExit as failed:
+            print("no icons this time (%s)" % failed)
+    icons = publish_icons(out)
     print("done in %d s: %s" % (time.time() - t0, json.dumps(nei, ensure_ascii=False)))
+    if icons is None:
+        print("icons: none")
+    else:
+        print("icons: %d on %d sheets, %d empty or failed, %s s"
+              % (icons["count"], len(icons["files"]), len(icons["missing"]), icons["seconds"]))
 
 
 if __name__ == "__main__":

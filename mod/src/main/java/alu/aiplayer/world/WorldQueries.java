@@ -70,6 +70,45 @@ public final class WorldQueries {
         TileEntity te = w.getTileEntity(x, y, z);
         o.addProperty("tileEntity", te != null);
         o.addProperty("inventory", te instanceof IInventory);
+        if (te != null) Machines.attachments(o, te);
+        return o;
+    }
+
+    /**
+     * Everything a block knows about itself, with nothing assumed about its kind: what it tells a scanner, if it
+     * is one that does, and its own saved data. {@code path} picks a part of the saved data to see in full.
+     */
+    public static JsonObject blockDetail(World w, int x, int y, int z, String path) {
+        JsonObject o = block(w, x, y, z);
+        TileEntity te = y < 0 || y > 255 || !w.blockExists(x, y, z) ? null : w.getTileEntity(x, y, z);
+        if (te == null) {
+            o.addProperty("detail", "this block keeps no data of its own: its id and meta are all there is");
+            return o;
+        }
+        o.addProperty("class", te.getClass().getName());
+        JsonArray says = Machines.says(te);
+        if (says.size() > 0) o.add("says", says);
+        try {
+            net.minecraft.nbt.NBTTagCompound tag = new net.minecraft.nbt.NBTTagCompound();
+            te.writeToNBT(tag);
+            net.minecraft.nbt.NBTBase part = alu.aiplayer.util.Nbt.at(tag, path);
+            alu.aiplayer.util.Nbt.Limits limits = new alu.aiplayer.util.Nbt.Limits();
+            if (path != null && !path.trim().isEmpty()) {
+                o.addProperty("path", path.trim());
+                limits.depth = 12;
+                limits.list = 200;
+                limits.chars = 60_000;
+                if (part == null) {
+                    o.addProperty("pathNotFound", true);
+                    part = tag;
+                    limits.depth = 2;
+                }
+            }
+            o.add("saved", alu.aiplayer.util.Nbt.json(part, limits));
+            if (limits.cut) o.addProperty("savedCut", true);
+        } catch (Throwable t) {
+            o.addProperty("savedError", String.valueOf(t));
+        }
         return o;
     }
 
@@ -495,6 +534,9 @@ public final class WorldQueries {
             if (controller != null) c.add("controller", J.pos(controller.xCoord, controller.yCoord, controller.zCoord));
             JsonArray attached = attached(w, te);
             if (attached.size() > 0) c.add("attached", attached);
+            // What the covers on its faces hold is not among its own slots: listed with it, face by face.
+            JsonArray covers = Machines.coversJson(te, kinds);
+            if (covers.size() > 0) c.add("covers", covers);
             list.add(c);
         }
         JsonObject o = new JsonObject();
@@ -636,6 +678,29 @@ public final class WorldQueries {
                 places.get(i)
                     .add(new Object[] { te, found[i], kinds.get(i) });
             }
+            // What the covers on its faces hold: a separate place each, reached from that face.
+            for (Machines.Cover cover : Machines.covers(te)) {
+                if (cover.holds == null) continue;
+                int[] inCover = new int[n];
+                List<Map<String, JsonObject>> coverKinds = new ArrayList<>();
+                for (int i = 0; i < n; i++) coverKinds.add(new LinkedHashMap<String, JsonObject>());
+                for (ItemStack st : cover.holds) {
+                    if (st == null || st.stackSize <= 0) continue;
+                    for (int i = 0; i < n; i++) {
+                        if (wanted.get(i)
+                            .matches(st)) {
+                            inCover[i] += st.stackSize;
+                            tallyKind(coverKinds.get(i), st, st.stackSize);
+                        }
+                    }
+                }
+                for (int i = 0; i < n; i++) {
+                    if (inCover[i] <= 0) continue;
+                    totals[i] += inCover[i];
+                    places.get(i)
+                        .add(new Object[] { te, inCover[i], coverKinds.get(i), cover });
+                }
+            }
         }
         JsonArray items = new JsonArray();
         for (int i = 0; i < n; i++) {
@@ -659,6 +724,13 @@ public final class WorldQueries {
                 String machine = Machines.name(te);
                 c.addProperty("container", machine != null ? machine : blockName(te.getBlockType(), te.getBlockMetadata()));
                 if (Drawers.is(te)) c.addProperty("kind", "drawers");
+                if (pl.length > 3) {
+                    // Inside a cover on one face of that block: sneak and right-click the face to open it.
+                    Machines.Cover cover = (Machines.Cover) pl[3];
+                    c.addProperty("kind", "cover");
+                    c.addProperty("cover", Names.displayName(cover.item));
+                    c.addProperty("side", Machines.SIDES[cover.side]);
+                }
                 c.addProperty("count", (Integer) pl[1]);
                 if (want.open()) {
                     // Which exact items these are, so they can be asked for by id and meta.

@@ -134,7 +134,7 @@ describe('凿子的组', () => {
     assert.deepEqual(stone.text, [
       '圆石 [minecraft:cobblestone] is an ingredient of 1 recipe(s), in 1 way(s) (the same recipe can be listed more than once in the book):',
       '- 有序合成: 1 recipe(s), e.g. makes 熔炉',
-      'See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient), page by page.',
+      'See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient) and "circuit" (the programmed circuit number), page by page.',
       'Besides the recipes:',
       `- 凿子 (Chisel) — 圆石 [minecraft:cobblestone] is one of the 3 blocks of chisel group "cobblestone": a chisel turns it into any of the other 2 (${COST}): chisel:cobblestone/1–2 "圆石砖", "碎裂圆石砖".`,
       POINTER,

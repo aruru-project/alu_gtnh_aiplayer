@@ -155,9 +155,13 @@ describe('模型拿到的工具清单', () => {
   // 第三批之后实际是 44,135，上限没动。多出来的 1,559：use_item 的 side / hit / times / every 和空手（+868，身体的新能力）、
   // run_program 后面的库函数索引（+196：read_blueprint 一行，list_drawers 的 front / hit，total_materials 的 chisel）、
   // start_routine（+145：不限调用次数、时长由主人定）、say / whisper 照实写怎么分行和上限（+97）、几个说明改成陈述（+253）。
+  // 第四批（覆盖板、流体、方块的全部数据）之后实际是 46,085，上限从 44,700 调到 46,600（+1,900）。多出来的 1,950 都是新能力的参数：
+  // open_screen 的 side / hit / sneak（+654）、deposit_items / withdraw_items 的容器可以带 side / sneak（各 +252，覆盖板里的东西靠它拿）、
+  // inspect_block 的 detail / path（+321，一个方块自己存的全部数据）、find_recipes 的 fluid / circuit（+309，按流体、按电路查配方）、
+  // 库函数索引（+74）、find_in_storage / find_item 的说明（+88）。
   // 量的是发给模型的那份（modelToolSpecs）：说明加上瘦过的参数 schema。
-  it('防回涨：不能看图的模型每一轮收到的工具清单不超过 44,700 字符', () => {
-    const CEILING = 44_700
+  it('防回涨：不能看图的模型每一轮收到的工具清单不超过 46,600 字符', () => {
+    const CEILING = 46_600
     const sizes = modelToolSpecs(ALL_TOOLS, { canSee: false })
       .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
       .sort((a, b) => b.chars - a.chars)

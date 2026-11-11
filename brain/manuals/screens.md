@@ -22,6 +22,17 @@
 5. 机器是慢慢做的：点进去以后关掉界面，过一会儿再打开看产物格，或者用 withdraw_items 取（对机器它默认只取产物格；要取原料格里的东西给 fromInputs:true）。
 6. **还不行**（界面里没有格子、要点界面里的按钮才开工、点了没反应）：告诉主人卡在哪——是哪个方块、界面叫什么、你试了什么——并用 report_problem 记一条。界面里的按钮（不是格子的那些）你点不了。
 
+# 点哪个面、蹲不蹲
+- 有的方块点不同的面、蹲不蹲，打开的界面不一样。open_screen 的 side 是点哪个面（down / up / north / south / west / east），sneak: true 是蹲着点，hit 是点在那个面的哪一点（各 0–1）。给了 side 时你得已经站在那个面的前方（先 go_to 过去）。
+- 例：机器某个面上贴着覆盖板“基础槽位扩展”，蹲着右键那个面，打开的是覆盖板自己的 9 格：`open_screen { at: { x: -525, y: 70, z: 41 }, side: "west", sneak: true }`。只是存取里面的东西，用 deposit_items / withdraw_items 带同样的 side、sneak 更省事（containers 手册）。
+
+# 一个方块自己存的全部数据
+- 任何方块都能这样看：inspect_block 带 detail: true。结果里是它对扫描器自报的那几行话（GregTech 的机器有），和它存档里的全部数据，原样给出。没有人为某种机器挑过“该给你看哪几项”，所以别的结果里没写到的状态都在这里：机器的各种开关、仓锁定了什么、覆盖板怎么设的、格子里的东西带着什么附加数据。
+- 键是这个方块自己起的内部名字（mMode、lockedFluidName、gt.covers……），值是原样的，要你自己读懂；结果末尾会把里面出现的流体内部名、物品 id 对上游戏里的中文名。物品写成 { item, meta, count, name }。
+- 数据多时放不下：结果里写着一共多长、每一项多长；用 path 只看其中一项的全部（`path: "gt.covers"`、`"Inventory[3].tag"`）。在程序里 r.data.saved、r.data.says 是全的，可以写个循环把一片机器扫一遍。
+- 例：大型化学反应釜说“输出空间不足”，可五个输出仓都是空的。对每个输出仓 `inspect_block { x, y, z, detail: true }`：它的话里有一行 Locked to fluid.gas_gas，存档数据里 lockedFluidName 是 gas_gas——这个仓被锁成只收炼油气，别的流体进不来。五个仓各锁了什么，一比就知道哪种产物没有仓收。
+- 这是看，不是动。看懂了“是什么状态”，要改它还是靠界面和右键（open_screen、click_slot、use_item）。
+
 # 凿子（Chisel）
 - 凿子是一件拿在手里的工具，不是方块：`open_screen { item: { id: "chisel:chisel" } }` 打开它自己的界面，不用走到哪里。凿子有好几种（find_item "凿子"），它的 meta 是磨损，不用写。
 - 玩家的用法：把要变的方块放进界面里放原料的那一格，界面里会出现它那一组的各种花纹，点想要的那个，放进去的那一叠整叠变成那种花纹；再把它拿回背包。一个换一个，不耗别的东西。

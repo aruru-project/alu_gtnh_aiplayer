@@ -67,6 +67,8 @@ export interface MockContainer {
   kind?: 'drawers' | 'drawer_controller'
   /** 旁边接着的漏斗、管道（有的话这是个自动化的容器）。 */
   attached?: { x: number; y: number; z: number; name: string; kind: string }[]
+  /** 它的流体罐（储罐、超级缸）。 */
+  tanks?: MockTank[]
 }
 
 /** 假图纸。读得了的有尺寸和每一格是什么；读不了的只有名字和原因。 */
@@ -125,6 +127,50 @@ export interface MockMachine {
    * kind:"multiblock"、formed、heat、idleReason、inputBuses / outputBuses / inputHatches（总线和仓，可以带 attached）。
    */
   more?: Json
+  /** 它各个面上的覆盖板。能装东西的（槽位扩展）带 slots 和 items：这些东西不在机器自己的格子里，要蹲着点那个面才拿得到。 */
+  covers?: MockCover[]
+  /** 它的流体罐里现在有什么（空罐只有 capacity）。 */
+  tanks?: MockTank[]
+  /** 它自己知道的全部（world.block 带 detail 时给出去）：对扫描器说的话、存档里的数据。 */
+  says?: string[]
+  saved?: Json
+}
+
+/** 机器某个面上的一块覆盖板。 */
+export interface MockCover {
+  side: string
+  id: string
+  meta: number
+  name: string
+  /** 能装东西的覆盖板才有。 */
+  slots?: number
+  items?: { id: string; meta: number; count: number; name: string }[]
+}
+
+export interface MockTank {
+  fluid?: string
+  name?: string
+  amount?: number
+  capacity: number
+}
+
+/** 覆盖板、流体罐照协议的样子给出去（world.block、world.containers、world.machines 都带）。 */
+function attachments(x: { covers?: MockCover[]; tanks?: MockTank[] }): Json {
+  return {
+    ...(x.covers && x.covers.length > 0
+      ? {
+          covers: x.covers.map((c) => ({
+            side: c.side,
+            id: c.id,
+            meta: c.meta,
+            name: c.name,
+            screen: true,
+            ...(c.slots !== undefined ? { slots: c.slots, usedSlots: (c.items ?? []).length, items: (c.items ?? []).map((i) => ({ ...i })), moreKinds: 0 } : {}),
+          })),
+        }
+      : {}),
+    ...(x.tanks && x.tanks.length > 0 ? { tanks: x.tanks.map((t) => ((t.amount ?? 0) > 0 ? { ...t } : { amount: 0, capacity: t.capacity })) } : {}),
+  }
 }
 
 /**
@@ -714,16 +760,28 @@ export class MockBridge {
   }
 
   /** 假世界里某一格是什么：y=64 是草地，往下是石头，往上是空气；blueprint 任务动过的格子以动过的为准。 */
-  private blockAt(x: number, y: number, z: number): Json {
+  private blockAt(x: number, y: number, z: number, detail = false, path?: string): Json {
     if (Math.abs(x) > LOADED_RADIUS || Math.abs(z) > LOADED_RADIUS) return { x, y, z, loaded: false }
     const chest = this.containers.find((c) => c.x === x && c.y === y && c.z === z)
     if (chest) {
-      return { x, y, z, id: chest.id, meta: 3, name: chest.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: true, inventory: true }
+      return { x, y, z, id: chest.id, meta: 3, name: chest.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: true, inventory: true, ...attachments(chest) }
     }
     const machine = this.machines.find((m) => m.x === x && m.y === y && m.z === z)
     if (machine) {
-      return { x, y, z, id: 'gregtech:gt.blockmachines', meta: 0, name: machine.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2, tileEntity: true, inventory: true }
+      const block = { x, y, z, id: 'gregtech:gt.blockmachines', meta: 0, name: machine.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2, tileEntity: true, inventory: true, ...attachments(machine) }
+      if (!detail) return block
+      // 它自己知道的全部：照真的身体，path 只看存档数据里的一个键（这里只认顶层的键）
+      const saved = (machine.saved ?? {}) as Json
+      const part = path !== undefined && path.length > 0 ? saved[path] : saved
+      return {
+        ...block,
+        class: 'gregtech.api.metatileentity.BaseMetaTileEntity',
+        ...(machine.says ? { says: machine.says } : {}),
+        ...(path !== undefined && path.length > 0 ? { path, ...(part === undefined ? { pathNotFound: true } : {}) } : {}),
+        saved: part === undefined ? saved : part,
+      }
     }
+
     if (this.craftingTables.some((t) => t.x === x && t.y === y && t.z === z)) {
       return { x, y, z, id: 'minecraft:crafting_table', meta: 0, name: 'Crafting Table', air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: false, inventory: false }
     }
@@ -770,8 +828,13 @@ export class MockBridge {
           ],
           bots: [...this.bots.keys()],
         }
-      case 'world.block':
-        return this.blockAt(this.num(p, 'x'), this.num(p, 'y'), this.num(p, 'z'))
+      case 'world.block': {
+        const path = typeof p.path === 'string' ? p.path.trim() : undefined
+        const block = this.blockAt(this.num(p, 'x'), this.num(p, 'y'), this.num(p, 'z'), p.detail === true || (path !== undefined && path.length > 0), path)
+        // 没有自己数据的方块：只有原有字段，外加一句说明
+        if ((p.detail === true || path) && block.loaded !== false && block.saved === undefined) return { ...block, detail: 'this block keeps no data of its own: its id and meta are all there is' }
+        return block
+      }
       case 'world.scan': {
         const x1 = Math.min(this.num(p, 'x1'), this.num(p, 'x2'))
         const x2 = Math.max(this.num(p, 'x1'), this.num(p, 'x2'))
@@ -872,9 +935,10 @@ export class MockBridge {
             ...(box.kind === 'drawer_controller' ? { drawers: drawers.length } : {}),
             ...(box.kind === 'drawers' && controller ? { controller: { x: controller.x, y: controller.y, z: controller.z } } : {}),
             ...(box.attached ? { attached: box.attached } : {}),
+            ...attachments(box),
           }))
-        // 原料格里放着东西的机器也是容器（原料格、产物格不分，合在一起列）
-        const machines = this.machines.filter((m) => m.inputs !== undefined).map((m) => ({ x: m.x, y: m.y, z: m.z, id: m.id ?? 'gregtech:gt.blockmachines', name: m.name, kind: 'machine', slots: m.inputSlots + 1, usedSlots: m.inputs!.length, items: m.inputs! }))
+        // 原料格里放着东西的机器也是容器（原料格、产物格不分，合在一起列）；带覆盖板、带罐的机器也列，覆盖板和罐照样带着
+        const machines = this.machines.filter((m) => m.inputs !== undefined || m.covers !== undefined || m.tanks !== undefined).map((m) => ({ ...attachments(m), x: m.x, y: m.y, z: m.z, id: m.id ?? 'gregtech:gt.blockmachines', name: m.name, kind: 'machine', slots: m.inputSlots + 1, usedSlots: (m.inputs ?? []).length, items: m.inputs ?? [] }))
         const merge = (slots: MockDevice['slots']): { id: string; meta: number; count: number; name: string }[] => slots.filter((x) => x.item && x.kind !== 'ghost').map((x) => ({ ...x.item! }))
         const devices = this.devices.map((d) => ({ x: d.x, y: d.y, z: d.z, id: d.id, name: d.name, slots: d.slots.length, usedSlots: merge(d.slots).length, items: merge(d.slots) }))
         // 和真的身体一样：以中心为心、每个方向 radius 格的立方体里的才算（radius 0 就是中心那一格上的那个容器）
@@ -1015,7 +1079,7 @@ export class MockBridge {
           const id = String(want.id ?? '')
           const meta = typeof want.meta === 'number' ? want.meta : undefined
           const matches = (i: { id: string; meta: number }) => (ore !== undefined ? this.hasOre(i, ore) : i.id === id && (meta === undefined || i.meta === meta))
-          const places = near
+          const places: (Json & { count: number })[] = near
             .map((box) => ({ box, found: box.items.filter((i) => matches(i) && i.count > 0) }))
             .filter((x) => x.found.length > 0)
             .map(({ box, found }) => ({
@@ -1029,6 +1093,26 @@ export class MockBridge {
               ...(ore !== undefined || meta === undefined ? { items: found.slice(0, 4).map((i) => ({ id: i.id, meta: i.meta, count: i.count, name: i.name })) } : {}),
             }))
             .sort((a, b) => b.count - a.count)
+          // 机器各个面上能装东西的覆盖板：里面的东西也算存货，那个存放点带 kind:"cover"、覆盖板的名字和哪个面
+          for (const m of this.machines) {
+            if (Math.max(Math.abs(m.x - c.x), Math.abs(m.y - c.y), Math.abs(m.z - c.z)) > radius) continue
+            for (const cover of m.covers ?? []) {
+              const found = (cover.items ?? []).filter((i) => matches(i) && i.count > 0)
+              if (found.length === 0) continue
+              places.push({
+                x: m.x,
+                y: m.y,
+                z: m.z,
+                container: m.name,
+                kind: 'cover',
+                cover: cover.name,
+                side: cover.side,
+                count: found.reduce((n, i) => n + i.count, 0),
+                ...(ore !== undefined || meta === undefined ? { items: found.slice(0, 4).map((i) => ({ id: i.id, meta: i.meta, count: i.count, name: i.name })) } : {}),
+              })
+            }
+          }
+          places.sort((a, b) => b.count - a.count)
           return {
             ...(ore !== undefined ? { ore } : meta === undefined ? { id } : { id, meta }),
             total: places.reduce((n, pl) => n + pl.count, 0),
@@ -1486,6 +1570,15 @@ export class MockBridge {
           return
         }
         box = { items: inside }
+      } else if (typeof at.side === 'string') {
+        // 点那个面（蹲着）：打开的是那个面上覆盖板自己的界面，往它里面存取。没蹲、或者那个面没有能装东西的覆盖板，就没有界面可用
+        const owner = this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
+        const cover = at.sneak === true ? owner?.covers?.find((cv) => cv.side === at.side && cv.slots !== undefined) : undefined
+        if (!cover) {
+          this.endTask(bot, task, 'failed', { error: { code: 'invalid', message: `clicking the ${String(at.side)} face${at.sneak === true ? ' while sneaking' : ''} opened no screen that holds items` } })
+          return
+        }
+        box = { items: (cover.items ??= []), kind: 'machine', slots: cover.slots! }
       } else {
         box = this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z)
         // GregTech 机器：放是放进原料格；取默认只从产物格取（这里的机器做完就被 process 取空了，所以什么都没有），fromInputs 才从原料格取
@@ -2014,6 +2107,14 @@ export class MockBridge {
     const at = { x: Number(p.x), y: Number(p.y), z: Number(p.z) }
     const me = this.blockOf(bot)
     if (Math.max(Math.abs(at.x - me.x), Math.abs(at.y - me.y), Math.abs(at.z - me.z)) > 5) throw new RpcError('out_of_reach', `the block at ${at.x},${at.y},${at.z} is too far to reach`)
+    // 蹲着点机器上有覆盖板的那个面：打开的是覆盖板自己的界面（它那几格）
+    if (typeof p.side === 'string' && p.sneak === true) {
+      const cover = this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)?.covers?.find((cv) => cv.side === p.side && cv.slots !== undefined)
+      if (!cover) return { open: false }
+      const items = (cover.items ??= [])
+      this.screens.set(bot.name, { title: cover.name, slots: Array.from({ length: cover.slots! }, (_, n) => (items[n] ? { kind: 'in' as const, item: items[n]! } : { kind: 'in' as const })) })
+      return this.screenLook(bot)
+    }
     const device = this.deviceAt(at)
     if (!device) return { open: false }
     this.screens.set(bot.name, { title: device.name, slots: device.slots, device })
@@ -2492,6 +2593,7 @@ function describeMachine(m: MockMachine): Json {
     ...(m.id !== undefined ? { id: m.id, meta: m.meta ?? 0 } : {}),
     ...(m.recipeKey !== undefined ? { recipeKey: m.recipeKey } : {}),
     ...(m.more ?? {}),
+    ...attachments(m),
   }
 }
 

@@ -7,7 +7,7 @@
 // 带 attached 的容器（旁边接着漏斗、管道）是主人自动化的一环，结果里标出来。
 
 import type { ContainerInfo, DrawerSlot } from '../bridge/protocol.ts'
-import { attachedText, formatContainer, formatPos, itemKey, mergeItems, nameOf } from './format.ts'
+import { COVER_NOTE, attachedText, formatContainer, formatPos, holdsCoverItems, itemKey, mergeItems, nameOf } from './format.ts'
 import { int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -67,6 +67,7 @@ export const listContainers: Tool = {
     if (!whole && paged.some((c) => mergeItems(c.items ?? []).length > KINDS_PER_LINE || cutByServer(c))) {
       notes.push('Where a line ends in "… more kinds", the rest is not shown here: list_containers with "at" that container and radius 0 lists everything in it (in a program, r.data.containers has every kind).')
     }
+    if (paged.some(holdsCoverItems)) notes.push(COVER_NOTE)
     const old = paged.filter(cutByServer).length
     if (whole && old > 0) notes.push('The game server did not list all of it (its mod is too old to list more than 60 kinds of a container). find_in_storage still finds a particular item in it.')
     return { content: [`Within ${radius} blocks of ${from.of}: ${range}.`, ...lines, ...notes].join('\n'), data: { total, offset, containers: paged }, keepWhole: true }
@@ -120,7 +121,8 @@ interface StockLine {
   count: number
   /** 其中在自动化容器（接着漏斗、管道）里的。 */
   automated: number
-  places: { x: number; y: number; z: number; count: number; kind?: string; automated?: boolean }[]
+  /** kind 是 "cover" 的那一处：东西在这个方块 side 那一面的覆盖板里，不在它自己的格子里。 */
+  places: { x: number; y: number; z: number; count: number; kind?: string; side?: string; automated?: boolean }[]
 }
 
 /** 把范围里的容器一页一页全读回来（到上限为止）。 */
@@ -158,18 +160,28 @@ export const listStock: Tool = {
     const storage = containers.filter((c) => c.kind !== 'machine' && c.kind !== 'drawer_controller')
     const merged = new Map<string, StockLine>()
     let truncated = 0
+    const put = (it: { id?: string; meta?: number; name?: string; count?: number }, place: Omit<StockLine['places'][number], 'count'>, automated: boolean): void => {
+      if (!it || typeof it.id !== 'string') return
+      const key = itemKey({ id: it.id, meta: it.meta ?? 0 })
+      let line = merged.get(key)
+      if (!line) merged.set(key, (line = { id: it.id, meta: it.meta ?? 0, count: 0, automated: 0, places: [], ...(it.name ? { name: it.name } : {}) }))
+      const n = typeof it.count === 'number' ? it.count : 1
+      line.count += n
+      if (automated) line.automated += n
+      line.places.push({ ...place, count: n, ...(automated ? { automated: true } : {}) })
+    }
     for (const c of storage) {
       if (cutByServer(c)) truncated++
       const automated = (c.attached?.length ?? 0) > 0
-      for (const it of c.items ?? []) {
-        if (!it || typeof it.id !== 'string') continue
-        const key = itemKey(it)
-        let line = merged.get(key)
-        if (!line) merged.set(key, (line = { id: it.id, meta: it.meta ?? 0, count: 0, automated: 0, places: [], ...(it.name ? { name: it.name } : {}) }))
-        const n = typeof it.count === 'number' ? it.count : 1
-        line.count += n
-        if (automated) line.automated += n
-        line.places.push({ x: c.x, y: c.y, z: c.z, count: n, ...(c.kind ? { kind: c.kind } : {}), ...(automated ? { automated: true } : {}) })
+      for (const it of c.items ?? []) put(it, { x: c.x, y: c.y, z: c.z, ...(c.kind ? { kind: c.kind } : {}) }, automated)
+    }
+    // 覆盖板里装着的东西（机器上的“槽位扩展”，模具常放在这里）也是存货：机器自己的格子不算，覆盖板里的算
+    let covers = 0
+    for (const c of containers) {
+      for (const cover of c.covers ?? []) {
+        if (cover.slots === undefined) continue
+        covers++
+        for (const it of cover.items ?? []) put(it, { x: c.x, y: c.y, z: c.z, kind: 'cover', side: cover.side }, false)
       }
     }
     let list = [...merged.values()].sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
@@ -179,7 +191,8 @@ export const listStock: Tool = {
     if (i.below !== undefined) list = list.filter((l) => l.count < i.below!)
     const skipped = containers.length - storage.length
     const notes = [
-      `Looked into ${storage.length} chest(s) and drawer(s) within ${radius} blocks of ${from.of}${skipped > 0 ? ` (${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
+      `Looked into ${storage.length} chest(s) and drawer(s)${covers > 0 ? ` and ${covers} cover(s) that hold items` : ''} within ${radius} blocks of ${from.of}${skipped > 0 ? ` (the own slots of ${skipped} machine(s) and drawer controller(s) not counted)` : ''}: ${kinds} kind(s) of item.`,
+      ...(covers > 0 ? ['A place marked "cover <side>" is a cover on that face of the block there: withdraw_items with container {x, y, z, side, sneak: true}.'] : []),
       ...(total > containers.length ? [`Only the nearest ${containers.length} of ${total} containers were read: the totals are not complete. Use a smaller radius.`] : []),
       // 向身体要的是每个容器的全部；还有没列全的，只会是老的身体（不认 kinds，一个容器最多给 60 种）
       ...(truncated > 0 ? [`The game server did not list everything in ${truncated} container(s) (its mod is too old to list more than 60 kinds of a container): what it left out is missing from these totals. find_in_storage still finds a particular item.`] : []),
@@ -192,7 +205,7 @@ export const listStock: Tool = {
     if (shown.length === 0) return fail(`There is no page ${page}: ${list.length} item(s)${filter ? ` ${filter}` : ''}, ${pages(list.length, STOCK_LINES_PER_PAGE)} page(s).`)
     const lines = shown.map((l) => {
       const places = [...l.places].sort((a, b) => b.count - a.count)
-      const where = places.slice(0, 2).map((p) => `${formatPos(p)}${p.kind === 'drawers' ? ' drawers' : ''}${p.automated ? ' AUTOMATED' : ''} ${p.count}`)
+      const where = places.slice(0, 2).map((p) => `${formatPos(p)}${p.kind === 'drawers' ? ' drawers' : p.kind === 'cover' ? ` cover ${p.side ?? '?'}` : ''}${p.automated ? ' AUTOMATED' : ''} ${p.count}`)
       const name = nameOf(l)
       return `- ${l.count}× ${name ? `${name} ` : ''}[${itemKey(l)}]: ${where.join(', ')}${places.length > 2 ? `, and ${places.length - 2} more place(s)` : ''}${l.automated > 0 ? ` (${l.automated} of them in automated containers)` : ''}`
     })

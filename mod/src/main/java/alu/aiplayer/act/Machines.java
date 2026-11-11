@@ -74,6 +74,155 @@ public final class Machines {
     }
 
     /** Whether the block is a GregTech machine, pipe, cable or the like. */
+    // ---- covers ---------------------------------------------------------------------------------------------------
+
+    public static final String[] SIDES = { "down", "up", "north", "south", "west", "east" };
+
+    private static boolean coversLooked;
+    private static Class<?> coverable;
+    private static Method hasCover, coverItem, coverAt;
+
+    private static synchronized boolean coversAvailable() {
+        if (coversLooked) return coverable != null;
+        coversLooked = true;
+        try {
+            Class<?> c = Class.forName("gregtech.api.interfaces.tileentity.ICoverable");
+            Class<?> dir = net.minecraftforge.common.util.ForgeDirection.class;
+            hasCover = c.getMethod("hasCoverAtSide", dir);
+            coverItem = c.getMethod("getCoverItemAtSide", dir);
+            coverAt = c.getMethod("getCoverAtSide", dir);
+            coverable = c;
+        } catch (Throwable t) {
+            coverable = null;
+        }
+        return coverable != null;
+    }
+
+    /** A cover on one face of a machine: the item it is, and what it holds if it is one that holds things. */
+    public static final class Cover {
+
+        public int side;
+        public ItemStack item;
+        /** Whether sneaking and right-clicking that face opens a screen of its own. */
+        public boolean screen;
+        /** Null when the cover holds nothing; the stacks otherwise (null entries for empty slots). */
+        public ItemStack[] holds;
+    }
+
+    /** The covers on a block's faces; empty for anything that takes no covers. */
+    public static java.util.List<Cover> covers(TileEntity te) {
+        java.util.List<Cover> out = new java.util.ArrayList<>();
+        if (te == null || !coversAvailable() || !coverable.isInstance(te)) return out;
+        for (int side = 0; side < 6; side++) {
+            try {
+                Object dir = net.minecraftforge.common.util.ForgeDirection.getOrientation(side);
+                if (!(Boolean) hasCover.invoke(te, dir)) continue;
+                Cover c = new Cover();
+                c.side = side;
+                c.item = (ItemStack) coverItem.invoke(te, dir);
+                Object cover = coverAt.invoke(te, dir);
+                if (cover != null) {
+                    try {
+                        c.screen = (Boolean) cover.getClass()
+                            .getMethod("hasCoverGUI")
+                            .invoke(cover);
+                    } catch (Throwable ignored) {}
+                    // A cover that keeps items says so with getItems(): an item handler of some slots.
+                    try {
+                        Object handler = cover.getClass()
+                            .getMethod("getItems")
+                            .invoke(cover);
+                        if (handler != null) {
+                            int n = (Integer) handler.getClass()
+                                .getMethod("getSlots")
+                                .invoke(handler);
+                            Method get = handler.getClass()
+                                .getMethod("getStackInSlot", int.class);
+                            get.setAccessible(true);
+                            c.holds = new ItemStack[Math.max(0, Math.min(n, 512))];
+                            for (int i = 0; i < c.holds.length; i++) c.holds[i] = (ItemStack) get.invoke(handler, i);
+                        }
+                    } catch (NoSuchMethodException none) {
+                        // most covers hold nothing
+                    } catch (Throwable ignored) {}
+                }
+                if (c.item != null) out.add(c);
+            } catch (Throwable ignored) {}
+        }
+        return out;
+    }
+
+    /**
+     * What a block says about itself to a scanner: the lines a player reads off a portable scanner held to it.
+     * Machines that give such information write them themselves, so nothing is known here about any kind.
+     */
+    public static com.google.gson.JsonArray says(TileEntity te) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        if (te == null) return out;
+        try {
+            Class<?> info = Class.forName("gregtech.api.interfaces.tileentity.IGregTechDeviceInformation");
+            if (!info.isInstance(te)) return out;
+            if (!(Boolean) info.getMethod("isGivingInformation")
+                .invoke(te)) return out;
+            String[] lines = (String[]) info.getMethod("getInfoData")
+                .invoke(te);
+            if (lines == null) return out;
+            Method toComponent = null;
+            try {
+                toComponent = info.getMethod("toComponent", String.class);
+            } catch (Throwable ignored) {}
+            for (String line : lines) {
+                if (line == null) continue;
+                String text = line;
+                // Lines may carry a translation key in place of text; the game turns it into words.
+                if (toComponent != null) {
+                    try {
+                        Object c = toComponent.invoke(null, line);
+                        if (c instanceof net.minecraft.util.IChatComponent) text = ((net.minecraft.util.IChatComponent) c).getUnformattedText();
+                    } catch (Throwable ignored) {}
+                }
+                // (The game's own stripping of colour codes exists on the client only.)
+                String plain = text.replaceAll("\u00a7.", "")
+                    .trim();
+                if (!plain.isEmpty() && out.size() < 60) out.add(new com.google.gson.JsonPrimitive(plain));
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
+    /** What a block's tanks hold, for anything that handles fluids: [{fluid, name, amount, capacity}]. */
+    public static com.google.gson.JsonArray tanks(TileEntity te) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        if (!(te instanceof net.minecraftforge.fluids.IFluidHandler)) return out;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        try {
+            // A machine may answer differently for each face; asked from every side, each tank is listed once.
+            for (int side = 6; side >= 0; side--) {
+                net.minecraftforge.fluids.FluidTankInfo[] info = ((net.minecraftforge.fluids.IFluidHandler) te)
+                    .getTankInfo(net.minecraftforge.common.util.ForgeDirection.getOrientation(side));
+                if (info == null) continue;
+                for (int i = 0; i < info.length; i++) {
+                    net.minecraftforge.fluids.FluidTankInfo t = info[i];
+                    if (t == null) continue;
+                    net.minecraftforge.fluids.FluidStack f = t.fluid;
+                    String key = i + "|" + (f == null ? "" : f.getFluid().getName() + "|" + f.amount) + "|" + t.capacity;
+                    if (!seen.add(key)) continue;
+                    JsonObject o = new JsonObject();
+                    if (f != null && f.getFluid() != null && f.amount > 0) {
+                        o.addProperty("fluid", f.getFluid().getName());
+                        o.addProperty("name", f.getLocalizedName());
+                        o.addProperty("amount", f.amount);
+                    } else {
+                        o.addProperty("amount", 0);
+                    }
+                    o.addProperty("capacity", t.capacity);
+                    out.add(o);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
     public static boolean isGregTech(TileEntity te) {
         return meta(te) != null;
     }
@@ -163,6 +312,61 @@ public final class Machines {
     }
 
     public static JsonObject describe(TileEntity te) {
+        JsonObject o = describeMachine(te);
+        if (o != null) attachments(o, te);
+        return o;
+    }
+
+    /** What is on and in a block besides its item slots: the covers on its faces and what its tanks hold. */
+    public static void attachments(JsonObject o, TileEntity te) {
+        com.google.gson.JsonArray covers = coversJson(te, 60);
+        if (covers.size() > 0) o.add("covers", covers);
+        com.google.gson.JsonArray tanks = tanks(te);
+        if (tanks.size() > 0) o.add("tanks", tanks);
+    }
+
+    /** The covers as data: [{side, id, meta, name, screen?, slots?, usedSlots?, items?, moreKinds?}]. */
+    public static com.google.gson.JsonArray coversJson(TileEntity te, int kinds) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        for (Cover c : covers(te)) {
+            JsonObject j = new JsonObject();
+            j.addProperty("side", SIDES[c.side]);
+            j.addProperty("id", alu.aiplayer.util.Names.itemId(c.item.getItem()));
+            j.addProperty("meta", c.item.getItemDamage());
+            j.addProperty("name", alu.aiplayer.util.Names.displayName(c.item));
+            if (c.screen) j.addProperty("screen", true);
+            if (c.holds != null) {
+                java.util.Map<String, JsonObject> merged = new java.util.LinkedHashMap<>();
+                int used = 0;
+                for (ItemStack st : c.holds) {
+                    if (st == null || st.stackSize <= 0) continue;
+                    used++;
+                    String key = alu.aiplayer.util.Names.itemId(st.getItem()) + "@" + alu.aiplayer.util.Names.meta(st);
+                    JsonObject item = merged.get(key);
+                    if (item == null) {
+                        item = alu.aiplayer.util.Names.describe(st);
+                        item.remove("durability");
+                        merged.put(key, item);
+                    } else {
+                        item.addProperty("count", item.get("count").getAsInt() + st.stackSize);
+                    }
+                }
+                j.addProperty("slots", c.holds.length);
+                j.addProperty("usedSlots", used);
+                com.google.gson.JsonArray items = new com.google.gson.JsonArray();
+                for (JsonObject item : merged.values()) {
+                    if (items.size() >= kinds) break;
+                    items.add(item);
+                }
+                j.add("items", items);
+                if (merged.size() > items.size()) j.addProperty("moreKinds", merged.size() - items.size());
+            }
+            out.add(j);
+        }
+        return out;
+    }
+
+    private static JsonObject describeMachine(TileEntity te) {
         Object m = meta(te);
         if (m == null) return null;
         if (isMultiblock(te)) return describeMultiblock(te, m);

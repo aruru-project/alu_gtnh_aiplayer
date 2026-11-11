@@ -8,7 +8,7 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
-import type { CarvingBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
+import type { CarvingBook, FluidInfo, FluidTable, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
 import { CHISEL_WAY, chiselData, chiselDetail, chiselMatches, chiselSummary, isChiselWay } from './chisel.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
@@ -566,13 +566,25 @@ function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surr
   return { rank: 2, text: `machine here but not usable now: ${machineText(best.m)}: ${best.problems.join(', ')}` }
 }
 
-/** 这条配方要的流体，附近做它的机器里有没有：多方块看得到输入仓，单方块的罐子看不到——照实说。 */
+/** 这台机器里现在有多少这种流体：多方块看输入仓，单方块看它自己的罐。读不到（身体没报罐）是 undefined。 */
+export function fluidInside(m: MachineInfo, fluid: string): number | undefined {
+  if (m.kind === 'multiblock') return (m.inputHatches ?? []).filter((h) => h.fluid === fluid).reduce((n, h) => n + (h.amount ?? 0), 0)
+  if (m.tanks === undefined) return undefined
+  return m.tanks.filter((t) => t.fluid === fluid).reduce((n, t) => n + (t.amount ?? 0), 0)
+}
+
+/**
+ * 这条配方要的流体，附近做它的机器里现在有没有：多方块看输入仓，单方块看它自己的罐（身体报的 tanks）。
+ * 罐里有什么就说什么；身体没报这台机器的罐才说读不到。
+ */
 function fluidFact(recipe: Recipe, candidates: readonly MachineInfo[]): string {
   if (recipe.fin.length === 0 || candidates.length === 0) return ''
-  const multi = candidates.find((m) => m.kind === 'multiblock')
-  if (!multi) return ' [its fluid has to be inside the machine already: a single-block machine\'s tank cannot be seen or filled by you]'
-  const have = recipe.fin.map((f) => `${quantity((multi.inputHatches ?? []).filter((h) => h.fluid === f.f).reduce((n, h) => n + (h.amount ?? 0), 0))} mB ${f.name}`)
-  return ` [the input hatches of the ${nameOf(multi) ?? 'machine'} hold ${have.join(', ')}]`
+  // 先看多方块，再看报了罐的单方块；都没有就是读不到
+  const m = candidates.find((c) => c.kind === 'multiblock') ?? candidates.find((c) => c.tanks !== undefined) ?? candidates[0]!
+  const where = m.kind === 'multiblock' ? `the input hatches of the ${nameOf(m) ?? 'machine'} at ${formatPos(m)}` : `the tanks of the ${nameOf(m) ?? 'machine'} at ${formatPos(m)}`
+  if (m.kind !== 'multiblock' && m.tanks === undefined) return ` [what ${where} hold cannot be read; inspect_block with "detail" shows everything the machine keeps]`
+  const have = recipe.fin.map((f) => `${quantity(fluidInside(m, f.f) ?? 0)} mB ${f.name} (one round takes ${quantity(f.mb)})`)
+  return ` [${where} now hold ${have.join(', ')}]`
 }
 
 // ── 一条配方写成一行 ──
@@ -637,13 +649,47 @@ function requireBook(ctx: ToolContext): { items: ItemTable | undefined; recipes:
   return { items: packdata.items, recipes: packdata.recipes, packdata }
 }
 
-export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook): ToolResult | string {
+/** 一种流体给模型看的写法：名字加注册名（查配方时两个都认）。 */
+export const fluidLabel = (f: FluidInfo): string => `${f.name} [fluid ${f.fluid}]`
+
+/** 产出（或者用到）这种流体的配方：GregTech 的页写在 fout / fin 里；别的页把流体画成“流体展示”物品，也算上。 */
+export function fluidRefs(recipes: RecipeBook, fluids: FluidTable | undefined, fluid: string, which: 'makes' | 'uses'): number[] {
+  const display = fluids?.displayItems(fluid) ?? []
+  const lists = which === 'makes' ? [recipes.makesFluid(fluid), ...display.map((d) => recipes.makesOf(d.id, d.meta))] : [recipes.usesFluid(fluid), ...display.map((d) => recipes.usesOf(d.id, d.meta))]
+  return lists.length === 1 ? [...lists[0]!] : [...new Set(lists.flat())].sort((a, b) => a - b)
+}
+
+/** find_item 里一次最多列这么多种流体。 */
+const FLUIDS_SHOWN = 8
+
+/** 找物品时顺带找到的流体：流体不是物品，但主人说的、机器里装的常常是它。 */
+function fluidLines(fluids: FluidTable, recipes: RecipeBook | undefined, found: readonly FluidInfo[]): string[] {
+  const lines = found.slice(0, FLUIDS_SHOWN).map((f) => {
+    const facts = recipes ? `: ${fluidRefs(recipes, fluids, f.fluid, 'makes').length} recipe(s) make it; used in ${fluidRefs(recipes, fluids, f.fluid, 'uses').length}` : ''
+    return `- ${fluidLabel(f)}${f.en ? ` (${f.en})` : ''}${facts}`
+  })
+  if (found.length > FLUIDS_SHOWN) lines.push(`- … and ${found.length - FLUIDS_SHOWN} more fluid(s): add a word to narrow it`)
+  return lines
+}
+
+const FLUID_HOW = 'A fluid is not an item: find_recipes (how it is made) and the library function find_uses (what takes it) are asked with "fluid" instead of "id": its name, or the internal name in the brackets.'
+
+export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook, fluids?: FluidTable): ToolResult | string {
   const query = input.query.trim()
   if (query.length < 1) return fail('Give a word of the name: Chinese, English, an id or an ore-dictionary name.')
   const limit = input.limit ?? ITEMS_PER_PAGE
   const page = Math.max(1, input.page ?? 1)
   const { hits, total } = items.search(query, { limit, offset: (page - 1) * limit })
-  if (total === 0) return `No item matches "${query}". Try fewer or other words: part of the Chinese name, of the English name, of the id, or an ore-dictionary name such as plateSteel.`
+  // 名字对得上的流体（中文名、英文名、内部名都认）：列在第一页的后面
+  const liquid = fluids ? fluids.search(query) : { exact: [], partial: [] }
+  const liquids = [...liquid.exact, ...liquid.partial]
+  const fluidPart = fluids && liquids.length > 0 && page === 1 ? [`Fluids matching "${query}" (${liquids.length}):`, ...fluidLines(fluids, recipes, liquids), FLUID_HOW] : []
+  if (total === 0) {
+    if (fluidPart.length > 0) return { content: [`No item matches "${query}".`, ...fluidPart].join('\n'), keepWhole: true }
+    // 什么都没对上：名字只差一两个字的（记错、打错一个字）列出来
+    const near = [...items.closest(query, 5).map((i) => `${i.name} [${itemKey(i)}]`), ...(fluids?.closest(query, 5) ?? []).map(fluidLabel)]
+    return `No item or fluid matches "${query}".${near.length > 0 ? ` Names one or two characters away: ${near.join(', ')}.` : ''} Try fewer or other words: part of the Chinese name, of the English name, of the id, or an ore-dictionary name such as plateSteel.`
+  }
   if (hits.length === 0) return fail(`"${query}" matches ${total} item(s): there is no page ${page} (${Math.ceil(total / limit)} page(s)).`)
   // 英文名只在帮得上忙时带：这一页里中文名重了，或者是拿英文搜的
   const names = new Map<string, number>()
@@ -652,6 +698,12 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
   const english = /[a-z]{2}/i.test(query)
   const lines = hits.map((h) => {
     const en = h.en && (names.get(h.name)! > 1 || (english && h.en.toLowerCase().includes(asked.split(/\s+/)[0]!))) ? ` (${h.en})` : ''
+    // NEI 的“流体展示”物品不是能拿在手里的东西：它是配方画面上代表一种流体的那张图。说它是哪种流体，不说“没有配方”
+    const pictured = fluids?.ofDisplayItem(h.id, h.meta)
+    if (pictured !== undefined) {
+      const which = pictured.length > 0 ? `the fluid ${pictured.map(fluidLabel).join(' or ')}` : 'a fluid no recipe in the book handles'
+      return `- ${h.name} [${itemKey(h)}]${en}: not an item you can hold — NEI's picture of ${which}`
+    }
     const facts: string[] = []
     if (recipes) {
       const made = recipes.makesOf(h.id, h.meta).length
@@ -670,7 +722,7 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
     total > hits.length
       ? `"${query}" matches ${total} items; these are ${first}–${first + hits.length - 1}, most alike first (page ${page} of ${Math.ceil(total / limit)}). Add a word to narrow it, or ask for the next page.`
       : `"${query}" matches ${total} item(s), most alike first.`
-  return { content: `${head}\n${lines.join('\n')}`, keepWhole: true }
+  return { content: [head, ...lines, ...fluidPart].join('\n'), keepWhole: true }
 }
 
 // ── 查做法、查用途 ──
@@ -682,11 +734,67 @@ interface Way {
 }
 
 interface RecipeQuery {
-  id: string
+  id?: string
   meta?: number
+  /** 查的是一种流体：它的名字（中文、英文）或者注册名。 */
+  fluid?: string
   way?: string
   contains?: string
+  /** 只要设这个编程电路号的配方。 */
+  circuit?: number
   page?: number
+}
+
+/** 问的是哪样东西：一个物品，或者一种流体。 */
+type Asked = { kind: 'item'; id: string; meta: number; info?: PackItemInfo; label: string; note: string } | { kind: 'fluid'; fluid: FluidInfo; label: string; note: string }
+
+/** 这条配方设的编程电路号（没有就是 undefined）。 */
+function circuitNumber(r: Recipe): number | undefined {
+  for (const s of r.in) {
+    const c = circuitOf(s)
+    if (c !== undefined) return c
+  }
+  return undefined
+}
+
+/** 几种流体列成一句，带各有多少条配方（让它挑）。 */
+function fluidChoices(recipes: RecipeBook, fluids: FluidTable, list: readonly FluidInfo[]): string {
+  const shown = list.slice(0, 12).map((f) => `${fluidLabel(f)} (${fluidRefs(recipes, fluids, f.fluid, 'makes').length} recipe(s) make it, ${fluidRefs(recipes, fluids, f.fluid, 'uses').length} use it)`)
+  return `${shown.join('; ')}${list.length > 12 ? `; and ${list.length - 12} more` : ''}`
+}
+
+/**
+ * 把 find_recipes / find_uses 的 id 或 fluid 认成一样东西。
+ * fluid：注册名正好对上的就是它；否则按名字找，正好一种就用它，好几种时列出来让它挑。
+ * id 是 NEI 的“流体展示”物品时，问的其实是那种流体。
+ */
+function resolveAsked(packdata: PackData, recipes: RecipeBook, input: RecipeQuery, nm: Namer): Asked | ToolResult {
+  const id = input.id?.trim() ?? ''
+  const text = input.fluid?.trim() ?? ''
+  if ((id.length > 0) === (text.length > 0)) return fail('Give exactly one of "id" (an item) or "fluid" (a fluid: its name, or its internal name such as molten.steel).')
+  const fluids = packdata.fluids
+  const asFluid = (fluid: FluidInfo, note = ''): Asked => ({ kind: 'fluid', fluid, label: fluidLabel(fluid), note })
+  if (text.length > 0) {
+    if (!fluids) return fail('No fluid is known on this brain: its recipe book lists none.')
+    const direct = fluids.get(text)
+    if (direct) return asFluid(direct)
+    const found = fluids.search(text)
+    const pick = found.exact.length > 0 ? found.exact : found.partial
+    if (pick.length === 1) return asFluid(pick[0]!)
+    if (pick.length > 1) return fail(`${pick.length} fluids ${found.exact.length > 0 ? 'are named' : 'match'} "${text}": ${fluidChoices(recipes, fluids, pick)}. Give the internal name in the brackets as "fluid".`)
+    const near = fluids.closest(text)
+    return fail(`No fluid matches "${text}".${near.length > 0 ? ` Names one or two characters away: ${near.map(fluidLabel).join(', ')}.` : ''} A fluid is asked for by its Chinese or English name or its internal name; find_item finds fluids too.`)
+  }
+  const meta = input.meta ?? 0
+  const pictured = fluids?.ofDisplayItem(id, meta)
+  if (fluids && pictured !== undefined && pictured.length > 0) {
+    const picture = nm.label(id, meta)
+    if (pictured.length === 1) return asFluid(pictured[0]!, ` (${picture} is NEI's picture of this fluid, not an item you can hold: this is about the fluid itself.)`)
+    return fail(`${picture} is NEI's picture of a fluid, not an item you can hold, and ${pictured.length} fluids have that name: ${fluidChoices(recipes, fluids, pictured)}. Ask with "fluid": the internal name in the brackets.`)
+  }
+  const item = resolveItem(recipes, { id, ...(input.meta !== undefined ? { meta: input.meta } : {}) }, nm, packdata.carving)
+  if ('content' in item) return item
+  return { kind: 'item', ...item, label: nm.label(item.id, item.meta), note: '' }
 }
 
 /** 用模型给的词挑方式：先当页的编号，再当页名，再看编号或页名里含不含。 */
@@ -745,25 +853,34 @@ async function carriedNow(ctx: ToolContext, items: ItemTable | undefined): Promi
 export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
-  const target = resolveItem(recipes, input, nm, packdata.carving)
-  if ('content' in target) return target
-  const label = nm.label(target.id, target.meta)
+  const asked = resolveAsked(packdata, recipes, input, nm)
+  if ('content' in asked) return asked
+  const label = asked.label
+  // 问的是物品时的那几样；问的是流体时没有凿子、没有“同一种东西的另一个 id”
+  const target = asked.kind === 'item' ? asked : { id: '', meta: 0 }
   // 凿子：它是某个组里的一种时，可以从同组的另一种凿出来。这不是配方，配方册里没有，照实另列
-  const carve = chiselMatches(packdata.carving, { id: target.id, meta: target.meta, ores: target.info?.ores ?? [] }, 'made')
+  const carve = asked.kind === 'item' ? chiselMatches(packdata.carving, { id: asked.id, meta: asked.meta, ores: asked.info?.ores ?? [] }, 'made') : []
   const carveData = carve.length > 0 ? { data: { item: { id: target.id, meta: target.meta, name: nm.name(target.id, target.meta) }, chisel: chiselData(carve, nm) } } : {}
   if (input.way !== undefined && isChiselWay(input.way) && carve.length > 0) return { content: chiselDetail(carve, target, label, nm), ...carveData, keepWhole: true }
   // 同一个材料件矿辞名下的别的 id 是同一种东西：做它们的配方也算（高炉出的玄钢锭是 EnderIO 的那个 id）
-  const same = nm.interchangeable(target.id, target.meta)
+  const same = asked.kind === 'item' ? nm.interchangeable(asked.id, asked.meta) : undefined
   const twins = (same?.others ?? []).filter((o) => recipes.makesOf(o.id, o.meta).length > 0)
-  const refs = twins.length === 0 ? recipes.makesOf(target.id, target.meta) : [...new Set([...recipes.makesOf(target.id, target.meta), ...twins.flatMap((o) => recipes.makesOf(o.id, o.meta))])].sort((a, b) => a - b)
+  const refs =
+    asked.kind === 'fluid'
+      ? fluidRefs(recipes, packdata.fluids, asked.fluid.fluid, 'makes')
+      : twins.length === 0
+        ? recipes.makesOf(target.id, target.meta)
+        : [...new Set([...recipes.makesOf(target.id, target.meta), ...twins.flatMap((o) => recipes.makesOf(o.id, o.meta))])].sort((a, b) => a - b)
   if (refs.length === 0) {
     if (carve.length > 0) {
       return { content: [`No recipe in the recipe book makes ${label}. It is made another way:`, ...chiselSummary(carve, target, label, nm, 'made')].join('\n'), ...carveData, keepWhole: true }
     }
+    if (asked.kind === 'fluid') return `No recipe in the recipe book gives ${label}${asked.note}: it is pumped, drilled or collected, or comes from something the book does not list. The library function find_uses shows what takes it.`
     return `No recipe makes ${label}: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). The library function find_uses shows what it is used for.`
   }
-  const wanted = { id: target.id, meta: target.meta, same: twins }
-  const twinNote = twins.length > 0 ? ` Recipes that make ${twins.map((o) => nm.label(o.id, o.meta)).join(', ')} are included: under the ore name ${same!.ore} it is the same thing (GregTech machines and "any ${same!.ore}" recipes take either).` : ''
+  // 查的是物品时，每条配方后面算“每个成品耗多少”；流体不算（一条配方出好几种流体，按哪种算都不对）
+  const wanted = asked.kind === 'item' ? { target: { id: target.id, meta: target.meta, same: twins } } : {}
+  const twinNote = `${asked.note}${twins.length > 0 ? ` Recipes that make ${twins.map((o) => nm.label(o.id, o.meta)).join(', ')} are included: under the ore name ${same!.ore} it is the same thing (GregTech machines and "any ${same!.ore}" recipes take either).` : ''}`
   // 按方式分组，去掉一模一样的
   const ways: Way[] = []
   const seen = new Set<string>()
@@ -785,8 +902,8 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   const merged = duplicates > 0 ? ` (${duplicates} exact duplicate(s) in the book are merged)` : ''
 
   const contains = input.contains?.trim().toLowerCase()
-  if (input.way !== undefined || contains || input.page !== undefined) {
-    // 具体的配方：按方式、按“原料里含某物”筛，翻页
+  if (input.way !== undefined || contains || input.circuit !== undefined || input.page !== undefined) {
+    // 具体的配方：按方式、按“原料里含某物”、按编程电路号筛，翻页
     let chosen = ways
     if (input.way !== undefined && input.way.trim().length > 0) {
       chosen = pickWays(ways, input.way)
@@ -795,12 +912,13 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     let list = chosen.flatMap((w) => w.recipes)
     const inWays = list.length
     if (contains) list = list.filter((r) => r.in.some((s) => slotMatches(s, contains, nm)) || r.fin.some((f) => f.name.toLowerCase().includes(contains) || f.f.toLowerCase().includes(contains)))
-    const scope = `${chosen.length === ways.length ? '' : ` by ${chosen.map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`}${contains ? ` with an ingredient containing "${input.contains!.trim()}"` : ''}`
-    if (list.length === 0) return `No recipe for ${label}${scope} (${inWays} recipe(s) before the "contains" filter; ${total} in all). Try another word: part of an ingredient's Chinese or English name, id or ore name.`
+    if (input.circuit !== undefined) list = list.filter((r) => circuitNumber(r) === input.circuit)
+    const scope = `${chosen.length === ways.length ? '' : ` by ${chosen.map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`}${contains ? ` with an ingredient containing "${input.contains!.trim()}"` : ''}${input.circuit !== undefined ? ` with programmed circuit ${input.circuit}` : ''}`
+    if (list.length === 0) return `No recipe for ${label}${scope} (${inWays} recipe(s) before the "contains"${input.circuit !== undefined ? ' and "circuit"' : ''} filter; ${total} in all). Try another word: part of an ingredient's Chinese or English name, id or ore name.`
     const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
     if (!paged) return fail(`There is no page ${input.page}: ${list.length} recipe(s)${scope}, ${Math.ceil(list.length / RECIPES_PER_PAGE)} page(s).`)
     const have = await carriedNow(ctx, items)
-    const lines = paged.shown.map((r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { target: wanted, ...(have ? { have } : {}) })}`)
+    const lines = paged.shown.map((r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { ...wanted, ...(have ? { have } : {}) })}`)
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
     return {
       content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),
@@ -829,7 +947,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     for (const r of shown) {
       const blocked = candidates.length > 0 && w.avail.rank === 0 ? candidates.map((m) => machineProblems(m, r)) : []
       const cannot = blocked.length > 0 && blocked.every((p) => p.length > 0) ? ` [NOT on the machine(s) here: ${blocked[0]!.join(', ')}]` : ''
-      lines.push(`   ${recipeLine(r, nm, { target: wanted })}${cannot}${fluidFact(r, candidates)}`)
+      lines.push(`   ${recipeLine(r, nm, wanted)}${cannot}${fluidFact(r, candidates)}`)
     }
     if (count > shown.length) {
       lines.push(`   … ${count - shown.length} more recipe(s) of this way are not shown (often one per material). See them with way "${wayLabel(w.handler, ways)}", narrowed with "contains" (a word of an ingredient), page by page.`)
@@ -843,7 +961,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     lines.push(`${Math.min(judged.length, WAYS_SHOWN) + 1}. ${first}`, ...rest)
   }
   lines.push(
-    '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage), about a fluid a single-block machine needs (its tank cannot be seen), or about which way is better. A recipe is used by its # number: craft_item or process_items.',
+    '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.',
   )
   return { content: lines.join('\n'), ...carveData, keepWhole: true }
 }
@@ -875,21 +993,28 @@ export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
 export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
-  const target = resolveItem(recipes, input, nm, packdata.carving)
-  if ('content' in target) return target
-  const label = nm.label(target.id, target.meta)
-  // 点名要“同一种东西的另一个 id”的机器配方也算用到它
-  const same = nm.interchangeable(target.id, target.meta)
-  const own = recipes.usesOf(target.id, target.meta, target.info?.ores ?? [])
-  const refs = same ? [...new Set([...own, ...same.others.flatMap((o) => recipes.usesOf(o.id, o.meta))])].sort((a, b) => a - b) : own
-  const item = { id: target.id, meta: target.meta, name: nm.name(target.id, target.meta) }
+  const asked = resolveAsked(packdata, recipes, input, nm)
+  if ('content' in asked) return asked
+  const label = asked.label
+  const target = asked.kind === 'item' ? asked : { id: '', meta: 0 }
+  let refs: number[]
+  if (asked.kind === 'fluid') {
+    refs = fluidRefs(recipes, packdata.fluids, asked.fluid.fluid, 'uses')
+  } else {
+    // 点名要“同一种东西的另一个 id”的机器配方也算用到它
+    const same = nm.interchangeable(asked.id, asked.meta)
+    const own = recipes.usesOf(asked.id, asked.meta, asked.info?.ores ?? [])
+    refs = same ? [...new Set([...own, ...same.others.flatMap((o) => recipes.usesOf(o.id, o.meta))])].sort((a, b) => a - b) : own
+  }
+  // data 里问的是哪样东西：物品在 item，流体在 fluid
+  const item = asked.kind === 'item' ? { item: { id: asked.id, meta: asked.meta, name: nm.name(asked.id, asked.meta) } } : { fluid: { ...asked.fluid } }
   // 凿子：它在某个组里（或者带着某个组认的矿辞名）时，能凿成那个组里别的方块。不是配方，照实另列
-  const carve = chiselMatches(packdata.carving, { id: target.id, meta: target.meta, ores: target.info?.ores ?? [] }, 'uses')
+  const carve = asked.kind === 'item' ? chiselMatches(packdata.carving, { id: asked.id, meta: asked.meta, ores: asked.info?.ores ?? [] }, 'uses') : []
   const carveData = carve.length > 0 ? { chisel: chiselData(carve, nm) } : {}
-  if (input.way !== undefined && isChiselWay(input.way) && carve.length > 0) return { content: chiselDetail(carve, target, label, nm), data: { item, total: refs.length, ...carveData }, keepWhole: true }
+  if (input.way !== undefined && isChiselWay(input.way) && carve.length > 0) return { content: chiselDetail(carve, target, label, nm), data: { ...item, total: refs.length, ...carveData }, keepWhole: true }
   if (refs.length === 0) {
-    if (carve.length > 0) return { content: [`Nothing in the recipe book uses ${label} as an ingredient. It has another use:`, ...chiselSummary(carve, target, label, nm, 'uses').map((line) => (line.startsWith(' ') ? line : `- ${line}`))].join('\n'), data: { item, total: 0, ways: [], ...carveData }, keepWhole: true }
-    return { content: `Nothing in the recipe book uses ${label} as an ingredient.`, data: { item, total: 0, ways: [] } }
+    if (carve.length > 0) return { content: [`Nothing in the recipe book uses ${label} as an ingredient. It has another use:`, ...chiselSummary(carve, target, label, nm, 'uses').map((line) => (line.startsWith(' ') ? line : `- ${line}`))].join('\n'), data: { ...item, total: 0, ways: [], ...carveData }, keepWhole: true }
+    return { content: `Nothing in the recipe book uses ${label} as an ingredient.${asked.note}`, data: { ...item, total: 0, ways: [] } }
   }
   // 用到它的配方可以上万条：分组只看每条属于哪一页，不读配方本身
   const groups = new Map<RecipeHandler, number[]>()
@@ -903,7 +1028,7 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   const ways = [...groups.entries()].map(([handler, list]) => ({ handler, refs: list })).sort((a, b) => b.refs.length - a.refs.length)
 
   const contains = input.contains?.trim().toLowerCase()
-  if (input.way !== undefined || contains || input.page !== undefined) {
+  if (input.way !== undefined || contains || input.circuit !== undefined || input.page !== undefined) {
     let chosen = ways
     if (input.way !== undefined && input.way.trim().length > 0) {
       chosen = pickWays(ways, input.way)
@@ -911,23 +1036,25 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
     }
     let list = chosen.flatMap((w) => w.refs)
     const inWays = list.length
-    const scope = `${chosen.length === ways.length ? '' : ` by ${chosen.map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`}${contains ? ` whose product or other ingredient contains "${input.contains!.trim()}"` : ''}`
+    const scope = `${chosen.length === ways.length ? '' : ` by ${chosen.map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`}${contains ? ` whose product or other ingredient contains "${input.contains!.trim()}"` : ''}${input.circuit !== undefined ? ` with programmed circuit ${input.circuit}` : ''}`
     let loaded: Map<number, Recipe> | undefined
-    if (contains) {
+    if (contains || input.circuit !== undefined) {
       // 要看内容才筛得了：这一步把候选的都读一遍（上万条也就一两百毫秒）
       loaded = new Map()
       list = list.filter((ref) => {
         const r = recipes.get(ref)
         if (!r) return false
         const hit =
-          r.out.some((o) => slotMatches({ kind: 'item', id: o.id, meta: o.meta, n: o.n, ...(o.name ? { name: o.name } : {}) }, contains, nm)) ||
-          r.in.some((s) => slotMatches(s, contains, nm)) ||
-          [...r.fin, ...r.fout].some((f) => f.name.toLowerCase().includes(contains))
+          (!contains ||
+            r.out.some((o) => slotMatches({ kind: 'item', id: o.id, meta: o.meta, n: o.n, ...(o.name ? { name: o.name } : {}) }, contains, nm)) ||
+            r.in.some((s) => slotMatches(s, contains, nm)) ||
+            [...r.fin, ...r.fout].some((f) => f.name.toLowerCase().includes(contains) || f.f.toLowerCase().includes(contains))) &&
+          (input.circuit === undefined || circuitNumber(r) === input.circuit)
         if (hit) loaded!.set(ref, r)
         return hit
       })
     }
-    if (list.length === 0) return { content: `No recipe uses ${label}${scope} (${inWays} before the "contains" filter; ${refs.length} in all).`, data: { item, total: 0, page: 1, pages: 1, recipes: [] } }
+    if (list.length === 0) return { content: `No recipe uses ${label}${scope} (${inWays} before the "contains"${input.circuit !== undefined ? ' and "circuit"' : ''} filter; ${refs.length} in all).`, data: { ...item, total: 0, page: 1, pages: 1, recipes: [] } }
     const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
     if (!paged) return fail(`There is no page ${input.page}: ${list.length} recipe(s)${scope}, ${Math.ceil(list.length / RECIPES_PER_PAGE)} page(s).`)
     const lines: string[] = []
@@ -939,26 +1066,27 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
       shown.push(recipeData(r, nm))
     }
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
-    return { content: [`Recipes that use ${label}${scope}: ${range}.`, ...lines].join('\n'), data: { item, total: list.length, page: paged.page, pages: paged.pages, recipes: shown }, keepWhole: true }
+    return { content: [`Recipes that use ${label}${scope}: ${range}.${asked.note}`, ...lines].join('\n'), data: { ...item, total: list.length, page: paged.page, pages: paged.pages, recipes: shown }, keepWhole: true }
   }
 
-  const lines: string[] = [`${label} is an ingredient of ${refs.length} recipe(s), in ${ways.length} way(s) (the same recipe can be listed more than once in the book):`]
+  const lines: string[] = [`${label} is an ingredient of ${refs.length} recipe(s), in ${ways.length} way(s) (the same recipe can be listed more than once in the book):${asked.note}`]
   for (const w of ways.slice(0, USE_WAYS_SHOWN)) {
     // 每种方式举几个产物当例子
     const examples: string[] = []
     for (const ref of w.refs) {
       const r = recipes.get(ref)
       const first = r?.out[0]
-      const name = first ? (first.name ?? nm.name(first.id, first.meta)) : undefined
+      // 只出流体的配方（蒸馏）：拿它出的第一种流体当例子
+      const name = first ? (first.name ?? nm.name(first.id, first.meta)) : r?.fout[0]?.name
       if (name && !examples.includes(name)) examples.push(name)
       if (examples.length >= 3) break
     }
     lines.push(`- ${w.handler.name}${wayLabel(w.handler, ways) === w.handler.name ? '' : ` (way "${w.handler.key}")`}: ${w.refs.length} recipe(s)${examples.length > 0 ? `, e.g. makes ${examples.join(', ')}` : ''}`)
   }
   if (ways.length > USE_WAYS_SHOWN) lines.push(`- … and ${ways.length - USE_WAYS_SHOWN} more way(s) with ${ways.slice(USE_WAYS_SHOWN).reduce((n, w) => n + w.refs.length, 0)} recipe(s): ${ways.slice(USE_WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`)
-  lines.push('See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient), page by page.')
+  lines.push('See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient) and "circuit" (the programmed circuit number), page by page.')
   if (carve.length > 0) lines.push('Besides the recipes:', ...chiselSummary(carve, target, label, nm, 'uses').map((line) => (line.startsWith(' ') ? line : `- ${line}`)))
-  return { content: lines.join('\n'), data: { item, total: refs.length, ways: ways.map((w) => ({ way: wayLabel(w.handler, ways), name: w.handler.name, recipes: w.refs.length })), ...carveData }, keepWhole: true }
+  return { content: lines.join('\n'), data: { ...item, total: refs.length, ways: ways.map((w) => ({ way: wayLabel(w.handler, ways), name: w.handler.name, recipes: w.refs.length })), ...carveData }, keepWhole: true }
 }
 
 // ── 把一条配方变成任务的参数 ──
@@ -1001,12 +1129,12 @@ export interface ProcessPlan {
   /** 预期的产物（多方块机器的输出总线不留东西时，身体靠它去箱子里取）。 */
   expect: { id: string; meta: number; count: number }[]
   /** 配方要的流体：要么机器已经接好，要么带着装了流体的单元用 fluids 给。 */
-  fluids: { name: string; mb: number }[]
+  fluids: { f: string; name: string; mb: number }[]
 }
 
 /** moldInside：配方要的模具、模头（不消耗的那格）已经在机器里了，不用带、不用放。 */
 export function processPlan(recipe: Recipe, rounds: number, have?: Carried, items?: ItemTable, moldInside = false): ProcessPlan {
-  const plan: ProcessPlan = { inputs: [], expect: [], fluids: recipe.fin.map((f) => ({ name: f.name, mb: f.mb * rounds })) }
+  const plan: ProcessPlan = { inputs: [], expect: [], fluids: recipe.fin.map((f) => ({ f: f.f, name: f.name, mb: f.mb * rounds })) }
   for (const slot of mergedSlots(recipe.in)) {
     const circuit = circuitOf(slot)
     if (circuit !== undefined) {

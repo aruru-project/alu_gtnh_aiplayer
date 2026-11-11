@@ -99,7 +99,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 ## 库函数：不在工具清单里的
 
-每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在能看图的模型 55 个、四万六千三百字符左右，不能看图的 53 个、四万四千一百字符左右）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
+每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在能看图的模型 55 个、四万八千三百字符左右，不能看图的 53 个、四万六千一百字符左右）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
 
 | | 发给模型 | 模型怎么知道它存在 | 怎么调 |
 |---|---|---|---|
@@ -120,10 +120,10 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 | | |
 |---|---|
-| `list_stock { radius?, contains?, below?, at?, page? }` | 周围所有箱子和抽屉合成一张存货表。`data`：`{ items: [{ id, meta, name?, count, automated, places: [{ x, y, z, count, kind?, automated? }] }] }`（全部，不分页；`text` 一页 40 行） |
+| `list_stock { radius?, contains?, below?, at?, page? }` | 周围所有箱子和抽屉合成一张存货表；机器各个面上能装东西的覆盖板（槽位扩展）里的东西也算（机器自己的格子不算）。`data`：`{ items: [{ id, meta, name?, count, automated, places: [{ x, y, z, count, kind?, side?, automated? }] }] }`（全部，不分页；`text` 一页 40 行）。`kind: "cover"` 的那一处在那个方块 `side` 面的覆盖板里，取它的容器写成 `{ x, y, z, side, sneak: true }` |
 | `list_drawers { x, y, z, below?, page? }` | 一个抽屉管理器（或一个抽屉方块）的每一格。`data` 是身体 `world.drawers` 的原样回答：`{ controller?, drawers, slotsTotal, slotsUsed, slots: [{ x, y, z, slot, id, meta, name, count, room, front, hit } 或 { x, y, z, slot, empty: true }], total, offset }`。`front`（正面朝哪）和 `hit`（点这一格时点在方块里的哪一点）可以原样交给 `use_item` 的 `side` / `hit` |
 | `read_blueprint { name, draft?, from?, to? }` | 一张图纸里有什么，不用知道它放在哪：服务器上的图纸（身体的 `blueprint.read`），或者 `draft: true` 读它自己的草稿，两边是同一个形状。`data`：`{ name, source: 'server' \| 'draft', size: { x, y, z }, blocks, materials: [{ id, meta, name?, count, item?, byHand? }], x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells }`，`palette[cells[(dy * sz + dz) * sx + dx]]` 是盒子里那一格（`palette[0]` 是空）。整张超过 262,144 格时不带格子那几项，文字里写明用 `from` / `to` 分块读；草稿没有 `byHand`（发布以后才知道） |
-| `find_uses { id, meta?, way?, contains?, page? }` | 一样东西能拿来做什么（NEI 的 U）。只给 id/meta：`{ item: { id, meta, name }, total, ways: [{ way, name, recipes }] }`（`way` 是可以回填给 `way` 参数的写法）。给了 `way` / `contains` / `page`：`{ item, total, page, pages, recipes: [{ recipe, way, in: [{ id, meta?, name, count } 或 { ore, name, count } 或 { any, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, fluidsOut?, eut?, ticks? }] }`（`count` 为 0 的原料是放进去但不消耗的）。它在凿子的某个组里（或者带着那个组认的矿辞名）时多一项 `chisel: [{ group, ore?, member, variants: [{ id, meta, name }] }]`：能凿成的全部变体；`way: "凿子"` 的文字是一行一种 |
+| `find_uses { id \| fluid, meta?, way?, contains?, circuit?, page? }` | 一样东西能拿来做什么（NEI 的 U）。问的可以是物品（`id`），也可以是一种流体（`fluid`：中文名、英文名或注册名；这时 `data` 里是 `fluid: { fluid, name, en? }` 而不是 `item`）。`circuit` 只要设这个编程电路号的配方：加工方式 + 输入里的一样东西 + 电路号，就是“这台机器现在在做哪条”。只给 id/meta：`{ item: { id, meta, name }, total, ways: [{ way, name, recipes }] }`（`way` 是可以回填给 `way` 参数的写法）。给了 `way` / `contains` / `circuit` / `page`：`{ item, total, page, pages, recipes: [{ recipe, way, in: [{ id, meta?, name, count } 或 { ore, name, count } 或 { any, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, fluidsOut?, eut?, ticks? }] }`（`count` 为 0 的原料是放进去但不消耗的）。它在凿子的某个组里（或者带着那个组认的矿辞名）时多一项 `chisel: [{ group, ore?, member, variants: [{ id, meta, name }] }]`：能凿成的全部变体；`way: "凿子"` 的文字是一行一种 |
 | `list_quest_lines { player? }` | 任务书各章和进度。`data`：`{ quests, player?, lines: [{ name, en?, quests, complete?, available? }], unclaimed? }`（进度那几项要看得到某个玩家的进度才有） |
 | `probe_block { x, y, z }` | 现在能不能挖这一格、用哪件工具、要多久。`data` 是身体 `bot.probe` 的原样回答：`{ id, meta, …, canDig, digTicks, toolSlot, inReach, candidates: [{ slot, item, harvest, strength, ticks, excluded? }] }` |
 | `check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }` | 世界和图纸对比，什么都不动。`data` 是身体 `blueprint.check` 的原样回答：`{ name, origin, box, cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }` |
@@ -131,13 +131,19 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `read_blocks { x1, y1, z1, x2, y2, z2 }` | 世界里一个盒子的全部方块（每边最多 64）。`data`：`{ x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells, unloaded }`，盒子从 `(x, y, z)` 起，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格（`palette[0]` 是空气） |
 | `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
 | `check_structure { at, tier, id?, meta? }` | 把世界里 `at` 那台主机周围的方块和它 `tier` 级的搭法对一遍（四个水平朝向都试，取对得最上的；机器零件占着机械方块的位置算对）。`data`：`{ machine, tier, facing, looksLike, total, right, changes: [{ x, y, z, from, to }], need: [{ id, meta, name, count, carried, stored, short }] }` |
-| `total_materials { id, meta?, count?, recipes?: [#…], chisel?: [{ id, meta?, from: { id, meta? } }] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`chisel` 是“这样东西用凿子从同组的另一种变来”的一步（不是配方，没有编号）：一换一往下乘，凿子不算消耗，文字里照实说耐久不知道；两样不在同一组就是出错的结果，写明各在哪一组。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed } 或 { chisel: { group, from }, way: 'chisel', rounds, makes, needed }], raw, kept, fluids, unused }`（用了凿子时 `kept` 里多一项 `{ tool: 'chisel', name: '凿子' }`） |
+| `total_materials { id \| fluid, meta?, count?, recipes?: [#…], chisel?: [{ id, meta?, from: { id, meta? } }] }` | 纯计算（流体也算：一条配方要的流体，如果选的配方里有一条产出它，就按 mB 记到那条头上，那一步的 `makes` 是 `{ fluid, name, count }`，`count` 是 mB；没有就记在 `fluids` 里当作要现成的。目标本身也可以是流体：给 `fluid`，`count` 是 mB）：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`chisel` 是“这样东西用凿子从同组的另一种变来”的一步（不是配方，没有编号）：一换一往下乘，凿子不算消耗，文字里照实说耐久不知道；两样不在同一组就是出错的结果，写明各在哪一组。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed } 或 { chisel: { group, from }, way: 'chisel', rounds, makes, needed }], raw, kept, fluids, unused }`（用了凿子时 `kept` 里多一项 `{ tool: 'chisel', name: '凿子' }`） |
 | `view_area { x1…z2 \| radius, view?, from?, layer? }`（模型不能看图时） | 世界里一个盒子的文字说明：范围、各种方块各多少、一层层各有什么。`data`：`{ x, y, z, sx, sy, sz, unloaded, kinds: [{ id, meta, name?, count }] }` |
 | `view_image { name }`（模型不能看图时） | 主人传的一张图片的文字说明：尺寸、透明的占多少、主要颜色。`data`：`{ name, width, height, transparent（0–1）, colors: ["颜色名 百分比"] }` |
 
 **`data` 里的名字。** 全局一个规矩：凡是带 `id` 的东西（物品、方块、容器、机器），`name` 是游戏里看到的中文名（和文字结果里的、和主人说的是同一个叫法），身体给的英文原名在 `en` 里。没有本地物品表、或者这样东西表里查不到时，`name` 还是身体给的英文名，没有 `en`。本来不带名字的条目（只有 `id`、`meta`、`count` 的清单项）不添字段。换名字的地方只有一处（`tools/format.ts` 的 `dataWithLocalNames`，`runTool` 和例程等任务结束的那一步都过它），所以每个工具的 `data` 都是这个规矩。
 
-`find_recipes`（在工具清单里）的 `data`：平时没有；查的东西在凿子的某个组里时是 `{ item: { id, meta, name }, chisel: [{ group, ore?, member, variants }] }`。
+`find_recipes`（在工具清单里）的 `data`：平时没有；查的东西在凿子的某个组里时是 `{ item: { id, meta, name }, chisel: [{ group, ore?, member, variants }] }`。它和 `find_uses` 一样可以给 `fluid` 代替 `id`、给 `circuit` 筛。
+
+**流体的名字**是同一个规矩：罐（`tanks: [{ fluid, name, amount, capacity }]`，`inspect_block`、`list_containers`、`find_machines` 的 `data` 里都有）的 `name` 是游戏里的中文名，身体给的英文名在 `en`；多方块的输入输出仓上是 `fluidName`（中文）和 `fluidEn`（英文）。`fluid` 是注册名，和配方册里的写法一样。本地资料里查不到的流体，名字原样是身体给的。
+
+**覆盖板**在同一批 `data` 里是 `covers: [{ side, id, meta, name, screen, slots?, usedSlots?, items?, moreKinds? }]`；`find_in_storage` 的存放点带 `kind: "cover"`、`cover`、`side`。
+
+**一个方块自己存的全部数据**：`inspect_block { x, y, z, detail: true }`（在工具清单里）的 `data` 多 `class`、`says`（它对扫描器自报的那几行话）、`saved`（它存档里的全部数据，键是内部名字，值原样；`path` 只看其中一部分）。这两项在 `data` 里一个字不改（不换中文名），所以程序可以写个循环把一片机器的某个设置扫一遍：`(await tool("inspect_block", { x, y, z, detail: true })).data.saved.lockedFluidName`。
 
 合并掉的旧名字（程序里照样能调）：`list_blueprints`、`list_drafts`、`list_images`（现在是 `list_designs`，`data` 是 `{ blueprints?, drafts?, images? }`）；`set_home`、`list_homes`、`join_team`（现在是 `run_command`：发一条服务器指令，`data` 是 `{ command, output: [回显的每一行] }`。能发哪些由身体的允许列表定，协议里没有读这份列表的接口，所以被拒绝时结果里写明原因和默认的列表）。
 

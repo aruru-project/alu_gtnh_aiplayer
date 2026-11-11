@@ -21,7 +21,7 @@ const NOW = 1_800_000_000_000
 /** 汇总的开头和结尾：按加工方式一种种列，说的是事实，不排好坏、不推荐。 */
 const LISTED = "Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:"
 const FACTS_ONLY =
-  '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage), about a fluid a single-block machine needs (its tank cannot be seen), or about which way is better. A recipe is used by its # number: craft_item or process_items.'
+  '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.'
 const PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17305 }
 const HAMMER = { id: 'gregtech:gt.metatool.01', meta: 12 }
 
@@ -115,7 +115,7 @@ describe('find_item：找物品', () => {
     assert.equal(last.content.split('\n').length, 3)
     const beyond = await s.run('find_item', { query: '锭', limit: 5, page: 5 })
     assert.deepEqual([beyond.isError, beyond.content], [true, '"锭" matches 17 item(s): there is no page 5 (4 page(s)).'])
-    assert.match((await s.run('find_item', { query: '不存在的东西' })).content, /^No item matches "不存在的东西"\. Try fewer or other words/)
+    assert.match((await s.run('find_item', { query: '不存在的东西' })).content, /^No item or fluid matches "不存在的东西"\. Try fewer or other words/)
   })
 })
 
@@ -169,7 +169,7 @@ describe('find_recipes：查做法', () => {
     // 高炉炉温 1801 K：要 1800 K 的那条做得了，要 2200 K 的那条做不了
     const ingot = (await s.run('find_recipes', { id: 'EnderIO:itemAlloy', meta: 6 })).content.split('\n')
     assert.equal(ingot[1], '1. 工业高炉 — 2 recipe(s); CAN RUN NOW on 工业高炉 at (-5,64,9) HV')
-    assert.equal(ingot[2], '   #6: 1× 玄钢粉 [gregtech:gt.metaitem.01/2364] + 1000 mB 氧气 (fluid); needs programmed circuit 11 → 1× 玄钢锭 — MV (120 EU/t), 50 s, coil heat 1800 K [the input hatches of the 工业高炉 hold 8000 mB 氧气]')
+    assert.equal(ingot[2], '   #6: 1× 玄钢粉 [gregtech:gt.metaitem.01/2364] + 1000 mB 氧气 (fluid); needs programmed circuit 11 → 1× 玄钢锭 — MV (120 EU/t), 50 s, coil heat 1800 K [the input hatches of the 工业高炉 at (-5,64,9) now hold 8000 mB 氧气 (one round takes 1000)]')
     assert.match(ingot[3]!, /^ {3}#7: .* coil heat 2200 K \[NOT on the machine\(s\) here: the recipe needs 2200 K, its coils reach 1801 K\]$/)
 
     const judge = async (machine: Record<string, unknown>): Promise<string> => {
@@ -276,7 +276,7 @@ describe('find_uses：查用途', () => {
       '- 无序合成: 1 recipe(s), e.g. makes 钢板标牌',
       '- 组装机: 1 recipe(s), e.g. makes 钢机器外壳',
       '- 研磨机: 1 recipe(s), e.g. makes 钢粉',
-      'See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient), page by page.',
+      'See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient) and "circuit" (the programmed circuit number), page by page.',
     ])
     // 钢锭：点名要它的机器配方，和要“任何 ingotSteel”的手工配方都算
     const ingot = (await s.run('find_uses', { id: 'gregtech:gt.metaitem.01', meta: 11305 })).content
@@ -411,7 +411,7 @@ describe('process_items：照配方册里的配方用机器加工', () => {
     const s = setup(t)
     const furnace = await s.run('process_items', { machine: { x: -5, y: 64, z: 9 }, recipe: 6, rounds: 3, wait: 600 })
     // 配方要的流体不替它准备：没带单元时提醒要多少、得已经在机器里
-    assert.match(furnace.content, /^Task t1 \(process\) started\..* This recipe also needs 3000 mB 氧气 in all: it has to be in the machine already \(piped in, or in its input hatch\); if it is not, the machine will not start\.$/)
+    assert.match(furnace.content, /^Task t1 \(process\) started\..* This recipe also takes 3000 mB 氧气 in all, from inside the machine \(its tank, or a multiblock's input hatch\)\. Its input hatches now hold 8000 mB 氧气\.$/)
     assert.deepEqual(s.lastTask(), {
       type: 'process',
       machine: { x: -5, y: 64, z: 9 },

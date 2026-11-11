@@ -60,7 +60,7 @@
 |---|---|---|
 | `server.info` | – | `{tick, tps, tickMs, worldTime, dayTime, isDay, raining, difficulty, players:[{name,uuid,dim,pos,isBot}], bots:[name]}` |
 | `world.player` | `{name}` | 一个在线玩家（真人或 bot）站在哪、朝哪看、指着什么：`{name, isBot}` 加上下面的 PlayerView。不在线返回 `not_found` |
-| `world.block` | `{dim?,x,y,z}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory}`；区块没加载时只有 `{loaded:false}` |
+| `world.block` | `{dim?,x,y,z, detail?=false, path?}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory,covers?,tanks?}`；区块没加载时只有 `{loaded:false}`。`covers`、`tanks` 见下面“覆盖板和流体罐”。**`detail:true` 把这个方块自己知道的全部给出来**，见下面“一个方块的全部数据” |
 | `world.blocks` | `{dim?,x1,y1,z1,x2,y2,z2}`，每边最多 64 格 | 一个范围里的全部方块，画图用，见下 |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
@@ -78,6 +78,7 @@ Container：
   "kind":"drawers",              // 没有：普通容器；"drawers"：抽屉；"drawer_controller"：抽屉管理器；"machine"：GregTech 机器
   "slots":243, "usedSlots":28,
   "items":[Item…],               // 按物品合并，最多列 kinds 种（默认 60）；还有没列的时带 "moreKinds":n。要把一个大箱子看全：以它为中心、radius 0、kinds 给大
+  "covers":[Cover…],             // 它各个面上的覆盖板，以及能装东西的覆盖板里装着什么；没有就不带。见“覆盖板和流体罐”
   "attached":[                   // 紧挨着它、会自己往里送或往外抽东西的方块；没有就不带这个字段
     {"x":-516,"y":71,"z":85,"name":"Brass Item Pipe","kind":"item pipe"}   // kind：hopper、item pipe、fluid pipe、pipe（其他 mod 的管道类）
   ],
@@ -88,6 +89,42 @@ Container：
 - 抽屉（Storage Drawers）的 `count` 是抽屉里真实的数量（可以上万），`slots` 是抽屉格数。
 - 抽屉管理器自己不装东西：`items` 为空，`drawers` 是它管着几个抽屉方块，`slots`/`usedSlots` 是这些抽屉合计的格数。它管的东西用 `world.drawers` 看。
 - 带 `attached` 的箱子多半是自动化的一环（进货口、出货口），往里放的东西可能马上被抽走。
+
+**一个方块的全部数据**（`world.block` 带 `detail:true` 或 `path`）。不按方块的种类做任何假设：凡是存着东西的方块（里面有什么、怎么设置的、正在干什么），存档时都把自己的全部状态写成一棵树，这里把那棵树原样给出来；会对扫描器“自报家门”的方块再把那几行话给出来。所以没见过的机器、没人为它写过读取代码的状态（输出仓锁定了哪种流体、机器的各种开关、覆盖板的设置……）都在这里。
+
+```jsonc
+{ …world.block 原有的字段…,
+  "class":"gregtech.api.metatileentity.BaseMetaTileEntity",
+  "says":[ "Output Hatch", "Stored Fluid: No Fluid", "0 L 16,000 L", "Locked to fluid.gas_gas" ],   // 它对扫描器说的话（GregTech 的机器有；别的没有就不带）
+  "saved":{ "lockedFluidName":"gas_gas", "mMode":9, "mFacing":5, "Inventory":[], … },           // 它存档里的全部数据
+  "savedCut":true            // saved 里有被省略的部分（太深、列表太长、总量太大），省略处写着怎么要
+}
+```
+
+- `saved` 的键是方块自己起的内部名字（`mMode`、`lockedFluidName`、`gt.covers`……），值是原样的。物品在存档里是一个只在本服有意义的数字编号，这里换成了看得懂的 `{item, meta, count, name, …其余原样}`。
+- 默认给到 6 层深、每个列表 40 项、一共约 4 万字符；超出的地方写着“ask for this path”。`path` 指定只看其中一部分并放宽限制（12 层、200 项、6 万字符），写法如 `gt.covers`、`Inventory[3].tag`（键名里本身带点的照写；列表用 `[n]`）。路径不存在时带 `pathNotFound:true` 并给出顶层。
+- 没有自己数据的方块（普通方块）只有原有字段，外加一句说明。
+- 这是读，不是动；怎么操作它仍然是界面和右键那一套。
+
+**覆盖板和流体罐**（`world.block`、`world.containers` 的每个容器、`world.machines` 的每台机器都带，没有就不带这个字段）：
+
+```jsonc
+"covers":[                       // GregTech 机器、管道各个面上的覆盖板
+  {"side":"west",                // 在哪个面：down / up / north / south / west / east
+   "id":"gregtech:gt.metaitem.01","meta":32380,"name":"Basic Item Holder",   // 它是哪件物品
+   "screen":true,                // 蹲着右键这个面会打开它自己的界面
+   "slots":9,"usedSlots":9,      // 能装东西的覆盖板（槽位扩展）才有下面这几项
+   "items":[Item…], "moreKinds":0}
+],
+"tanks":[                        // 任何装流体的方块（机器的罐、储罐、超级缸……）里现在有什么
+  {"fluid":"chlorine","name":"Chlorine","amount":67000,"capacity":4000000},
+  {"amount":0,"capacity":32000}  // 空的罐只有容量
+]
+```
+
+- 覆盖板里的东西**不在机器自己的格子里**：机器的 `items`/`slots` 不含它们。`world.stock` 会把它们算进去，那个存放点带 `kind:"cover"`、`cover`（覆盖板的名字）、`side`。
+- 存取覆盖板里的东西和玩家一样：蹲着右键那个面，打开的是覆盖板自己的界面。`deposit`/`withdraw` 的 `container` 写成 `{x,y,z,side:"west",sneak:true}`；自己点界面用 `screen.open` 的 `side`、`sneak`。
+- `tanks` 是方块自己报的（Forge 的流体接口），从各个面问一遍、同一个罐只列一次。有的机器有的罐不对外报，那就不在这里。
 
 `world.drawers` 结果：
 
@@ -218,7 +255,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
 | `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
-| `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
+| `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,cover?,side?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
 
@@ -286,7 +323,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `screen.open` | `{bot, x,y,z}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
+| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
@@ -425,8 +462,8 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 | `clear` | `{x1,y1,z1,x2,y2,z2, dropoff?, overflow?}`，体积 ≤ 32768 | 把盒子里所有方块挖掉，一层一层从上往下 |
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周 |
 | `flatten` | `{x1,z1,x2,z2, y, fill?=true, fillItems?:[id], maxFillDepth?=3, dropoff?, supply?, overflow?}`，≤64×64 | 把区域整成地面顶层在 y 的平地：挖掉 y 以上的一切，再把 y 及以下的坑由低到高填上 |
-| `deposit` | `{container:{x,y,z}, items?:[ItemFilter], keep?:[id]}` | 走过去把物品放进箱子。不给 items 则放入除工具、食物和 keep 以外的全部 |
-| `withdraw` | `{container:{x,y,z}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。界面里有“放不进东西的格子”的是机器：默认只从这些产物格取；`fromInputs:true` 改成从其余的格子取（把留在里面的模具、模头、没用完的原料拿出来）。没有这种格子的是普通仓储，哪格都取 |
+| `deposit` | `{container:{x,y,z, side?, sneak?}, items?:[ItemFilter], keep?:[id]}` | 走过去把物品放进箱子。`container` 里带 `side` / `sneak` 时，不是普通地右键它，而是点那个面（蹲着或不蹲）打开界面，打开的是什么界面就往什么界面里放（覆盖板里的格子就这样存取）；`withdraw` 同。不给 items 则放入除工具、食物和 keep 以外的全部 |
+| `withdraw` | `{container:{x,y,z, side?, sneak?}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。界面里有“放不进东西的格子”的是机器：默认只从这些产物格取；`fromInputs:true` 改成从其余的格子取（把留在里面的模具、模头、没用完的原料拿出来）。没有这种格子的是普通仓储，哪格都取 |
 | `haul` | `{from:{x,y,z}, to:{x,y,z}, items?:[ItemFilter]}` | 在两个箱子之间来回搬，直到源箱子里符合条件的搬完或数量够。只搬这一趟取出来的东西，bot 自己的物品不动 |
 | `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
