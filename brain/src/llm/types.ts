@@ -76,6 +76,8 @@ export interface GenerateRequest {
   tools: ToolSpec[]
   toolChoice?: 'auto' | 'required' | 'none'
   maxOutputTokens?: number
+  /** 这次调用的输出至少要给这么多 token：模型配置的上限比它小（或者没配）时用它，配置得更大的照配置。 */
+  minOutputTokens?: number
   temperature?: number
   signal?: AbortSignal
 }

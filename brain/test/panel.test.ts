@@ -662,7 +662,7 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.equal(bot.limits.maxSteps, 8)
     assert.equal(bot.limits.dailyTokenLimit, 500000)
     // 没提交的上限保持原值
-    assert.equal(bot.limits.historyTokenThreshold, 24000)
+    assert.equal(bot.limits.historyTokenThreshold, 240000)
 
     const bad = await s.call('PUT', '/api/bot', { name: '有 空格' })
     assert.equal(bad.status, 400)
@@ -1487,7 +1487,7 @@ describe('面板：两条线', () => {
     const [talk, work] = st.agents
     // 对话线：自己的模型（快的那个）、空闲、历史里一轮；没有例程和身体这几个键
     assert.deepEqual([talk.model.state, talk.model.provider, talk.model.model, talk.model.providerId, talk.model.modelId, talk.turn, talk.pending], ['idle', '主力', 'gpt-fast', main.id, fast, null, 0])
-    assert.deepEqual([talk.history.turns, talk.history.hasSummary, talk.history.threshold], [1, false, 60000])
+    assert.deepEqual([talk.history.turns, talk.history.hasSummary, talk.history.threshold], [1, false, 120000])
     for (const key of ['routine', 'lastRoutine', 'body', 'waitingAnswer', 'lastReport']) assert.equal(key in talk, false, key)
     // 干活线：自己的模型、正在想第 2 步、这一轮的起因；它在等的回答和最近一次送来的话；身体正在做的任务
     assert.deepEqual([work.model.state, work.model.model, work.model.step, work.turn.steps, work.turn.maxSteps, work.turn.about], ['thinking', 'gpt-x', 2, 1, 16, '对话线交给你的（这一句是它写的）：把圆石搬到箱子里'])
@@ -1496,7 +1496,7 @@ describe('面板：两条线', () => {
     assert.deepEqual([work.routine, work.lastRoutine, work.body.online, work.body.task.id, work.body.task.progress], [null, null, true, 't7', { done: 3, total: 8 }])
     // 它自己开的、还没结束的任务：这一刻没有（身体上那个 t7 不是它开的）
     assert.deepEqual(work.ownTasks, [])
-    assert.deepEqual([work.history.turns, work.history.threshold], [0, 24000])
+    assert.deepEqual([work.history.turns, work.history.threshold], [0, 240000])
     // 日志条目带着是哪条线的；两条线之间的往来是 kind: relay；轮的编号两条线不重
     const log = (await s.call('GET', '/api/log')).json.entries as { kind: string; agent?: string; turn?: number; relay?: { type: string; from: string; to: string }; text: string }[]
     assert.deepEqual(log.filter((e) => e.kind === 'relay').map((e) => [e.agent, e.relay, e.text]), [['work', { type: 'question', from: 'work', to: 'talk' }, '干活线 → 对话线（提问）：放哪个箱子？']])
@@ -1509,6 +1509,88 @@ describe('面板：两条线', () => {
     assert.deepEqual([o.provider.model, o.lineModels.work.model, o.lineModels.talk.model, o.lineModels.talk.modelLabel], ['gpt-x', 'gpt-x', 'gpt-fast', '快的'])
     assert.deepEqual([o.agent.busy, o.talk.busy, o.history.turns, o.histories.talk.turns, o.histories.work.turns], [true, false, 0, 1, 0])
     answer(reply(''))
+    await lines.agent.whenIdle()
+  })
+
+  it('状态里一条线的历史有多大，是和阈值比的那个数：调过模型以后按接口报的输入 token 算，提示词和工具清单都在里面', async (t) => {
+    const lines = makeAgent()
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    // 还没调过模型：两条线都是 0
+    const idle = (await s.call('GET', '/api/status')).json.agents
+    assert.deepEqual([idle[0].history.estimatedTokens, idle[1].history.estimatedTokens], [0, 0])
+    // 干活线跑一轮；模型如实报这份请求的输入 token（这个模型两个字符一个 token）
+    lines.llm.enqueue((req) => reply('做完了', [], { usage: { inputTokens: Math.round((req.system.length + JSON.stringify(req.tools).length + JSON.stringify(req.messages).length) / 2), outputTokens: 5 } }))
+    lines.agent.handleEvent(told('做一件事'))
+    await lines.agent.whenIdle()
+    const [talk, work] = (await s.call('GET', '/api/status')).json.agents
+    // 历史里只有一轮（按字符估两百来 token），但整份请求两万五千多：工具清单就有四万多字符
+    assert.equal(work.history.turns, 1)
+    assert.ok(work.history.estimatedTokens > 25_000 && work.history.estimatedTokens < 32_000, `work ${work.history.estimatedTokens}`)
+    // 概览里干活线那一项是同一个数
+    assert.equal((await s.call('GET', '/api/overview')).json.histories.work.estimatedTokens, work.history.estimatedTokens)
+    // 对话线被干活线留下的话叫醒过一轮，它的假模型报的数离谱（1000），不信它：只按历史的字符估
+    assert.ok(talk.history.estimatedTokens < 1000, `talk ${talk.history.estimatedTokens}`)
+  })
+
+  it('现在就压历史（POST /api/history/compact）：带 dryRun 只写不存，回它会写成什么；不带的真压，状态里看得到记录是哪几轮换成的；line 写错回 400，这条线正在跑一轮时回 409', async (t) => {
+    const lines = makeAgent({ settings: { historyTokenThreshold: 4000 } })
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    for (let i = 1; i <= 8; i++) {
+      lines.llm.enqueue(reply(`第 ${i} 轮做完了。${'话'.repeat(600)}`))
+      lines.agent.handleEvent(told(`做第 ${i} 件`))
+      await lines.agent.whenIdle()
+    }
+    const ids = lines.history.get().turns.map((turn) => turn.id)
+    const before = structuredClone(lines.history.get())
+
+    // 试写：最近那一段（两轮）以外的六轮写成记录，历史一个字没动
+    lines.llm.enqueue(reply('<analysis>先过一遍</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } }))
+    const tried = await s.call('POST', '/api/history/compact', { line: 'work', dryRun: true })
+    assert.equal(tried.status, 200)
+    const { inputChars, tokensBefore, tokensAfter, tidied, ...rest } = tried.json
+    assert.deepEqual(rest, {
+      line: 'work',
+      dryRun: true,
+      applied: false,
+      action: 'summarized',
+      summary: '## 现在在做的事\n（无）',
+      analysis: '先过一遍',
+      turns: { from: ids[0], to: ids[5], count: 6 },
+      kept: 2,
+      calls: 1,
+      usage: { inputTokens: 5000, outputTokens: 300 },
+      summaryChars: 13,
+      capChars: 1800,
+    })
+    assert.equal(inputChars, lines.llm.requests.at(-1)!.messages[0]!.content.map((p) => (p.type === 'text' ? p.text : '')).join('').length)
+    assert.ok(tokensAfter < tokensBefore && tidied.states === 6, JSON.stringify({ tokensBefore, tokensAfter, tidied }))
+    assert.deepEqual(lines.history.get(), before)
+    assert.equal(lines.llm.requests.at(-1)!.tools.length, 0)
+
+    // 写错的
+    const noLine = await s.call('POST', '/api/history/compact', { dryRun: true })
+    assert.deepEqual([noLine.status, noLine.json.error.message], [400, 'line 要写 talk 或 work'])
+    const badFlag = await s.call('POST', '/api/history/compact', { line: 'work', dryRun: 'yes' })
+    assert.deepEqual([badFlag.status, badFlag.json.error.message], [400, 'dryRun 要写 true 或 false'])
+
+    // 真压：历史换掉了；状态里这条线的历史带着“记录是哪几轮换成的”
+    lines.llm.enqueue(reply('<summary>真压的记录</summary>'))
+    const done = await s.call('POST', '/api/history/compact', { line: 'work' })
+    assert.deepEqual([done.status, done.json.dryRun, done.json.applied, done.json.summary, done.json.turns], [200, false, true, '真压的记录', { from: ids[0], to: ids[5], count: 6 }])
+    assert.deepEqual([lines.history.get().summary, lines.history.get().turns.length], ['真压的记录', 2])
+    const work = (await s.call('GET', '/api/status')).json.agents[1]
+    assert.deepEqual([work.history.turns, work.history.hasSummary, work.history.summaryOf], [2, true, { from: ids[0], to: ids[5], turns: 6 }])
+
+    // 这条线正在跑一轮：真压回 409，历史不动
+    let release!: (r: ReturnType<typeof reply>) => void
+    lines.llm.enqueue(() => new Promise((resolve) => (release = resolve)))
+    lines.agent.handleEvent(told('再做一件'))
+    await waitFor('the worker is in a turn', () => release !== undefined)
+    const busy = await s.call('POST', '/api/history/compact', { line: 'work' })
+    assert.deepEqual([busy.status, busy.json.error.code, busy.json.error.message], [409, 'busy', '干活线正在跑一轮，等它停下来再压（或者带 dryRun 只试不存）'])
+    release(reply('做完了'))
     await lines.agent.whenIdle()
   })
 
@@ -1535,7 +1617,7 @@ describe('面板：两条线', () => {
     )
     // 两条线的上限各有一项，主人在“AI 玩家”页能改
     const bot = (await s.call('PUT', '/api/bot', { limits: { talkMaxSteps: 9, talkHistoryTokenThreshold: 30000 } })).json.bot
-    assert.deepEqual([bot.limits.talkMaxSteps, bot.limits.talkHistoryTokenThreshold, bot.limits.maxSteps, bot.limits.historyTokenThreshold], [9, 30000, 60, 24000])
+    assert.deepEqual([bot.limits.talkMaxSteps, bot.limits.talkHistoryTokenThreshold, bot.limits.maxSteps, bot.limits.historyTokenThreshold], [9, 30000, 60, 240000])
   })
 
   it('清空对话历史：带 line 只清那一条线的，不带是两条都清', async (t) => {

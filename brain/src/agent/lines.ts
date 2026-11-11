@@ -21,7 +21,7 @@ import { clip, formatTask } from '../tools/format.ts'
 import { LINE_TOOLS, QuestProgressCache, SurroundingsCache } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ReminderAccess } from '../tools/index.ts'
 import { Agent, newLineShared } from './agent.ts'
-import type { AgentSettings, AgentState, AgentStatus, AgentTiming, LinePeek, LineShared, PersistedAgentState, TurnAt } from './agent.ts'
+import type { AgentSettings, AgentState, AgentStatus, AgentTiming, CompactNowResult, LinePeek, LineShared, PersistedAgentState, TurnAt } from './agent.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, fromBridgeEvent } from './events.ts'
 import type { AgentEvent, SaidEvent, WorkerNote } from './events.ts'
@@ -311,6 +311,16 @@ export class Lines {
   /** 两条线之间留着的事：干活线在等的回答、它最近一次送来的话。 */
   linkState(): LinkState {
     return { ...this.links }
+  }
+
+  /** 一条线下一次调模型时上下文大概多大（token）：和它的压缩阈值比的那个数。 */
+  contextTokens(line: LineName): number {
+    return this[line].contextTokens()
+  }
+
+  /** 现在就把一条线的历史写成交接记录（dryRun：只写不存）。 */
+  compactNow(line: LineName, opts: { dryRun?: boolean } = {}): Promise<CompactNowResult> {
+    return this[line].compactNow(opts)
   }
 
   /** 两条线都没有在跑的一轮、也没有排着的事时兑现。测试用。 */

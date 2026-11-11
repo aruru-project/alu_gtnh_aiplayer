@@ -67,6 +67,14 @@ describe('Anthropic 兼容适配器', () => {
     assert.equal(JSON.stringify(sent.body).includes('cache_control'), false)
   })
 
+  it('这次调用要求“输出至少给这么多”（写交接记录的调用）：配置的上限比它小或者没配就用它，配置得更大的照配置', async () => {
+    llm.enqueue({ text: 'a' }, { text: 'b' }, { text: 'c' })
+    await client({ maxOutputTokens: 900 }).generate(request([user('hello')], { minOutputTokens: 30_000 }))
+    await client({}).generate(request([user('hello')], { minOutputTokens: 30_000 }))
+    await client({ maxOutputTokens: 64_000 }).generate(request([user('hello')], { minOutputTokens: 30_000 }))
+    assert.deepEqual(llm.requests.map((r) => r.body.max_tokens), [30_000, 30_000, 64_000])
+  })
+
   it('连续的同角色消息合并，工具结果紧跟工具调用并排在文本前面', async () => {
     llm.enqueue({ text: 'ok' })
     await client().generate(

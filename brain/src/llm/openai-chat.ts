@@ -132,7 +132,8 @@ export function buildOpenAiBody(config: ProviderConfig, req: GenerateRequest): R
     }))
     if (req.toolChoice) body.tool_choice = req.toolChoice
   }
-  const maxTokens = req.maxOutputTokens ?? config.maxOutputTokens
+  const asked = req.maxOutputTokens ?? config.maxOutputTokens
+  const maxTokens = req.minOutputTokens !== undefined ? Math.max(asked ?? 0, req.minOutputTokens) : asked
   if (maxTokens !== undefined) body[options.maxTokensField] = maxTokens
   const temperature = req.temperature ?? config.temperature
   if (temperature !== undefined) body.temperature = temperature

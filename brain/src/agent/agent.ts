@@ -20,7 +20,8 @@ import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
 import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, bridgeHint, modelToolSpecs, runTool } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
-import { compactHistory, historyMessages } from './compaction.ts'
+import { compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
+import type { CompactResult, ContextGauge } from './compaction.ts'
 import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, eventLine, isHumanInput } from './events.ts'
@@ -126,6 +127,38 @@ export interface LineLinks {
   /** 这条线上发生了一件“外面的事”（不是另一条线引起的）：例程有了结局。两条线之间“连着往来了几次”从头数。 */
   outside?(): void
 }
+
+/** “现在就写交接记录”（面板的接口）的结果。 */
+export type CompactNowResult =
+  | { ok: false; reason: 'busy' | 'no_model'; message: string }
+  | {
+      ok: true
+      /** 历史改了没有（dryRun 时总是 false；没有可换的轮时也是 false）。 */
+      applied: boolean
+      action: CompactResult['action']
+      /** 写成的交接记录（会存进历史的那一份：已有的记录和这些轮合并以后的）。没写成是空的。 */
+      summary: string
+      /** 它写记录之前打的草稿（按标签写了才有）。 */
+      analysis?: string
+      /** 换成记录的是哪几轮；没有换是 null。 */
+      turns: { from: number; to: number; count: number } | null
+      /** 原样留着的有几轮。 */
+      kept: number
+      /** 调了几次模型，一共给它看了多少字符，接口报的 token。 */
+      calls: number
+      inputChars: number
+      usage: { inputTokens: number; outputTokens: number }
+      summaryChars: number
+      /** 记录的上限（字符）。 */
+      capChars?: number
+      /** 之前、之后上下文多大（token，和阈值比的那个数）。 */
+      tokensBefore: number
+      tokensAfter: number
+      /** 第一步收拾了什么。 */
+      tidied?: { results: number; states: number; charsBefore: number; charsAfter: number }
+      /** 有一段没写成的原因（已经折进去的照样算数）。 */
+      error?: string
+    }
 
 /** 叫停干活线的结果。 */
 export interface HaltResult {
@@ -393,6 +426,10 @@ export class Agent {
   private outageAnnounced = false
   private lastAnnounce = new Map<string, number>()
   private lastCall: LastCall | undefined
+  /** 最近一次一轮里的模型调用：接口报的输入 token 和同一份请求的字符估算（量上下文多大时校准用）。重启后从头记。 */
+  private gauge: ContextGauge | undefined
+  /** 面板上正在试写交接记录（不改历史的那种）：进程要停时打断它。 */
+  private dryRun: AbortController | undefined
 
   constructor(deps: AgentDeps) {
     this.deps = deps
@@ -473,8 +510,9 @@ export class Agent {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
     this.abort?.abort()
+    this.dryRun?.abort()
     // 正在跑的例程停下：它正等着的任务取消掉（等这次取消发出去，最多两秒），“它停在哪”排进下次启动要处理的事里
-    if (this.routine?.stop('the brain was shut down or restarted')) {
+    if (this.routine?.stop('the brain was shut down or restarted', '大脑停了或者重启了')) {
       let giveUp: NodeJS.Timeout | undefined
       await Promise.race([this.routine.whenCanceled(), new Promise<void>((resolve) => (giveUp = setTimeout(resolve, 2000)))])
       clearTimeout(giveUp)
@@ -666,14 +704,14 @@ export class Agent {
 
   /** 面板上主人点了“停止例程”。没有在跑的返回 false。 */
   stopRoutine(): boolean {
-    return this.routine?.stop('your owner stopped it on the control panel') ?? false
+    return this.routine?.stop('your owner stopped it on the control panel', '主人在面板上停的') ?? false
   }
 
   /** 例程结束了：记一笔，叫醒模型，把它的情况和日志给模型看。 */
   private routineEnded(view: RoutineView): void {
     this.deps.links?.outside?.()
     const text = describeRoutine(view, this.now())
-    this.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : '停了'}：${view.ending ?? ''}`, detail: text, source: 'routine', runId: view.id, ...(view.run ? { run: view.run } : {}) })
+    this.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : `停了：${view.endingText ?? view.ending ?? ''}`}`, detail: text, source: 'routine', runId: view.id, ...(view.run ? { run: view.run } : {}) })
     if (this.quietRoutineEnd) {
       // 总停止停掉的：它停在哪留给模型以后看，不为这个叫醒它
       this.pushBackground({ type: 'notice', time: this.now(), wake: false, text: `被叫停时你的例程还在跑，已经一起停下（它做了的事不会撤销，正在做的那个任务取消了）：\n${text}` })
@@ -796,7 +834,7 @@ export class Agent {
     const routineTask = routineNow?.current?.taskId
     this.quietRoutineEnd = true
     try {
-      this.routine?.stop('everything was stopped (stop_work)')
+      this.routine?.stop('everything was stopped (stop_work)', '全部停下的时候一起停的')
     } finally {
       this.quietRoutineEnd = false
     }
@@ -1300,13 +1338,13 @@ export class Agent {
   }
 
   /** 压缩历史用的模型：和一轮里的调用走同一条路，这样它也有一条 model_call 日志、也算进“正在想”。 */
-  private compactor(llm: LlmClient, turn: number): LlmClient {
-    return { generate: (req) => this.callModel(llm, req, { purpose: 'compact', turn }) }
+  private compactor(llm: LlmClient, turn?: number): LlmClient {
+    return { generate: (req) => this.callModel(llm, req, { purpose: 'compact', ...(turn !== undefined ? { turn } : {}) }) }
   }
 
   private priorMessages(): Message[] {
     const h = this.deps.history.get()
-    return historyMessages(h.summary, h.turns)
+    return historyMessages(h.summary, h.turns, h.summaryOf)
   }
 
   private overBudget(settings: AgentSettings): boolean {
@@ -1353,6 +1391,12 @@ export class Agent {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         ...(result.usage.cacheReadTokens !== undefined ? { cacheReadTokens: result.usage.cacheReadTokens } : {}),
+      }
+      // 一轮里的调用：记下接口报的输入 token 和同一份请求的字符估算，量上下文多大时拿它校准。
+      // 带图的不算（图按张收 token，和字符数没关系）；压缩历史的那种调用发的不是这条线的上下文，也不算。
+      if (at.purpose === 'turn' && !req.messages.some((m) => m.role === 'user' && m.content.some((p) => p.type === 'image' || (p.type === 'tool_result' && (p.images?.length ?? 0) > 0)))) {
+        const overheadEstimate = estimateTokens(req.system) + estimateTokens(req.tools)
+        this.gauge = { inputTokens: result.usage.inputTokens, requestEstimate: overheadEstimate + estimateTokens(req.messages), overheadEstimate }
       }
       if (this.llmFailures > 0) {
         this.log.add({ kind: 'info', text: '模型接口恢复了，继续干活。' })
@@ -1435,28 +1479,136 @@ export class Agent {
 
   // ── 历史压缩 ──
 
+  /**
+   * 这条线下一次调模型时上下文大概多大（token）：和压缩阈值比的就是这个数。有最近一次调用的数时，是接口报的输入 token
+   * （含提示词和工具清单）加上那之后历史的增减；还没有调用记录（刚启动）时整个按“字符 ÷ 3”，只算历史。
+   */
+  contextTokens(): number {
+    const h = this.deps.history.get()
+    return contextTokens(h.summary, h.turns, this.gauge)
+  }
+
+  private compactOptions(settings: AgentSettings): { threshold: number; talk: boolean; gauge: ContextGauge | undefined } {
+    return { threshold: settings.historyTokenThreshold, talk: this.line === 'talk', gauge: this.gauge }
+  }
+
   private async maybeCompact(llm: LlmClient, settings: AgentSettings, signal: AbortSignal): Promise<void> {
     const h = this.deps.history.get()
-    const res = await compactHistory(h.summary, h.turns, { threshold: settings.historyTokenThreshold, llm, signal, talk: this.line === 'talk' })
-    if (res.action !== 'nothing') this.deps.history.replace(res.summary, res.turns)
-    if (res.action === 'summarized') {
-      this.log.add({ kind: 'info', text: `历史太长，把较早的 ${res.removedTurns} 轮压成了摘要。`, detail: res.summary })
-    } else if (res.action === 'dropped') {
-      this.log.add({ kind: 'error', text: `历史太长且摘要没写成（${res.error ?? '未知原因'}），丢弃了较早的 ${res.removedTurns} 轮。` })
+    const res = await compactHistory(h.summary, h.turns, { ...this.compactOptions(settings), llm, signal })
+    if (res.action !== 'nothing') this.deps.history.replace(res.summary, res.turns, res.folded)
+    this.logCompaction(res, 'threshold')
+  }
+
+  /** 压缩做了什么，照实记进活动日志：第一步收拾了多少、换了哪几轮、调了几次模型、哪里没成。 */
+  private logCompaction(res: CompactResult, why: 'threshold' | 'overflow' | 'panel'): void {
+    const range = (r: { from: number; to: number; turns: number }): string => `较早的 ${r.turns} 轮（第 ${r.from} 轮到第 ${r.to} 轮）`
+    const cause = why === 'threshold' ? `历史超过了阈值（上下文约 ${res.tokensBefore} token）` : why === 'overflow' ? '模型说上下文太长' : '面板上要求现在就压'
+    // 第一步：截短旧的工具结果、拿掉旧的状态快照。动了东西就记一条，不悄悄做
+    if (res.tidied) {
+      const t = res.tidied
+      const did = [t.results > 0 ? `截短了 ${t.results} 条旧的工具结果` : '', t.states > 0 ? `拿掉了 ${t.states} 段旧的状态快照（每轮开头那段“当前状态”）` : ''].filter((x) => x.length > 0)
+      this.log.add({ kind: 'info', text: `${cause}，先收拾最近 ${res.recentTurns} 轮以外的：${did.join('，')}。历史从 ${t.charsBefore} 字符变成 ${t.charsAfter} 字符。` })
+    }
+    const first = res.tidied ? (why === 'panel' ? '收拾完' : '收拾完还是太长') : cause
+    const cost = res.calls !== undefined ? `写它调了 ${res.calls} 次模型${res.inputChars !== undefined ? `、给它看了 ${res.inputChars} 字符` : ''}` : ''
+    const now = `上下文从约 ${res.tokensBefore} token 变成约 ${res.tokensAfter} token`
+    if (res.action === 'summarized' && res.folded) {
+      const partly = res.error ? `；后面还有该换的没写成（${res.error}），留到下一轮再试` : ''
+      this.log.add({
+        kind: res.error ? 'error' : 'info',
+        text: `${first}，把${range(res.folded)}换成了交接记录（${res.summary.length} 字符，上限 ${res.capChars ?? '?'}），${cost}${partly}。${now}。`,
+        detail: res.summary,
+      })
+    } else if (res.action === 'dropped' && res.discarded) {
+      const kept = res.folded ? `${range(res.folded)}换成了交接记录；` : ''
+      this.log.add({ kind: 'error', text: `${first}，交接记录没写成（${res.error ?? '未知原因'}；${cost}）：${kept}${range(res.discarded)}没写成记录，从历史里直接丢掉了（活动日志里还有）。${now}。`, detail: res.summary })
     } else if (res.error) {
-      this.log.add({ kind: 'error', text: `历史该压缩了，但摘要没写成：${res.error}。下一轮再试。` })
+      this.log.add({ kind: 'error', text: `${first}，该写交接记录了，但没写成：${res.error}（${cost}）。${why === 'panel' ? '历史没动。' : '下一轮再试。'}` })
+    }
+    // 它写记录之前打的草稿不存进历史，留在日志里给人看它是怎么想的
+    if (res.analysis && res.analysis.length > 0) {
+      const many = res.analysis.length > 1
+      this.log.add({ kind: 'info', text: `写交接记录前它打的草稿（${many ? `${res.analysis.length} 段，` : ''}不存进历史）。`, detail: res.analysis.map((a, n) => (many ? `【第 ${n + 1} 段】\n${a}` : a)).join('\n\n') })
     }
   }
 
-  /** 模型明确说上下文超长时用：不看阈值，把最近一轮之前的全部压掉；压不了就丢。 */
+  /** 模型明确说上下文超长时用：不看阈值，留最近那一段，把更早的压到现在的一半上下；写不成记录就丢。 */
   private async forceCompact(llm: LlmClient, signal: AbortSignal): Promise<void> {
     const h = this.deps.history.get()
     if (h.turns.length === 0 && h.summary.length === 0) return
-    const res = await compactHistory(h.summary, h.turns, { threshold: 1, llm, signal, talk: this.line === 'talk' })
-    if (res.action === 'summarized' || res.action === 'dropped') {
-      this.deps.history.replace(res.summary, res.turns)
+    const res = await compactHistory(h.summary, h.turns, { ...this.compactOptions(this.deps.settings()), llm, signal, mode: 'overflow' })
+    if (res.action !== 'nothing') {
+      this.deps.history.replace(res.summary, res.turns, res.folded)
+      this.logCompaction(res, 'overflow')
     } else {
-      this.deps.history.replace(h.summary, [])
+      // 什么都动不了（历史里只剩最近那一段，里面也没有可收拾的）：留着只会让下一次请求照样超长，丢掉，并在记录里照实留一句
+      const first = h.turns[0]
+      const last = h.turns[h.turns.length - 1]
+      const note = first && last ? `（第 ${first.id} 轮到第 ${last.id} 轮共 ${h.turns.length} 轮因为上下文超长被丢弃了，没能写成交接记录。原始记录还在活动日志里。）` : ''
+      this.deps.history.replace([h.summary.trim(), note].filter((x) => x.length > 0).join('\n'), [])
+      if (note) this.log.add({ kind: 'error', text: `模型说上下文超长，历史里的 ${h.turns.length} 轮（第 ${first!.id} 轮到第 ${last!.id} 轮）没法再压，从历史里直接丢掉了（活动日志里还有）。` })
+    }
+  }
+
+  /**
+   * 现在就把这条线的历史写成交接记录（面板的接口）：不看阈值，最近那一段以外的全部换掉。
+   * dryRun：只写不存——历史不动，返回它会写成什么（试提示词用）；这时不占这条线，它正在跑一轮也能试。
+   * 不带 dryRun 的要等这条线停下来：它正在跑一轮时不做，如实说。
+   */
+  async compactNow(opts: { dryRun?: boolean } = {}): Promise<CompactNowResult> {
+    const dryRun = opts.dryRun === true
+    const llm = this.deps.llm()
+    if (!llm) return { ok: false, reason: 'no_model', message: `${this.line === 'talk' ? '对话线' : '干活线'}还没有可用的模型，写不了交接记录` }
+    const h = this.deps.history.get()
+    const base = { ...this.compactOptions(this.deps.settings()), mode: 'all' as const }
+    const view = (res: CompactResult, applied: boolean): CompactNowResult => ({
+      ok: true,
+      applied,
+      action: res.action,
+      summary: res.action === 'summarized' || res.action === 'dropped' ? res.summary : '',
+      ...(res.analysis && res.analysis.length > 0 ? { analysis: res.analysis.join('\n\n') } : {}),
+      turns: res.folded ? { from: res.folded.from, to: res.folded.to, count: res.folded.turns } : null,
+      kept: res.turns.length,
+      calls: res.calls ?? 0,
+      inputChars: res.inputChars ?? 0,
+      usage: res.usage ?? { inputTokens: 0, outputTokens: 0 },
+      summaryChars: res.action === 'summarized' || res.action === 'dropped' ? res.summary.length : 0,
+      ...(res.capChars !== undefined ? { capChars: res.capChars } : {}),
+      tokensBefore: res.tokensBefore,
+      tokensAfter: res.tokensAfter,
+      ...(res.tidied ? { tidied: res.tidied } : {}),
+      ...(res.error !== undefined ? { error: res.error } : {}),
+    })
+    if (dryRun) {
+      if (this.dryRun) return { ok: false, reason: 'busy', message: '这条线已经有一次试写在跑，等它回来' }
+      const abort = new AbortController()
+      this.dryRun = abort
+      try {
+        const res = await compactHistory(h.summary, h.turns, { ...base, llm, signal: abort.signal })
+        const what = res.folded ? `第 ${res.folded.from} 轮到第 ${res.folded.to} 轮共 ${res.folded.turns} 轮 → ${res.summary.length} 字符，调了 ${res.calls ?? 0} 次模型` : `没有写成${res.error ? `（${res.error}）` : '：最近那一段以外没有可换的轮'}`
+        this.log.add({ kind: res.error ? 'error' : 'info', text: `面板上试写了一次交接记录（历史没动）：${what}。` })
+        return view(res, false)
+      } finally {
+        this.dryRun = undefined
+      }
+    }
+    if (this.running) return { ok: false, reason: 'busy', message: `${this.line === 'talk' ? '对话线' : '干活线'}正在跑一轮，等它停下来再压（或者带 dryRun 只试不存）` }
+    // 占住这条线：写记录的这段时间里不开新的一轮
+    this.running = true
+    this.abort = new AbortController()
+    try {
+      const res = await compactHistory(h.summary, h.turns, { ...base, llm: this.compactor(llm), signal: this.abort.signal })
+      if (res.action !== 'nothing') this.deps.history.replace(res.summary, res.turns, res.folded)
+      this.logCompaction(res, 'panel')
+      return view(res, res.action !== 'nothing')
+    } finally {
+      this.running = false
+      this.halting = false
+      this.abort = undefined
+      this.thinking = undefined
+      for (const w of this.turnWaiters.splice(0)) w()
+      this.schedule()
+      this.notifyIdle()
     }
   }
 
@@ -1516,7 +1668,7 @@ export class Agent {
         const view = routine.view()
         return view ? describeRoutine(view, this.now()) : undefined
       },
-      stop: () => routine.stop('you stopped it with stop_routine'),
+      stop: () => routine.stop('you stopped it with stop_routine', '它自己用 stop_routine 停的'),
     }
   }
 
@@ -1551,6 +1703,7 @@ export class Agent {
       ...(this.line === 'talk' && links ? { worker: this.workerAccess(links) } : {}),
       ...(this.line === 'work' && links?.toTalk ? { talk: { report: (text: string, question: boolean) => links.toTalk!(question ? 'question' : 'report', text, this.turnAt()) } } : {}),
       ...(this.deps.chatLog ? { chatLog: this.deps.chatLog } : {}),
+      activityLog: this.deps.log,
       canSeeImages: () => canSee,
       maxResultChars: () => this.deps.settings().toolResultMaxChars,
       bridge: this.deps.bridge,

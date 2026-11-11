@@ -326,7 +326,7 @@ export class PanelLive {
       if (s.ghost) view.ghost = true
       slots.push(view)
     }
-    const all = (screen as { controls?: unknown }).controls
+    const all = screen.controls
     const controls = Array.isArray(all) ? all.slice(0, CONTROLS_MAX).map((c) => controlView(c)).filter((c): c is ControlView => c !== undefined) : []
     return {
       name: screen.screen ?? '',

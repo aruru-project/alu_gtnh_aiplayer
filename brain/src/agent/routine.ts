@@ -88,6 +88,8 @@ export interface RoutineView {
   logLost?: number
   /** 为什么结束（英文，给模型看）。 */
   ending?: string
+  /** 为什么结束（中文，给主人看：活动日志和面板用）。 */
+  endingText?: string
   /** 程序 return 的值（太长时只有开头，见 valueLength）。 */
   value?: string
   /** 程序 return 的值原来多长；只在它比 value 长（被截了）时有。 */
@@ -217,7 +219,7 @@ export class RoutineRunner {
       abort: new AbortController(),
       limits,
       failures: 0,
-      timer: setTimeout(() => this.finish(run, 'limit', `it ran for ${Math.round(limits.wallMs / 60_000)} minutes, the time it was given`), limits.wallMs),
+      timer: setTimeout(() => this.finish(run, 'limit', `it ran for ${Math.round(limits.wallMs / 60_000)} minutes, the time it was given`, `跑满了给它的 ${Math.round(limits.wallMs / 60_000)} 分钟`), limits.wallMs),
       waiters: new Map(),
       owned: new Set(),
       finished: new Map(),
@@ -253,7 +255,7 @@ export class RoutineRunner {
       })
       .then(
         (result) => this.programEnded(run, result),
-        (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${e instanceof Error ? e.message : String(e)}`),
+        (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${e instanceof Error ? e.message : String(e)}`, `程序没能跑起来：${e instanceof Error ? e.message : String(e)}`),
       )
     const minutes = Math.round(limits.wallMs / 60_000)
     return { view: this.view()!, minutes, ...(opts.minutes !== undefined && opts.minutes > minutes ? { asked: opts.minutes } : {}) }
@@ -264,11 +266,11 @@ export class RoutineRunner {
     return this.canceling
   }
 
-  /** 停掉正在跑的例程（模型或主人要求的）。没有在跑的返回 false。 */
-  stop(reason: string): boolean {
+  /** 停掉正在跑的例程（模型或主人要求的）。reason 给模型看（英文），said 给主人看（中文）。没有在跑的返回 false。 */
+  stop(reason: string, said: string): boolean {
     const run = this.running
     if (!run) return false
-    this.finish(run, 'stopped', reason)
+    this.finish(run, 'stopped', reason, said)
     return true
   }
 
@@ -320,7 +322,7 @@ export class RoutineRunner {
       if (final) {
         result = { ok: final.state === 'done', text: formatTask(final), data: dataWithLocalNames({ task: final.id, state: final.state, ...(final.result ? { result: final.result } : {}), ...(final.error ? { error: final.error } : {}) }) }
         // 任务被别人取消了（主人在面板上、模型另开了任务）：这是叫例程停下
-        if (final.state === 'canceled' && !run.ended) this.finish(run, 'stopped', `its task ${final.id} (${final.type}) was canceled by someone else`)
+        if (final.state === 'canceled' && !run.ended) this.finish(run, 'stopped', `its task ${final.id} (${final.type}) was canceled by someone else`, `它开的任务 ${final.id}（${final.type}）被别人取消了`)
       } else {
         result = { ok: false, text: 'the routine was stopped while this task was running' }
       }
@@ -332,7 +334,7 @@ export class RoutineRunner {
     if (view.recent.length > CALLS_KEPT) view.recent.shift()
     delete view.current
     run.failures = result.ok ? 0 : run.failures + 1
-    if (run.failures >= limits.failuresInARow && !run.ended) this.finish(run, 'limit', `${run.failures} tool calls failed in a row; the last: ${clip(line, 200)}`)
+    if (run.failures >= limits.failuresInARow && !run.ended) this.finish(run, 'limit', `${run.failures} tool calls failed in a row; the last: ${clip(line, 200)}`, `连着 ${run.failures} 次工具调用失败，最后一次：${clip(line, 200)}`)
     return result
   }
 
@@ -389,24 +391,27 @@ export class RoutineRunner {
     if (o.status === 'ok') {
       if (o.value !== undefined) run.view.value = o.value
       if (o.valueLength !== undefined) run.view.valueLength = o.valueLength
-      return this.finish(run, 'done', 'the program finished')
+      return this.finish(run, 'done', 'the program finished', '程序跑到头了')
     }
     if (o.status === 'error') {
       const where = o.error.line !== undefined ? ` at line ${o.error.line}` : ''
-      return this.finish(run, 'failed', `the program failed${where}: ${o.error.name}: ${o.error.message}`)
+      return this.finish(run, 'failed', `the program failed${where}: ${o.error.name}: ${o.error.message}`, `程序出错了${o.error.line !== undefined ? `（第 ${o.error.line} 行）` : ''}：${o.error.name}: ${o.error.message}`)
     }
-    if (o.status === 'timeout') return this.finish(run, 'limit', `the program itself computed for more than ${run.limits.computeMs / 1000} s (waiting for tools is not counted): look for a loop that never ends`)
-    if (o.status === 'stopped') return this.finish(run, 'stopped', 'it was stopped')
-    this.finish(run, 'failed', o.status === 'memory' ? 'the program used too much memory' : o.status === 'output' ? 'the program produced too much output' : (o.detail ?? 'the sandbox process ended unexpectedly'))
+    if (o.status === 'timeout') return this.finish(run, 'limit', `the program itself computed for more than ${run.limits.computeMs / 1000} s (waiting for tools is not counted): look for a loop that never ends`, `程序自己算了超过 ${run.limits.computeMs / 1000} 秒（等工具的时间不算）`)
+    if (o.status === 'stopped') return this.finish(run, 'stopped', 'it was stopped', '被停掉了')
+    if (o.status === 'memory') return this.finish(run, 'failed', 'the program used too much memory', '程序用的内存太多')
+    if (o.status === 'output') return this.finish(run, 'failed', 'the program produced too much output', '程序输出的东西太多')
+    this.finish(run, 'failed', o.detail ?? 'the sandbox process ended unexpectedly', o.detail !== undefined ? `沙箱出了状况：${o.detail}` : '跑程序的沙箱进程意外结束了')
   }
 
-  private finish(run: Running, status: RoutineStatus, ending: string): void {
+  private finish(run: Running, status: RoutineStatus, ending: string, said: string): void {
     if (run.ended) return
     run.ended = true
     clearTimeout(run.timer)
     const view = run.view
     view.status = status
     view.ending = ending
+    view.endingText = said
     view.endedAt = this.deps.now()
     const task = view.current?.taskId
     delete view.current

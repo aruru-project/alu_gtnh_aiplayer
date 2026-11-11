@@ -911,7 +911,8 @@ describe('两条线各有各的上下文', () => {
           summaries.push(req)
           return reply('主人要 3 个铁锭，已经交给干活线，还没结果。')
         }
-        return reply(`第 ${i} 句：${'啊'.repeat(600)}`)
+        // 话说得长：光把旧轮里的状态快照拿掉还不够，得压成摘要
+        return reply(`第 ${i} 句：${'啊'.repeat(2500)}`)
       })
     }
     for (let i = 0; i < 6; i++) {
@@ -919,7 +920,10 @@ describe('两条线各有各的上下文', () => {
       await h.agent.whenIdle()
     }
     assert.ok(summaries.length >= 1, 'the talk history was summarised')
-    assert.match(summaries[0]!.system, /“对话线”整理记忆/)
+    // 对话线有它自己的写法：小节是话和约定（谁交代了什么、交给干活线的事、答应过的事），上限按它自己的阈值算
+    assert.match(summaries[0]!.system, /^你在替一个 Minecraft（GTNH 整合包）服务器里的 AI 玩家的“对话线”写“交接记录”。/)
+    assert.match(summaries[0]!.system, /上限 900 字，/)
+    for (const section of ['## 主人和别人交代的事、提的要求', '## 正在聊的', '## 交给干活线的事', '## 干活线问过的、主人答过的', '## 答应过的事', '## 查到的结论', '## 人']) assert.ok(summaries[0]!.system.includes(`\n${section}\n`), section)
     assert.match(summaries[0]!.messages[0]!.content.map((p) => (p.type === 'text' ? p.text : '')).join(''), /\[它说的话\] 第 0 句/)
     assert.equal(h.talkHistory.get().summary, '主人要 3 个铁锭，已经交给干活线，还没结果。')
     assert.equal(h.history.get().summary, '')

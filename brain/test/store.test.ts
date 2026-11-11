@@ -167,7 +167,7 @@ describe('数据目录', () => {
     assert.deepEqual([c.activeProviderId, c.activeModelId, c.talkProviderId, c.talkModelId], ['main', 'b', 'main', 'b'])
     assert.deepEqual([store.lineProvider('talk')?.model, store.lineProvider('work')?.model], ['gpt-b', 'gpt-b'])
     // 原来的上限是干活线的，原样留着；对话线的两项用默认值
-    assert.deepEqual([c.bot.limits.maxSteps, c.bot.limits.historyTokenThreshold, c.bot.limits.talkMaxSteps, c.bot.limits.talkHistoryTokenThreshold], [80, 200_000, 20, 60_000])
+    assert.deepEqual([c.bot.limits.maxSteps, c.bot.limits.historyTokenThreshold, c.bot.limits.talkMaxSteps, c.bot.limits.talkHistoryTokenThreshold], [80, 200_000, 20, 120_000])
     assert.deepEqual(c.bot.owners, ['Steve'])
     // 旧人设是分线之前的整段核心提示词，不能当对话线的说话风格：清空，说明原文在哪份备份里
     assert.equal(c.bot.systemPrompt, '')

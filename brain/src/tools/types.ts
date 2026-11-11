@@ -2,6 +2,7 @@ import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
+import type { LogPage, LogQuery } from '../store/activity-log.ts'
 import type { FeedbackInput } from '../store/feedback.ts'
 import type { ChatLine } from '../store/chat-log.ts'
 import type { Manual } from '../store/manuals.ts'
@@ -142,6 +143,8 @@ export interface ToolContext {
   talk?: TalkAccess
   /** 最近的聊天记录。上层没提供时 recent_chat 用不了。 */
   chatLog?: ChatLogAccess
+  /** 活动日志（store/activity-log.ts 的 ActivityLog 满足），只读。上层没提供时 read_log 用不了。 */
+  activityLog?: { search(query: LogQuery): LogPage }
   /** run_program 占哪个位子：两条线各跑各的程序，互不挡着。 */
   programSlot?: string
   bridge: BridgeApi

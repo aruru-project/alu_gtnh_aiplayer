@@ -1864,7 +1864,7 @@ it('端到端：面板拿到的数据——模型还在想时状态里看得出�
   assert.deepEqual([idle.agent, idle.name, idle.model.state, idle.model.provider, idle.model.model, idle.turn, idle.routine, idle.lastRoutine, idle.waitingAnswer, idle.lastReport], ['work', 'Alu', 'idle', '主力', 'claude-e2e', null, null, null, null, null])
   assert.deepEqual(idle.body, { online: true, task: null, queue: [] })
   assert.deepEqual([talkIdle.agent, talkIdle.title, talkIdle.model.state, talkIdle.model.provider, talkIdle.model.model, talkIdle.turn, 'routine' in talkIdle, 'body' in talkIdle], ['talk', '对话线', 'idle', 'talk', 'talk-e2e', null, false, false])
-  assert.deepEqual([talkIdle.history, idle.history], [{ turns: 0, hasSummary: false, estimatedTokens: 0, threshold: 60000 }, { turns: 0, hasSummary: false, estimatedTokens: 0, threshold: 24000 }])
+  assert.deepEqual([talkIdle.history, idle.history], [{ turns: 0, hasSummary: false, estimatedTokens: 0, threshold: 120000 }, { turns: 0, hasSummary: false, estimatedTokens: 0, threshold: 240000 }])
 
   // 例程：看一眼自己 → 一步参数不对（出错）→ 走一段路（模拟的身体里要等人喊完成，所以会停在这一步）
   const code = `await tool('get_status')\nlog('看过了')\nawait tool('withdraw_items', { container: { x: 1 } })\nawait tool('go_to', { x: 40, z: 40 })\nreturn '到了'`
@@ -2078,7 +2078,7 @@ it('端到端：带着只有一条线时留下的数据目录启动 → 配置�
   // 2. 配置：补上了对话线的那几项（和原来选的一样），原来的上限是干活线的；原文件留了底；旧人设清空
   const saved = JSON.parse(fs.readFileSync(path.join(tmp.dir, 'config.json'), 'utf8'))
   assert.deepEqual([saved.version, saved.activeProviderId, saved.activeModelId, saved.talkProviderId, saved.talkModelId], [3, 'mock', 'm1', 'mock', 'm1'])
-  assert.deepEqual([saved.bot.limits.maxSteps, saved.bot.limits.historyTokenThreshold, saved.bot.limits.talkMaxSteps, saved.bot.limits.talkHistoryTokenThreshold, saved.bot.systemPrompt], [40, 180_000, 20, 60_000, ''])
+  assert.deepEqual([saved.bot.limits.maxSteps, saved.bot.limits.historyTokenThreshold, saved.bot.limits.talkMaxSteps, saved.bot.limits.talkHistoryTokenThreshold, saved.bot.systemPrompt], [40, 180_000, 20, 120_000, ''])
   assert.equal(fs.readFileSync(path.join(tmp.dir, 'config.json.v2.bak'), 'utf8'), oldConfig)
   assert.equal(fs.statSync(path.join(tmp.dir, 'config.json.v2.bak')).mode & 0o777, 0o600)
   // 对话线用的是新的默认说话风格，不是那段旧人设

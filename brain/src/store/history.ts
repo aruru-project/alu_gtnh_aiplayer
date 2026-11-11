@@ -12,11 +12,29 @@ export interface Turn {
   messages: Message[]
 }
 
+/** 摘要是哪几轮压成的。 */
+export interface SummaryRange {
+  /** 第一轮和最后一轮的编号。两条线共用一个计数器，所以中间的编号不一定都是这条线的。 */
+  from: number
+  to: number
+  /** 一共多少轮。 */
+  turns: number
+  /** 这之前还有更早的轮也在摘要里，但当时没有记下是哪几轮（加这项记录之前留下的老摘要）。 */
+  unknownBefore?: boolean
+}
+
 export interface HistoryState {
-  /** 更早的轮被压成的摘要；没有则为空字符串。 */
+  /** 更早的轮换成的交接记录（字段名是它还叫“摘要”时留下的）；没有则为空字符串。 */
   summary: string
+  /** 摘要是哪几轮压成的；老数据里没有这一项（那时没记）。 */
+  summaryOf?: SummaryRange
   turns: Turn[]
   nextTurnId: number
+}
+
+function parseRange(v: unknown): SummaryRange | undefined {
+  if (!isRecord(v) || typeof v.from !== 'number' || typeof v.to !== 'number' || typeof v.turns !== 'number') return undefined
+  return { from: v.from, to: v.to, turns: v.turns, ...(v.unknownBefore === true ? { unknownBefore: true } : {}) }
 }
 
 function isMessage(v: unknown): v is Message {
@@ -66,8 +84,11 @@ export class HistoryStore {
         }
       }
       const maxId = turns.reduce((m, t) => Math.max(m, t.id), 0)
+      const summary = typeof raw.summary === 'string' ? raw.summary : ''
+      const summaryOf = summary.length > 0 ? parseRange(raw.summaryOf) : undefined
       this.state = {
-        summary: typeof raw.summary === 'string' ? raw.summary : '',
+        summary,
+        ...(summaryOf ? { summaryOf } : {}),
         turns,
         nextTurnId: Math.max(maxId + 1, typeof raw.nextTurnId === 'number' ? raw.nextTurnId : 1),
       }
@@ -95,9 +116,19 @@ export class HistoryStore {
     this.save()
   }
 
-  /** 压缩后整体替换。 */
-  replace(summary: string, turns: Turn[]): void {
-    this.state = { summary, turns, nextTurnId: this.state.nextTurnId }
+  /**
+   * 压缩后整体替换。folded：这次折进摘要里的是哪几轮——和以前记着的并起来，摘要开头据此写明“这是第几轮到第几轮压成的”。
+   * 原来就有摘要、却没有记着范围的（老数据）：并起来的范围带 unknownBefore。
+   */
+  replace(summary: string, turns: Turn[], folded?: SummaryRange): void {
+    const before = this.state.summaryOf
+    const hadSummary = this.state.summary.trim().length > 0
+    let summaryOf: SummaryRange | undefined
+    if (summary.trim().length === 0) summaryOf = undefined
+    else if (!folded) summaryOf = before
+    else if (before) summaryOf = { from: before.from, to: folded.to, turns: before.turns + folded.turns, ...(before.unknownBefore ? { unknownBefore: true } : {}) }
+    else summaryOf = { ...folded, ...(hadSummary ? { unknownBefore: true } : {}) }
+    this.state = { summary, ...(summaryOf ? { summaryOf } : {}), turns, nextTurnId: this.state.nextTurnId }
     this.save()
   }
 

@@ -101,7 +101,7 @@ const ACTING = [
 const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
 const TALK_TOOLS_WITH_VISION = ['whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', 'set_reminder', ...NOTES]
 const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
-const LIBRARY = ['recent_chat', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
+const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
@@ -164,7 +164,7 @@ describe('模型拿到的工具清单', () => {
     }
   })
 
-  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2000 字符；start_routine 的说明指过去', async (t) => {
+  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2200 字符；start_routine 的说明指过去', async (t) => {
     for (const line of ['work', 'talk'] as const) {
       for (const vision of [true, false]) {
         const tools = await offered(setup(t, { vision }), line)
@@ -172,7 +172,8 @@ describe('模型拿到的工具清单', () => {
         for (const name of [...LIBRARY, ...OLD_NAMES]) assert.equal(names.includes(name), false, name)
         const run = tools.find((tool) => tool.name === 'run_program')!.description
         const index = run.slice(run.indexOf('\nLibrary functions') + 1)
-        assert.ok(index.length <= 2000, `the index is ${index.length} characters`)
+        // 上限从 2000 调到 2200：多了 read_log 的一行（约 200 字符）——历史压缩把较早的轮换成交接记录以后，靠它翻回原始记录
+        assert.ok(index.length <= 2200, `the index is ${index.length} characters`)
         const lines = index.split('\n')
         assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
         // 对话线的索引里只有只查不动的：会开任务的 haul_items 不在
@@ -321,17 +322,17 @@ describe('库函数：不在清单里，在程序里调', () => {
 
   it('调了一个不存在的名字：报错里分两组列出能调的——这条线的工具，和库函数；看图的两个按它能不能看图归组', async (t) => {
     const blind = (await modelCalls(setup(t, { vision: false }), 'fly_to_the_moon')).content
-    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
+    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image|\bsay\b|whisper/)
     assert.ok(blind.length < 1100, `${blind.length} characters`)
     for (const old of OLD_NAMES) assert.equal(blind.includes(old), false, old)
 
     const seeing = (await modelCalls(setup(t, { vision: true }), 'fly_to_the_moon')).content
-    assert.match(seeing, /Your tools: .*\bview_area\b.*\bview_image\b.*\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, .*, total_materials\.$/)
+    assert.match(seeing, /Your tools: .*\bview_area\b.*\bview_image\b.*\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials\.$/)
 
     // 对话线：列的是它自己的工具和只查不动的库函数
     const talk = (await lineCalls(setup(t, { vision: false }), 'talk', 'fly_to_the_moon')).content
-    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, list_stock, .*, total_materials, view_area, view_image\.$/)
+    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(talk, /haul_items|go_to|start_routine/)
   })
 

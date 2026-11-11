@@ -125,8 +125,47 @@ export interface ActivityEntry {
 
 export type ActivityInput = Omit<ActivityEntry, 'id' | 'time'> & { time?: number }
 
-const DETAIL_MAX = 8000
-const KEEP_FILES = 14
+/** 在日志里找什么（read_log 用）。几个条件同时给就是都要满足。 */
+export interface LogQuery {
+  /** 时间段（毫秒时间戳），含两端。 */
+  since?: number
+  until?: number
+  /** 第几轮到第几轮，含两端。 */
+  turnFrom?: number
+  turnTo?: number
+  /** 只要这几类。 */
+  kinds?: readonly ActivityKind[]
+  /** 只要这条线的，加上不分线的（系统的事、聊天、分成两条线之前的旧条目）。不给就是全部。 */
+  agent?: string
+  /** 这些词都要出现（不分大小写）：在正文、详细内容、who 里找。 */
+  words?: readonly string[]
+  /** 只要这一条。 */
+  id?: number
+  /** 翻页：只要 id 比它大的 / 比它小的。 */
+  afterId?: number
+  beforeId?: number
+  /** 一页最多几条。 */
+  limit: number
+  /** 这一页从哪头取：earliest 最早的那些（往后翻用 afterId）；latest 最晚的那些（往前翻用 beforeId）。 */
+  from: 'earliest' | 'latest'
+}
+
+export interface LogPage {
+  /** 这一页，按时间顺序。 */
+  entries: ActivityEntry[]
+  /** 符合条件的一共多少条（翻页的 afterId / beforeId 不算条件）。 */
+  matched: number
+  /** 符合条件的里面，比这一页早的、晚的各还有多少条。 */
+  earlier: number
+  later: number
+  /** 日志里现在最早的一条是什么时候的（更早的已经删掉了）；日志是空的就没有。 */
+  oldestTime?: number
+}
+
+/** 一条的详细内容最多留这么多字符，超出的截掉并在末尾写明原长。 */
+export const DETAIL_MAX = 8000
+/** 按天存的文件留最近这么多个（有记录的日子才有文件）。 */
+export const LOG_KEEP_DAYS = 14
 
 export class ActivityLog {
   private readonly dir: string | undefined
@@ -236,6 +275,54 @@ export class ActivityLog {
     return { entries: all, more }
   }
 
+  /**
+   * 在整份日志里找（内存里的和按天存的文件）。给了时间段就只读那几天的文件。
+   * 内存里有的以内存为准（它可能被原地改过、还没落盘）。
+   */
+  search(query: LogQuery): LogPage {
+    const byId = new Map<number, ActivityEntry>()
+    const files = this.files()
+    const day = (time: number): string => `activity-${localDateKey(time)}.jsonl`
+    for (const file of files) {
+      if (query.since !== undefined && file < day(query.since)) continue
+      if (query.until !== undefined && file > day(query.until)) continue
+      for (const e of this.readFile(file)) byId.set(e.id, e)
+    }
+    for (const e of this.entries) byId.set(e.id, e)
+    const all = [...byId.values()].sort((a, b) => a.id - b.id)
+    // 最早的一条：没按时间筛文件时就是读到的第一条；筛了就去看最老的那个文件
+    let oldestTime = all[0]?.time
+    if (query.since !== undefined && files.length > 0 && files[0]! < day(query.since)) oldestTime = this.readFile(files[0]!)[0]?.time ?? oldestTime
+    const words = (query.words ?? []).map((w) => w.toLowerCase()).filter((w) => w.length > 0)
+    const kinds = query.kinds && query.kinds.length > 0 ? new Set<string>(query.kinds) : undefined
+    const matches = all.filter((e) => {
+      if (query.id !== undefined) return e.id === query.id
+      if (query.since !== undefined && e.time < query.since) return false
+      if (query.until !== undefined && e.time > query.until) return false
+      if (query.turnFrom !== undefined && (e.turn === undefined || e.turn < query.turnFrom)) return false
+      if (query.turnTo !== undefined && (e.turn === undefined || e.turn > query.turnTo)) return false
+      if (kinds && !kinds.has(e.kind)) return false
+      if (query.agent !== undefined && e.agent !== undefined && e.agent !== query.agent) return false
+      if (words.length > 0) {
+        const hay = `${e.who ?? ''}\n${e.text}\n${e.detail ?? ''}`.toLowerCase()
+        if (!words.every((w) => hay.includes(w))) return false
+      }
+      return true
+    })
+    const inWindow = matches.filter((e) => (query.afterId === undefined || e.id > query.afterId) && (query.beforeId === undefined || e.id < query.beforeId))
+    const limit = Math.max(1, query.limit)
+    const entries = query.from === 'earliest' ? inWindow.slice(0, limit) : inWindow.slice(Math.max(0, inWindow.length - limit))
+    const first = entries[0]?.id
+    const last = entries[entries.length - 1]?.id
+    return {
+      entries,
+      matched: matches.length,
+      earlier: first === undefined ? (query.beforeId !== undefined ? matches.filter((e) => e.id < query.beforeId!).length : 0) : matches.filter((e) => e.id < first).length,
+      later: last === undefined ? (query.afterId !== undefined ? matches.filter((e) => e.id > query.afterId!).length : 0) : matches.filter((e) => e.id > last).length,
+      ...(oldestTime !== undefined ? { oldestTime } : {}),
+    }
+  }
+
   /** 一天的文件里的全部条目，按 id 排好；同一个 id 出现两次（原地改过的）以后一行为准。 */
   private readFile(file: string): ActivityEntry[] {
     if (!this.dir) return []
@@ -301,7 +388,7 @@ export class ActivityLog {
   private prune(): void {
     if (!this.dir) return
     const files = this.files()
-    for (const f of files.slice(0, Math.max(0, files.length - KEEP_FILES))) {
+    for (const f of files.slice(0, Math.max(0, files.length - LOG_KEEP_DAYS))) {
       fs.rmSync(path.join(this.dir, f), { force: true })
     }
   }

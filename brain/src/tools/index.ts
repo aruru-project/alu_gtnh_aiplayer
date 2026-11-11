@@ -25,6 +25,7 @@ import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routine
 import { reportProblem } from './feedback.ts'
 import { clip, dataWithLocalNames } from './format.ts'
 import { recentChat, report, stopWork, tellWorker, workerStatus } from './lines.ts'
+import { readLog } from './log.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
 import {
@@ -186,6 +187,7 @@ export const ALL_TOOLS: readonly Tool[] = [...TALK_TOOLS, ...WORK_TOOLS.filter((
  */
 export const LIBRARY_TOOLS: readonly Tool[] = [
   recentChat,
+  readLog,
   listStock,
   listDrawers,
   findUses,

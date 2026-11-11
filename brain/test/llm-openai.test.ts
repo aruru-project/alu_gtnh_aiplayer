@@ -91,6 +91,14 @@ describe('OpenAI 兼容适配器', () => {
     ])
   })
 
+  it('这次调用要求“输出至少给这么多”（写交接记录的调用）：配置的上限比它小或者没配就用它，配置得更大的照配置', async () => {
+    llm.enqueue({ text: 'a' }, { text: 'b' }, { text: 'c' })
+    await client({ maxOutputTokens: 777 }).generate(request([user('hi')], { minOutputTokens: 30_000 }))
+    await client({}).generate(request([user('hi')], { minOutputTokens: 30_000 }))
+    await client({ maxOutputTokens: 128_000 }).generate(request([user('hi')], { minOutputTokens: 30_000 }))
+    assert.deepEqual(llm.requests.map((r) => r.body.max_tokens), [30_000, 30_000, 128_000])
+  })
+
   it('开关 maxTokensField 和 systemRole 改变输出上限的字段名和系统提示词的角色', async () => {
     llm.enqueue({ text: 'ok' })
     await client({ maxOutputTokens: 500, options: { maxTokensField: 'max_completion_tokens', systemRole: 'developer' } }).generate(

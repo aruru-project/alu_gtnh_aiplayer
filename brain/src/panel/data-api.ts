@@ -2,7 +2,7 @@
 // 界面在 panel/public/（另一个 Work 在做）；这里只出数据，形状写在 docs/BRAIN_SPEC.md 的“面板的数据接口”。
 // 和 server.ts 分开放，是为了两边并行改的时候少撞：server.ts 里只有几行路由指到这里。
 
-import type { AgentState, AgentStatus } from '../agent/agent.ts'
+import type { AgentState, AgentStatus, CompactNowResult } from '../agent/agent.ts'
 import type { LinkState } from '../agent/lines.ts'
 import type { RoutineView } from '../agent/routine.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
@@ -68,9 +68,35 @@ export function runRecords(runs: RunLogStore | undefined, params: URLSearchParam
 export interface HistorySize {
   turns: number
   hasSummary: boolean
+  /**
+   * 这条线下一次调模型时上下文大概多大（token），和 threshold 比的就是它：最近一次模型调用接口报的输入 token
+   * （含提示词和工具清单）加上那之后历史的增减；大脑刚启动、这条线还没调过模型时是历史的“字符 ÷ 3”。
+   */
   estimatedTokens: number
   /** 超过它就压缩（这条线的设置）。 */
   threshold: number
+  /** 历史最前面那份交接记录是哪几轮换成的；没有记录、或者老数据没记，就没有这一项。 */
+  summaryOf?: { from: number; to: number; turns: number; unknownBefore?: boolean }
+}
+
+/**
+ * POST /api/history/compact {line, dryRun?}：现在就把一条线的历史写成交接记录——不看阈值，最近那一段以外的全部换掉。
+ * dryRun: true 只写不存（历史不动），看它会写成什么；这条线正在跑一轮时也能试。不带 dryRun 的要等这条线停下来，
+ * 它正在跑一轮时回 409。用的是这条线自己的模型，要等模型写完才回（记录长的时候一两分钟）。
+ */
+export async function historyCompact(
+  agent: { compactNow?(line: LineName, opts: { dryRun?: boolean }): Promise<CompactNowResult> },
+  body: Record<string, unknown>,
+  reject: Reject,
+): Promise<unknown> {
+  const line = body.line
+  if (line !== 'talk' && line !== 'work') return reject(400, 'bad_request', 'line 要写 talk 或 work')
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') return reject(400, 'bad_request', 'dryRun 要写 true 或 false')
+  if (!agent.compactNow) return reject(404, 'not_found', '这个大脑不支持在面板上压缩历史')
+  const res = await agent.compactNow(line, { dryRun: body.dryRun === true })
+  if (!res.ok) return reject(res.reason === 'busy' ? 409 : 503, res.reason, res.message)
+  const { ok: _ok, ...rest } = res
+  return { line, dryRun: body.dryRun === true, ...rest }
 }
 
 export interface StatusDeps {
@@ -107,6 +133,7 @@ function routineState(view: RoutineView): Record<string, unknown> {
     ...(view.current ? { waiting: `${view.current.tool} ${view.current.input}`, waitingSince: view.current.since, ...(view.current.taskId ? { waitingTask: view.current.taskId } : {}) } : {}),
     ...(view.limitMs !== undefined ? { limitMs: view.limitMs } : {}),
     ...(view.ending !== undefined ? { ending: view.ending } : {}),
+    ...(view.endingText !== undefined ? { endingText: view.endingText } : {}),
     ...(run?.file !== undefined ? { file: run.file } : {}),
   }
 }

@@ -6,7 +6,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import type { AgentState, AgentStatus } from '../agent/agent.ts'
+import type { AgentState, AgentStatus, CompactNowResult } from '../agent/agent.ts'
 import type { LinkState, StopResult } from '../agent/lines.ts'
 import type { LineName } from '../tools/index.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
@@ -48,7 +48,8 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
-import { blueprintRead, logPage, panelStatus, runList, runRecords } from './data-api.ts'
+import { blueprintRead, historyCompact, logPage, panelStatus, runList, runRecords } from './data-api.ts'
+import type { HistorySize } from './data-api.ts'
 
 export interface PanelDeps {
   config: ConfigStore
@@ -90,6 +91,10 @@ export interface PanelDeps {
     ownCancel<T extends { ids?: string[]; replaced?: string[] }>(fn: () => Promise<T>): Promise<T>
     /** 停掉正在跑的例程；没有在跑的返回 false。 */
     stopRoutine?(): boolean
+    /** 一条线下一次调模型时上下文大概多大（token）：和它的压缩阈值比的那个数。没提供时按历史的字符数估。 */
+    contextTokens?(line: LineName): number
+    /** 现在就把一条线的历史写成交接记录（dryRun：只写不存）。 */
+    compactNow?(line: LineName, opts: { dryRun?: boolean }): Promise<CompactNowResult>
   }
   reminders: { list(): Reminder[]; remove(id: string): boolean }
   /** 它写的程序（例程、run_program）每次运行的明细。没提供时 /api/runs 是空的。 */
@@ -597,6 +602,12 @@ export class PanelServer {
         this.deps.log.add({ kind: 'info', text: `${line === 'talk' ? '对话线的' : line === 'work' ? '干活线的' : '两条线的'}对话历史已在面板上清空（记忆不受影响）。` })
         return { ok: true }
       }
+      case 'POST /history/compact':
+        return historyCompact(this.deps.agent, body, (status, code, message) => {
+          throw new HttpError(status, code, message)
+        }).finally(() => {
+          this.overviewCache = undefined
+        })
       case 'DELETE /reminders':
         return { removed: typeof body.id === 'string' && this.deps.reminders.remove(body.id) }
       case 'GET /settings':
@@ -686,7 +697,7 @@ export class PanelServer {
       // 意见簿里主人还没看过的条数：导航上的那个数字
       feedback: { unread: this.deps.feedback.unread() },
       reminders: this.deps.reminders.list(),
-      history: { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: historyTokens(h.summary, h.turns) },
+      history: { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: this.deps.agent.contextTokens?.('work') ?? historyTokens(h.summary, h.turns) },
       histories: { talk: this.historySize('talk') ?? null, work: this.historySize('work') ?? null },
     }
     this.overviewCache = { at: now, data }
@@ -694,12 +705,19 @@ export class PanelServer {
   }
 
   /** 一条线的历史有多长、离压缩还有多远。 */
-  private historySize(line: LineName): { turns: number; hasSummary: boolean; estimatedTokens: number; threshold: number } | undefined {
+  private historySize(line: LineName): HistorySize | undefined {
     const store = line === 'talk' ? this.deps.talkHistory : this.deps.history
     if (!store) return undefined
     const h = store.get()
     const limits = this.deps.config.get().bot.limits
-    return { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: historyTokens(h.summary, h.turns), threshold: line === 'talk' ? limits.talkHistoryTokenThreshold : limits.historyTokenThreshold }
+    return {
+      turns: h.turns.length,
+      hasSummary: h.summary.length > 0,
+      // 和阈值比的那个数：这条线下一次调模型时上下文大概多大（见 agent 的 contextTokens）
+      estimatedTokens: this.deps.agent.contextTokens?.(line) ?? historyTokens(h.summary, h.turns),
+      threshold: line === 'talk' ? limits.talkHistoryTokenThreshold : limits.historyTokenThreshold,
+      ...(h.summaryOf ? { summaryOf: h.summaryOf } : {}),
+    }
   }
 
   /** 总停止（和对话线的 stop_work 是同一件事）：取消身体的全部任务、停掉例程、打断干活线正在想的那一步。 */

@@ -135,8 +135,10 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   // 对话线一轮就是回一句话、查几样东西、把事交出去
   talkMaxSteps: 20,
   dailyTokenLimit: 0,
-  historyTokenThreshold: 24_000,
-  talkHistoryTokenThreshold: 60_000,
+  // 这条线的上下文（提示词、工具清单和历史，按模型接口报的输入 token 校准）超过这么多就压缩历史。
+  // 现在的模型上下文大多是一百万 token，压一次要重写整段提示词缓存、还会丢细节，所以给得宽；对话线的事少，给一半。
+  historyTokenThreshold: 240_000,
+  talkHistoryTokenThreshold: 120_000,
   memoryMaxChars: 4000,
   toolResultMaxChars: 6000,
   // 例程不限调用次数（一口气搬一万多个东西的活要几千次调用），靠时长、连续失败和随时可停来管：默认两小时，最长十二小时

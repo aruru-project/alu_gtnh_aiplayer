@@ -115,7 +115,7 @@ export function buildAnthropicBody(config: ProviderConfig, req: GenerateRequest)
 
   const body: Record<string, unknown> = {
     model: config.model,
-    max_tokens: req.maxOutputTokens ?? config.maxOutputTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
+    max_tokens: Math.max(req.minOutputTokens ?? 0, req.maxOutputTokens ?? config.maxOutputTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS),
     messages: wire,
   }
   if (req.system.trim().length > 0) {
