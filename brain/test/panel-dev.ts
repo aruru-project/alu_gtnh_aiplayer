@@ -684,7 +684,14 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
   const usage = { input: talk ? 6200 : 48000, output: 90, cacheRead: talk ? 5400 : 45000 }
 
   if (talk) {
-    if (afterTool) return { text: '', usage }
+    if (afterTool) {
+      // 记到清单上了：应一声
+      const asked = messages[messages.length - 2]?.tool_calls?.[0]?.function?.name
+      return { text: asked === 'todo' ? '记上了。' : '', usage }
+    }
+    // 主人说“记一下：……”：记到工作清单上（和干活线送来的话一起到的时候也先办这件）
+    const remember = /对你说[:：]\s*记(?:一下|上)[:：，,]?\s*([^\n]+)/.exec(todo)
+    if (remember) return { toolCalls: [{ name: 'todo', input: { add: [{ text: remember[1]!.trim() }] } }], usage }
     const fromWorker = /干活线(.*?)[:：]\s*([\s\S]*)/.exec(todo)
     if (fromWorker) {
       const body = fromWorker[2]!.split('\n')[0]!.slice(0, 120)
@@ -704,6 +711,8 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
   const opening = [...messages].reverse().find((m) => m.role === 'user')
   const openingText = typeof opening?.content === 'string' ? opening.content : ''
   const slow = /慢/.test(openingText.split('[最近发生的事')[0] ?? '') ? { delayMs: 6000 } : {}
+  // 工作清单把它叫醒了（它停着，清单上还有没做的）：不动手、也不留话（留了话会叫醒对话线，在聊天里说一句）
+  if (!afterTool && /工作清单上还有/.test(todo)) return { text: '', usage }
   if (afterTool) {
     const result = typeof last.content === 'string' ? last.content : ''
     // 开了任务或者例程：这一轮到此为止，等它结束再被叫醒
@@ -1030,6 +1039,18 @@ b.save('三色旗')`
     const grid = gridFromDraft(hutDraft.draft)
     const png = renderView(grid, new BlockLooks(design.colors()), { view: 'iso', from: 'southeast' }, { maxSize: 480, title: 'Draft' }).png
     samplePicture = new PictureStore(DATA_DIR).save(png, blocksOfGrid(grid))
+  }
+  // 工作清单：几条没做的、一条在等人的、两条做完的，谁写的都有
+  const { TodoStore } = await import('../src/store/todo.ts')
+  const todoStore = new TodoStore(DATA_DIR)
+  if (todoStore.list().length === 0) {
+    const t0 = Date.now()
+    todoStore.apply({ add: [{ text: '平整基地南边那块地，y=69' }, { text: '问阿露明天要不要一起下矿' }] }, 'talk', t0 - 5 * 3600_000)
+    todoStore.apply({ change: [{ id: 1, state: 'done' }, { id: 2, state: 'done' }] }, 'work', t0 - 4 * 3600_000)
+    todoStore.apply({ add: [{ text: '修二号高炉', note: '不急，耐火砖够了再说' }] }, 'talk', t0 - 3 * 3600_000)
+    todoStore.apply({ change: [{ id: 3, waitingFor: 'Steve 把耐火砖送来' }] }, 'work', t0 - 2 * 3600_000)
+    todoStore.apply({ add: [{ text: '把身上的钢锭搬进抽屉矩阵' }] }, 'work', t0 - 40 * 60_000)
+    todoStore.apply({ add: [{ text: '做 4 台基础卷板机', note: '放在一楼东边' }] }, 'owner', t0 - 20 * 60_000)
   }
   // 两条提醒：一条对话线定的，一条干活线定的（到点叫醒各自那条线）
   const { ReminderStore } = await import('../src/store/reminders.ts')
