@@ -377,6 +377,18 @@ public final class BridgeApi {
                 J.reqInt(p, "slot"),
                 J.i(p, "button", 0),
                 J.bool(p, "shift", false)));
+        bridge.register(
+            "screen.press",
+            p -> alu.aiplayer.act.Screens.press(
+                bots.requireOnline(J.reqStr(p, "bot")),
+                J.str(p, "panel", null),
+                J.reqStr(p, "key"),
+                J.i(p, "button", 0),
+                J.bool(p, "shift", false)));
+        bridge.register(
+            "screen.set",
+            p -> alu.aiplayer.act.Screens
+                .set(bots.requireOnline(J.reqStr(p, "bot")), J.str(p, "panel", null), J.reqStr(p, "key"), p.get("value")));
         bridge.register("screen.close", p -> alu.aiplayer.act.Screens.close(bots.requireOnline(J.reqStr(p, "bot"))));
         bridge.register("task.cancel", p -> {
             Bot b = bots.require(J.reqStr(p, "bot"));

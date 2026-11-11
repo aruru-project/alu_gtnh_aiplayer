@@ -126,6 +126,9 @@ public final class Screens {
         }
         o.add("slots", slots);
         o.addProperty("slotCount", c.inventorySlots.size());
+        // What the screen has besides slots: switches, choices, further panels, fluid slots, buttons.
+        JsonArray controls = Controls.list(c);
+        if (controls.size() > 0) o.add("controls", controls);
         ItemStack held = p.inventory.getItemStack();
         if (held != null) o.add("cursor", Names.describe(held));
         return o;
@@ -149,6 +152,30 @@ public final class Screens {
             throw new RpcException("invalid", "the screen did not take that click: " + e);
         }
         return look(bot);
+    }
+
+    /** Works one of the screen's controls as a click does; see {@link Controls#press}. */
+    public static JsonObject press(Bot bot, String panel, String key, int button, boolean shift) {
+        Container c = open(bot);
+        Controls.press(c, panel, key, button, shift);
+        c.detectAndSendChanges();
+        return look(bot);
+    }
+
+    /** Sets one of the screen's controls to a value; see {@link Controls#set}. */
+    public static JsonObject set(Bot bot, String panel, String key, com.google.gson.JsonElement value) {
+        Container c = open(bot);
+        Controls.set(c, panel, key, value);
+        c.detectAndSendChanges();
+        return look(bot);
+    }
+
+    private static Container open(Bot bot) {
+        EntityPlayerMP p = bot.player();
+        if (!bot.tasks.idle()) throw new RpcException("busy", "a task is running");
+        Container c = p.openContainer;
+        if (c == null || c == p.inventoryContainer) throw RpcException.badRequest("no screen is open; open one first");
+        return c;
     }
 
     /** Closes the screen. Whatever is still on the cursor goes back into the inventory, or to the ground. */
