@@ -92,6 +92,13 @@ export interface StopResult {
 
 /** 被叫停时干活线正有一个工具在执行：最多等这么久让它回来，再把任务取消一遍。 */
 const HALT_SETTLE_MS = 3000
+/**
+ * 两条线互相叫醒：对话线带话叫醒干活线，干活线留下的话又叫醒对话线。两个模型客气起来（“收到”“不客气”……）就是一个没人参与、
+ * 一直花 token 的循环。所以数着：中间没有任何外面的事（有人说话、面板指令、提醒、任务或例程结束、死亡），话头在两条线之间
+ * 连着倒了这么多次以后，再往来的话照常送到，但只作背景、不再叫醒对方，并如实告诉发的那一方。有外面的事就从头数。
+ */
+export const VOLLEY_MAX = 12
+const SPINNING = `The two lines have now woken each other ${VOLLEY_MAX} times in a row with no one speaking and nothing happening in the game (no task or routine ending), so the program has stopped waking them for each other. This message is there as background when something else wakes the other line; a player speaking, or a task ending, puts things back to normal.`
 const NOTE_WORD: Record<WorkerNote, string> = { report: '汇报', question: '提问', result: '做完留下的话', trouble: '出了状况' }
 const MIGRATION_NOTE =
   '大脑升级过：从现在起“跟人说话”和“操作身体干活”分成了两条线，你是干活线。这之前的历史是升级前留下的，那时只有一条线，所以里面有你用 say、whisper 直接对玩家说话的记录。现在对玩家说话的是对话线：你要让人知道的事用 report，或者留在一轮结束时的文字里。'
@@ -151,6 +158,9 @@ export class Lines {
   private readonly deps: LinesDeps
   private readonly shared: LineShared = newLineShared()
   private links: LinkState = {}
+  /** 话头在两条线之间连着倒了几次（中间没有外面的事），和上一次是谁发的。 */
+  private volley = 0
+  private lastFrom: LineName | undefined
 
   constructor(deps: LinesDeps) {
     this.deps = deps
@@ -188,7 +198,7 @@ export class Lines {
       settings: () => deps.settings('work'),
       tools: LINE_TOOLS.work,
       history: deps.histories.work,
-      links: { toTalk: (kind, text, at) => this.toTalk(kind, text, at) },
+      links: { toTalk: (kind, text, at) => this.toTalk(kind, text, at), outside: () => this.outside() },
     })
     this.talk = new Agent({
       ...common,
@@ -238,6 +248,8 @@ export class Lines {
     if (ev.type === 'chat') this.deps.chatLog?.add({ time: ev.time, kind: 'chat', who: ev.player, text: ev.message, ...(ev.speaker ? { speaker: ev.speaker } : {}) })
     else if (ev.type === 'whisper') this.deps.chatLog?.add({ time: ev.time, kind: 'whisper', who: ev.from, text: ev.message, ...(ev.speaker ? { speaker: ev.speaker } : {}) })
     else if (ev.type === 'panel_command') this.deps.chatLog?.add({ time: ev.time, kind: 'panel', who: 'owner (panel)', text: ev.text })
+    // 外面的事：有人说话、提醒到点、任务结束、死了。两条线之间“连着往来了几次”从头数
+    if (ev.type === 'chat' || ev.type === 'whisper' || ev.type === 'panel_command' || ev.type === 'reminder' || ev.type === 'task_ended' || ev.type === 'death') this.outside()
     const to = lineOf(ev)
     if (to === 'talk') this.talk.handleEvent(ev)
     else if (to === 'work') this.work.handleEvent(ev)
@@ -307,17 +319,41 @@ export class Lines {
     }
   }
 
+  private outside(): void {
+    this.volley = 0
+    this.lastFrom = undefined
+  }
+
+  /**
+   * 一条线要给另一条线送话了：话头换了手就数一次。返回 true 表示已经连着倒了太多次，这一条只作背景送、不叫醒对方。
+   * 同一条线连着发几条（干活线一轮里汇报了三次）不算换手。
+   */
+  private spinning(from: LineName): boolean {
+    if (this.lastFrom !== from) {
+      this.lastFrom = from
+      this.volley++
+      if (this.volley === VOLLEY_MAX + 1) {
+        this.deps.log.add({
+          kind: 'error',
+          text: `两条线已经连着互相叫醒了 ${VOLLEY_MAX} 次，中间没有人说话、游戏里也没有事发生（没有任务或例程结束）。为免空转，之后它们之间的话照常送到，但只作背景、不再互相叫醒；有人说话或有任务结束后恢复。`,
+        })
+      }
+    }
+    return this.volley > VOLLEY_MAX
+  }
+
   // ── 对话线 → 干活线 ──
 
   /** tell_worker：把一件事交给干活线，或者带一句话。当时的人的原话原样附上。 */
   private tell(text: string, said: SaidEvent[], saidBefore: boolean, at: TurnAt): string {
     const now = this.now()
     const ev: AgentEvent = { type: 'told', time: now, text, said, ...(saidBefore ? { saidBefore: true } : {}) }
+    const spinning = this.spinning('talk')
     this.deps.log.add({
       kind: 'relay',
       agent: 'talk',
       ...at,
-      text: `对话线 → 干活线：${firstLine(text)}`,
+      text: `对话线 → 干活线${spinning ? '（只作背景，没有叫醒它）' : ''}：${firstLine(text)}`,
       detail: describeEvent(ev),
       relay: { type: 'tell', from: 'talk', to: 'work', quotes: said.length },
     })
@@ -325,7 +361,8 @@ export class Lines {
     const waiting = this.links.waiting
     // 带的话到了：它不再是“在等回答”（是不是答了它的问题由它自己看）
     if (waiting) this.saveLinks({ ...this.links, waiting: undefined })
-    this.work.handleEvent(ev)
+    this.work.handleEvent(ev, spinning ? { background: true } : {})
+    if (spinning) return `Delivered, but it does not wake the worker. ${SPINNING}`
     const when = before.model.outage
       ? `The worker's model interface is failing (${before.model.outage.lastError}); it takes this up when the interface works again.`
       : before.turn
@@ -410,17 +447,20 @@ export class Lines {
   private toTalk(kind: WorkerNote, text: string, at: TurnAt): string {
     const now = this.now()
     const line = firstLine(text)
+    // 出了状况是程序替它报的（本来就限频），不算两条线之间的你来我往
+    const spinning = kind !== 'trouble' && this.spinning('work')
     this.deps.log.add({
       kind: 'relay',
       agent: 'work',
       ...at,
-      text: `干活线 → 对话线（${NOTE_WORD[kind]}）：${line}`,
+      text: `干活线 → 对话线（${NOTE_WORD[kind]}${spinning ? '，只作背景，没有叫醒它' : ''}）：${line}`,
       ...(line !== text ? { detail: text } : {}),
       relay: { type: kind, from: 'work', to: 'talk' },
       ...(kind === 'trouble' ? { isError: true } : {}),
     })
     this.saveLinks({ ...(kind === 'question' ? { waiting: { text, since: now } } : this.links.waiting ? { waiting: this.links.waiting } : {}), lastReport: { type: kind, text, time: now } })
-    this.talk.handleEvent({ type: 'worker', time: now, kind, text })
+    this.talk.handleEvent({ type: 'worker', time: now, kind, text }, spinning ? { background: true } : {})
+    if (spinning) return `Sent, but it does not wake the talk line. ${SPINNING}`
     return kind === 'question'
       ? 'Sent to the talk line as a question. The answer comes back as a message from the talk line: at your next step if you are still working, or by waking you if your turn has ended. It can take a while when your owner has to be asked.'
       : 'Sent to the talk line.'

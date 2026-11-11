@@ -123,6 +123,8 @@ export interface LineLinks {
   workerLine?(now: number): string
   /** 干活线送给对话线：汇报、提问、一轮结束留下的话、出了状况。 */
   toTalk?(kind: WorkerNote, text: string, at: TurnAt): string
+  /** 这条线上发生了一件“外面的事”（不是另一条线引起的）：例程有了结局。两条线之间“连着往来了几次”从头数。 */
+  outside?(): void
 }
 
 /** 叫停干活线的结果。 */
@@ -481,8 +483,13 @@ export class Agent {
    * 这条线收到一个事件：记日志 → 唤醒策略 → 排队或进背景。哪些事件到哪条线由 agent/lines.ts 分。
    * logged：这件事已经记过日志了（两条线都收到的身体事件由干活线记一次；两条线之间的往来在发的那一刻记过）。
    */
-  handleEvent(ev: AgentEvent, opts: { logged?: boolean } = {}): void {
+  handleEvent(ev: AgentEvent, opts: { logged?: boolean; background?: boolean } = {}): void {
     const now = this.now()
+    // 只作背景：不叫醒模型，下次有事时它看得到（两条线空转时，往来的话这样送）
+    if (opts.background) {
+      this.pushBackground(ev)
+      return
+    }
     // 例程开的任务：开始、结束都交给例程，不叫醒模型（例程自己把每一步记进了日志，做完会一次叫醒）
     if ((ev.type === 'task_ended' || ev.type === 'task_started') && this.routine?.owns(ev.task.id)) {
       if (ev.type === 'task_ended') {
@@ -646,6 +653,7 @@ export class Agent {
 
   /** 例程结束了：记一笔，叫醒模型，把它的情况和日志给模型看。 */
   private routineEnded(view: RoutineView): void {
+    this.deps.links?.outside?.()
     const text = describeRoutine(view, this.now())
     this.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : '停了'}：${view.ending ?? ''}`, detail: text, source: 'routine', runId: view.id, ...(view.run ? { run: view.run } : {}) })
     if (this.quietRoutineEnd) {
@@ -1184,13 +1192,16 @@ export class Agent {
 
     saveTurn()
 
-    // 它这一轮说了话：跟它说话的人接下来一段时间不用再叫名字
+    // 它这一轮说了话：跟它说话的人接下来一段时间不用再叫名字。
+    // 这一轮不是被谁的话叫醒的（干活线做完了，它来告诉人）也一样：给最近一个跟它说过话的人续上，他接一句“好，放箱子里”不用再带名字。
     if (this.turnSpoke) {
       const now = this.now()
       for (const ev of triggers) {
         if (ev.type === 'chat') this.lastExchange.set(ev.player.toLowerCase(), now)
         else if (ev.type === 'whisper') this.lastExchange.set(ev.from.toLowerCase(), now)
       }
+      const last = this.shared.lastSpeaker
+      if (talk && last !== undefined) this.lastExchange.set(last.toLowerCase(), now)
     }
 
     this.lastTurn = { id: turnId, endedAt: this.now(), steps, how: hitLimit ? 'limit' : 'ended' }
