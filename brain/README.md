@@ -235,7 +235,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 两条线各有一份工具清单（`tools/index.ts` 的 `TALK_TOOLS`、`WORK_TOOLS`），模型能用的东西分三层（细节见 `docs/SCRIPTS.md` 的“库函数”）：
 
 - **工具**：连说明和参数 schema 每一轮都发给模型，它直接调。
-  - **干活线**：操作身体的全部，加上查、记忆、手册、意见簿和 `report`；没有对玩家说话的（`say`、`whisper`）和提醒。不能看图的模型拿到 51 个、45,753 字符；能看图的 53 个、四万八千字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。
+  - **干活线**：操作身体的全部，加上查、记忆、手册、意见簿和 `report`；没有对玩家说话的（`say`、`whisper`）和提醒。不能看图的模型拿到 52 个、46,783 字符；能看图的 54 个、四万九千字符左右（看图的 `view_area`、`view_image` 只发给能看图的模型；`view_draft` 不能看图时只留出文字的那些参数）。
   - **对话线**：`whisper`、`tell_worker`、`worker_status`、`stop_work`、所有只查不动的、`run_program`、记忆、提醒、手册、意见簿；没有任何会动身体的，也没有 `say`（它写的文字就是它说的话）。不能看图的模型拿到 28 个、20,951 字符，不到干活线的一半；能看图的 30 个。它每回一句话都带着这份清单。
 - **库函数**（13 个）：不发给模型，在它写的程序里 `await tool(名字, 参数)` 调。`run_program` 的说明后面带着一份索引（每个一行，整份不超过 2000 字符），模型靠它知道这些函数存在。对话线的索引里只有只查不动的（没有会开任务的 `haul_items`）。
 - **旧名字**（6 个）：合并掉的工具原来的名字，不发、不提，只为已经存着的例程、笔记和它自己写的手册还能用。
@@ -265,7 +265,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 写程序 | `run_program`（当场跑完，只能调查询类的；两条线各跑各的，互不挡着）`view_draft`；干活线：`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |
 | 物品（干活线） | `deposit_items` `withdraw_items`（位置，或者身上的一个包；位置带 `side` / `sneak` 是点那个面、蹲着开出来的界面——覆盖板里的东西这样存取）`collect_items` `give_items` `use_item`（右键：拿着身上的一件东西，或者空手；点方块的哪个面、哪一点、连点几下都能定——按钮、拉杆、抽屉的某一格） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
 | 制作 | `find_item`（物品和流体）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines`；干活线：`craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
-| 界面（通用，干活线） | `open_screen` `click_slot` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲） | |
+| 界面（通用，干活线） | `open_screen` `click_slot` `use_control` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲，结果里连界面上格子以外的控件一起列；`use_control` 按或者设这些控件——开关、选项、页签、流体格、按钮） | |
 | 任务书 | `find_quests` `get_quest` | `list_quest_lines`（各章和进度） |
 | 多方块结构 | | `find_structure` `check_structure` |
 | 任务、记忆、手册、意见簿 | `task_status` `remember` `forget` `list_manuals` `read_manual` `write_manual`（把主人教的做法写成自己的手册）`report_problem`；干活线：`cancel_task`；对话线：`set_reminder`（提醒到点叫醒的是对话线） | |
@@ -281,7 +281,9 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 - **身体读得懂状态的**：`world.machines` 列出来的 GregTech 单方块加工机器和多方块主机。照旧给完整判断：电压、炉温、成型没有、有没有电、忙不忙。蒸汽机器不烧电——存着 0 EU 不算“没电”，电压也不比，写明“有没有蒸汽读不出来，要试”（身体现在不说一台机器烧不烧电，大脑先按名字里有没有 Steam 认；没有能源仓却成型了的多方块也按蒸汽算）。
 - **身体读不懂、配方册认得的**：配方册每个配方页的 `machines`（做这类配方的机器，作为物品的 id + meta）对 `world.containers` 里的容器。一个方块 id 下只有一种机器的（熔炉）直接认，有好几种的（`IC2:blockMachine`、不属于加工机器的 GregTech 方块）按英文名对。对得上的就是一台“可以试”的机器：`find_machines` 把它们列在后面一段，`find_recipes` 写 CAN TRY，`process_items` 对它和对别的机器一样用。这种机器里的东西（燃料、没取走的产物）不算库存。
 - 列着合成台的配方页（AE2、ProjectRed 自己的合成页，导出时没标成合成格）不当机器；没列机器的页（信息页、图表）它做不了。
-- 没有现成办法的界面（要一格格点的、不认识的）：`open_screen` 等三个工具，对应协议的 `screen.*`。结果把界面自己的格子（哪些是产物格、哪些只显示）和它背包里的格子分开列。怎么对付没见过的机器写在 `screens` 手册里：先 `process_items` 直接试，不行就打开界面自己看、自己点，还不行再报给主人并记进意见簿。
+- 没有现成办法的界面（要一格格点的、不认识的）：`open_screen` 等四个工具，对应协议的 `screen.*`。结果把界面自己的格子（哪些是产物格、哪些只显示）和它背包里的格子分开列。
+- **界面上格子以外的东西**（协议的 `controls`、`screen.press`、`screen.set`）：开关、数字、文字、选项、能再打开的面板（覆盖板的页签）、流体格、按钮。`open_screen` 照实列出来——名字是界面自己起的（`fluidAutoOutput`、`cover_panel_west`……），大脑不解释任何一个是干什么的，只写种类、现在的值、是不是只显示；`use_control` 不给 `value` 是按一下，给了是设成那个值。这是改机器的设置，和玩家点那一下是一回事。机器罐里的流体出不去（自动输出关着）、东西在覆盖板的页签里，靠的就是它。
+- **产物是流体的加工**：身体在“没有物品可取、但机器的罐（多方块是输出仓）里的东西变了”时算任务做成；`process_items` 的结果照实说做成了、产物是流体、现在在哪个罐里多少 mB，流体留在原处。怎么对付没见过的机器写在 `screens` 手册里：先 `process_items` 直接试，不行就打开界面自己看、自己点，还不行再报给主人并记进意见簿。
 
 ### 多方块结构（玩家说的“投影”）
 

@@ -94,7 +94,7 @@ const ACTING = [
   'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
   'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks', 'build_blueprint',
   'start_routine', 'routine_status', 'stop_routine', 'publish_draft', 'delete_draft',
-  'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'close_screen',
+  'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'use_control', 'close_screen',
   'craft_item', 'process_items', 'cancel_task',
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
@@ -214,9 +214,11 @@ describe('模型拿到的工具清单', () => {
   // 两条线各有清单、各有上限：
   //   干活线：分线之前单代理的上限是 46,600（第四批——覆盖板、流体、方块的全部数据——之后实际 46,085）。分线后实际 45,753：
   //           少了 say、whisper、set_reminder（-1,233），多了 report（+763）和库函数索引里 recent_chat 的一行（+138）。上限不动。
+  //           第五批（界面上格子以外的控件）之后实际 46,783，上限从 46,600 调到 47,200（+600）：多了 use_control（+1,005，
+  //           按和设界面自己的开关、选项、页签、流体格——没有它就开不了机器的自动输出），open_screen 的说明多一句（+25）。
   //   对话线：实际 20,951（28 个工具），不到干活线的一半；上限留约 2%。它每回一句话都带着这份清单，回话快不快就看它。
   //           里面最大的几个是它用来自己回答问题的：run_program 连库函数索引（2,7xx）、find_in_storage、report_problem、find_recipes。
-  for (const [line, ceiling] of [['work', 46_600], ['talk', 21_400]] as const) {
+  for (const [line, ceiling] of [['work', 47_200], ['talk', 21_400]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

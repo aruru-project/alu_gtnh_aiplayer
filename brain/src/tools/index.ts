@@ -64,7 +64,7 @@ import {
   useItem,
   withdrawItems,
 } from './tasks.ts'
-import { clickSlot, closeScreen, openScreen } from './screen.ts'
+import { clickSlot, closeScreen, openScreen, useControl } from './screen.ts'
 import { checkStructure, findStructure, readBlocks } from './structures.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure } from './types.ts'
 import type { LineName, Tool, ToolContext, ToolResult } from './types.ts'
@@ -116,6 +116,7 @@ export const WORK_TOOLS: readonly Tool[] = [
   useItem,
   openScreen,
   clickSlot,
+  useControl,
   closeScreen,
   findItem,
   findRecipes,

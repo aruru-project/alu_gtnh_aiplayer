@@ -1337,11 +1337,28 @@ export function processErrorLines(detail: Record<string, unknown>): string[] {
   return [line]
 }
 
-/** process 任务的结果：放进去多少、取回了什么（产物，以及没被消耗的电路、模具和没用完的原料）。 */
+/**
+ * process 任务的结果：放进去多少、取回了什么（产物，以及没被消耗的电路、模具和没用完的原料）。
+ * 产物是流体的配方（流体提取机把钢板化成熔融钢）没有物品可取：身体看到机器的罐（多方块是输出仓）里的东西变了，算做成，
+ * 结果带 fluids（那里现在有什么）。照实说：做成了，产物是流体，现在在哪、多少；它留在原处。
+ */
 export function processResultLines(result: Record<string, unknown>): string[] {
-  const { put, outputs, timedOut, freeSlots, ...rest } = result
+  const { put, outputs, timedOut, freeSlots, fluids, ...rest } = result
   const got = kindList(outputs)
   let line = `put ${count(put)} item(s) into the machine; took out: ${got.length > 0 ? got.map((o) => kindText(o.count, o)).join(', ') : 'nothing'}`
+  if (Array.isArray(fluids)) {
+    // 多方块给的是输出仓（带坐标），单方块给的是它自己的罐
+    const hatches = fluids.some((f) => isObject(f) && typeof f.x === 'number')
+    const holds = (fluids as unknown[])
+      .filter(isObject)
+      .map((f) => {
+        const tank = tankText({ fluid: typeof f.fluid === 'string' ? f.fluid : undefined, name: typeof f.fluidName === 'string' ? f.fluidName : typeof f.name === 'string' && !hatches ? f.name : undefined, amount: count(f.amount), capacity: typeof f.capacity === 'number' ? f.capacity : undefined } as Tank)
+        return hatches ? `${typeof f.kind === 'string' ? f.kind : 'hatch'} ${formatPos(f as { x: number; y: number; z: number })}: ${tank}` : tank
+      })
+    line += `; it ran, and what it made is a fluid, not an item: it is in ${hatches ? "the machine's output hatches" : "the machine's tank"}, which now ${hatches ? 'hold' : 'holds'} ${holds.length > 0 ? holds.join('; ') : 'nothing readable'}. A fluid stays where it is until the machine's own auto-output, a pipe or a fluid container moves it`
+    // 身体那句英文说明讲的是同一件事，上面已经说全了
+    delete rest.note
+  }
   if (timedOut === true) line += '; timedOut: the wait ran out before it finished, the machine is still working on the rest'
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`

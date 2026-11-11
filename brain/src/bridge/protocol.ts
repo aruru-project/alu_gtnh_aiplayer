@@ -442,7 +442,38 @@ export interface ScreenSlot {
   ghost?: boolean
 }
 
-/** screen.open / look / click 的结果：点完之后界面的样子。有的界面点开后过一小会儿才出现，那时 open 是 false。 */
+/**
+ * 界面上格子以外的一样东西（screen.look 的 controls）：开关、数字、文字、选项、能再打开的面板（页签）、流体格、按钮。
+ * 名字（panel、key）是界面自己起的，身体不知道任何一个是干什么的。readOnly 的只是显示，不收玩家的改动。
+ */
+export interface ScreenControl {
+  /** 它在哪个面板上（界面自己的名字）。只在 key 重名时才需要用它区分。 */
+  panel?: string
+  /** 它的名字，如 fluidAutoOutput:0；冒号前的那一段不重名时可以单独用。 */
+  key: string
+  /** switch / number / text / choice / panel / fluid / button / value（只是显示）/ other。 */
+  kind: 'switch' | 'number' | 'text' | 'choice' | 'panel' | 'fluid' | 'button' | 'value' | 'other' | (string & {})
+  /** 开关、数字、文字、选项现在的值。 */
+  value?: unknown
+  /** 选项：能选的那几个。 */
+  options?: string[]
+  /** 面板：现在开着没有。打开以后它的格子出现在 slots 里。 */
+  open?: boolean
+  readOnly?: boolean
+  /** 流体格：里面是什么、多少、能装多少；玩家拿着容器点它时能不能往里倒（fills）、能不能从里面取（drains）；phantom 是只做设置用的假格子。 */
+  fluid?: string
+  name?: string
+  amount?: number
+  capacity?: number
+  fills?: boolean
+  drains?: boolean
+  phantom?: boolean
+  /** value / other：它在界面里是哪一类东西。 */
+  type?: string
+  unreadable?: boolean
+}
+
+/** screen.open / look / click / press / set 的结果：做完之后界面的样子。有的界面点开后过一小会儿才出现，那时 open 是 false。 */
 export interface ScreenState {
   open?: boolean
   screen?: string
@@ -450,6 +481,8 @@ export interface ScreenState {
   slots?: ScreenSlot[]
   /** 鼠标上拿着的东西。 */
   cursor?: Item
+  /** 界面上格子以外的东西；这个界面没有（不是 ModularUI 2 做的）就不带。 */
+  controls?: ScreenControl[]
 }
 
 export interface MachineInfo {

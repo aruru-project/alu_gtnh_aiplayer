@@ -114,6 +114,14 @@ export class BridgeApi {
   screenClick(bot: string, p: { slot: number; button?: number; shift?: boolean }): Promise<ScreenState> {
     return this.call('screen.click', { bot, ...p })
   }
+  /** 按一下界面上格子以外的一样东西：开关翻过来、面板打开或关上、按钮做它的事、流体格照鼠标上拿着的容器装或倒。 */
+  screenPress(bot: string, p: { key: string; panel?: string; button?: number; shift?: boolean }): Promise<ScreenState> {
+    return this.call('screen.press', { bot, ...p })
+  }
+  /** 把一个开关、数字、文字或选项设成 value。 */
+  screenSet(bot: string, p: { key: string; panel?: string; value: boolean | number | string }): Promise<ScreenState> {
+    return this.call('screen.set', { bot, ...p })
+  }
   screenClose(bot: string): Promise<Record<string, unknown>> {
     return this.call('screen.close', { bot })
   }

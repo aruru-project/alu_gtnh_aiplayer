@@ -1,4 +1,4 @@
-碰到没见过的机器、别的 mod 的机器、原版熔炉，或者任何不知道怎么用的界面（要点格子、要点按钮的）时看。
+碰到没见过的机器、别的 mod 的机器、原版熔炉，或者任何不知道怎么用的界面（要点格子、要点按钮的），或者要看、要改一台机器界面上的设置（自动输出的开关、覆盖板的页签）时看。
 
 # 任何带界面的方块你都能用
 你用东西的办法和玩家一样：走过去，打开它的界面，把东西点进去、点出来。身体不分是哪个 mod 的。所以没有“这种机器不支持”这回事，只有“身体读不读得懂它的状态”的区别：
@@ -13,6 +13,7 @@
    - Its slots：它自己的格子。标着 OUTPUT 的是产物格（放不进东西）；标着 display only 的只是显示（编程电路的设置），里面没有真东西；别的是能放东西的格子（原料、燃料、模具）。
    - Your own inventory：你背包里有东西的格子。
    - 每格前面的 slot 编号就是 click_slot 要的。
+   - Its controls besides slots：界面上格子以外的东西（开关、选项、页签、流体格、按钮），见下面“界面上格子以外的东西”。这一段没有，就是这个界面没有列得出来的控件。
 3. **自己点。** click_slot：
    - 按着 Shift 点你自己的一格（shift:true）：整组进它“该去的地方”（原料格、燃料格）。最常用。
    - 按着 Shift 点它的一格：整组回到你背包（取产物、把放错的拿回来）。
@@ -20,7 +21,20 @@
    - 每点一次都会给你点完之后的样子，照着看下一步。
 4. **用完 close_screen。** 开着界面时别的事都干不了；任务在跑的时候也开不了界面（先等任务结束）。
 5. 机器是慢慢做的：点进去以后关掉界面，过一会儿再打开看产物格，或者用 withdraw_items 取（对机器它默认只取产物格；要取原料格里的东西给 fromInputs:true）。
-6. **还不行**（界面里没有格子、要点界面里的按钮才开工、点了没反应）：告诉主人卡在哪——是哪个方块、界面叫什么、你试了什么——并用 report_problem 记一条。界面里的按钮（不是格子的那些）你点不了。
+6. **还不行**（界面里没有格子、也没有列出控件，点了没反应）：告诉主人卡在哪——是哪个方块、界面叫什么、你试了什么——并用 report_problem 记一条。界面里的按钮只有列在 controls 里的才按得到；有的界面（不是 GregTech 新式界面那种做法的）一个都列不出来。
+
+# 界面上格子以外的东西
+- 机器的界面上除了格子，还有开关、数字、文字、选项、能再打开的面板（页签）、流体格、按钮。open_screen（和每次点完、按完回来的界面）把它们列在 Its controls besides slots 下面：名字、种类、现在的值，按所在的面板分开。
+- **名字是这个界面自己起的**（fluidAutoOutput、itemAutoOutput、powerSwitch、cover_panel_west、ghostCircuitPanel、sideSelection_……），身体和这本手册都不知道每一个是干什么的：看名字、看它现在的值、按一下看界面变成什么样，是你自己读懂它的办法。
+- 标着 display only 的只是显示，不收改动；shown value 也只是显示。
+- use_control 按或者设一个控件，给它的名字（key）：
+  - 不给 value 是按一下，和玩家点它是一回事：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格见下一条。right: true 是右键，shift: true 是按着 Shift。
+  - 给 value 是设成那个值：开关 true / false，数字，文字，选项里的一个。
+  - 名字可以只写冒号前面那一段（fluidAutoOutput:0 写成 fluidAutoOutput）；两个面板上有重名的时，再给 panel。
+- 流体格（fluid slot）：玩家是鼠标上拿着装流体的容器（单元、桶）去点它。那一行写着它 gives to（能把里面的流体装进你鼠标上的空容器）、takes from（能收你鼠标上容器里的流体）。先 click_slot 点自己背包里的容器把它拿到鼠标上，再 use_control 点那个流体格，最后 click_slot 把容器放回背包。
+- **这改的是机器的设置**：和玩家在界面上点了那一下完全一样，不会自己恢复。改之前是什么值，结果里写着。
+- 例（开一台机器的流体自动输出）：流体提取机把钢板化成了熔融钢，流体留在它自己的罐里。`open_screen { at: { x: -527, y: 70, z: 41 } }`，controls 里有 `fluidAutoOutput:0 [switch]: off`；`use_control { key: "fluidAutoOutput" }` 之后那一行变成 on，几秒内罐里的流体被推到它输出面挨着的那台机器（隔壁固化器的罐里有了）。输出面朝哪边：机器存档数据里的 mFacing（inspect_block 带 detail），或者界面上 sideSelection_… 那几个面板。
+- 例（点开覆盖板的页签）：流体固化器的界面上有 `cover_panel_west [panel]: closed`，`use_control { key: "cover_panel_west" }` 之后它是 open，Its slots 从 4 格变成 13 格：多出来的 9 格就是西面那块覆盖板“基础槽位扩展”里的东西，可以用 click_slot 在机器的格子和它们之间挪（比如把模具从覆盖板挪进机器的模具格）。
 
 # 点哪个面、蹲不蹲
 - 有的方块点不同的面、蹲不蹲，打开的界面不一样。open_screen 的 side 是点哪个面（down / up / north / south / west / east），sneak: true 是蹲着点，hit 是点在那个面的哪一点（各 0–1）。给了 side 时你得已经站在那个面的前方（先 go_to 过去）。
@@ -31,7 +45,7 @@
 - 键是这个方块自己起的内部名字（mMode、lockedFluidName、gt.covers……），值是原样的，要你自己读懂；结果末尾会把里面出现的流体内部名、物品 id 对上游戏里的中文名。物品写成 { item, meta, count, name }。
 - 数据多时放不下：结果里写着一共多长、每一项多长；用 path 只看其中一项的全部（`path: "gt.covers"`、`"Inventory[3].tag"`）。在程序里 r.data.saved、r.data.says 是全的，可以写个循环把一片机器扫一遍。
 - 例：大型化学反应釜说“输出空间不足”，可五个输出仓都是空的。对每个输出仓 `inspect_block { x, y, z, detail: true }`：它的话里有一行 Locked to fluid.gas_gas，存档数据里 lockedFluidName 是 gas_gas——这个仓被锁成只收炼油气，别的流体进不来。五个仓各锁了什么，一比就知道哪种产物没有仓收。
-- 这是看，不是动。看懂了“是什么状态”，要改它还是靠界面和右键（open_screen、click_slot、use_item）。
+- 这是看，不是动。看懂了“是什么状态”，要改它还是靠界面和右键（open_screen、click_slot、use_control、use_item）。
 
 # 凿子（Chisel）
 - 凿子是一件拿在手里的工具，不是方块：`open_screen { item: { id: "chisel:chisel" } }` 打开它自己的界面，不用走到哪里。凿子有好几种（find_item "凿子"），它的 meta 是磨损，不用写。
@@ -48,7 +62,7 @@
 # 界面还能干什么
 - 别的 mod 的工作台、要摆格子的机器：一格格点进去。原版和匠魂的 3×3 合成用 craft_item 更省事。
 - 身上的东西的界面（背包）：open_screen 给 item。往包里存取东西用 deposit_items / withdraw_items 的 bag 更省事。
-- 例程里也能调这几个工具：同样的点法要重复很多遍时写成例程。
+- 例程里也能调这几个工具（open_screen、click_slot、use_control、close_screen）：同样的点法要重复很多遍时写成例程。程序里 r.data.controls 是全部控件 [{ panel, key, kind, value / open / fluid、amount…, readOnly? }]。
 
 # 要小心的
 - 机器里原来放着的东西（模具、燃料、别人的原料）是主人的：拿出来之前先问，用完放回去。

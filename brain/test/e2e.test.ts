@@ -2174,3 +2174,82 @@ it('端到端：主人说模具在流体固化器的覆盖板里 → 它搜库�
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())
 })
+
+it('端到端：钢板在流体提取机里化成了熔融钢，隔壁的固化器却是空的 → 加工的结果告诉它“做成了，产物是流体，在提取机的罐里” → 它打开提取机的界面，看到“流体自动输出”关着，按开 → 再看固化器，罐里有熔融钢了', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  const talk = relayTalk()
+  const GT = 'gregtech:gt.metaitem.01'
+  // 两台机器挨着，都在它够得着的地方
+  const EXTRACTOR = { x: 10, y: 64, z: -8 }
+  const SOLIDIFIER = { x: 11, y: 64, z: -8 }
+  const PANEL = 'basicmachine.fluidextractor.tier.02'
+  bridge.machines = [
+    {
+      ...EXTRACTOR, name: 'Basic Fluid Extractor', recipes: 'Fluid Extractor', tier: 'LV', inputSlots: 1, storedEU: 4000, inputVoltage: 32,
+      tanks: [{ capacity: 16000 }],
+      // 一个钢板化成 144 mB 熔融钢；流体自动输出关着（开了以后流到隔壁的固化器）
+      melts: [{ id: GT, meta: 17305, fluid: 'molten.steel', name: 'Molten Steel', mb: 144 }],
+      controls: [
+        { panel: PANEL, key: 'fluidAutoOutput:0', kind: 'switch', value: false },
+        { panel: PANEL, key: 'powerfail:0', kind: 'switch', value: false, readOnly: true },
+      ],
+      autoOutputTo: SOLIDIFIER,
+    },
+    { ...SOLIDIFIER, name: 'Basic Fluid Solidifier', recipes: 'Fluid Solidifier', tier: 'LV', inputSlots: 1, storedEU: 4000, inputVoltage: 32, tanks: [{ capacity: 16000 }] },
+  ]
+  await bridge.start()
+  await llm.start()
+  await talk.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const brain = startBrain(tmp.dir, bridge, { talk })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    await talk.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const alu = bridge.bots.get('Alu')!
+  alu.inventory = [{ slot: 0, id: GT, meta: 17305, count: 2, name: 'Steel Plate' }]
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+  const all = () => llm.requests.map((_, n) => seen(n)).join('\n---\n')
+
+  // 1. 把两个钢板放进流体提取机
+  llm.enqueue({ toolCalls: [{ name: 'process_items', input: { machine: EXTRACTOR, inputs: [{ id: GT, meta: 17305, count: 2 }] } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '把这两个钢板做成钢环')
+  await waitFor('the first turn ended', () => llm.requests.length === 2, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 2. 加工做完：没有物品出来，罐里多了熔融钢——任务是“完成”，结果说清产物是流体、在哪、多少。
+  //    它接着：打开提取机的界面 → 按开“流体自动输出” → 关界面，看一眼固化器 → 汇报
+  llm.enqueue(
+    { toolCalls: [{ name: 'open_screen', input: { at: EXTRACTOR } }] },
+    { toolCalls: [{ name: 'use_control', input: { key: 'fluidAutoOutput' } }] },
+    { toolCalls: [{ name: 'close_screen', input: {} }, { name: 'inspect_block', input: SOLIDIFIER }] },
+    { toolCalls: [{ name: 'report', input: { text: '熔融钢已经到固化器了。' } }] },
+    { text: '' },
+  )
+  bridge.completeTask('Alu')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('熔融钢已经到固化器了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))
+
+  const text = all()
+  assert.match(text, /任务 t1（process）完成了。 结果：put 2 item\(s\) into the machine; took out: nothing; it ran, and what it made is a fluid, not an item: it is in the machine's tank, which now holds 288 of 16000 mB Molten Steel \[fluid molten\.steel\]\. A fluid stays where it is until the machine's own auto-output, a pipe or a fluid container moves it; freeSlots 36/)
+  // 界面上格子以外的东西：开关关着、只是显示的那个、罐那一格
+  assert.match(text, /Its controls besides slots \(3; the names are the screen's own, use_control works them\):\non panel "basicmachine\.fluidextractor\.tier\.02":\n- fluidAutoOutput:0 \[switch\]: off\n- powerfail:0 \[switch, display only\]: off\n- auto_sync:tank:0 \[fluid slot\]: 288 of 16000 mB Molten Steel \[fluid molten\.steel\]; gives to a fluid container on your cursor\n/)
+  // 身体收到的就是“按这个控件”；按完开关是开的，提取机的罐空了
+  assert.deepEqual(bridge.requestsOf('screen.press'), [{ bot: 'Alu', key: 'fluidAutoOutput' }])
+  assert.match(text, /- fluidAutoOutput:0 \[switch\]: on\n- powerfail:0 \[switch, display only\]: off\n- auto_sync:tank:0 \[fluid slot\]: empty \(holds up to 16000 mB\); gives to a fluid container on your cursor\n/)
+  // 固化器的罐里有熔融钢了（它自己看到的，也是模拟的游戏里真的发生的）
+  assert.match(text, /\(11,64,-8\): gregtech:gt\.blockmachines "Basic Fluid Solidifier" \[solid, tileEntity, inventory\] hardness 2\ntank: 288 of 16000 mB Molten Steel \[fluid molten\.steel\]/)
+  assert.deepEqual(bridge.machines.map((m) => m.tanks!.map((tank) => tank.amount ?? 0)), [[0], [288]])
+  assert.equal(alu.inventory.some((i) => i.id === GT && i.meta === 17305), false)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})

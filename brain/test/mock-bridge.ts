@@ -134,6 +134,27 @@ export interface MockMachine {
   /** 它自己知道的全部（world.block 带 detail 时给出去）：对扫描器说的话、存档里的数据。 */
   says?: string[]
   saved?: Json
+  /**
+   * 它界面上格子以外的东西（开关、选项、按钮……）。给了它，screen.open 对着这台机器就打开它自己的界面：
+   * 原料格和一个产物格，加上这些控件、每个罐一个流体格、每块能装东西的覆盖板一个页签（cover_panel_<面>）。
+   */
+  controls?: MockControl[]
+  /** fluidAutoOutput 这个开关打开以后，它罐里的流体进到哪台机器的罐里（真的机器是朝它的输出面推）。 */
+  autoOutputTo?: { x: number; y: number; z: number }
+  /** 它能把哪些东西化成流体（process 放进这种东西，没有物品出来，罐里多出流体）。 */
+  melts?: { id: string; meta: number; fluid: string; name: string; mb: number }[]
+  /** 被按过的按钮（测试看用）。 */
+  pressed?: string[]
+}
+
+/** 机器界面上的一个控件：名字（panel、key）是界面自己起的。 */
+export interface MockControl {
+  panel: string
+  key: string
+  kind: 'switch' | 'number' | 'text' | 'choice' | 'button' | 'value'
+  value?: boolean | number | string
+  options?: string[]
+  readOnly?: boolean
 }
 
 /** 机器某个面上的一块覆盖板。 */
@@ -336,7 +357,7 @@ export class MockBridge {
   /** 身体不认识的机器（熔炉、别的 mod 的机器）：world.machines 里没有它们，world.containers 里有；process、存取、界面动作都能对着它们用。 */
   devices: MockDevice[] = []
   /** 每个 bot 现在开着的界面（screen.open 打开的）。 */
-  private readonly screens = new Map<string, { title: string; slots: MockDevice['slots']; device?: MockDevice; cursor?: { id: string; meta: number; count: number; name: string } }>()
+  private readonly screens = new Map<string, { title: string; slots: MockDevice['slots']; device?: MockDevice; cursor?: { id: string; meta: number; count: number; name: string }; machine?: MockMachine; panels?: Map<string, number> }>()
   machines: MockMachine[] = [
     { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 1, storedEU: 51200, inputVoltage: 128 },
     { x: 18, y: 64, z: -4, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, storedEU: 0, inputVoltage: 0 },
@@ -1289,6 +1310,10 @@ export class MockBridge {
         return this.screenLook(this.onlineBot(p.bot))
       case 'screen.click':
         return this.screenClick(this.onlineBot(p.bot), p)
+      case 'screen.press':
+        return this.screenPress(this.onlineBot(p.bot), p)
+      case 'screen.set':
+        return this.screenSet(this.onlineBot(p.bot), p)
       case 'screen.close': {
         const bot = this.onlineBot(p.bot)
         const open = this.screens.get(bot.name)
@@ -2115,6 +2140,14 @@ export class MockBridge {
       this.screens.set(bot.name, { title: cover.name, slots: Array.from({ length: cover.slots! }, (_, n) => (items[n] ? { kind: 'in' as const, item: items[n]! } : { kind: 'in' as const })) })
       return this.screenLook(bot)
     }
+    // 一台带控件的 GregTech 机器：它自己的界面——原料格、一个产物格，加上格子以外的那些东西
+    const machine = this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
+    if (machine?.controls) {
+      const inputs = machine.inputs ?? []
+      const slots: MockDevice['slots'] = [...Array.from({ length: machine.inputSlots }, (_, n) => (inputs[n] ? { kind: 'in' as const, item: inputs[n]! } : { kind: 'in' as const })), { kind: 'out' as const }]
+      this.screens.set(bot.name, { title: machine.name, slots, machine, panels: new Map() })
+      return this.screenLook(bot)
+    }
     const device = this.deviceAt(at)
     if (!device) return { open: false }
     this.screens.set(bot.name, { title: device.name, slots: device.slots, device })
@@ -2135,6 +2168,107 @@ export class MockBridge {
         ...own.map((i) => ({ slot: open.slots.length + i.slot, own: true, item: { id: i.id, meta: i.meta, count: i.count, name: i.name } })),
       ],
       ...(open.cursor ? { cursor: { ...open.cursor } } : {}),
+      ...(open.machine ? { controls: this.controlsOf(open.machine, open.panels ?? new Map()) } : {}),
+    }
+  }
+
+  /** 一台机器界面上格子以外的东西：它自己的控件、每个罐一个流体格、每块能装东西的覆盖板一个页签。 */
+  private controlsOf(machine: MockMachine, panels: Map<string, number>): Json[] {
+    const main = machine.controls?.[0]?.panel ?? machine.name
+    return [
+      ...(machine.controls ?? []).map((c) => ({ panel: c.panel, key: c.key, kind: c.kind, ...(c.value !== undefined ? { value: c.value } : {}), ...(c.options ? { options: c.options } : {}), ...(c.readOnly ? { readOnly: true } : {}) })),
+      ...(machine.covers ?? []).filter((cv) => cv.slots !== undefined).map((cv) => ({ panel: main, key: `cover_panel_${cv.side}`, kind: 'panel', open: panels.has(`cover_panel_${cv.side}`) })),
+      ...(machine.tanks ?? []).map((t, n) => ({ panel: main, key: `auto_sync:tank:${n}`, kind: 'fluid', ...((t.amount ?? 0) > 0 ? { fluid: t.fluid, name: t.name, amount: t.amount } : { amount: 0 }), capacity: t.capacity, fills: false, drains: true })),
+    ]
+  }
+
+  /** 按名字找一个控件：写全（fluidAutoOutput:0），或者只写冒号前的那一段（不重名时）；panel 只在重名时需要。 */
+  private findControl(machine: MockMachine | undefined, panels: Map<string, number>, p: Json): Json {
+    if (!machine) throw new RpcError('bad_request', 'this screen has no controls of that kind (only its slots can be clicked)')
+    const key = String(p.key ?? '')
+    const panel = typeof p.panel === 'string' ? p.panel : undefined
+    const found = this.controlsOf(machine, panels).filter((c) => (panel === undefined || c.panel === panel) && (c.key === key || (String(c.key).includes(':') && String(c.key).slice(0, String(c.key).lastIndexOf(':')) === key)))
+    if (found.length === 0) throw new RpcError('bad_request', `the screen has no control "${key}"${panel !== undefined ? ` in panel "${panel}"` : ''}; screen.look lists them`)
+    if (found.length > 1) throw new RpcError('bad_request', `more than one control is called "${key}": give its full key and its panel`)
+    return found[0]!
+  }
+
+  /** 按一下：开关翻过来、页签打开或关上、按钮做它的事。照真的身体的原话拒绝。 */
+  private screenPress(bot: MockBot, p: Json): Json {
+    const open = this.screens.get(bot.name)
+    if (!open) throw new RpcError('bad_request', 'no screen is open; open one first')
+    const panels = (open.panels ??= new Map())
+    const control = this.findControl(open.machine, panels, p)
+    const machine = open.machine!
+    const own = machine.controls?.find((c) => c.key === control.key && c.panel === control.panel)
+    if (control.kind === 'panel') {
+      // 覆盖板的页签：打开以后它那几格接在机器自己的格子后面；再按一下收起来
+      const cover = machine.covers!.find((cv) => `cover_panel_${cv.side}` === control.key)!
+      const at = panels.get(String(control.key))
+      if (at !== undefined) {
+        open.slots = open.slots.filter((_, n) => n < at || n >= at + cover.slots!)
+        panels.delete(String(control.key))
+      } else {
+        panels.set(String(control.key), open.slots.length)
+        const items = (cover.items ??= [])
+        open.slots = [...open.slots, ...Array.from({ length: cover.slots! }, (_, n) => (items[n] ? { kind: 'in' as const, item: items[n]! } : { kind: 'in' as const }))]
+      }
+    } else if (control.kind === 'fluid') {
+      throw new RpcError('invalid', 'the screen did not take that: nothing on the cursor holds or takes a fluid')
+    } else if (control.kind === 'button') {
+      ;(machine.pressed ??= []).push(String(control.key))
+    } else if (control.kind === 'switch' && own) {
+      if (own.readOnly) throw new RpcError('denied', `the screen only shows "${String(p.key)}"; it does not take a change of it from a player`)
+      own.value = own.value !== true
+      this.afterSwitch(machine, own)
+    } else {
+      throw new RpcError('bad_request', `"${String(p.key)}" is not something a click works; set its value instead`)
+    }
+    return this.screenLook(bot)
+  }
+
+  /** 设成一个值：开关、数字、文字、选项。 */
+  private screenSet(bot: MockBot, p: Json): Json {
+    const open = this.screens.get(bot.name)
+    if (!open) throw new RpcError('bad_request', 'no screen is open; open one first')
+    const control = this.findControl(open.machine, (open.panels ??= new Map()), p)
+    const machine = open.machine!
+    const own = machine.controls?.find((c) => c.key === control.key && c.panel === control.panel)
+    const value = p.value
+    if (typeof value !== 'boolean' && typeof value !== 'number' && typeof value !== 'string') throw new RpcError('bad_request', 'value must be true/false, a number or a text')
+    if (!own || own.kind === 'button' || own.kind === 'value') throw new RpcError('bad_request', `"${String(p.key)}" is not a value that can be set; press it, or look at what kind it is`)
+    if (own.readOnly) throw new RpcError('denied', `the screen only shows "${String(p.key)}"; it does not take a change of it from a player`)
+    if (own.kind === 'choice') {
+      const pick = (own.options ?? []).find((o) => o.toLowerCase() === String(value).toLowerCase())
+      if (pick === undefined) throw new RpcError('bad_request', `"${String(p.key)}" is one of: [${(own.options ?? []).join(', ')}]`)
+      own.value = pick
+    } else if (own.kind === 'switch') {
+      own.value = typeof value === 'boolean' ? value : typeof value === 'number' ? value !== 0 : value === 'true'
+      this.afterSwitch(machine, own)
+    } else if (own.kind === 'number') {
+      own.value = Number(value)
+    } else {
+      own.value = String(value)
+    }
+    return this.screenLook(bot)
+  }
+
+  /** 开关变了以后机器跟着做的事：流体自动输出打开，罐里的流体进了隔壁那台的罐。 */
+  private afterSwitch(machine: MockMachine, control: MockControl): void {
+    if (!control.key.startsWith('fluidAutoOutput') || control.value !== true || !machine.autoOutputTo) return
+    const to = machine.autoOutputTo
+    const target = this.machines.find((m) => m.x === to.x && m.y === to.y && m.z === to.z)
+    if (!target) return
+    for (const tank of machine.tanks ?? []) {
+      if (!tank.fluid || !((tank.amount ?? 0) > 0)) continue
+      const into = (target.tanks ??= [{ capacity: 16000 }]).find((t) => t.fluid === tank.fluid || !((t.amount ?? 0) > 0))
+      if (!into) continue
+      into.fluid = tank.fluid
+      if (tank.name !== undefined) into.name = tank.name
+      into.amount = (into.amount ?? 0) + tank.amount!
+      tank.amount = 0
+      delete tank.fluid
+      delete tank.name
     }
   }
 
@@ -2223,6 +2357,12 @@ export class MockBridge {
         result: { put: 0, outputs: [], freeSlots },
       }
     }
+    // 产物是流体的加工（流体提取机把钢板化成熔融钢）：没有物品出来，罐里的东西变了
+    const melted = (machine.melts ?? []).find((m) => given.some((g) => g.count > 0 && g.id === m.id && (g.meta === undefined || g.meta === m.meta)))
+    if (melted && machine.storedEU > 0 && machine.switchedOff !== true && machine.active !== true) {
+      const rounds = given.filter((g) => g.id === melted.id && (g.meta === undefined || g.meta === melted.meta)).reduce((n, g) => n + g.count, 0)
+      return { machine, recipe: { inputs: [{ id: melted.id, meta: melted.meta, count: 1 }], outputs: [], melts: melted }, rounds, given }
+    }
     // 编程电路可以不带在身上：circuit 参数像玩家点机器界面上的电路格一样直接设（做完恢复原样）
     const circuit = typeof p.circuit === 'number' ? p.circuit : undefined
     const has = (need: Json): number =>
@@ -2277,6 +2417,24 @@ export class MockBridge {
       if (back > 0) outputs.push({ id: String(need.id), meta: Number(need.meta ?? 0), name: String(need.name ?? need.id), count: back })
     }
     bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    const melts = plan.recipe.melts as { fluid: string; name: string; mb: number } | undefined
+    if (melts && outputs.length === 0) {
+      // 没有物品可取，罐里的东西变了：算做成，结果带 note 和 fluids（罐里现在有什么），和真的身体一样
+      const tanks = (plan.machine.tanks ??= [{ capacity: 16000 }])
+      const tank = tanks.find((t) => t.fluid === melts.fluid) ?? tanks.find((t) => !((t.amount ?? 0) > 0)) ?? tanks[0]!
+      tank.fluid = melts.fluid
+      tank.name = melts.name
+      tank.amount = (tank.amount ?? 0) + melts.mb * plan.rounds
+      return {
+        result: {
+          put,
+          outputs,
+          freeSlots: 36 - bot.inventory.length,
+          note: 'the machine ran and gave no item: what it made is a fluid, which stays in its tank (fluids shows what is there now)',
+          fluids: tanks.map((t) => ((t.amount ?? 0) > 0 ? { ...t } : { amount: 0, capacity: t.capacity })),
+        },
+      }
+    }
     return { result: { put, outputs, freeSlots: 36 - bot.inventory.length } }
   }
 

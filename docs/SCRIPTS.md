@@ -102,7 +102,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 ## 库函数：不在工具清单里的
 
-每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在两条线各有清单——不能看图的模型，干活线 51 个、45,753 字符，对话线 28 个、20,951 字符）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
+每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在两条线各有清单——不能看图的模型，干活线 52 个、46,783 字符，对话线 28 个、20,951 字符）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
 
 | | 发给模型 | 模型怎么知道它存在 | 怎么调 |
 |---|---|---|---|
@@ -144,6 +144,10 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 `find_recipes`（在工具清单里）的 `data`：平时没有；查的东西在凿子的某个组里时是 `{ item: { id, meta, name }, chisel: [{ group, ore?, member, variants }] }`。它和 `find_uses` 一样可以给 `fluid` 代替 `id`、给 `circuit` 筛。
 
 **流体的名字**是同一个规矩：罐（`tanks: [{ fluid, name, amount, capacity }]`，`inspect_block`、`list_containers`、`find_machines` 的 `data` 里都有）的 `name` 是游戏里的中文名，身体给的英文名在 `en`；多方块的输入输出仓上是 `fluidName`（中文）和 `fluidEn`（英文）。`fluid` 是注册名，和配方册里的写法一样。本地资料里查不到的流体，名字原样是身体给的。
+
+**界面**：`open_screen`、`click_slot`、`use_control`（干活线的工具，例程里能调）的 `data` 是身体给的界面原样：`{ open, screen, slotCount, slots: [{ slot, own?, item?, takesNothing?, ghost? }], cursor?, controls?: [{ panel, key, kind, value?, open?, options?, readOnly?, fluid?, name?, amount?, capacity?, fills?, drains? }] }`。`controls` 是界面上格子以外的东西（开关、数字、文字、选项、页签、流体格、按钮），`panel` 和 `key` 是界面自己起的名字，原样交回给 `use_control`。
+
+**产物是流体的加工**：例程里 `await tool("process_items", …)` 等到任务结束，`data.result` 里除了 `put`、`outputs`（这时是空的）还有 `fluids`：机器的罐（`[{ fluid, name, en?, amount, capacity }]`）或者多方块的输出仓（`[{ x, y, z, kind, capacity, fluid?, fluidName?, fluidEn?, amount? }]`）现在有什么。
 
 **覆盖板**在同一批 `data` 里是 `covers: [{ side, id, meta, name, screen, slots?, usedSlots?, items?, moreKinds? }]`；`find_in_storage` 的存放点带 `kind: "cover"`、`cover`、`side`。
 
