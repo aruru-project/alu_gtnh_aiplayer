@@ -213,7 +213,7 @@ describe('工作清单：自动下线', () => {
 describe('工作清单：干活线停下来以后被叫醒', () => {
   const NUDGE_2 = '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 2 件没做完、也没标成在等人：#1 把东边箱子里的钢锭搬进仓库、#2 挖完北边的矿洞'
 
-  it('它记下两件就停了：过一小会儿叫醒它一次，列出没做的；它什么都没改又停了，不再叫。清单变了、或者它为别的事走了一轮，再叫', async (t) => {
+  it('它记下两件就停了：过一小会儿叫醒它一次，列出没做的；它什么都没改又停了，不再叫。主人勾掉一件不叫（收拾清单不该把它叫起来）；多了一件没做的、或者它为别的事走了一轮，再叫', async (t) => {
     const { h } = setup(t)
     h.llm.enqueue(reply('', [{ name: 'todo', input: { add: [{ text: '把东边箱子里的钢锭搬进仓库' }, { text: '挖完北边的矿洞' }] } }]), reply('先记在清单上了'))
     h.agent.handleEvent(told('先把这两件记下'))
@@ -223,10 +223,14 @@ describe('工作清单：干活线停下来以后被叫醒', () => {
     await sleep(200)
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 3)
-    // 清单变了（主人在面板上把 #1 标成做完）：再叫，只列还没做的
-    h.todo.apply({ change: [{ id: 1, state: 'done' }] }, 'owner', T0)
-    await waitFor('woken again after the list changed', () => h.llm.requests.length >= 4)
-    assert.equal(nudges(h)[1], '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 1 件没做完、也没标成在等人：#2 挖完北边的矿洞')
+    // 主人在面板上把 #1 勾掉、给 #2 加个备注：清单上没多出没做的，不叫
+    h.todo.apply({ change: [{ id: 1, state: 'done' }, { id: 2, note: '不急' }] }, 'owner', T0)
+    await sleep(200)
+    assert.equal(h.llm.requests.length, 3)
+    // 主人加了一件没做的：再叫，列出现在还没做的
+    h.todo.apply({ add: [{ text: '修二号高炉' }] }, 'owner', T0)
+    await waitFor('woken again after a new item', () => h.llm.requests.length >= 4)
+    assert.equal(nudges(h)[1], '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 2 件没做完、也没标成在等人：#2 挖完北边的矿洞、#3 修二号高炉')
     await sleep(200)
     assert.equal(h.llm.requests.length, 4)
     // 清单没变，可它为别的事（对话线交来的）走了一轮：走完再叫
@@ -276,10 +280,10 @@ describe('工作清单：干活线停下来以后被叫醒', () => {
     assert.deepEqual([again.llm.requests.length, nudges(again).length], [2, 1])
   })
 
-  it('每次被叫醒它都只改改清单、不开任务也不提问：中间没有外面的事，连着叫到上限就不再叫，日志里记一条', async (t) => {
+  it('每次被叫醒它都只往清单上再加一件、不开任务也不提问：中间没有外面的事，连着叫到上限就不再叫，日志里记一条', async (t) => {
     const { h } = setup(t)
     let n = 0
-    h.llm.auto = (seen) => (seen.includes('[系统] 你停下来了') ? reply('', [{ name: 'todo', input: { change: [{ id: 1, note: `看过 ${++n} 次` }] } }]) : undefined)
+    h.llm.auto = (seen) => (seen.includes('[系统] 你停下来了') ? reply('', [{ name: 'todo', input: { add: [{ text: `再看一次（第 ${++n} 次）` }] } }]) : undefined)
     h.todo.apply({ add: [{ text: '修二号高炉' }] }, 'owner', T0)
     await waitFor('the cap was reached', () => h.log.recent(0, 500).some((e) => e.kind === 'error' && e.text.includes('工作清单')))
     await sleep(200)

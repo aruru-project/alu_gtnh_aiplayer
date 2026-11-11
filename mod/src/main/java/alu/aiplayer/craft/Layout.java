@@ -147,10 +147,31 @@ public final class Layout {
         return cell instanceof List ? book.oreName(cell) : null;
     }
 
-    /** Hammers, wrenches, files and the like: the recipe wears them but gives them back. */
+    /**
+     * Hammers, wrenches, files and the like: the recipe wears them but gives them back. A cell is one when its ore
+     * name is a crafting tool's, or (a grid laid out by name) when the item itself is registered as one, or the game
+     * hands the item back after a craft.
+     */
     public boolean isTool(Object cell) {
         String ore = ore(cell);
-        return ore != null && ore.startsWith("craftingTool");
+        if (ore != null) return ore.startsWith("craftingTool");
+        if (!(cell instanceof ItemStack)) return false;
+        ItemStack s = (ItemStack) cell;
+        if (s.getItem() == null) return false;
+        ItemStack probe = s.getItemDamage() == OreDictionary.WILDCARD_VALUE ? new ItemStack(s.getItem(), 1, 0) : s.copy();
+        try {
+            for (int id : OreDictionary.getOreIDs(probe)) {
+                if (OreDictionary.getOreName(id)
+                    .startsWith("craftingTool")) return true;
+            }
+            if (probe.getItem()
+                .hasContainerItem(probe)) {
+                ItemStack back = probe.getItem()
+                    .getContainerItem(probe);
+                return back != null && back.getItem() == probe.getItem();
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     public String label(Object cell) {

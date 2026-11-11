@@ -181,8 +181,8 @@ export class Lines {
   private lastFrom: LineName | undefined
   // ── 工作清单叫醒干活线 ──
   private todoTimer: NodeJS.Timeout | undefined
-  /** 上一次因为清单叫醒它时，清单是第几版（TodoStore.revision）。 */
-  private todoNudged: number | undefined
+  /** 上次因为清单叫醒它时，清单上没做的那几条的编号。 */
+  private todoNudged: Set<number> | undefined
   /** 上一次叫醒以后，它有没有为别的事走过一轮。 */
   private todoFresh = true
   /** 被叫停了：在它为新的事走完一轮之前，不因为清单叫醒它。 */
@@ -406,8 +406,9 @@ export class Lines {
   private async checkTodo(): Promise<void> {
     const todo = this.deps.todo
     if (!todo || this.closed || this.todoHalted || this.todoOpen().length === 0) return
-    // 上次叫醒以后清单没变、它也没为别的事走过一轮：它看过了，没动
-    if (this.todoNudged === todo.revision() && !this.todoFresh) return
+    // 上次叫醒以后清单上没有多出没做的（新加的、重新打开的），它也没为别的事走过一轮：它看过了，没动。
+    // 勾掉、删掉、改字不算：主人在面板上收拾清单，不该把停着的它叫起来
+    if (this.todoNudged !== undefined && !this.todoFresh && this.todoOpen().every((i) => this.todoNudged!.has(i.id))) return
     // 不在线（下线了、和游戏断着）：叫醒它也什么都做不了
     if (!this.workStopped() || this.shared.online === false) return
     // 对话线正在想：它可能马上就把事交过来（先记清单、再交事是常见的两步）。等它想完再看
@@ -436,7 +437,7 @@ export class Lines {
     // 问的这一会儿可能来了事
     const open = this.todoOpen()
     if (this.closed || this.todoHalted || open.length === 0 || !this.workStopped()) return
-    this.todoNudged = todo.revision()
+    this.todoNudged = new Set(open.map((i) => i.id))
     this.todoFresh = false
     this.todoInRow++
     this.work.handleEvent({ type: 'todo', time: this.now(), open })
