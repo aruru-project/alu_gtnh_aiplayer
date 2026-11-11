@@ -114,6 +114,30 @@ def prepare(s):
     return st["block"]
 
 
+# What untouched land is made of. A site with anything else in it (a roof, a path, a pipe) is somebody's work:
+# flatten digs whatever stands above its level, and a run that started on a roof once took part of it away.
+WILD = {"minecraft:air", "minecraft:dirt", "minecraft:grass", "minecraft:stone", "minecraft:sand", "minecraft:gravel",
+        "minecraft:sandstone", "minecraft:clay", "minecraft:snow", "minecraft:snow_layer", "minecraft:ice",
+        "minecraft:tallgrass", "minecraft:double_plant", "minecraft:red_flower", "minecraft:yellow_flower",
+        "minecraft:deadbush", "minecraft:leaves", "minecraft:leaves2", "minecraft:log", "minecraft:log2",
+        "minecraft:vine", "minecraft:mycelium", "minecraft:cactus", "minecraft:reeds", "minecraft:brown_mushroom",
+        "minecraft:red_mushroom", "minecraft:coal_ore", "minecraft:iron_ore"}
+
+
+# The same, for what the pack's world generation adds: its plants and trees, its rock and the ore in it.
+WILD_MODS = ("BiomesOPlenty:", "gregtech:gt.blockores", "gregtech:gt.blockstones", "gregtech:gt.blockgranites",
+             "Thaumcraft:blockMagicalLeaves", "Thaumcraft:blockMagicalLog", "Thaumcraft:blockCustomPlant",
+             "Natura:", "TwilightForest:")
+
+
+def wild(s, x1, z1, size, min_y, max_y):
+    box = s.call("world.blocks", {"dim": 0, "x1": x1 - 1, "y1": max(1, min_y - 3), "z1": z1 - 1,
+                                  "x2": x1 + size, "y2": min(255, max_y + 12), "z2": z1 + size})
+    if box.get("unloaded"):
+        return False
+    return all(p["id"] in WILD or p["id"].startswith(WILD_MODS) for p in box["palette"])
+
+
 def pick_site(s, origin, size):
     """A size x size square of loaded dry sloping land a short walk from the bot."""
     for ring in range(1, 12):
@@ -126,6 +150,8 @@ def pick_site(s, origin, size):
                 continue
             if st["maxY"] - st["minY"] > 8 or st["maxY"] - st["minY"] < 1:
                 continue  # want a real slope, but not a cliff
+            if not wild(s, x1, z1, size, st["minY"], st["maxY"]):
+                continue  # somebody built here: the scenarios dig and fill, so only untouched ground will do
             return x1, z1, scan
     raise RuntimeError("no suitable test site near the bot")
 
