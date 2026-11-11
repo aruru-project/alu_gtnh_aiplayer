@@ -593,6 +593,16 @@ describe('两条线互相叫醒', () => {
     assert.equal(h.game.callsOf('task.start').length, 10)
     assert.equal(relays(h).some((e) => e.text.includes('只作背景')), false)
     assert.equal(h.log.recent(0, 500).some((e) => e.kind === 'error'), false)
+
+    // 干活线一轮里一口气汇报了十五次（中间没有外面的事）：话头只换了一次手，每一条都照常送到
+    h.llm.auto = undefined
+    h.talk.auto = undefined
+    h.llm.enqueue(reply('', Array.from({ length: 15 }, (_, i) => ({ name: 'report', input: { text: `第 ${i + 1} 箱看完了` } }))), reply(''))
+    h.agent.handleEvent(told('把十五个箱子挨个看一遍', []))
+    await h.agent.whenIdle()
+    assert.equal(relays(h, 'report').filter((e) => e.text.includes('箱看完了')).length, 15)
+    assert.equal(relays(h).some((e) => e.text.includes('只作背景')), false)
+    assert.match(h.talk.requests.map((_, i) => h.talk.lastUserText(i)).join('\n'), /干活线汇报：第 15 箱看完了/)
   })
 })
 
