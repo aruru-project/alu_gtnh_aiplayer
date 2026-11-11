@@ -91,6 +91,31 @@ describe('说话', () => {
     assert.deepEqual(s.spoke.map((x) => x.kind), ['say', 'say'])
   })
 
+  it('say 说长话：照实说发成了几行；超过一次能说的、排不进去的，写明截了多少、丢了几行；老的身体不回话时只说“说了”', async (t) => {
+    const s = setup(t)
+    // 身体的回话：排进去几行、队列满了没排进去几行、超过 1000 字截掉多少
+    const answers: Record<string, unknown>[] = [{ lines: 1 }, { lines: 2 }, { lines: 10, cutChars: 250 }, { lines: 3, droppedLines: 2 }, { lines: 0, droppedLines: 4 }, {}]
+    s.game.handlers['bot.chat'] = () => answers.shift()!
+    assert.equal((await s.run('say', { message: '好。' })).content, 'Said in public chat.')
+    const long = '铁锭一共三百二十个，分在两个箱子里；'.repeat(8)
+    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat, as 2 lines of at most 100 characters, going out about one a second.')
+    // 不在大脑这边截：原样交给身体，由它说截了多少
+    assert.equal(s.game.callsOf('bot.chat')[1]!.message, long)
+    assert.equal((await s.run('say', { message: 'x'.repeat(1250) })).content, 'Said in public chat, as 10 lines of at most 100 characters, going out about one a second. The last 250 characters were cut off: one say holds at most 1000.')
+    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat, as 3 lines of at most 100 characters, going out about one a second. The last 2 line(s) were not sent: too many chat lines of yours were still waiting to go out.')
+    const nothing = await s.run('say', { message: long })
+    assert.deepEqual([nothing.isError, nothing.content], [true, 'Nothing was said: 4 line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.'])
+    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat.')
+  })
+
+  it('whisper 太长时只发开头那一段，并写明发了多少、一共多少', async (t) => {
+    const s = setup(t)
+    s.game.handlers['bot.command'] = () => ({ output: [] })
+    const res = await s.run('whisper', { player: 'Steve', message: '字'.repeat(300) })
+    assert.equal(res.content, 'Whisper sent. Only the first 220 of 300 characters were sent: a whisper holds at most 220. Send the rest in another whisper.')
+    assert.equal(s.game.callsOf('bot.command').map((p) => String(p.command).slice('tell Steve '.length)).join(''), '字'.repeat(220))
+  })
+
   it('whisper 用 tell 指令私聊指定玩家；名字不合法时不执行任何指令', async (t) => {
     const s = setup(t)
     s.game.handlers['bot.command'] = (p) => ({ output: [`You whisper to Steve: ${String(p.command).slice('tell Steve '.length)}`] })
@@ -548,6 +573,21 @@ describe('任务类工具', () => {
     assert.equal(s.game.callsOf('task.start').length, 2)
   })
 
+  it('use_item 点方块的哪个面、哪一点、连点几下都由它定：拿着东西对抽屉正面连点两下，空手按一个按钮；没说拿什么也没说点哪时如实说', async (t) => {
+    const s = setup(t)
+    // 抽屉那一格的 front / hit 原样交给 side / hit（list_drawers 的 data 里有）
+    await s.run('use_item', { id: 'minecraft:dirt', on: { x: 5, y: 64, z: 5 }, side: 'south', hit: { x: 0.25, y: 0.75, z: 1 }, times: 2, every: 3 })
+    await s.run('use_item', { on: { x: 7, y: 65, z: 5 }, side: 'west' })
+    assert.deepEqual(s.game.callsOf('task.start').map((p) => p.task), [
+      { type: 'use', item: { id: 'minecraft:dirt' }, on: { x: 5, y: 64, z: 5 }, side: 'south', hit: { x: 0.25, y: 0.75, z: 1 }, times: 2, every: 3 },
+      { type: 'use', on: { x: 7, y: 65, z: 5 }, side: 'west' },
+    ])
+    assert.deepEqual(await s.run('use_item', {}), { content: 'Give "id" (an item you carry) to use it, or "on" (a block) to right-click that block with an empty hand, or both.', isError: true })
+    assert.deepEqual(await s.run('use_item', { id: 'minecraft:dirt', side: 'south' }), { content: '"side" and "hit" say where on a block to click: give the block as "on".', isError: true })
+    assert.equal((await s.run('use_item', { id: 'minecraft:dirt', on: { x: 5, y: 64, z: 5 }, hit: { x: 2, y: 0, z: 0 } })).content, 'Invalid arguments for use_item: hit.x must be <= 1')
+    assert.equal(s.game.callsOf('task.start').length, 2)
+  })
+
   it('use_item 把身上的一件东西拿到手里右键用：对空中、对某个方块、蹲着用；做完以后模型看到的是背包里多了少了什么、血量和饱食度、是否打开了界面', async (t) => {
     const s = setup(t)
     await s.run('use_item', { id: 'minecraft:bread' })
@@ -739,14 +779,14 @@ describe('图纸', () => {
     const s = setup(t)
     // 真实 mod 的原话
     s.game.handlers['blueprint.check'] = (p) => {
-      if (p.name !== 'cabin') throw new BridgeError('not_found', `there is no blueprint named "${String(p.name)}"; blueprint.list shows the ones there are`)
+      if (p.name !== 'cabin') throw new BridgeError('bad_request', `there is no blueprint named "${String(p.name)}"; blueprint.list shows the ones there are`)
       return WORKSHOP_CHECK
     }
     assert.equal((await s.run('check_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })).isError, undefined)
     await s.run('build_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })
     assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'cabin', x: 0, y: 64, z: 0 })
     const missing = await s.run('check_blueprint', { name: 'castle', x: 0, y: 64, z: 0 })
-    assert.deepEqual([missing.isError, missing.content], [true, 'not_found: there is no blueprint named "castle"; blueprint.list shows the ones there are (list_designs shows the blueprints on the server; a name is the file name without ".schematic".)'])
+    assert.deepEqual([missing.isError, missing.content], [true, 'bad_request: there is no blueprint named "castle"; blueprint.list shows the ones there are (list_designs shows the blueprints on the server; a name is the file name without ".schematic".)'])
   })
 
   it('check_blueprint 带着 bot 去对比，把结果排成短文本：计数、材料（要多少、身上有多少）、得由人放的、挡路的', async (t) => {

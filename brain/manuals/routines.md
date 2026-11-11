@@ -21,13 +21,15 @@
 - 只查不动的在 run_program 和例程里都能调。haul_items 会开任务，只能在例程里调。
 - 各自的参数和 data：
   - list_stock { radius?, contains?, below?, at?, page? }：周围所有箱子和抽屉合成一张存货表。r.data.items 是 [{ id, meta, name, count, automated, places: [{ x, y, z, count, kind, automated }] }]（全部，不分页；r.text 一页 40 行）。at 是 { x, y, z }：以那个地方为中心看。
-  - list_drawers { x, y, z, below?, page? }：抽屉管理器（或一个抽屉方块）的每一格。r.data.slots 是 [{ x, y, z, slot, id, meta, name, count, room }]（空格是 { empty: true }），r.data.total 是符合条件的总格数（一页 60 格，多了翻 page）。
+  - list_drawers { x, y, z, below?, page? }：抽屉管理器（或一个抽屉方块）的每一格。r.data.slots 是 [{ x, y, z, slot, id, meta, name, count, room, front, hit }]（空格是 { empty: true }；front / hit 是这一格的正面朝哪、点它时点的位置，可以原样交给 use_item 的 side / hit），r.data.total 是符合条件的总格数（一页 60 格，多了翻 page）。
   - find_uses { id, meta?, way?, contains?, page? }：一样东西能拿来做什么。只给 id/meta：r.data.ways 是 [{ way, name, recipes }]（每种方式几条）。给了 way、contains 或 page：r.data.recipes 是这一页的配方 [{ recipe, way, in: [{ id, meta, name, count } 或 { ore, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, eut?, ticks? }]，r.data.page、r.data.pages 是第几页、共几页。
   - list_quest_lines { player? }：任务书各章。r.data.lines 是 [{ name, en, quests, complete, available }]（后两项要有玩家的进度才有），r.data.unclaimed 是做完没领奖励的个数。
   - probe_block { x, y, z }：现在能不能挖这一格。r.data 是 { id, meta, canDig, digTicks, toolSlot, inReach, candidates: [{ slot, item, harvest, ticks, excluded }] }。
   - check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }（参数和 build_blueprint 一样）：世界和图纸对比，什么都不动。r.data 是 { cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }。
   - haul_items { from, to, items? }：在两个容器之间来回搬，搬完为止（任务；只能在例程里调）。r.data 是 { task, state, result, error }。
+  - read_blueprint { name, draft?, from?, to? }：一张图纸里有什么，不用知道它放在哪（draft: true 读你自己的草稿）。r.data 是 { name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }], x, y, z, sx, sy, sz, palette, cells }，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格；整张超过 262144 格时没有 cells，用 from、to 分块读。例子在 blueprint 手册。
   - read_blocks、find_structure、check_structure：见 multiblocks 手册。total_materials：见 crafting 手册。
+- data 里的名字：name 是游戏里看到的中文名（和主人说的、和文字结果里的一样），身体给的英文原名在 en 里。统计、汇报直接用 name。
   - 你的模型不能看图时还有 view_area { x1…z2 或 radius }（世界里一个盒子的文字说明，r.data.kinds 是 [{ id, meta, name, count }]）和 view_image { name }（一张图片的尺寸和主要颜色，r.data 是 { width, height, transparent, colors }）。
 
 # 常用的 data
@@ -66,7 +68,9 @@ return "搬完 " + moved + " 格"
 背包只有 36 格：取一样放一样最稳；想省来回，可以取几样再一起放，但别超过背包。
 
 # 上限和停
-- 例程默认最多跑 30 分钟（minutes 可以给到 180），最多调 400 次工具、开 150 个任务；连着 3 次工具失败会自动停下。程序自己的计算时间有限（等工具结果的时间不算），所以不要写不调工具的死循环。
+- 调多少次工具、开多少个任务没有上限：几千次调用、一口气搬一万多个东西的活可以放在一个例程里做完。
+- 管着它的是这几样：能跑多久（默认和最长是主人设的，start_routine 的结果里写着这一次能跑多少分钟；minutes 可以自己要，超过最长的给到最长）；连着 3 次工具失败会自动停下；程序自己的计算时间 20 秒（等工具结果的时间不算，不调工具的死循环会被停掉）；每秒调工具的次数有上限，超了的那次自动等一下再调，不算失败。
+- 每一步（参数、结果全文、用时）都记在这次运行的记录里，主人在面板上能逐步看。你被叫醒时拿到的是最近 12 次调用（每次一行）和程序 log 的最后 40 行：要带回来的数放进 return 或 log。
 - 同一时间只能有一个例程。它在跑的时候你还是会被别的事叫醒：routine_status 看它做到哪了，stop_routine 停掉它。
 - 例程在跑的时候不要自己再开任务：新任务会顶掉它正在做的那个，例程会因此停下。主人让你干别的急事时，先 stop_routine。
 - 例程停下时，它已经做了的事不会撤销（搬走的东西还在新地方）。被叫醒后先看日志和现场，再决定接着做还是告诉主人。

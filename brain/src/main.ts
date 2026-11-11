@@ -19,6 +19,7 @@ import { loadPackData } from './packdata/index.ts'
 import { useLocalNames } from './tools/format.ts'
 import { PanelServer } from './panel/server.ts'
 import { ActivityLog } from './store/activity-log.ts'
+import { RunLogStore } from './agent/run-log.ts'
 import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
 import { FeedbackStore } from './store/feedback.ts'
 import { PictureStore } from './store/pictures.ts'
@@ -51,6 +52,8 @@ function toAgentSettings(c: BrainConfig): AgentSettings {
     dailyTokenLimit: c.bot.limits.dailyTokenLimit,
     historyTokenThreshold: c.bot.limits.historyTokenThreshold,
     toolResultMaxChars: c.bot.limits.toolResultMaxChars,
+    routineMinutes: c.bot.limits.routineMinutes,
+    routineMaxMinutes: c.bot.limits.routineMaxMinutes,
   }
 }
 
@@ -78,6 +81,8 @@ async function main(): Promise<void> {
   // ── store ──
   const config = new ConfigStore(dataDir, overridesFromEnv(process.env))
   const log = new ActivityLog(dataDir)
+  // 它写的程序（例程、run_program）每次运行的全量记录：logs/runs/
+  const runLogs = new RunLogStore(dataDir)
   const memory = new MemoryStore(dataDir, () => config.get().bot.limits.memoryMaxChars)
   // 手册：默认的随代码发布（brain/manuals），主人写的和改过的在数据目录里；同名时主人的盖住默认的
   const manuals = new ManualStore(path.join(BRAIN_ROOT, 'manuals'), path.join(dataDir, 'manuals'))
@@ -177,6 +182,7 @@ async function main(): Promise<void> {
     log,
     todayTokens: () => usage.todayTokens(),
     persist: { load: () => agentStateFile.get(), save: (state) => agentStateFile.set(state) },
+    runLogs,
   })
 
   /** 面板上按过“上线”的 bot，连上游戏后要确保它在。 */
@@ -260,6 +266,7 @@ async function main(): Promise<void> {
     bridgeStatus: () => bridgeClient.status(),
     agent,
     reminders,
+    runs: runLogs,
     // 测试连接也花 token，一样记账
     testConnection: (provider) => testConnection(provider, { onUsage: (record) => usage.add(record.usage) }),
     listModels: (provider) => listRemoteModels(provider),

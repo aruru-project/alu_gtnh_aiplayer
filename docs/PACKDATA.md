@@ -25,6 +25,7 @@
 | `items.jsonl` | 物品表，见“物品” | `tools/export-packdata` |
 | `blocks.jsonl` | 方块颜色表，见“方块颜色” | `tools/export-packdata` |
 | `textures/atlas.png` `textures/atlas.json` | 方块贴图的图集，见“方块贴图” | `make-packdata.py textures` |
+| `icons/icons.json` `icons/icons-000.png` … | 每个物品在物品栏里的样子，见“物品图标” | `tools/export-packdata` |
 | `recipes.jsonl` `handlers.json` `structures.jsonl` `carving.jsonl` | 配方册、多方块结构、凿子的组，见“配方” | `tools/export-packdata` |
 
 `meta.json` 是一个对象，键是子命令的名字。子命令重新生成时只替换自己那一节，别的键原样保留：
@@ -201,6 +202,85 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 | `variants` | 同一个 `id`+`meta` 下还有几种只靠附加数据（NBT）区分、名字不同的变体，如不同材质的 GregTech 工具 |
 
 来源是 NEI 物品面板里的全部物品，加上配方里出现过的物品。怎么导出见“配方”一节末尾。
+
+## 物品图标
+
+`icons/`：`items.jsonl` 里每一个物品在物品栏格子里的样子，是游戏自己画出来的（方块是立体的那个角度，按材料染色的物品是染好的颜色）。
+给面板画“和游戏里一样的物品栏”用。
+
+- `icons-000.png`、`icons-001.png` ……：图集。每张 2048×2048、8 位 RGBA，64 列 × 64 行，一格 32×32 像素（游戏界面里一格 16 像素的 2 倍）。
+  背景是真的透明；玻璃、冰这类半透明的东西是半透明的（普通透明度，颜色没有预先乘过透明度）。最后一张没用到的格子全透明。
+- `icons.json`：
+
+```jsonc
+{
+  "format": 1,
+  "generatedAt": "2026-11-11T16:17:48+08:00",
+  "cell": 32, "columns": 64, "rows": 64,        // 一格的边长；每张图几列几行
+  "count": 63676,                               // 图标的个数 = items.jsonl 的行数
+  "itemsSha1": "b97b89db…",                     // 这些图标是照哪一份 items.jsonl 画的，见下
+  "files": ["icons-000.png", "icons-001.png", …],
+  "missing": [726, 727, 941, …],                // 画出来是空的那些行号，升序；它们的格子全透明
+  "failed": 1,                                  // missing 里有几个是画的时候出错的
+  "errors": [[56894, "java.lang.NullPointerException: …"]],   // 出错的行号和原因，最多 200 条；没有出错的就没有这一项
+  "cutShort": 61440,                            // 只在超时没画完时才有：从这一行起都没画（它们也在 missing 里）
+  "seconds": 11.2                               // 画这些图标用了多久
+}
+```
+
+### 怎么找到一个物品的那一格
+
+**图标的编号就是物品在 `items.jsonl` 里的行号，从 0 数**（第一行是 0）。没有别的索引：读 `items.jsonl` 时记下每个 `id/meta` 在第几行就行。
+
+行号 `n` 的图标：
+
+- 在第 `n / 4096`（取整）张图里，即 `files[⌊n / (columns×rows)⌋]`；
+- 张内第 `i = n % 4096` 格，左上角的像素是 `x = (i % 64) × 32`，`y = ⌊i / 64⌋ × 32`。
+
+例：`minecraft:chest/0` 在第 93 行 → `icons-000.png` 的 (928, 32)；`gregtech:gt.metaitem.01/11305`（钢锭）在第 32241 行 → `icons-007.png`（32241 = 7×4096 + 3569）的 (1568, 1760)。
+行号只对这一份 `items.jsonl` 有效，重新导出以后会变。
+
+手里的东西按 `id` + `meta` 找不到行的时候：
+
+- 有耐久的工具和护甲，`meta` 是磨损掉的耐久，表里只有 `meta` 0 的那一行，用它；
+- 再没有就看有没有 `meta` 32767（“任何 meta 都行”）的那一行；它画的是 `meta` 0 的样子；
+- 还没有，或者行号在 `missing` 里，就没有图标，显示文字。
+
+`itemsSha1` 用来确认图标和物品表是同一份：把 `items.jsonl` 每一行的 `<id>/<meta>` 加一个换行符依次接起来（UTF-8），取 SHA-1。
+`tools/export-packdata` 把图标放进 packdata 之前核对它，对不上就不放，并且把 packdata 里旧的 `icons/` 删掉（图标是按行号找的，配错了物品表就全是错的图）。
+读的一方至少要核对 `count` 等于 `items.jsonl` 的行数。
+
+### 画的是什么
+
+- 画的是物品栏里一格的样子，走的是游戏画物品栏时的同一个调用，所以各个 mod 自己的画法（GregTech 的机器和按材料染色的零件、箱子、匠魂工具、带光晕的物品）都在。
+  不画数量、耐久条、电量条；附魔的闪光不画。会动的贴图是导出那一刻的那一帧。
+- 一行只有一个图标，可同一个 `id` + `meta` 下的东西不一定只有一种样子。画的是 NEI 物品列表里这个 `id` + `meta` 的第一种（它的名字就是 `items.jsonl` 里的 `name`）；
+  NEI 不列出的（只在配方里出现过的）画的是不带附加数据（NBT）的那一种。所以：
+  - 带 `variants` 的行（这个整合包里 340 行：神秘时代 178、原版 43——药水和附魔书、匠魂 26、其余零散）图标只是其中一种。
+    匠魂的镐画的是“精金镐”（白的），背包里那把是别的材质时颜色就对不上；
+  - GregTech 的“流体显示”（配方里代表流体的那个物品）画的是流体本身，没有数量。
+- 界面里超出一格的东西（Avaritia 那类物品的光晕）在格子边上被裁掉，不会画到旁边的格子里。
+
+### 哪些没有图标
+
+这个整合包 63,676 行里有 21 行是空的（`missing`）：
+
+| 原因 | 行数 | 例子 |
+|---|---|---|
+| 本来就看不见的方块：空气一类、光源、传送门 | 12 | `Botania:fakeAir`、`Thaumcraft:blockHole`、`ThaumicHorizons:light`、`AWWayofTime:bloodLight`、`WitchingGadgets:WG_CustomAir` |
+| 样子全靠 NBT，不带就什么也画不出来 | 7 | `StevesCarts:ModularCart`、`ArchitectureCraft:cladding`、`littletiles:BlockLittleTiles`、`malisisdoors:item.custom_door`、`EnderIO:blockConduitFacade` |
+| 图标就是空的 | 1 | `dreamcraft:Nothing`（“你什么都没得到”） |
+| 画的时候 mod 自己出错 | 1 | `Genetics:serumArray/16`（空的血清阵列，Binnie 的代码里空指针） |
+
+另外有 16 行画出来是紫黑格子（游戏里“贴图丢了”的样子，游戏里看也是这样，所以不算在 `missing` 里）：`chisel:moss_carpet` 的 5 个、`EMT:EMTItems` 的 4 个弃用图纸、其余零散。
+
+一个物品画的时候出错只是它那一格留空，别的照画。整个画图有 10 分钟的时间上限（实际十来秒），到点就停，没画的记进 `missing`，并写上 `cutShort`。
+
+### 透明度是怎么来的
+
+游戏画物品时面对的是不透明的界面，它在透明度通道里留下的数没有意义（平面物品会先把那一块的透明度清零，半透明的会被乘两遍）。
+所以每个物品画两遍，一遍在黑底上、一遍在白底上：两遍一样的像素是不透明的，白底还是白、黑底还是黑的像素是空的，介于中间的按差值算出透明度，再还原出颜色。
+附魔闪光是往画面上“加”一张贴图，导出时把这张贴图临时换成全黑的，加上去等于没加。
 
 ## 方块颜色
 
@@ -409,16 +489,30 @@ tools/make-packdata.py textures \
 - 怎么凿：拿着凿子右键打开它的界面，把方块放进去，点想要的那个花纹，整组一起变（它用通用的界面动作就能做，见 `screens` 手册）。
 - 只有一种方块的组不导。
 
+**大脑怎么用**（`brain/src/packdata/carving.ts`，文件不在就当没有；真实的这份 297 组、4220 种方块，读进来几毫秒）：
+
+- 同一种方块可以在不止一个组里（真实数据里有 37 种），所以按物品查到的是一串组。
+- `find_recipes` 查到组里的方块时，把“凿子”当作又一种做法列在最后：它在哪一组、能从同组的哪些变来（同一个 id 的各个 meta 并成一行，如 `chisel:nucrete/0–6, 8–15 "结构混凝土"`；id 多的组只列前 8 个 id 并写明还有多少）、组认矿辞名的写明、凿子是拿在手里用的工具。配方册里一条配方都没有的变体不再只回一句“没有配方”。`way: "凿子"` 是全部变体一行一种；`data.chisel` 是全部变体。照实列，不排序、不推荐。
+- `find_uses`（库函数）同理：它能凿成同组的哪些；自己不在组里、只带着那个组认的矿辞名的东西也列（能凿成那一组）。
+- `find_item` 的每一行：组里的东西标着 `chisel group "…"`。
+- 程序里：`data.chiselGroups()`、`data.chiselGroupsOf(id, meta)`，见 `docs/SCRIPTS.md`。
+- `total_materials` 的 `chisel` 参数：凿子的一步一换一往下乘，凿子不算消耗；一次凿掉多少耐久这份资料里没有，结果里照实说不知道。
+
 ### 怎么导出
 
 ```bash
 tools/client setup            # 头一回：把客户端包解到 client/，从官方源取游戏的库和资源，约 1.1G
 tools/gradle build            # 导出代码在 mod 里（alu.aiplayer.export，只在客户端里加载）
 tools/export-packdata         # 约 10 分钟；结果写进 brain/packdata/
+tools/export-packdata --only icons   # 只重画图标：照 packdata 里现有的 items.jsonl 画，别的文件不动；约一分半
 ```
 
 - 需要一个能让客户端进去的服务器（默认测试服 `127.0.0.1:10186`，`--join` 改），客户端用离线名字 `Exporter` 进，这个名字要在白名单里。
 - 客户端要一个桌面来开窗口（默认 `DISPLAY=:10`，本机的 RDP 桌面），用显卡渲染。它不走启动器，也不登录账号。
 - 游戏会启动两次：第一次中文，导出全部；第二次英文，只导名字（有些 mod 的名字在启动时就定死了，所以要两次），然后按 `id`+`meta` 并进 `items.jsonl` 和 `blocks.jsonl` 的 `en`。
 - `client/` 里是我们自己的一份客户端，为了能在这台机器上启动拿掉了两个 mod（Opis、CraftPresence，在 `client/disabled-mods/`），它们不带配方。
-- `meta.json` 的 `nei` 一节记着这次导出的条数：`{format, generatedAt, lang, pack, items, recipes, pages, seconds, english, blocks}`。
+- 图标是第一次启动时在别的都写完之后画的（多十来秒）。它画坏了不影响别的：那一次没画成的话，最后会再单独启动一次只画图标；还不成，这次导出就没有图标，别的文件照常。
+  第二次启动只导名字，不碰图标；把英文名并进 `items.jsonl` 时行的顺序不变。
+- `--only icons` 画的是 packdata 里那份 `items.jsonl`，只写 `icons/` 和 `meta.json` 的 `icons` 一节。
+- `meta.json` 的 `nei` 一节记着这次导出的条数：`{format, generatedAt, lang, pack, items, recipes, pages, seconds, english, blocks}`；
+  `icons` 一节是图标的：`{format, generatedAt, cell, icons, sheets, missing, seconds}`（图标数、图集张数、空着的格数、画了几秒）。

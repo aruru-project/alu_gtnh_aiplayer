@@ -1,4 +1,4 @@
-import { COMMANDS, COMMAND_MAX_CHARS, PLAYER_NAME_RE, SAY_MAX_CHARS, WHISPER_ECHO_RE, WHISPER_FAILED_RE, WHISPER_MAX_CHARS } from './commands.ts'
+import { COMMANDS, COMMAND_MAX_CHARS, PLAYER_NAME_RE, SAY_LINE_CHARS, SAY_MAX_CHARS, WHISPER_ECHO_RE, WHISPER_FAILED_RE, WHISPER_MAX_CHARS } from './commands.ts'
 import { obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool } from './types.ts'
@@ -31,31 +31,44 @@ export function chunks(text: string, size: number): string[] {
   return out
 }
 
+/** 聊天用的文字：单行（换行压成空格）、去掉控制字符和开头的 /。不截短。 */
+function chatLine(text: string): string {
+  return cleanChatText(text, Number.POSITIVE_INFINITY)
+}
+
 export const say: Tool = {
   name: 'say',
-  description:
-    'Say something in public chat. This is the only way players can hear you (besides whisper); your plain text replies are not shown to anyone. Keep it short.',
-  inputSchema: obj({ message: str('What to say. One short line.') }, ['message']),
+  description: `Say something in public chat: the only way players hear you, besides whisper (your plain text replies are shown to nobody). A chat line holds at most ${SAY_LINE_CHARS} characters: longer text goes out as several lines, about one a second, at most ${SAY_MAX_CHARS} characters at a time.`,
+  inputSchema: obj({ message: str('What to say.') }, ['message']),
   async run(ctx, input: { message: string }) {
-    const text = cleanChatText(input.message, SAY_MAX_CHARS)
+    const text = chatLine(input.message)
     if (text.length === 0) return fail('message is empty')
-    await ctx.bridge.botChat(ctx.botName, text)
+    // 怎么分行、截没截由身体定，它的回话里有；这里照实告诉模型发出去是什么样
+    const sent = await ctx.bridge.botChat(ctx.botName, text)
     ctx.hooks.spoke?.({ kind: 'say', text })
-    return 'Said in public chat.'
+    const lines = typeof sent.lines === 'number' ? sent.lines : undefined
+    const cut = typeof sent.cutChars === 'number' && sent.cutChars > 0 ? sent.cutChars : 0
+    const dropped = typeof sent.droppedLines === 'number' && sent.droppedLines > 0 ? sent.droppedLines : 0
+    if (lines === 0 && dropped > 0) return fail(`Nothing was said: ${dropped} line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.`)
+    const notes = [
+      lines !== undefined && lines > 1 ? `Said in public chat, as ${lines} lines of at most ${SAY_LINE_CHARS} characters, going out about one a second.` : 'Said in public chat.',
+      ...(cut > 0 ? [`The last ${cut} characters were cut off: one say holds at most ${SAY_MAX_CHARS}.`] : []),
+      ...(dropped > 0 ? [`The last ${dropped} line(s) were not sent: too many chat lines of yours were still waiting to go out.`] : []),
+    ]
+    return notes.join(' ')
   },
 }
 
 export const whisper: Tool = {
   name: 'whisper',
-  description: 'Send a private message to one player (only they see it).',
-  inputSchema: obj({ player: str('Exact player name.'), message: str('What to tell them. One short line.') }, [
-    'player',
-    'message',
-  ]),
+  description: `Send a private message to one player (only they see it). At most ${WHISPER_MAX_CHARS} characters.`,
+  inputSchema: obj({ player: str('Exact player name.'), message: str('What to tell them.') }, ['player', 'message']),
   async run(ctx, input: { player: string; message: string }) {
     if (!PLAYER_NAME_RE.test(input.player)) return fail(`"${input.player}" is not a valid player name`)
-    const text = cleanChatText(input.message, WHISPER_MAX_CHARS)
-    if (text.length === 0) return fail('message is empty')
+    const whole = chatLine(input.message)
+    if (whole.length === 0) return fail('message is empty')
+    // 太长的只发开头那一段，并在结果里写明（不悄悄截掉）
+    const text = whole.length > WHISPER_MAX_CHARS ? whole.slice(0, WHISPER_MAX_CHARS) : whole
     const output: string[] = []
     // 每条 tell 指令连同玩家名不能超过身体允许的长度
     const room = COMMAND_MAX_CHARS - COMMANDS.whisper(input.player, '').length
@@ -73,6 +86,7 @@ export const whisper: Tool = {
     if (WHISPER_FAILED_RE.test(reply)) return fail(`${input.player} did not get it. The server replied: ${reply}`)
     ctx.hooks.spoke?.({ kind: 'whisper', to: input.player, text })
     const unusual = output.filter((line) => !WHISPER_ECHO_RE.test(line))
-    return unusual.length > 0 ? `Whisper sent. The server replied: ${unusual.join(' | ')}` : 'Whisper sent.'
+    const cut = whole.length > text.length ? ` Only the first ${text.length} of ${whole.length} characters were sent: a whisper holds at most ${WHISPER_MAX_CHARS}. Send the rest in another whisper.` : ''
+    return `${unusual.length > 0 ? `Whisper sent. The server replied: ${unusual.join(' | ')}` : 'Whisper sent.'}${cut}`
   },
 }

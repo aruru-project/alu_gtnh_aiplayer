@@ -166,6 +166,38 @@ export function withLocalNames(value: unknown, depth = 0): unknown {
   return out
 }
 
+/**
+ * 工具结果的 data（给它写的程序用的那一份）里的名字：凡是带 id 的东西（物品、方块、容器、机器），name 换成游戏里的中文名，
+ * 身体给的英文名留在 en 里。全局一个规矩：name 是游戏里看到的名字，en 是英文原名（和本地物品表、任务书的写法一致）。
+ * 文字结果里早就是中文名了；data 不换的话，程序统计完只能自己翻译，译出来的未必是游戏里的叫法。
+ * 没有本地物品表、或者这样东西表里查不到时原样不动。接着的管道（attached）只有名字没有 id，也照名字换。
+ * 只换本来就带着名字的：没有 name 的东西（一个只有 id、meta、count 的清单项）不添字段，形状不变。
+ */
+export function dataWithLocalNames(value: unknown, depth = 0, key = ''): unknown {
+  if (!localNames || depth > 10 || value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) {
+    // 一长串数字（每格一个下标的 cells、runs）不用看
+    if (typeof value[0] === 'number') return value
+    return value.map((v) => dataWithLocalNames(v, depth + 1, key))
+  }
+  const thing = value as { id?: unknown; meta?: unknown; name?: unknown; en?: unknown; x?: unknown; count?: unknown }
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value)) out[k] = dataWithLocalNames(v, depth + 1, k)
+  const named = typeof thing.id === 'string' && thing.id.includes(':')
+  // 名字已经不是英文的（工具自己从本地资料里取的中文名、带着编号的写法）就不动它
+  if (typeof thing.name === 'string' && /^[\x20-\x7e]*$/.test(thing.name) && (named || key === 'attached')) {
+    // 世界里的方块（有坐标、没有数量）：meta 是朝向之类，不按物品的 meta 查
+    const block = typeof thing.x === 'number' && typeof thing.count !== 'number'
+    const local = nameOf(thing, { block })
+    if (local !== undefined && local !== thing.name) {
+      const english = typeof thing.name === 'string' ? displayName(thing.name) : undefined
+      if (english !== undefined && thing.en === undefined) out.en = english
+      out.name = local
+    }
+  }
+  return out
+}
+
 export function formatItem(m: MergedItem): string {
   let s = `${m.count}× ${itemKey(m)}`
   const name = nameOf(m)
@@ -974,14 +1006,17 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { used, gained, lost, openedScreen, health, food, freeSlots, ...rest } = result
+  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, ...rest } = result
   const item = isObject(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
   const got = kindList(gained)
   const gone = kindList(lost)
   const list = (items: Record<string, unknown>[]): string => (items.length > 0 ? items.map((x) => kindText(x.count, x)).join(', ') : 'nothing')
-  const parts = [`used "${what}"`, `gained: ${list(got)}`, `lost: ${list(gone)}`]
+  // 空手点方块时没有“用了什么”；对着方块点的写明点了几下、点的哪个面
+  const parts = [item === undefined && params?.on !== undefined ? 'right-clicked with an empty hand' : `used "${what}"`]
+  if (typeof clicks === 'number' && (clicks !== 1 || typeof side === 'string')) parts.push(`${clicks} click(s)${typeof side === 'string' ? ` on the ${side} face` : ''}`)
+  parts.push(`gained: ${list(got)}`, `lost: ${list(gone)}`)
   if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
   else if (got.length === 0 && gone.length === 0) parts.push('nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)

@@ -8,8 +8,9 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
-import type { PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
+import type { CarvingBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
+import { CHISEL_WAY, chiselData, chiselDetail, chiselMatches, chiselSummary, isChiselWay } from './chisel.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
 import { fail } from './types.ts'
 import type { ToolContext, ToolResult } from './types.ts'
@@ -636,7 +637,7 @@ function requireBook(ctx: ToolContext): { items: ItemTable | undefined; recipes:
   return { items: packdata.items, recipes: packdata.recipes, packdata }
 }
 
-export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }): ToolResult | string {
+export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook): ToolResult | string {
   const query = input.query.trim()
   if (query.length < 1) return fail('Give a word of the name: Chinese, English, an id or an ore-dictionary name.')
   const limit = input.limit ?? ITEMS_PER_PAGE
@@ -658,6 +659,9 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
       facts.push(made > 0 ? `${made} recipe(s) make it` : 'no recipe makes it', used > 0 ? `used in ${used}` : 'used in none')
     }
     if (h.ores && h.ores.length > 0) facts.push(`ore names: ${h.ores.slice(0, 4).join(', ')}${h.ores.length > 4 ? ` +${h.ores.length - 4}` : ''}`)
+    // 凿子的组：它是组里的一种时写出来（这种东西配方册里常常查不到做法）
+    const groups = (carving?.groupsOf(h.id, h.meta) ?? []).map((m) => `"${m.group.group}"`)
+    if (groups.length > 0) facts.push(`chisel group ${groups.join(', ')}`)
     if (h.variants) facts.push(`${h.variants} variants that differ only in their data (same id/meta)`)
     return `- ${h.name} [${itemKey(h)}]${en}${facts.length > 0 ? `: ${facts.join('; ')}` : ''}`
   })
@@ -710,12 +714,12 @@ function slotMatches(slot: RecipeSlot, text: string, nm: Namer): boolean {
   return slot.any.some(([id, meta]) => hit(id, meta))
 }
 
-function resolveItem(recipes: RecipeBook, input: { id: string; meta?: number }, nm: Namer): { id: string; meta: number; info?: PackItemInfo } | ToolResult {
+function resolveItem(recipes: RecipeBook, input: { id: string; meta?: number }, nm: Namer, carving?: CarvingBook): { id: string; meta: number; info?: PackItemInfo } | ToolResult {
   const id = input.id.trim()
   const meta = input.meta ?? 0
   const info = nm.item(id, meta)
-  // 物品表和配方册里都没见过这个 id/meta：多半是写错了
-  if (!info && recipes.makesOf(id, meta).length === 0 && recipes.usesOf(id, meta).length === 0) {
+  // 物品表、配方册、凿子的组里都没见过这个 id/meta：多半是写错了
+  if (!info && recipes.makesOf(id, meta).length === 0 && recipes.usesOf(id, meta).length === 0 && (carving?.groupsOf(id, meta).length ?? 0) === 0) {
     return fail(`No item ${itemKey({ id, meta })} is known. Get the exact id and meta with find_item (many GregTech items share one id and differ only in meta).`)
   }
   return info ? { id, meta, info } : { id, meta }
@@ -739,16 +743,23 @@ async function carriedNow(ctx: ToolContext, items: ItemTable | undefined): Promi
 }
 
 export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
-  const { items, recipes } = requireBook(ctx)
+  const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
-  const target = resolveItem(recipes, input, nm)
+  const target = resolveItem(recipes, input, nm, packdata.carving)
   if ('content' in target) return target
   const label = nm.label(target.id, target.meta)
+  // 凿子：它是某个组里的一种时，可以从同组的另一种凿出来。这不是配方，配方册里没有，照实另列
+  const carve = chiselMatches(packdata.carving, { id: target.id, meta: target.meta, ores: target.info?.ores ?? [] }, 'made')
+  const carveData = carve.length > 0 ? { data: { item: { id: target.id, meta: target.meta, name: nm.name(target.id, target.meta) }, chisel: chiselData(carve, nm) } } : {}
+  if (input.way !== undefined && isChiselWay(input.way) && carve.length > 0) return { content: chiselDetail(carve, target, label, nm), ...carveData, keepWhole: true }
   // 同一个材料件矿辞名下的别的 id 是同一种东西：做它们的配方也算（高炉出的玄钢锭是 EnderIO 的那个 id）
   const same = nm.interchangeable(target.id, target.meta)
   const twins = (same?.others ?? []).filter((o) => recipes.makesOf(o.id, o.meta).length > 0)
   const refs = twins.length === 0 ? recipes.makesOf(target.id, target.meta) : [...new Set([...recipes.makesOf(target.id, target.meta), ...twins.flatMap((o) => recipes.makesOf(o.id, o.meta))])].sort((a, b) => a - b)
   if (refs.length === 0) {
+    if (carve.length > 0) {
+      return { content: [`No recipe in the recipe book makes ${label}. It is made another way:`, ...chiselSummary(carve, target, label, nm, 'made')].join('\n'), ...carveData, keepWhole: true }
+    }
     return `No recipe makes ${label}: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). The library function find_uses shows what it is used for.`
   }
   const wanted = { id: target.id, meta: target.meta, same: twins }
@@ -779,7 +790,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     let chosen = ways
     if (input.way !== undefined && input.way.trim().length > 0) {
       chosen = pickWays(ways, input.way)
-      if (chosen.length === 0) return fail(`${label} is not made by any way matching "${input.way.trim()}". Its ways: ${ways.map((w) => `"${wayLabel(w.handler, ways)}" (${w.recipes.length})`).join(', ')}.`)
+      if (chosen.length === 0) return fail(`${label} is not made by any way matching "${input.way.trim()}". Its ways: ${ways.map((w) => `"${wayLabel(w.handler, ways)}" (${w.recipes.length})`).join(', ')}${carve.length > 0 ? `, "${CHISEL_WAY}" (chisel group)` : ''}.`)
     }
     let list = chosen.flatMap((w) => w.recipes)
     const inWays = list.length
@@ -806,7 +817,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     .map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around, machineWayExists) }))
     // 不排“哪种更好”：照配方册里的先后
     .sort((a, b) => a.order - b.order)
-  const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}.${twinNote} Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:`]
+  const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}${carve.length > 0 ? ', and with a chisel (last entry)' : ''}.${twinNote} Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:`]
   if (around.error) lines.push(`(Which machines and crafting tables are around you could not be checked: ${around.error}.)`)
   else if (around.machinesTotal > around.machines.length) lines.push(`(Only ${around.machines.length} of about ${around.machinesTotal} machines within ${MACHINES_REACH} blocks were checked.)`)
   judged.slice(0, WAYS_SHOWN).forEach((w, n) => {
@@ -827,10 +838,14 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   if (judged.length > WAYS_SHOWN) {
     lines.push(`${judged.length - WAYS_SHOWN} more way(s) are not shown: ${judged.slice(WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}" (${w.recipes.length})`).join(', ')}. Ask for one with "way".`)
   }
+  if (carve.length > 0) {
+    const [first, ...rest] = chiselSummary(carve, target, label, nm, 'made')
+    lines.push(`${Math.min(judged.length, WAYS_SHOWN) + 1}. ${first}`, ...rest)
+  }
   lines.push(
     '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage), about a fluid a single-block machine needs (its tank cannot be seen), or about which way is better. A recipe is used by its # number: craft_item or process_items.',
   )
-  return { content: lines.join('\n'), keepWhole: true }
+  return { content: lines.join('\n'), ...carveData, keepWhole: true }
 }
 
 /** 一条配方的数据形式，给程序用（find_uses 的 data.recipes）。count 为 0 的原料是要放进去但不消耗的（编程电路、模具）。 */
@@ -858,9 +873,9 @@ export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
  * 只给 id/meta 时 ways 是每种方式各有几条（全部方式，不止文字里列出来的那些）；给了 way / contains / page 时 recipes 是这一页的配方。
  */
 export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
-  const { items, recipes } = requireBook(ctx)
+  const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
-  const target = resolveItem(recipes, input, nm)
+  const target = resolveItem(recipes, input, nm, packdata.carving)
   if ('content' in target) return target
   const label = nm.label(target.id, target.meta)
   // 点名要“同一种东西的另一个 id”的机器配方也算用到它
@@ -868,7 +883,14 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   const own = recipes.usesOf(target.id, target.meta, target.info?.ores ?? [])
   const refs = same ? [...new Set([...own, ...same.others.flatMap((o) => recipes.usesOf(o.id, o.meta))])].sort((a, b) => a - b) : own
   const item = { id: target.id, meta: target.meta, name: nm.name(target.id, target.meta) }
-  if (refs.length === 0) return { content: `Nothing in the recipe book uses ${label} as an ingredient.`, data: { item, total: 0, ways: [] } }
+  // 凿子：它在某个组里（或者带着某个组认的矿辞名）时，能凿成那个组里别的方块。不是配方，照实另列
+  const carve = chiselMatches(packdata.carving, { id: target.id, meta: target.meta, ores: target.info?.ores ?? [] }, 'uses')
+  const carveData = carve.length > 0 ? { chisel: chiselData(carve, nm) } : {}
+  if (input.way !== undefined && isChiselWay(input.way) && carve.length > 0) return { content: chiselDetail(carve, target, label, nm), data: { item, total: refs.length, ...carveData }, keepWhole: true }
+  if (refs.length === 0) {
+    if (carve.length > 0) return { content: [`Nothing in the recipe book uses ${label} as an ingredient. It has another use:`, ...chiselSummary(carve, target, label, nm, 'uses').map((line) => (line.startsWith(' ') ? line : `- ${line}`))].join('\n'), data: { item, total: 0, ways: [], ...carveData }, keepWhole: true }
+    return { content: `Nothing in the recipe book uses ${label} as an ingredient.`, data: { item, total: 0, ways: [] } }
+  }
   // 用到它的配方可以上万条：分组只看每条属于哪一页，不读配方本身
   const groups = new Map<RecipeHandler, number[]>()
   for (const ref of refs) {
@@ -885,7 +907,7 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
     let chosen = ways
     if (input.way !== undefined && input.way.trim().length > 0) {
       chosen = pickWays(ways, input.way)
-      if (chosen.length === 0) return fail(`${label} is not used by any way matching "${input.way.trim()}". Ways that use it: ${ways.slice(0, 40).map((w) => `"${wayLabel(w.handler, ways)}" (${w.refs.length})`).join(', ')}${ways.length > 40 ? `, and ${ways.length - 40} more` : ''}.`)
+      if (chosen.length === 0) return fail(`${label} is not used by any way matching "${input.way.trim()}". Ways that use it: ${ways.slice(0, 40).map((w) => `"${wayLabel(w.handler, ways)}" (${w.refs.length})`).join(', ')}${ways.length > 40 ? `, and ${ways.length - 40} more` : ''}${carve.length > 0 ? `, "${CHISEL_WAY}" (chisel group)` : ''}.`)
     }
     let list = chosen.flatMap((w) => w.refs)
     const inWays = list.length
@@ -935,7 +957,8 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   }
   if (ways.length > USE_WAYS_SHOWN) lines.push(`- … and ${ways.length - USE_WAYS_SHOWN} more way(s) with ${ways.slice(USE_WAYS_SHOWN).reduce((n, w) => n + w.refs.length, 0)} recipe(s): ${ways.slice(USE_WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}"`).join(', ')}`)
   lines.push('See the recipes with "way" (one of the names above), narrowed with "contains" (a word of the product or of another ingredient), page by page.')
-  return { content: lines.join('\n'), data: { item, total: refs.length, ways: ways.map((w) => ({ way: wayLabel(w.handler, ways), name: w.handler.name, recipes: w.refs.length })) }, keepWhole: true }
+  if (carve.length > 0) lines.push('Besides the recipes:', ...chiselSummary(carve, target, label, nm, 'uses').map((line) => (line.startsWith(' ') ? line : `- ${line}`)))
+  return { content: lines.join('\n'), data: { item, total: refs.length, ways: ways.map((w) => ({ way: wayLabel(w.handler, ways), name: w.handler.name, recipes: w.refs.length })), ...carveData }, keepWhole: true }
 }
 
 // ── 把一条配方变成任务的参数 ──

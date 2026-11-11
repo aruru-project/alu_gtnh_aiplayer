@@ -49,7 +49,9 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `img.resize(宽, 高?)` | 缩放成一张新图。缩小时每格是它盖住的那一块的平均色（按不透明度加权）；不给高就按比例 |
 | `palette()` | 方块颜色表：`[{ id, meta, name?, color: [r, g, b] }]`。来自 `brain/packdata/blocks.jsonl`，没有这个文件时是内置的 16 色羊毛加 16 色染色粘土 |
 | `nearestBlock(r, g, b, among?)` 或 `nearestBlock([r, g, b], among?)` | 颜色最接近的方块（返回颜色表里的一项，可以直接交给 `b.set`）。`among` 是一个方块列表，只在里面挑；`"minecraft:wool"` 指它的所有 meta |
-| `data.available()` | 现在有哪几样本地资料：`items`、`quests`、`questLines`、`structures` 里的几个 |
+| `data.available()` | 现在有哪几样本地资料：`items`、`quests`、`questLines`、`structures`、`carving` 里的几个 |
+| `data.chiselGroups()` | 凿子的全部组（`carving.jsonl`）：`[{ group, ore?, variants: [{ id, meta, name }] }]`。同组里的方块能用凿子互相变，一换一 |
+| `data.chiselGroupsOf(id, meta?)` | 一样东西在凿子的哪几个组里：`[{ group, ore?, variants, member }]`，都不在是 `[]`。`member` 为 `false` 是它自己不在组里、只带着那个组认的矿辞名（能凿成那一组） |
 | `data.items()` / `data.item(id, meta?)` | 物品表（`items.jsonl`） |
 | `data.quests()` / `data.questLines()` | 任务书（字段见 `docs/PACKDATA.md`） |
 | `data.structures()` | 全部多方块机器：`[{ id, meta, name, tiers }]`（`structures.jsonl`） |
@@ -81,7 +83,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **每一步记在哪。** 一个例程可以调几千次工具，所以不是每次都往对话日志里记：
 
-- 全量在这次运行自己的文件里：数据目录 `logs/runs/<routine|program>-<日期>-<时间>-<编号>.jsonl`，一行一条。`start`（程序全文）、`call`（第几次、工具、参数、成没成、结果全文、用时、开的任务号）、`log`（程序自己 `log` 的一行）、`end`（怎么结束的、返回值）。留最近 300 次运行。
+- 全量在这次运行自己的文件里：数据目录 `logs/runs/<routine|program>-<日期>-<时间>-<编号>.jsonl`，一行一条（一次运行写过 20 MiB 以后，成功的结果只留开头 400 字符并记下原来多长，免得跑十二小时的例程把磁盘写满；参数、成没成、用时照记，出错的照样留全）。`start`（程序全文）、`call`（第几次、工具、参数、成没成、结果全文、用时、开的任务号）、`log`（程序自己 `log` 的一行）、`end`（怎么结束的、返回值）。留最近 300 次运行。
 - 对话日志里一次运行只有一条汇总（“例程 r3（整理抽屉）：在跑，已调 312 次工具，开了 150 个任务，0 次出错，64 秒”），跑着的时候原地更新；另外每一次出错的调用各有一条。面板上点开汇总就是读上面那个文件。
 - `run_program` 的程序调的查询也是这样记（编号 `p1`、`p2`……）；一次工具都没调的程序不占行。
 
@@ -97,7 +99,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 ## 库函数：不在工具清单里的
 
-每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在能看图的模型 55 个、四万五千字符左右，不能看图的 53 个、四万两千六百字符左右）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
+每个工具的说明和参数 schema 每一轮都发给模型（瘦身前 66 个工具、六万两千多字符；现在能看图的模型 55 个、四万六千三百字符左右，不能看图的 53 个、四万四千一百字符左右）。“查一查、把结果算一算”这类事不值得每一轮都占着地方，做成**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，只是不在发给模型的清单里。登记在 `brain/src/tools/index.ts`，一共三层：
 
 | | 发给模型 | 模型怎么知道它存在 | 怎么调 |
 |---|---|---|---|
@@ -119,8 +121,9 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | | |
 |---|---|
 | `list_stock { radius?, contains?, below?, at?, page? }` | 周围所有箱子和抽屉合成一张存货表。`data`：`{ items: [{ id, meta, name?, count, automated, places: [{ x, y, z, count, kind?, automated? }] }] }`（全部，不分页；`text` 一页 40 行） |
-| `list_drawers { x, y, z, below?, page? }` | 一个抽屉管理器（或一个抽屉方块）的每一格。`data` 是身体 `world.drawers` 的原样回答：`{ controller?, drawers, slotsTotal, slotsUsed, slots: [{ x, y, z, slot, id, meta, name, count, room } 或 { x, y, z, slot, empty: true }], total, offset }` |
-| `find_uses { id, meta?, way?, contains?, page? }` | 一样东西能拿来做什么（NEI 的 U）。只给 id/meta：`{ item: { id, meta, name }, total, ways: [{ way, name, recipes }] }`（`way` 是可以回填给 `way` 参数的写法）。给了 `way` / `contains` / `page`：`{ item, total, page, pages, recipes: [{ recipe, way, in: [{ id, meta?, name, count } 或 { ore, name, count } 或 { any, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, fluidsOut?, eut?, ticks? }] }`（`count` 为 0 的原料是放进去但不消耗的） |
+| `list_drawers { x, y, z, below?, page? }` | 一个抽屉管理器（或一个抽屉方块）的每一格。`data` 是身体 `world.drawers` 的原样回答：`{ controller?, drawers, slotsTotal, slotsUsed, slots: [{ x, y, z, slot, id, meta, name, count, room, front, hit } 或 { x, y, z, slot, empty: true }], total, offset }`。`front`（正面朝哪）和 `hit`（点这一格时点在方块里的哪一点）可以原样交给 `use_item` 的 `side` / `hit` |
+| `read_blueprint { name, draft?, from?, to? }` | 一张图纸里有什么，不用知道它放在哪：服务器上的图纸（身体的 `blueprint.read`），或者 `draft: true` 读它自己的草稿，两边是同一个形状。`data`：`{ name, source: 'server' \| 'draft', size: { x, y, z }, blocks, materials: [{ id, meta, name?, count, item?, byHand? }], x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells }`，`palette[cells[(dy * sz + dz) * sx + dx]]` 是盒子里那一格（`palette[0]` 是空）。整张超过 262,144 格时不带格子那几项，文字里写明用 `from` / `to` 分块读；草稿没有 `byHand`（发布以后才知道） |
+| `find_uses { id, meta?, way?, contains?, page? }` | 一样东西能拿来做什么（NEI 的 U）。只给 id/meta：`{ item: { id, meta, name }, total, ways: [{ way, name, recipes }] }`（`way` 是可以回填给 `way` 参数的写法）。给了 `way` / `contains` / `page`：`{ item, total, page, pages, recipes: [{ recipe, way, in: [{ id, meta?, name, count } 或 { ore, name, count } 或 { any, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, fluidsOut?, eut?, ticks? }] }`（`count` 为 0 的原料是放进去但不消耗的）。它在凿子的某个组里（或者带着那个组认的矿辞名）时多一项 `chisel: [{ group, ore?, member, variants: [{ id, meta, name }] }]`：能凿成的全部变体；`way: "凿子"` 的文字是一行一种 |
 | `list_quest_lines { player? }` | 任务书各章和进度。`data`：`{ quests, player?, lines: [{ name, en?, quests, complete?, available? }], unclaimed? }`（进度那几项要看得到某个玩家的进度才有） |
 | `probe_block { x, y, z }` | 现在能不能挖这一格、用哪件工具、要多久。`data` 是身体 `bot.probe` 的原样回答：`{ id, meta, …, canDig, digTicks, toolSlot, inReach, candidates: [{ slot, item, harvest, strength, ticks, excluded? }] }` |
 | `check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }` | 世界和图纸对比，什么都不动。`data` 是身体 `blueprint.check` 的原样回答：`{ name, origin, box, cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }` |
@@ -128,9 +131,13 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `read_blocks { x1, y1, z1, x2, y2, z2 }` | 世界里一个盒子的全部方块（每边最多 64）。`data`：`{ x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells, unloaded }`，盒子从 `(x, y, z)` 起，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格（`palette[0]` 是空气） |
 | `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
 | `check_structure { at, tier, id?, meta? }` | 把世界里 `at` 那台主机周围的方块和它 `tier` 级的搭法对一遍（四个水平朝向都试，取对得最上的；机器零件占着机械方块的位置算对）。`data`：`{ machine, tier, facing, looksLike, total, right, changes: [{ x, y, z, from, to }], need: [{ id, meta, name, count, carried, stored, short }] }` |
-| `total_materials { id, meta?, count?, recipes: [#…] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed }], raw, kept, fluids, unused }` |
+| `total_materials { id, meta?, count?, recipes?: [#…], chisel?: [{ id, meta?, from: { id, meta? } }] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`chisel` 是“这样东西用凿子从同组的另一种变来”的一步（不是配方，没有编号）：一换一往下乘，凿子不算消耗，文字里照实说耐久不知道；两样不在同一组就是出错的结果，写明各在哪一组。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed } 或 { chisel: { group, from }, way: 'chisel', rounds, makes, needed }], raw, kept, fluids, unused }`（用了凿子时 `kept` 里多一项 `{ tool: 'chisel', name: '凿子' }`） |
 | `view_area { x1…z2 \| radius, view?, from?, layer? }`（模型不能看图时） | 世界里一个盒子的文字说明：范围、各种方块各多少、一层层各有什么。`data`：`{ x, y, z, sx, sy, sz, unloaded, kinds: [{ id, meta, name?, count }] }` |
 | `view_image { name }`（模型不能看图时） | 主人传的一张图片的文字说明：尺寸、透明的占多少、主要颜色。`data`：`{ name, width, height, transparent（0–1）, colors: ["颜色名 百分比"] }` |
+
+**`data` 里的名字。** 全局一个规矩：凡是带 `id` 的东西（物品、方块、容器、机器），`name` 是游戏里看到的中文名（和文字结果里的、和主人说的是同一个叫法），身体给的英文原名在 `en` 里。没有本地物品表、或者这样东西表里查不到时，`name` 还是身体给的英文名，没有 `en`。本来不带名字的条目（只有 `id`、`meta`、`count` 的清单项）不添字段。换名字的地方只有一处（`tools/format.ts` 的 `dataWithLocalNames`，`runTool` 和例程等任务结束的那一步都过它），所以每个工具的 `data` 都是这个规矩。
+
+`find_recipes`（在工具清单里）的 `data`：平时没有；查的东西在凿子的某个组里时是 `{ item: { id, meta, name }, chisel: [{ group, ore?, member, variants }] }`。
 
 合并掉的旧名字（程序里照样能调）：`list_blueprints`、`list_drafts`、`list_images`（现在是 `list_designs`，`data` 是 `{ blueprints?, drafts?, images? }`）；`set_home`、`list_homes`、`join_team`（现在是 `run_command`：发一条服务器指令，`data` 是 `{ command, output: [回显的每一行] }`。能发哪些由身体的允许列表定，协议里没有读这份列表的接口，所以被拒绝时结果里写明原因和默认的列表）。
 
@@ -217,6 +224,7 @@ brain/src/script/runner.mjs     子进程入口：收紧自己、建 vm 上下�
 brain/src/script/prelude.js     程序能用的 API，在 vm 上下文里求值（纯 JavaScript）
 brain/src/design/               草稿的检查和存取、文字预览、.schematic、PNG 解码、图片存取
 brain/src/agent/routine.ts      例程：程序调工具时怎么执行、怎么等任务、各项上限、怎么结束
+brain/src/agent/run-log.ts      程序每次运行的记录：每一步的全量写进 logs/runs/，对话日志里一条滚动更新的汇总加出错的那几步
 brain/src/tools/design.ts       run_program、例程的三个工具、list_designs、草稿的三个工具（view_draft 加 picture 可以把草稿画成图）
 brain/src/tools/index.ts        工具、库函数、旧名字三层；发给模型的清单（按模型能不能看图）；库函数的索引
 brain/src/tools/pictures.ts     看图的工具：view_area（世界）、view_image（主人传的图片）

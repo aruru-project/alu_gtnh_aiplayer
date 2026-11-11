@@ -44,6 +44,10 @@ export interface LimitsConfig {
   memoryMaxChars: number
   /** 单个工具结果的长度上限（字符）。 */
   toolResultMaxChars: number
+  /** 例程（它写的后台程序）没说跑多久时最多跑几分钟。 */
+  routineMinutes: number
+  /** 例程自己要求时长时最多给到几分钟。 */
+  routineMaxMinutes: number
 }
 
 export interface BotConfig {
@@ -112,14 +116,23 @@ export const DEFAULT_PACKDATA_DIR = 'packdata'
 /** 默认按正式部署来：端口 25590，口令文件没有默认值（必须显式配置）。 */
 export const DEFAULT_BRIDGE_PORT = 25590
 
+/** 每轮步数上限最多能设到多少。 */
+export const MAX_STEPS_LIMIT = 500
+
 export const DEFAULT_LIMITS: LimitsConfig = {
-  // “给一个目标它自己去办”这类活要查物品、查配方、找库存、取料、合成，一轮里十几二十步是常事
-  maxSteps: 30,
+  // “给一个目标它自己去办”这类活要查物品、查配方、找库存、取料、合成，一轮里几十步是常事
+  maxSteps: 60,
   dailyTokenLimit: 0,
   historyTokenThreshold: 24_000,
   memoryMaxChars: 4000,
   toolResultMaxChars: 6000,
+  // 例程不限调用次数（一口气搬一万多个东西的活要几千次调用），靠时长、连续失败和随时可停来管：默认两小时，最长十二小时
+  routineMinutes: 120,
+  routineMaxMinutes: 720,
 }
+
+/** 例程时长最多能设到多少分钟（七天）。 */
+export const ROUTINE_MINUTES_LIMIT = 7 * 24 * 60
 
 /** 对话窗口默认 5 分钟：实测 60 秒太短，隔一分钟多、话里没带名字的句子它就不理了。 */
 export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec: 300 }
@@ -361,11 +374,14 @@ export function normalizeConfig(raw: unknown): BrainConfig {
         conversationWindowSec: int(wake.conversationWindowSec, DEFAULT_WAKE.conversationWindowSec, 0, 3600),
       },
       limits: {
-        maxSteps: int(limits.maxSteps, DEFAULT_LIMITS.maxSteps, 1, 64),
+        maxSteps: int(limits.maxSteps, DEFAULT_LIMITS.maxSteps, 1, MAX_STEPS_LIMIT),
         dailyTokenLimit: int(limits.dailyTokenLimit, DEFAULT_LIMITS.dailyTokenLimit, 0, 1_000_000_000),
         historyTokenThreshold: int(limits.historyTokenThreshold, DEFAULT_LIMITS.historyTokenThreshold, 2000, 2_000_000),
         memoryMaxChars: int(limits.memoryMaxChars, DEFAULT_LIMITS.memoryMaxChars, 200, 100_000),
         toolResultMaxChars: int(limits.toolResultMaxChars, DEFAULT_LIMITS.toolResultMaxChars, 500, 100_000),
+        routineMinutes: int(limits.routineMinutes, DEFAULT_LIMITS.routineMinutes, 1, ROUTINE_MINUTES_LIMIT),
+        // 最长不能比默认的还短
+        routineMaxMinutes: Math.max(int(limits.routineMaxMinutes, DEFAULT_LIMITS.routineMaxMinutes, 1, ROUTINE_MINUTES_LIMIT), int(limits.routineMinutes, DEFAULT_LIMITS.routineMinutes, 1, ROUTINE_MINUTES_LIMIT)),
       },
       wantOnline: bot.wantOnline === true,
     },

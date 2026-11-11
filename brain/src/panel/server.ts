@@ -6,7 +6,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import type { AgentStatus } from '../agent/agent.ts'
+import type { AgentState, AgentStatus } from '../agent/agent.ts'
+import type { RunLogStore } from '../agent/run-log.ts'
 import { historyTokens } from '../agent/compaction.ts'
 import type { AgentEvent } from '../agent/events.ts'
 import { DEFAULT_PERSONA } from '../agent/prompt.ts'
@@ -43,6 +44,7 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
+import { blueprintRead, logPage, panelStatus, runList, runRecords } from './data-api.ts'
 
 export interface PanelDeps {
   config: ConfigStore
@@ -66,12 +68,16 @@ export interface PanelDeps {
   agent: {
     handleEvent(ev: AgentEvent): void
     status(): AgentStatus
+    /** 模型这一头、这一轮现在的样子（GET /api/status 用）。 */
+    state?(): AgentState
     /** 执行一个会取消任务的请求；期间和之后收到的对应“任务被取消”不叫醒模型。 */
     ownCancel<T extends { ids?: string[]; replaced?: string[] }>(fn: () => Promise<T>): Promise<T>
     /** 停掉正在跑的例程；没有在跑的返回 false。 */
     stopRoutine?(): boolean
   }
   reminders: { list(): Reminder[]; remove(id: string): boolean }
+  /** 它写的程序（例程、run_program）每次运行的明细。没提供时 /api/runs 是空的。 */
+  runs?: RunLogStore
   testConnection(config: ProviderConfig): Promise<TestConnectionResult>
   /** 问一家接口它有哪些模型（config.model 用不上）。 */
   listModels(config: ProviderConfig): Promise<RemoteModelsResult>
@@ -119,6 +125,11 @@ class HttpError extends Error {
     this.status = status
     this.code = code
   }
+}
+
+/** data-api.ts 里的接口出错时用它回。 */
+const panelReject = (status: number, code: string, message: string): never => {
+  throw new HttpError(status, code, message)
 }
 
 const SENSITIVE_HEADER_RE = /key|token|secret|auth|cookie|password/i
@@ -201,6 +212,8 @@ export class PanelServer {
   private unsubscribeLog: (() => void) | undefined
   private heartbeat: NodeJS.Timeout | undefined
   private overviewCache: { at: number; data: unknown } | undefined
+  /** 实时日志推过的最大的条目 id（比它小的再推来，是同一条的新样子）。 */
+  private lastBroadcastId = 0
 
   constructor(deps: PanelDeps) {
     this.deps = deps
@@ -427,7 +440,11 @@ export class PanelServer {
   }
 
   private broadcast(entry: ActivityEntry): void {
-    const frame = this.frame(entry)
+    // 原地改过的条目（model_call、run）再推一次时不带 SSE 的 id 行：浏览器断线重连用的 Last-Event-ID 还是最新那条的，
+    // 不会因为收到一条旧 id 的更新就把后面的全部重发一遍。条目自己的 id 在 data 里。
+    const update = entry.id <= this.lastBroadcastId
+    if (!update) this.lastBroadcastId = entry.id
+    const frame = update ? `data: ${JSON.stringify(entry)}\n\n` : this.frame(entry)
     for (const res of this.streams) res.write(frame)
   }
 
@@ -438,8 +455,29 @@ export class PanelServer {
     switch (key) {
       case 'GET /overview':
         return this.overview()
+      // 下面五个是面板要的数据（形状见 docs/BRAIN_SPEC.md 的“面板的数据接口”），实现在 data-api.ts
       case 'GET /log':
-        return { entries: this.deps.log.recent(Number(url.searchParams.get('after') ?? 0) || 0, 300) }
+        return logPage(this.deps.log, url.searchParams)
+      case 'GET /status':
+        return panelStatus(
+          {
+            agent: this.deps.agent,
+            bridge: this.deps.bridge,
+            connected: () => this.deps.bridgeStatus().state === 'connected',
+            botName: () => this.deps.config.get().bot.name,
+            model: () => {
+              const active = this.deps.config.activeSelection()
+              return active ? { provider: active.provider.label, model: active.model.name } : undefined
+            },
+          },
+          this.now(),
+        )
+      case 'GET /runs':
+        return runList(this.deps.runs, url.searchParams)
+      case 'GET /runs/records':
+        return runRecords(this.deps.runs, url.searchParams, panelReject)
+      case 'GET /blueprints/read':
+        return blueprintRead(this.deps, url.searchParams, panelReject)
       case 'POST /command':
         return this.command(body)
       case 'GET /providers':

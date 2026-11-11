@@ -22,15 +22,15 @@ import { UsageStore } from '../src/store/usage.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
 import { encodePng, tmpDir, waitFor } from './helpers.ts'
-import { readSchematic } from './mock-bridge.ts'
+import { readBlueprintAnswer, readSchematic } from './mock-bridge.ts'
 
 const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
 
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook } = {}) {
-  const tmp = tmpDir()
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void } } = {}) {
+  const tmp = opts.dir ?? tmpDir()
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = new FakeGame()
-  const log = new ActivityLog()
+  const log = opts.log ?? new ActivityLog()
   const memory = new MemoryStore(tmp.dir, () => config.get().bot.limits.memoryMaxChars)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const design = new DesignWorkspace({ dataDir: tmp.dir })
@@ -127,7 +127,7 @@ describe('面板：鉴权', () => {
     assert.equal(page.status, 200)
     assert.match(page.text, /<title>AI 玩家/)
     assert.equal((await s.call('GET', '/app.js')).status, 200)
-    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log']) {
+    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log', '/api/log?before=5', '/api/status', '/api/runs', '/api/runs/records?id=r1', '/api/blueprints/read?name=x']) {
       assert.equal((await s.call('GET', route)).status, 401, route)
     }
     assert.equal((await s.call('POST', '/api/command', { text: '回家' })).status, 401)
@@ -508,6 +508,101 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.match(frames.at(-1)!, /^id: \d+$/m)
     await reader.cancel()
     await pump
+  })
+
+  it('实时日志：跟着更新的条目（正在想的那次模型调用、程序运行的汇总）改了以后，用同一个 id 再推一次新的样子', async (t) => {
+    const s = await setup(t)
+    const { headers } = await s.login()
+    const res = await fetch(`${s.origin}/api/events`, { headers: { cookie: headers.getSetCookie()[0]!.split(';')[0]! } })
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let received = ''
+    const pump = (async () => {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) return
+        received += decoder.decode(value, { stream: true })
+      }
+    })()
+    const entry = s.log.add({ kind: 'model_call', turn: 3, step: 1, text: '第 1 步：模型在想…', call: { state: 'thinking', purpose: 'turn', step: 1, startedAt: 1000 } })
+    await waitFor('the thinking entry', () => received.includes('模型在想'))
+    s.log.update(entry.id, { text: '第 1 步：2.0 秒，输入 900 / 输出 12 token，说完了', call: { state: 'done', purpose: 'turn', step: 1, startedAt: 1000, ms: 2000, inputTokens: 900, outputTokens: 12, stop: 'end', toolCalls: 0 } })
+    await waitFor('the settled entry', () => received.includes('说完了'))
+    const raw = received.split('\n\n').filter((f) => f.includes('data: '))
+    // 改过的那一次不带 SSE 自己的 id 行（断线重连时不会从这条旧 id 起把后面的重发一遍）；条目的 id 在数据里
+    assert.deepEqual(raw.map((f) => /^id: \d+$/m.test(f)), [true, false])
+    const frames = raw.map((f) => JSON.parse(f.split('data: ')[1]!))
+    assert.deepEqual(frames.map((f) => [f.id, f.kind, f.turn, f.step, f.call.state, f.call.ms ?? null]), [
+      [entry.id, 'model_call', 3, 1, 'thinking', null],
+      [entry.id, 'model_call', 3, 1, 'done', 2000],
+    ])
+    // 之后再来拿日志的，拿到的是改过之后的那一条，只有一条
+    assert.deepEqual((await s.call('GET', '/api/log')).json.entries.map((e: { id: number; call: { state: string } }) => [e.id, e.call.state]), [[entry.id, 'done']])
+    await reader.cancel()
+    await pump
+  })
+
+  it('对话日志往回翻：一页页用 before 翻到头（翻过了内存里留的那 500 条，接着读按天存的文件），不重不漏、顺序不变；跟着更新过的条目给的是最后的样子；大脑重启以后照样翻得到', async (t) => {
+    const dir = tmpDir()
+    const first = new ActivityLog(dir.dir)
+    // 昨天 300 条、今天 400 条；其中一条（程序运行的汇总）后来改过
+    const day = 24 * 3600_000
+    const start = Date.now() - day
+    for (let n = 1; n <= 300; n++) first.add({ kind: 'info', text: `昨天 ${n}`, time: start + n })
+    const summary = first.add({ kind: 'run', text: '例程 r1：在跑', time: start + day })
+    for (let n = 2; n <= 400; n++) first.add({ kind: 'info', text: `今天 ${n}`, time: start + day + n })
+    first.update(summary.id, { text: '例程 r1：跑完了' }, { persist: true })
+    // 重启：内存里只读回最近那个文件的末尾
+    const s = await setup(t, {}, { dir, log: new ActivityLog(dir.dir) })
+    await s.login()
+    const latest = (await s.call('GET', '/api/log?limit=100')).json
+    assert.deepEqual([latest.entries.length, latest.entries[0].id, latest.entries.at(-1).id, latest.more], [100, 601, 700, true])
+    const seen: { id: number; text: string }[] = [...latest.entries]
+    let pages = 0
+    for (let more = true; more; pages++) {
+      const page = (await s.call('GET', `/api/log?before=${seen[0]!.id}&limit=128`)).json
+      assert.ok(page.entries.length > 0 && page.entries.length <= 128)
+      seen.unshift(...page.entries)
+      more = page.more
+      assert.ok(pages < 20)
+    }
+    assert.deepEqual([pages, seen.length], [5, 700])
+    assert.deepEqual(seen.map((e) => e.id), Array.from({ length: 700 }, (_, n) => n + 1))
+    assert.deepEqual([seen[0]!.text, seen[299]!.text, seen[300]!.text, seen[301]!.text, seen[699]!.text], ['昨天 1', '昨天 300', '例程 r1：跑完了', '今天 2', '今天 400'])
+    // 翻到头以后再翻：没有了
+    assert.deepEqual((await s.call('GET', '/api/log?before=1')).json, { entries: [], more: false })
+  })
+
+  it('图纸里有什么：一张图纸的尺寸和材料表（得由人放的带着原因）；要格子时一并给；没有这张图纸、没有这张草稿时说没有', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    // 3×2×3：一层石砖地板，上面一个箱子（得由人放）
+    const cells = new Uint16Array(18)
+    cells.fill(1, 0, 9)
+    cells[13] = 2
+    const HUT = { name: 'hut', size: { x: 3, y: 2, z: 3 }, kinds: [{ id: 'minecraft:air', meta: 0, name: 'Air' }, { id: 'minecraft:stonebrick', meta: 0, name: 'Stone Bricks' }, { id: 'minecraft:chest', meta: 3, name: 'Chest', byHand: 'it holds contents or settings' }], cells }
+    s.game.handlers['blueprint.read'] = (p) => {
+      if (p.name !== 'hut') throw new BridgeError('bad_request', `no blueprint named ${String(p.name)}`)
+      return readBlueprintAnswer(HUT, p)
+    }
+    const read = await s.call('GET', '/api/blueprints/read?name=hut')
+    assert.equal(read.status, 200)
+    assert.deepEqual(read.json, {
+      name: 'hut',
+      source: 'server',
+      size: { x: 3, y: 2, z: 3 },
+      blocks: 10,
+      materials: [
+        { id: 'minecraft:stonebrick', meta: 0, name: 'Stone Bricks', count: 9 },
+        { id: 'minecraft:chest', meta: 3, name: 'Chest', count: 1, byHand: 'it holds contents or settings' },
+      ],
+    })
+    assert.deepEqual(s.game.callsOf('blueprint.read'), [{ name: 'hut', cells: false }])
+    const whole = (await s.call('GET', '/api/blueprints/read?name=hut&cells=1')).json
+    assert.deepEqual([whole.sx, whole.sy, whole.sz, whole.palette.map((k: { id: string }) => k.id), whole.cells], [3, 2, 3, ['minecraft:air', 'minecraft:stonebrick', 'minecraft:chest'], [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 2, 0, 0, 0, 0]])
+    const missing = await s.call('GET', '/api/blueprints/read?name=nope')
+    assert.deepEqual([missing.status, missing.json.error.code], [502, 'bad_request'])
+    assert.deepEqual([(await s.call('GET', '/api/blueprints/read?name=../x')).status, (await s.call('GET', '/api/blueprints/read?name=nope&draft=1')).status], [400, 404])
   })
 
   it('AI 玩家设置保存后立刻反映在配置里；名字不合法时拒绝', async (t) => {

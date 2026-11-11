@@ -179,6 +179,109 @@ interface ProviderConfig {
   - **记忆**：查看、编辑、删除。
 - 布局清楚、朴素即可，不追求花哨；手机上也能看。
 
+### 面板的数据接口
+
+界面要的数据都从这几处来（实现在 `panel/data-api.ts`、`store/activity-log.ts`、`agent/run-log.ts`）。前端只管显示；这里定的是字段。
+
+**1. 日志条目**（`GET /api/log`、SSE `GET /api/events`）。原有字段：`id`、`time`、`kind`、`text`，可选的 `who`、`detail`、`isError`、`turn`、`pictures`、`scenes`。另有这些可选字段：
+
+| 字段 | 出现在 | 含义 |
+|---|---|---|
+| `agent` | 任何条目 | 哪个代理的；不带就是主代理（以后它开的帮手各有各的名字） |
+| `step` | `model_call`、`model_text`、模型直接调的 `tool_call` / `tool_result` | 这一轮的第几次模型调用（从 1 起），和 `turn` 一起定位 |
+| `source` | `tool_call`、`tool_result`、`run`、例程开始和结束的那两条 | 谁发起的：`model`（模型自己）、`program`（`run_program` 的程序）、`routine`（后台的例程） |
+| `runId` | 属于某次程序运行的条目 | `r3`（例程）、`p12`（程序）。每次大脑重启从 1 重新数，唯一的是 `run.file` |
+| `run` | `kind: "run"`，例程开始和结束的那两条 | 这次运行的快照，见下 |
+| `call` | `kind: "model_call"` | 这次模型调用的账，见下 |
+
+`kind` 在原来那些之外多两种，**这两种会原地更新**：SSE 里收到一条数据里的 `id` 是已经有的，就是同一条的新样子，替换掉原来那条；之后再拉日志拿到的也是新样子。更新的那一帧不带 SSE 自己的 `id:` 行（只有 `data:`），所以浏览器断线重连用的 `Last-Event-ID` 一直是最新那条的。
+
+- **`model_call`**：一次模型调用一条。开始想的时候就出现（`call.state: "thinking"`），回来或出错时改成结果。
+
+  ```jsonc
+  { "id": 812, "time": 1731300000000, "kind": "model_call", "turn": 12, "step": 3,
+    "text": "第 3 步：11.8 秒，输入 181204（缓存命中 176900） / 输出 412 token，要调 2 个工具",
+    "call": { "state": "done",            // thinking | done | failed
+              "purpose": "turn",          // turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）
+              "step": 3, "startedAt": 1731300000000, "ms": 11820,
+              "model": "claude-…",        // 接口回的模型名
+              "inputTokens": 181204,      // 已含缓存读写的部分
+              "outputTokens": 412,
+              "cacheReadTokens": 176900, "cacheWriteTokens": 4100,   // 接口给了才有
+              "stop": "tool_calls",       // tool_calls 要调工具 | end 说完了 | truncated 被输出上限截断 | other | error
+              "toolCalls": 2 } }
+  ```
+
+  `thinking` 时只有 `state`、`purpose`、`step`、`startedAt`。`failed` 时 `stop` 是 `error`，带 `errorKind`（`auth`、`timeout`、`server`、`context_length`、`aborted`……）和 `error`（原话），条目 `isError: true`。
+
+- **`run`**：它写的程序的一次运行一条汇总，跑着的时候更新（最快一秒一次），结束时定稿。例程调工具**不再每次记两条**：只有出错的那一步另有一条 `tool_result`（`isError`、`source`、`runId`，`text` 以 `[例程 r3 #12]` 开头，`detail` 是参数和结果全文）。
+
+  ```jsonc
+  { "id": 830, "time": 1731300100000, "kind": "run", "source": "routine", "runId": "r3",
+    "text": "例程 r3（整理抽屉）：在跑，已调 312 次工具，开了 150 个任务，0 次出错，64 秒；正在等 withdraw_items {…}",
+    "run": { "id": "r3", "kind": "routine",       // routine | program
+             "name": "整理抽屉",
+             "status": "running",                 // running | done | failed | stopped | limit
+             "startedAt": 1731300100000,          // 结束后多一项 endedAt
+             "calls": 312, "tasks": 150, "errors": 0,
+             "waiting": "withdraw_items {\"container\":…}",   // 正等着的那一步；结束后没有
+             "file": "routine-20261111-153012-r3.jsonl" } }   // 明细在哪个文件（见第 3 条）
+  ```
+
+  例程另有开始、结束各一条（`kind` 是 `info`，没跑完的结束是 `error`），带 `source: "routine"`、`runId` 和当时的 `run` 快照；开始那条的 `detail` 是程序全文，结束那条的 `detail` 是交给模型的那段总结。`run_program` 的程序只有那条 `run`，一次工具都没调的不出现。大脑正常停下时例程会被停掉，那条 `run` 定稿成 `stopped`；进程被强杀的话它停在 `running`，没有结束的那一条。
+
+**2. 翻页。** `id` 跨重启单调递增，可以当游标。
+
+- `GET /api/log?after=<id>&limit=<n>`（默认 300，最多 500）→ `{ entries, more }`：`id` 大于 `after` 的里面**最新的** n 条，按时间顺序；`more` 是 `after` 和 `entries[0]` 之间还有没给的。不带参数就是最新的 300 条。
+- `GET /api/log?before=<id>&limit=<n>` → `{ entries, more }`：紧挨在 `id` 之前的 n 条，按时间顺序；内存里（最近 500 条）不够就读按天存的文件（留 14 天）。`more: false` 是到头了。往上翻就一直用这一页第一条的 `id`。
+- SSE `GET /api/events?after=<id>`：先补发 `id` 大于 `after` 的最近 300 条，之后实时推。
+
+**3. 程序运行的明细**（数据目录 `logs/runs/`，一次运行一个文件，留最近 300 次）。
+
+- `GET /api/runs?limit=<n>` → `{ runs: [{ file, id, kind, name, status, startedAt, endedAt?, calls, tasks, errors }] }`，新的在前。
+- `GET /api/runs/records?file=<run.file>&after=<行号，默认 0>&limit=<n，默认 200，最多 1000>` → `{ file, total, next, records }`。也可以给 `id=r3`，取这个编号最近的一次。`next` 是下一页的 `after`；还在跑的运行文件在长，拿 `next` 接着读就是新追加的。`records` 一行一条：
+
+  ```jsonc
+  { "t": "start", "time": 1731300100000, "id": "r3", "kind": "routine", "name": "整理抽屉", "code": "程序全文" }
+  { "t": "call",  "time": 1731300100050, "n": 1, "tool": "list_drawers", "input": { "x": 1, "y": 64, "z": 1 },
+    "ok": true, "text": "结果全文（超过 2 万字符截并写明）", "ms": 35, "task": "t12" }   // task：这一步开了任务时才有
+    // 一次运行的记录写过 20 MiB 以后，成功的结果只留开头 400 字符，并多一项 "textLength"（原来多长）；出错的照样留全
+  { "t": "log",   "time": 1731300100060, "text": "slots below 128: 2" }                    // 程序自己 log 的一行
+  { "t": "end",   "time": 1731300164000, "status": "done", "ending": "the program finished", "calls": 4, "tasks": 3, "errors": 0, "value": "47" }
+  ```
+
+**4. 状态** `GET /api/status`（不缓存，可以一秒一拉；`/api/overview` 原样保留）。三样分开：模型、例程、身体。
+
+```jsonc
+{ "time": 1731300000000,
+  "agents": [ {
+    "agent": "main", "name": "Alu",
+    "model": { "state": "thinking",                    // idle | thinking | tools | outage
+               "provider": "Anthropic", "model": "claude-…",        // 现在配置用的
+               "turn": 12, "step": 3, "since": 1731300000000, "purpose": "turn",
+               "lastCall": { "time": 1731299990000, "ok": true, "durationMs": 11820, "model": "claude-…",
+                             "inputTokens": 181204, "outputTokens": 412, "cacheReadTokens": 176900 } },
+    "turn": { "id": 12, "startedAt": 1731299950000, "steps": 2, "maxSteps": 60 },
+    "pending": 0,
+    "routine": { "id": "r3", "name": "整理抽屉", "status": "running", "startedAt": 1731300100000,
+                 "calls": 312, "tasks": 150, "errors": 0,
+                 "waiting": "withdraw_items {…}", "waitingSince": 1731300160000, "waitingTask": "t151",
+                 "limitMs": 7200000, "file": "routine-20261111-153012-r3.jsonl" },
+    "lastRoutine": null,
+    "body": { "online": true,
+              "task": { "id": "t151", "type": "withdraw", "state": "running", "progress": { "done": 3, "total": 8 }, "startedAt": 1731300160000 },
+              "queue": [ { "id": "t152", "type": "craft", "state": "queued" } ] }
+  } ] }
+```
+
+- `model.state`：`idle` 没有在跑的一轮；`thinking` 模型调用进行中（带 `turn`、`step`、`since`、`purpose`）；`tools` 这一轮没完、正在执行它要的工具（带 `turn`、`step`）；`outage` 模型接口故障、过一阵再试。有故障时（不管当时是哪个状态）带 `outage: { failures, since, nextRetryAt, lastError }`。
+- `turn`：正在跑的一轮，`steps` 是已经完成的模型调用次数；没有是 `null`。`pending`：排着队还没处理的事件数。
+- `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`）。停它是 `POST /api/routine/stop`。
+- `body`：`task` 是身体正在做的任务（`progress` 身体给了才有），`queue` 是排队的。连不上身体时是 `{ "online": false, "task": null, "queue": [], "error": "…" }`。取消是 `POST /api/tasks/cancel`。
+- **`agents` 是数组**：现在只有 `main` 一项；以后每个帮手一项，各有自己的 `model`、`turn`、`routine`，日志条目用 `agent` 字段对上。界面别写死成只有一个模型。
+
+**5. 图纸里有什么** `GET /api/blueprints/read?name=<名字>&draft=<0|1>&cells=<0|1>` → 和库函数 `read_blueprint` 的 `data` 同一个形状（见 `docs/SCRIPTS.md`）：`{ name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }] }`；`cells=1` 才带 `x y z sx sy sz palette cells`。`draft=1` 读它的草稿。没有这张图纸是 502（身体的原话），没有这张草稿是 404。
+
 ## 测试
 
 用 `node:test`。命令：`npm test`、`npm run typecheck`。

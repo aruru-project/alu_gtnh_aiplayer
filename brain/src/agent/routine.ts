@@ -1,9 +1,11 @@
 // 例程：模型写的程序在后台跑，程序里可以一个个调工具（查询的直接拿结果，会开任务的等任务做完再往下走）。
 // 模型启动它以后这一轮就可以结束；例程做完、出错、被停掉或者碰到上限时，再把模型叫醒，带上它的日志。
 //
-// 例程里调的每个工具和模型自己调走的是同一条路（runTool）：同样的校验，同样记进对话日志（面板上看得到）。
+// 例程里调的每个工具和模型自己调走的是同一条路（runTool）：同样的校验。每一步记进这次运行自己的记录（run-log.ts），
+// 面板的对话日志里是一条滚动更新的汇总加上出错的那几步。
 // 程序本身照旧跑在沙箱里（script/sandbox.ts），碰不到文件和网络，只多了“调工具”这一个口子。
-// 上限：总时长、工具调用次数、开任务的次数、连续失败的次数、程序自己的计算时间。同一时间只跑一个。
+// 管着它的：总时长（默认和最长由主人在面板上定）、连续失败的次数、程序自己的计算时间、每秒最多调几次工具（超了自动等，
+// 不报错）；随时可停。调多少次工具、开多少个任务不设上限：一口气搬一万多个东西的活就该让它一口气做完。同一时间只跑一个。
 
 import type { BridgeApi } from '../bridge/api.ts'
 import { BridgeError } from '../bridge/protocol.ts'
@@ -11,25 +13,28 @@ import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace, ProgramRun } from '../design/index.ts'
 import type { ProgramCall, ProgramCallResult } from '../script/sandbox.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
-import { clip, compactJson, formatTask } from '../tools/format.ts'
+import { clip, compactJson, dataWithLocalNames, formatTask } from '../tools/format.ts'
+import type { ActivityRun } from '../store/activity-log.ts'
+import { RunRecorder } from './run-log.ts'
+import type { RunLogStore } from './run-log.ts'
 import { DEFAULT_RESULT_MAX_CHARS, runTool } from '../tools/index.ts'
 import type { Tool, ToolContext, ToolResult } from '../tools/index.ts'
 
 export interface RoutineLimits {
-  /** 从开始到结束最多多久（等任务的时间算在内）。 */
+  /** 没说跑多久时，从开始到结束最多多久（等任务的时间算在内）。 */
   wallMs: number
-  /** 最多调多少次工具。 */
-  calls: number
-  /** 其中最多开多少个任务。 */
-  actions: number
+  /** 它自己要求的时长最多给到多久。 */
+  maxWallMs: number
   /** 连着失败这么多次就停。 */
   failuresInARow: number
   /** 程序自己最多算多久（等工具结果的时间不算）。 */
   computeMs: number
+  /** 每秒最多调几次工具：超了就自动等一下再调，不算错。免得一个不停的循环把游戏服务器打爆。 */
+  callsPerSecond: number
 }
 
-export const DEFAULT_ROUTINE_LIMITS: RoutineLimits = { wallMs: 30 * 60_000, calls: 400, actions: 150, failuresInARow: 3, computeMs: 20_000 }
-export const ROUTINE_MAX_MINUTES = 180
+/** 时长的两个数是没人配置时用的；平时由主人在面板的设置里定（agent 每次启动例程时现问）。 */
+export const DEFAULT_ROUTINE_LIMITS: RoutineLimits = { wallMs: 120 * 60_000, maxWallMs: 12 * 60 * 60_000, failuresInARow: 3, computeMs: 20_000, callsPerSecond: 20 }
 /** 例程里不能调的工具：不能自己再跑程序、再开例程。 */
 export const ROUTINE_BLOCKED_TOOLS: readonly string[] = ['run_program', 'start_routine', 'stop_routine', 'routine_status']
 const CALLS_KEPT = 12
@@ -89,6 +94,10 @@ export interface RoutineView {
   valueLength?: number
   /** 它存下的图纸草稿。 */
   drafts?: string[]
+  /** 这一次最多能跑多久（毫秒）。 */
+  limitMs?: number
+  /** 这次运行的结构化快照（面板用）：调了多少次、开了多少任务、出错多少次、全量记录在哪个文件。 */
+  run?: ActivityRun
 }
 
 export interface RoutineDeps {
@@ -106,7 +115,10 @@ export interface RoutineDeps {
   cancelTask(id: string): Promise<void>
   /** 扣下的任务事件送回 agent 的事件入口（这时谁开的任务已经清楚了）。 */
   redeliver(ev: RoutineTaskEvent): void
-  limits?: Partial<RoutineLimits>
+  /** 各项上限。给函数的话每次启动例程时现问（主人在面板上改了时长，下一个例程就照新的来）。 */
+  limits?: Partial<RoutineLimits> | (() => Partial<RoutineLimits>)
+  /** 每次运行的全量记录落在哪；不给就不落盘。 */
+  runs?: RunLogStore
   /** “单个工具结果上限”现在是多少：一个工具结果最多给程序这么多字符的文字（data 不受限制），程序 return 的值也照它截。 */
   maxResultChars?(): number
 }
@@ -127,6 +139,10 @@ interface Running {
   /** 工具调用还没回来时到的、还不知道是谁开的任务的事件，见 hold。 */
   held: RoutineTaskEvent[]
   ended: boolean
+  /** 这次运行的记录员：全量写文件，对话日志里一条汇总。 */
+  record: RunRecorder
+  /** 最近几次调用开始的时刻（毫秒，单调时钟）：限速用。 */
+  stamps: number[]
 }
 
 export class RoutineRunner {
@@ -144,7 +160,9 @@ export class RoutineRunner {
   /** 正在跑的例程；没有时是上一个跑完的（没有跑过就是 undefined）。 */
   view(): RoutineView | undefined {
     const view = this.running?.view ?? this.last
-    return view ? { ...view, recent: [...view.recent], logs: [...view.logs] } : undefined
+    if (!view) return undefined
+    const run = this.running ? this.running.record.view() : view.run
+    return { ...view, recent: [...view.recent], logs: [...view.logs], ...(run ? { run } : {}) }
   }
 
   isRunning(): boolean {
@@ -186,12 +204,14 @@ export class RoutineRunner {
   /**
    * 启动一个例程。已经有一个在跑时返回 error。启动以后立刻返回；程序在后台跑。
    */
-  start(code: string, opts: { name?: string; minutes?: number } = {}): { view: RoutineView } | { error: string } {
+  start(code: string, opts: { name?: string; minutes?: number } = {}): { view: RoutineView; minutes: number; asked?: number } | { error: string } {
     if (this.running) return { error: `routine ${this.running.view.id} ("${this.running.view.name}") is still running: wait for it, or stop it with stop_routine` }
-    const limits: RoutineLimits = { ...DEFAULT_ROUTINE_LIMITS, ...(this.deps.limits ?? {}) }
-    if (opts.minutes !== undefined) limits.wallMs = Math.min(ROUTINE_MAX_MINUTES, Math.max(1, opts.minutes)) * 60_000
+    const given = typeof this.deps.limits === 'function' ? this.deps.limits() : (this.deps.limits ?? {})
+    const limits: RoutineLimits = { ...DEFAULT_ROUTINE_LIMITS, ...given }
+    // 它要多久就给多久，到主人设的最长为止
+    if (opts.minutes !== undefined) limits.wallMs = Math.min(limits.maxWallMs, Math.max(1, opts.minutes) * 60_000)
     const id = `r${this.seq++}`
-    const view: RoutineView = { id, name: (opts.name ?? '').trim().slice(0, 60) || id, status: 'running', startedAt: this.deps.now(), calls: 0, actions: 0, recent: [], logs: [] }
+    const view: RoutineView = { id, name: (opts.name ?? '').trim().slice(0, 60) || id, status: 'running', startedAt: this.deps.now(), calls: 0, actions: 0, recent: [], logs: [], limitMs: limits.wallMs }
     const run: Running = {
       view,
       abort: new AbortController(),
@@ -204,9 +224,12 @@ export class RoutineRunner {
       calling: 0,
       held: [],
       ended: false,
+      record: new RunRecorder({ log: this.deps.log, now: () => this.deps.now(), ...(this.deps.runs ? { store: this.deps.runs } : {}) }, { id, kind: 'routine', name: view.name, code }),
+      stamps: [],
     }
     this.running = run
-    this.deps.log.add({ kind: 'info', text: `例程 ${id}（${view.name}）开始在后台跑。`, detail: code })
+    view.run = run.record.view()
+    this.deps.log.add({ kind: 'info', text: `例程 ${id}（${view.name}）开始在后台跑。`, detail: code, source: 'routine', runId: id, run: view.run })
     void this.deps.design
       .run(code, {
         timeoutMs: limits.computeMs,
@@ -215,6 +238,7 @@ export class RoutineRunner {
           signal: run.abort.signal,
           onCall: (call) => this.call(run, call),
           onLog: (text) => {
+            run.record.logLine(text)
             view.logs.push(clip(text, LOG_LINE_CHARS))
             if (view.logs.length > LOGS_KEPT) {
               view.logsDropped = (view.logsDropped ?? 0) + view.logs.length - LOGS_KEPT
@@ -231,7 +255,8 @@ export class RoutineRunner {
         (result) => this.programEnded(run, result),
         (e: unknown) => this.finish(run, 'failed', `the program could not be run: ${e instanceof Error ? e.message : String(e)}`),
       )
-    return { view: this.view()! }
+    const minutes = Math.round(limits.wallMs / 60_000)
+    return { view: this.view()!, minutes, ...(opts.minutes !== undefined && opts.minutes > minutes ? { asked: opts.minutes } : {}) }
   }
 
   /** 例程停下时要取消的那个任务已经取消完了（或者没取消成）。大脑退出前等它一下，免得请求还没发出去连接就断了。 */
@@ -256,15 +281,14 @@ export class RoutineRunner {
   private async call(run: Running, call: ProgramCall): Promise<ProgramCallResult> {
     const { view, limits } = run
     if (run.ended) return { ok: false, text: 'the routine has been stopped' }
-    if (view.calls >= limits.calls) {
-      this.finish(run, 'limit', `it made ${limits.calls} tool calls, the most a routine may make`)
-      return { ok: false, text: 'the routine has reached its limit of tool calls' }
-    }
+    // 限速：这一秒里已经调够了就等到下一次能调的时候（不算错，程序只是觉得这一步慢了一点）
+    await this.pace(run)
+    if (run.ended) return { ok: false, text: 'the routine has been stopped' }
     const n = ++view.calls
     const input = compactJson(call.input, 200)
     const since = this.deps.now()
     view.current = { tool: call.name, input, since }
-    this.deps.log.add({ kind: 'tool_call', who: call.name, text: `[例程 ${view.id}] ${input}` })
+    run.record.waiting(call.name, call.input)
 
     let started: TaskInfo | undefined
     const ctx = this.deps.context((task) => {
@@ -294,25 +318,34 @@ export class RoutineRunner {
       const final = task.state === 'done' || task.state === 'failed' || task.state === 'canceled' ? task : await this.waitForTask(run, task.id)
       run.owned.delete(task.id)
       if (final) {
-        result = { ok: final.state === 'done', text: formatTask(final), data: { task: final.id, state: final.state, ...(final.result ? { result: final.result } : {}), ...(final.error ? { error: final.error } : {}) } }
+        result = { ok: final.state === 'done', text: formatTask(final), data: dataWithLocalNames({ task: final.id, state: final.state, ...(final.result ? { result: final.result } : {}), ...(final.error ? { error: final.error } : {}) }) }
         // 任务被别人取消了（主人在面板上、模型另开了任务）：这是叫例程停下
         if (final.state === 'canceled' && !run.ended) this.finish(run, 'stopped', `its task ${final.id} (${final.type}) was canceled by someone else`)
       } else {
         result = { ok: false, text: 'the routine was stopped while this task was running' }
       }
-      if (view.actions >= limits.actions && !run.ended) this.finish(run, 'limit', `it started ${limits.actions} tasks, the most a routine may start`)
     }
     const line = result.text.split('\n')[0] ?? ''
-    const entry: Parameters<ActivityLog['add']>[0] = { kind: 'tool_result', who: call.name, text: `[例程 ${view.id}] ${clip(line, 300)}` }
-    if (line !== result.text) entry.detail = result.text
-    if (!result.ok) entry.isError = true
-    this.deps.log.add(entry)
+    // 每一步的全量进这次运行的记录；对话日志里只有汇总和出错的
+    run.record.call({ n, tool: call.name, input: call.input, ok: result.ok, text: result.text, ms: this.deps.now() - since, ...(taskId ? { task: taskId } : {}) })
     view.recent.push({ n, tool: call.name, input, ok: result.ok, result: clip(line, 200), ms: this.deps.now() - since, ...(taskId ? { taskId } : {}) })
     if (view.recent.length > CALLS_KEPT) view.recent.shift()
     delete view.current
     run.failures = result.ok ? 0 : run.failures + 1
     if (run.failures >= limits.failuresInARow && !run.ended) this.finish(run, 'limit', `${run.failures} tool calls failed in a row; the last: ${clip(line, 200)}`)
     return result
+  }
+
+  /** 限速：最近一秒里调用已经到了上限，就等到最早那一次满一秒。 */
+  private async pace(run: Running): Promise<void> {
+    const perSecond = Math.max(1, Math.floor(run.limits.callsPerSecond))
+    for (;;) {
+      const now = performance.now()
+      while (run.stamps.length > 0 && now - run.stamps[0]! >= 1000) run.stamps.shift()
+      if (run.stamps.length < perSecond || run.ended) break
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, 1000 - (now - run.stamps[0]!))))
+    }
+    run.stamps.push(performance.now())
   }
 
   /** 等一个任务结束。例程被停掉时返回 undefined。 */
@@ -380,6 +413,8 @@ export class RoutineRunner {
     run.abort.abort()
     if (this.running === run) this.running = undefined
     this.last = view
+    run.record.end(status === 'running' ? 'stopped' : status, ending, view.value)
+    view.run = run.record.view()
     this.release(run)
     // 停下来时它开的任务还在游戏里跑：取消掉（程序自己跑完的不会走到这里还带着任务）
     if (task !== undefined && status !== 'done') {

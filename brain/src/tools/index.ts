@@ -14,13 +14,13 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
-import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
+import { buildBlueprint, checkBlueprint, listBlueprints, readBlueprint } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
 import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
 import { totalMaterials } from './materials.ts'
 import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
 import { reportProblem } from './feedback.ts'
-import { clip } from './format.ts'
+import { clip, dataWithLocalNames } from './format.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
 import {
@@ -144,6 +144,7 @@ export const LIBRARY_TOOLS: readonly Tool[] = [
   listQuestLines,
   probeBlock,
   checkBlueprint,
+  readBlueprint,
   haulItems,
   readBlocks,
   findStructure,
@@ -297,7 +298,7 @@ export function bridgeHint(code: string, message: string): string | undefined {
     return 'Bots are not allowed to use this command on this server. Retrying will not help; ask a player to do it.'
   }
   // 身体的原话里说的是协议方法名（blueprint.list），模型认得的是工具名
-  if (code === 'not_found' && /no blueprint named/i.test(message)) {
+  if (/no blueprint named/i.test(message)) {
     return 'list_designs shows the blueprints on the server; a name is the file name without ".schematic".'
   }
   if (code === 'too_large' && /queue/i.test(message)) {
@@ -335,7 +336,8 @@ export async function runTool(
     const content = result.keepWhole ? result.content : clip(result.content, max)
     const out: ToolResult = result.isError ? { content, isError: true } : { content }
     if (result.images && result.images.length > 0) out.images = result.images
-    if (result.data !== undefined) out.data = result.data
+    // data 里的名字和文字结果里一样用游戏里的中文名（英文原名留在 en 里）
+    if (result.data !== undefined) out.data = dataWithLocalNames(result.data)
     return out
   } catch (e) {
     if (e instanceof ToolFailure) return { content: e.message, isError: true }

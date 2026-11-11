@@ -238,6 +238,10 @@ export interface DrawerSlot {
   count?: number
   /** 还放得下多少。 */
   room?: number
+  /** 这个抽屉的正面朝哪（down/up/north/south/west/east）：玩家点这一格时点的面，可以原样交给 use 任务的 side。 */
+  front?: string
+  /** 点这一格时点在方块里的哪一点（各 0–1），可以原样交给 use 任务的 hit。 */
+  hit?: { x: number; y: number; z: number }
 }
 
 export interface DrawersResult {
@@ -562,6 +566,35 @@ export interface BlueprintPlacement {
   only?: string[]
   skip?: string[]
   clear?: string[]
+}
+
+/** blueprint.read 的材料表里的一行：图纸里的一种方块和它的个数。 */
+export interface BlueprintKind {
+  id: string
+  meta?: number
+  name?: string
+  count?: number
+  /** 放它用的物品和方块不同名时才有。 */
+  item?: { id: string; meta?: number }
+  /** 身体不放、留给人的：原因。 */
+  byHand?: string
+}
+
+/** blueprint.read：图纸本身的内容，和世界无关。palette + runs 和 world.blocks 同一种写法，是 from..to 这个盒子里的格子。 */
+export interface BlueprintContent {
+  name?: string
+  size?: BlockPos
+  blocks?: number
+  /** 永远是整张图纸的材料，多的在前。 */
+  materials?: BlueprintKind[]
+  x?: number
+  y?: number
+  z?: number
+  sx?: number
+  sy?: number
+  sz?: number
+  palette?: BlueprintKind[]
+  runs?: number[]
 }
 
 /** 要放的一种方块。have 只在 blueprint.check 带了 bot 时有。 */

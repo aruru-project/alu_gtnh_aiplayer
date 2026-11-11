@@ -300,6 +300,8 @@ export class MockBridge {
    */
   readonly bags = new Map<string, { id: string; meta: number; count: number; name: string }[]>([['Backpack:backpack', []]])
   /** use 任务：这件东西右键用了会怎样。food：吃掉一个，饱食度加这么多；wear：穿到身上（从背包里消失）。包是打开界面；别的东西用了没有看得见的变化。 */
+  /** use 任务对着方块点过的每一下（空手按按钮、拿着东西点方块）：谁、点的哪个方块、哪个面、几下。 */
+  readonly clickLog: Json[] = []
   readonly usable = new Map<string, { food?: number; wear?: boolean }>([
     ['minecraft:bread', { food: 5 }],
     ['minecraft:iron_helmet', { wear: true }],
@@ -899,7 +901,9 @@ export class MockBridge {
           slotsTotal += box.slots
           slotsUsed += box.items.length
           box.items.forEach((item, slot) => {
-            if (below === undefined || item.count < below) slots.push({ x: box.x, y: box.y, z: box.z, slot, id: item.id, meta: item.meta, name: item.name, count: item.count, room: Math.max(0, 2048 - item.count) })
+            // front / hit：玩家点这一格时点的面和位置（这里的抽屉都朝南，一个方块里的几格从上往下排）
+            const hit = { x: 0.5, y: Math.round((1 - (slot + 0.5) / box.slots) * 100) / 100, z: 1 }
+            if (below === undefined || item.count < below) slots.push({ x: box.x, y: box.y, z: box.z, slot, id: item.id, meta: item.meta, name: item.name, count: item.count, room: Math.max(0, 2048 - item.count), front: 'south', hit })
           })
           // 没指定物品的空格（只在不筛数量时列）
           if (below === undefined) for (let slot = box.items.length; slot < box.slots; slot++) slots.push({ x: box.x, y: box.y, z: box.z, slot, empty: true })
@@ -1121,6 +1125,13 @@ export class MockBridge {
             .map((b) => ('error' in b ? { name: b.name, error: b.error } : { name: b.name, ...describeBlueprint(b) })),
           folder: BLUEPRINT_FOLDER,
         }
+      case 'blueprint.read': {
+        const name = blueprintName(p.name)
+        const file = this.blueprints.get(name)
+        if (!file) throw new RpcError('bad_request', `there is no blueprint named "${name}"; blueprint.list shows the ones there are`)
+        if ('error' in file) throw new RpcError('bad_request', `blueprint "${name}": ${file.error}`)
+        return readBlueprintAnswer(file, p)
+      }
       case 'blueprint.check': {
         const plan = this.blueprintPlan(p)
         // 带了 bot 时它必须在线，materials 里有它身上的数量
@@ -1213,7 +1224,8 @@ export class MockBridge {
         const bot = this.onlineBot(p.bot)
         this.throttle(bot)
         // 一次最多 1000 字；每一行开头的 / 和空白都被去掉，聊天内容不会被当成指令
-        const message = String(p.message ?? '')
+        const whole = String(p.message ?? '')
+        const message = whole
           .slice(0, 1000)
           .split(/\r?\n/)
           .map((line) => line.replace(/^[\s/]+/, ''))
@@ -1221,7 +1233,14 @@ export class MockBridge {
           .join(' ')
         this.chatLog.push({ bot: bot.name, message })
         this.emit('chat', { player: bot.name, uuid: `uuid-${bot.name}`, message, isBot: true })
-        return {}
+        // 和真的身体一样回话：分成了几行（一行最多 100 字，尽量断在标点或空格后面）、超过 1000 字截掉了多少
+        let lines = 0
+        for (let rest = message.trim(); rest.length > 0; lines++) {
+          let end = Math.min(rest.length, 100)
+          if (rest.length > 100) for (let i = 100; i > 60; i--) if ('。！？；，、：）,.!?;:) '.includes(rest[i - 1]!)) { end = i; break }
+          rest = rest.slice(end).trim()
+        }
+        return { lines, ...(whole.length > 1000 ? { cutChars: whole.length - 1000 } : {}) }
       }
       case 'bot.command':
         return { output: this.command(this.onlineBot(p.bot), String(p.command ?? '')) }
@@ -1355,8 +1374,12 @@ export class MockBridge {
       if (inputs.some((i) => typeof i.count !== 'number' || i.count <= 0)) throw new RpcError('bad_request', 'each input needs a count')
     }
     if (type === 'use') {
+      // 手里拿着 item（不给就是空手，这时必须给 on）；可以指定点哪个面、点哪一点、连点几下
       const item = spec.item as Json | undefined
-      if (item === null || typeof item !== 'object' || typeof item.id !== 'string') throw new RpcError('bad_request', 'item must be {id, meta?}')
+      if (item !== undefined && (item === null || typeof item !== 'object' || typeof item.id !== 'string')) throw new RpcError('bad_request', 'item must be {id, meta?}')
+      if (item === undefined && positions(spec.on).length === 0) throw new RpcError('bad_request', 'an empty hand needs a block to click: give on')
+      if (spec.side !== undefined && !['down', 'up', 'north', 'south', 'west', 'east'].includes(String(spec.side))) throw new RpcError('bad_request', 'side must be one of down, up, north, south, west, east')
+      if (spec.times !== undefined && (typeof spec.times !== 'number' || spec.times < 1 || spec.times > 64)) throw new RpcError('bad_request', 'times must be 1 to 64')
     }
     if ((type === 'deposit' || type === 'withdraw') && (spec.container as Json | undefined)?.item !== undefined) {
       // 随身的包当容器：{item:{id, meta?}}；往里放必须列出放什么
@@ -1531,13 +1554,34 @@ export class MockBridge {
       }
     }
     if (task.type === 'use') {
-      // 把身上的一件东西拿到手里右键用一下：结果只报看得见的变化
-      const want = p.item as { id: string; meta?: number }
+      // 把身上的一件东西拿到手里（或者空手）右键：结果只报看得见的变化，加上点了几下、点的哪个面
+      const want = p.item as { id: string; meta?: number } | undefined
+      const on = positions(p.on)[0]
+      const clicks = typeof p.times === 'number' ? p.times : 1
+      const clicked = on ? { clicks, side: typeof p.side === 'string' ? p.side : 'north' } : { clicks }
+      if (!want) {
+        this.clickLog.push({ bot: bot.name, on: on!, ...clicked, ...(p.hit !== undefined ? { hit: p.hit as Json } : {}) })
+        this.endTask(bot, task, 'done', { result: { used: 'an empty hand', gained: [], lost: [], ...clicked, health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length } })
+        return
+      }
       const held = bot.inventory.find((i) => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta))
       if (!held) {
         this.endTask(bot, task, 'failed', { error: { code: 'no_material', message: 'the bot carries no such item' } })
         return
       }
+      // 对着抽屉右键：第一下把手里这一组放进去，紧接着的第二下是“双击”，身上所有同类的都放进去
+      const drawer = on ? this.containers.find((box) => box.kind === 'drawers' && box.x === on.x && box.y === on.y && box.z === on.z) : undefined
+      if (drawer) {
+        const moved = clicks >= 2 ? held.count : Math.min(64, held.count)
+        const slot = drawer.items.find((i) => i.id === held.id && i.meta === held.meta)
+        if (slot) slot.count += moved
+        else drawer.items.push({ id: held.id, meta: held.meta, name: held.name, count: moved })
+        held.count -= moved
+        bot.inventory = bot.inventory.filter((i) => i.count > 0)
+        this.endTask(bot, task, 'done', { result: { used: held.name, gained: [], lost: [{ id: held.id, meta: held.meta, name: held.name, count: moved }], ...clicked, health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length } })
+        return
+      }
+      if (on) this.clickLog.push({ bot: bot.name, on, item: held.id, ...clicked, ...(p.hit !== undefined ? { hit: p.hit as Json } : {}) })
       const effect = this.usable.get(held.id) ?? {}
       const lost: Json[] = []
       if (effect.food !== undefined || effect.wear === true) {
@@ -1547,7 +1591,7 @@ export class MockBridge {
         bot.inventory = bot.inventory.filter((i) => i.count > 0)
       }
       this.endTask(bot, task, 'done', {
-        result: { used: held.name, gained: [], lost, ...(this.bags.has(held.id) ? { openedScreen: true } : {}), health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length },
+        result: { used: held.name, gained: [], lost, ...(this.bags.has(held.id) ? { openedScreen: true } : {}), ...clicked, health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length },
       })
       return
     }
@@ -2837,6 +2881,52 @@ function readNbt(buf: Buffer): Json {
  * 把一个 Schematica 的 .schematic 文件读成假图纸。和真实 mod 一样：方块按文件自带的注册名（SchematicaMapping）对应，
  * 不是能用的图纸时以 bad_request 说明原因（原话照真实 mod 的）。
  */
+/**
+ * blueprint.read 的回答，照真的身体：整张图纸的材料表（多的在前，得由人放的带 byHand），加上 from..to 这个盒子里的格子
+ * （调色板 + “下标, 连续几格”，和 world.blocks 同一种写法）。一次最多 262144 格；cells:false 只给材料表。
+ */
+export function readBlueprintAnswer(b: MockBlueprint, p: Record<string, unknown>): Record<string, unknown> {
+  const counts = new Array<number>(b.kinds.length).fill(0)
+  for (const index of b.cells) counts[index]!++
+  const kind = (k: MockBlueprint['kinds'][number]): Record<string, unknown> => ({ id: k.id, meta: k.meta, name: k.name, ...(k.byHand !== undefined ? { byHand: k.byHand } : {}) })
+  const materials = b.kinds
+    .map((k, index) => ({ k, n: counts[index]! }))
+    .filter(({ n }, index) => index > 0 && n > 0)
+    .sort((x, y) => y.n - x.n)
+    .map(({ k, n }) => ({ ...kind(k), count: n }))
+  const out: Record<string, unknown> = { name: b.name, size: b.size, blocks: materials.reduce((n, m) => n + (m.count as number), 0), materials }
+  if (p.cells === false) return out
+  const corner = (v: unknown, fallback: { x: number; y: number; z: number }) => {
+    const o = v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : undefined
+    return o ? { x: Number(o.x ?? fallback.x), y: Number(o.y ?? fallback.y), z: Number(o.z ?? fallback.z) } : fallback
+  }
+  const from = corner(p.from, { x: 0, y: 0, z: 0 })
+  const far = corner(p.to, { x: b.size.x - 1, y: b.size.y - 1, z: b.size.z - 1 })
+  const to = { x: Math.min(far.x, b.size.x - 1), y: Math.min(far.y, b.size.y - 1), z: Math.min(far.z, b.size.z - 1) }
+  if (from.x < 0 || from.y < 0 || from.z < 0 || to.x < from.x || to.y < from.y || to.z < from.z) {
+    throw new RpcError('bad_request', `from and to are positions inside the plan, counted from 0 at its lowest corner; it is ${b.size.x} x ${b.size.y} x ${b.size.z}`)
+  }
+  const [sx, sy, sz] = [to.x - from.x + 1, to.y - from.y + 1, to.z - from.z + 1]
+  if (sx * sy * sz > 262144) {
+    throw new RpcError('too_large', `that is ${sx * sy * sz} cells; one read gives at most 262144: give from and to and read the plan a part at a time (cells:false gives the materials alone)`)
+  }
+  const palette: Record<string, unknown>[] = [{ id: 'minecraft:air', meta: 0 }]
+  const index = new Map<number, number>([[0, 0]])
+  const runs: number[] = []
+  for (let y = from.y; y <= to.y; y++) {
+    for (let z = from.z; z <= to.z; z++) {
+      for (let x = from.x; x <= to.x; x++) {
+        const k = b.cells[x + (y * b.size.z + z) * b.size.x]!
+        if (!index.has(k)) index.set(k, palette.push(kind(b.kinds[k]!)) - 1)
+        const i = index.get(k)!
+        if (runs.length > 0 && runs[runs.length - 2] === i) runs[runs.length - 1]!++
+        else runs.push(i, 1)
+      }
+    }
+  }
+  return { ...out, x: from.x, y: from.y, z: from.z, sx, sy, sz, palette, runs }
+}
+
 export function readSchematic(name: string, bytes: Buffer): MockBlueprint {
   const bad = (message: string) => new RpcError('bad_request', message)
   let tag: Json

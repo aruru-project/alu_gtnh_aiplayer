@@ -386,9 +386,42 @@
       if (named.length > 1) throw new Error(`${named.length} machines are named ${text}: use data.structure(id, meta) with one of ${named.map((m) => `${m.id}/${m.meta}`).join(', ')}`)
       return named[0] ?? null
     },
-    /** 现在有哪几样资料：['items', 'quests', 'questLines', 'structures'] 里的几个。 */
+    /** 凿子的全部组：[{ group, ore?, variants: [{ id, meta, name }] }]。同组里的任何一种都能用凿子变成另一种，一换一。 */
+    chiselGroups: () => carvingIndex().groups,
+    /**
+     * 一样东西在凿子的哪几个组里：[{ group, ore?, variants, member }]，一个都没有就是 []。
+     * member 为 true 是它就是组里的一种；false 是它只带着那个组认的矿辞名（能凿成那一组，自己不在组里）。
+     */
+    chiselGroupsOf(id, meta = 0) {
+      const index = carvingIndex()
+      const found = (index.byItem.get(`${id}/${meta}`) ?? []).map((g) => ({ ...g, member: true }))
+      const ores = config.data.includes('items') ? (data.item(id, meta)?.ores ?? []) : []
+      for (const ore of ores) for (const g of index.byOre.get(ore) ?? []) if (!found.some((f) => f.group === g.group)) found.push({ ...g, member: false })
+      return found
+    },
+    /** 现在有哪几样资料：['items', 'quests', 'questLines', 'structures', 'carving'] 里的几个。 */
     available: () => [...config.data],
   })
+
+  let carving
+  function carvingIndex() {
+    if (carving) return carving
+    // 认不出来的行（没有组名、没有变体）跳过，和大脑自己读这份资料时一样
+    const groups = (config.data.includes('carving') ? dataset('carving', jsonLines) : []).filter((g) => g && typeof g.group === 'string' && Array.isArray(g.variants) && g.variants.length > 0)
+    const byItem = new Map()
+    const byOre = new Map()
+    const add = (map, key, g) => {
+      const list = map.get(key)
+      if (!list) map.set(key, [g])
+      else if (!list.includes(g)) list.push(g)
+    }
+    for (const g of groups) {
+      for (const v of g.variants) add(byItem, `${v.id}/${v.meta ?? 0}`, g)
+      if (g.ore) add(byOre, g.ore, g)
+    }
+    carving = { groups, byItem, byOre }
+    return carving
+  }
 
   let structures
   function structureIndex() {

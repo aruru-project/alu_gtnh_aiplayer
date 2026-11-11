@@ -14,6 +14,8 @@ import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 export const PROGRAM_MAX_CHARS = 20_000
+/** start_routine 的 minutes 参数在 schema 里最多写到多少（七天）；真正的上限是主人在面板上设的那个。 */
+export const ROUTINE_MINUTES_SCHEMA_MAX = 7 * 24 * 60
 /** run_program 的程序连同它等查询结果的时间，最多这么久（模型的这一轮在等它）。 */
 export const PROGRAM_WALL_MAX_MS = 90_000
 /** 一次预览大约画这么多字符的格子。 */
@@ -125,13 +127,16 @@ export const runProgramTool: Tool = {
     const resultMax = ctx.maxResultChars?.() ?? DEFAULT_RESULT_MAX_CHARS
     try {
       const query = ctx.queryFromProgram
+      ctx.hooks.programStarted?.(i.code)
       run = await design.run(i.code, {
         timeoutMs,
         valueChars: resultMax,
         // 程序里可以调查询类的工具；整个程序连等结果的时间有个总上限，到了就停
         hooks: { signal: AbortSignal.timeout(PROGRAM_WALL_MAX_MS), ...(query ? { onCall: (call) => query(call.name, call.input) } : {}) },
       })
+      ctx.hooks.programEnded?.({ ok: run.outcome.status === 'ok', note: run.outcome.status })
     } catch (e) {
+      ctx.hooks.programEnded?.({ ok: false, note: e instanceof Error ? e.message : String(e) })
       if (e instanceof DesignBusyError) return fail('Another program of yours is still running. Wait for it to finish.')
       throw e
     }
@@ -174,12 +179,12 @@ export const runProgramTool: Tool = {
 export const startRoutine: Tool = {
   name: 'start_routine',
   description:
-    'Start a JavaScript program that runs in the background and acts: it calls your tools with await tool(name, input), and a tool that starts a task returns when the task has ended. For many similar steps (move every item of a list, a chain of crafts) instead of calling the tools one by one. The library functions listed under run_program can be called here too. It returns at once: end your turn; you are woken with its log when it finishes, fails or is stopped. Read the routines manual first.',
+    'Start a JavaScript program that runs in the background and acts: it calls your tools with await tool(name, input), and a tool that starts a task returns when the task has ended. Many similar steps (moving every item of a list, a chain of crafts) fit in one routine instead of one tool call each: its calls cost no model call, and there is no limit on how many it makes. The library functions listed under run_program can be called here too. It returns at once; you are woken with its log when it finishes, fails or is stopped. Details: routines manual.',
   inputSchema: obj(
     {
       code: str('The program: JavaScript statements (the body of an async function).', { maxLength: PROGRAM_MAX_CHARS }),
       name: str('A few words saying what it does (shown to your owner).', { maxLength: 60 }),
-      minutes: int('Stop it if it has not finished after this many minutes (default 30).', { min: 1, max: 180 }),
+      minutes: int('Stop it if it has not finished after this many minutes. The default and the longest allowed are set by your owner; the result says how long it may run.', { min: 1, max: ROUTINE_MINUTES_SCHEMA_MAX }),
     },
     ['code'],
   ),
@@ -396,7 +401,7 @@ export const viewDraft: Tool = {
 export const publishDraft: Tool = {
   name: 'publish_draft',
   description:
-    'Send a draft to the game server as a blueprint (a .schematic file), so that build_blueprint (and the library function check_blueprint) can use it. A blueprint of the same name is replaced. Do this only after your owner has seen the design and agreed, unless they told you to just build it.',
+    'Send a draft to the game server as a blueprint (a .schematic file), so that build_blueprint (and the library function check_blueprint) can use it. A blueprint of the same name is replaced. Until it is published a draft exists only on the brain, where your owner sees it on the control panel.',
   inputSchema: obj(
     {
       name: str('Draft name as list_designs shows it.', { maxLength: 60 }),

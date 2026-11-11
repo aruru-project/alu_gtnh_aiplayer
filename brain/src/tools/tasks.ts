@@ -7,7 +7,7 @@ import type { TaskSpec } from '../bridge/protocol.ts'
 import { COMMANDS, COMMAND_MAX_CHARS, COMMAND_REPLY_WAIT_MS, DEFAULT_ALLOWED_COMMANDS, HOME_NAME_RE, PLAYER_NAME_RE, TEAM_ID_RE, WHISPER_COMMAND_RE, WHISPER_FAILED_RE } from './commands.ts'
 import { formatPos, formatTask } from './format.ts'
 import { botBlock } from './observe.ts'
-import { arr, bool, int, obj, str } from './schema.ts'
+import { arr, bool, int, num, obj, str } from './schema.ts'
 import type { Schema } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -459,22 +459,33 @@ export const giveItems: Tool = {
   },
 }
 
+export const USE_SIDES = ['down', 'up', 'north', 'south', 'west', 'east']
+
+/**
+ * 像玩家那样右键：手里拿着一件东西（或者空手），对着空中或者对着一个方块；可以指定点哪个面、点面上的哪一点、连点几下。
+ * 这是通用的那只手：没有现成工具的事（吃、穿戴、按按钮、拉拉杆、对着抽屉连点两下把同类的全放进去）都是它。
+ */
 export const useItem: Tool = {
   name: 'use_item',
   description:
-    'Hold an item you carry and right-click with it (task): in the air (eat, drink, wear it, open it), or on a block with "on". For what no other tool does. The result tells what changed: items gained and lost, health, food. See the inventory manual.',
-  inputSchema: obj(
-    {
-      id: str('Item id.'),
-      meta: int('Item meta. Omit to match any.', { min: 0 }),
-      on: pos('Block to right-click with it (you walk there first). Omit to use it in the air.'),
-      sneak: bool('true: sneak while using it; some items then do something else.'),
-      queue,
-    },
-    ['id'],
-  ),
-  run: (ctx, i: { id: string; meta?: number; on?: unknown; sneak?: boolean; queue?: boolean }) =>
-    startTask(ctx, { type: 'use', item: i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }, on: i.on, sneak: i.sneak }, i.queue),
+    'Right-click as a player does (task): holding an item you carry, in the air (eat, drink, wear it, open it) or on a block ("on"; you walk there first); without "id", with an empty hand on a block (a button, a lever). The result tells what changed: items gained and lost, health, food, and the clicks made. Details: inventory manual.',
+  inputSchema: obj({
+    id: str('Item to hold. Omit for an empty hand (then "on" is needed).'),
+    meta: int('Its meta. Omit to match any.', { min: 0 }),
+    on: pos('Block to right-click. Omit to use the item in the air.'),
+    side: str('Which face of the block to click (default: the one facing you). For a horizontal face you first walk in front of it.', { enum: USE_SIDES }),
+    hit: obj({ x: num(undefined, { min: 0, max: 1 }), y: num(undefined, { min: 0, max: 1 }), z: num(undefined, { min: 0, max: 1 }) }, ['x', 'y', 'z'], 'The point of the block to click, each 0 to 1 from its lowest corner (default: the middle of the face).'),
+    times: int('How many clicks in a row (default 1), like holding the button down.', { min: 1, max: 64 }),
+    every: int('Ticks between the clicks (default 4).', { min: 1, max: 40 }),
+    sneak: bool('true: sneak while using it; some items then do something else.'),
+    queue,
+  }),
+  async run(ctx, i: { id?: string; meta?: number; on?: unknown; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; queue?: boolean }) {
+    if (i.id === undefined && i.on === undefined) return fail('Give "id" (an item you carry) to use it, or "on" (a block) to right-click that block with an empty hand, or both.')
+    if (i.on === undefined && (i.side !== undefined || i.hit !== undefined)) return fail('"side" and "hit" say where on a block to click: give the block as "on".')
+    const item = i.id === undefined ? undefined : i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }
+    return startTask(ctx, { type: 'use', item, on: i.on, side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak }, i.queue)
+  },
 }
 
 // ── 任务管理 ──

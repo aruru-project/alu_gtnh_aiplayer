@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Agent } from '../src/agent/agent.ts'
 import type { AgentSettings, AgentTiming, PersistedAgentState } from '../src/agent/agent.ts'
 import type { RoutineLimits } from '../src/agent/routine.ts'
+import { RunLogStore } from '../src/agent/run-log.ts'
 import type { DesignWorkspace } from '../src/design/index.ts'
 import type { PackData } from '../src/packdata/index.ts'
 import { BridgeApi } from '../src/bridge/api.ts'
@@ -159,6 +160,8 @@ export interface AgentHarness {
   /** 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里。 */
   manuals: ManualStore
   log: ActivityLog
+  /** 它写的程序每次运行的全量记录（临时目录的 logs/runs/）。 */
+  runLogs: RunLogStore
   settings: AgentSettings
   reminders: { dueAt: number; note: string }[]
   persisted: { state: PersistedAgentState | undefined }
@@ -171,6 +174,8 @@ export interface AgentHarness {
 export interface MakeAgentOptions {
   settings?: Partial<AgentSettings>
   timing?: Partial<AgentTiming>
+  /** 一次程序运行的记录写到多大以后结果只留开头（默认 20 MiB）。 */
+  runLogFullTextBytes?: number
   noModel?: boolean
   dir?: string
   persisted?: { state: PersistedAgentState | undefined }
@@ -199,6 +204,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const memory = new MemoryStore(tmp.dir, () => 4000)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const log = new ActivityLog()
+  const runLogs = new RunLogStore(tmp.dir, opts.runLogFullTextBytes !== undefined ? { fullTextBytes: opts.runLogFullTextBytes } : {})
   const reminders: { dueAt: number; note: string }[] = []
   const persisted = opts.persisted ?? { state: undefined }
   const usedTokens = { value: 0 }
@@ -227,6 +233,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     },
     history,
     log,
+    runLogs,
     todayTokens: () => usedTokens.value,
     persist: { load: () => persisted.state, save: (s) => (persisted.state = structuredClone(s)) },
     timing,
@@ -246,6 +253,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     memory,
     manuals,
     log,
+    runLogs,
     settings,
     reminders,
     persisted,

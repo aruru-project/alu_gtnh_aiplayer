@@ -38,6 +38,7 @@
 
 ## 本地资料
 - data.available() 看现在有哪几样。data.items()、data.item(id, meta) 是物品表；data.quests()、data.questLines() 是任务书。
+- data.chiselGroups() 是凿子的全部组 [{ group, ore?, variants: [{ id, meta, name }] }]：同组里的方块能用凿子互相变。data.chiselGroupsOf(id, meta) 是一样东西所在的组（多一项 member：它就是组里的一种，还是只带着那个组认的矿辞名），不在任何组里是 []。
 
 # 例子：小屋
 ```js

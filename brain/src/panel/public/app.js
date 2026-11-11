@@ -1000,11 +1000,13 @@ function renderBot(data) {
   const owners = h('input', { id: 'bf-owners', type: 'text', value: bot.owners.join(' '), placeholder: '留空 = 谁都可以叫它干活' })
   const mode = h('select', { id: 'bf-mode' }, h('option', { value: 'mention', text: '叫到名字，或刚和它说过话', selected: bot.wake.mode === 'mention' }), h('option', { value: 'all', text: '所有聊天都触发（费 token）', selected: bot.wake.mode === 'all' }))
   const windowSec = h('input', { id: 'bf-window', type: 'number', min: 0, max: 3600, value: bot.wake.conversationWindowSec })
-  const maxSteps = h('input', { id: 'bf-steps', type: 'number', min: 1, max: 64, value: bot.limits.maxSteps })
+  const maxSteps = h('input', { id: 'bf-steps', type: 'number', min: 1, max: 500, value: bot.limits.maxSteps })
   const daily = h('input', { id: 'bf-daily', type: 'number', min: 0, value: bot.limits.dailyTokenLimit })
   const historyMax = h('input', { id: 'bf-history', type: 'number', min: 2000, value: bot.limits.historyTokenThreshold })
   const memoryMax = h('input', { id: 'bf-memory', type: 'number', min: 200, value: bot.limits.memoryMaxChars })
   const resultMax = h('input', { id: 'bf-result', type: 'number', min: 500, value: bot.limits.toolResultMaxChars })
+  const routineMinutes = h('input', { id: 'bf-routine', type: 'number', min: 1, max: 10080, value: bot.limits.routineMinutes })
+  const routineMaxMinutes = h('input', { id: 'bf-routine-max', type: 'number', min: 1, max: 10080, value: bot.limits.routineMaxMinutes })
   const usingDefault = bot.systemPrompt.trim() === ''
   const persona = h('textarea', { id: 'bf-persona', class: 'tall', value: usingDefault ? data.defaultPersona : bot.systemPrompt })
   const personaState = h('span', { class: 'muted', text: usingDefault ? '现在用的是默认提示词' : '现在用的是自定义提示词' })
@@ -1035,6 +1037,8 @@ function renderBot(data) {
             historyTokenThreshold: Number(historyMax.value),
             memoryMaxChars: Number(memoryMax.value),
             toolResultMaxChars: Number(resultMax.value),
+            routineMinutes: Number(routineMinutes.value),
+            routineMaxMinutes: Number(routineMaxMinutes.value),
           },
         }),
       '已保存，立刻生效',
@@ -1061,11 +1065,13 @@ function renderBot(data) {
     h(
       'div',
       { class: 'fields' },
-      field('每轮最多调几次模型', maxSteps, '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要 20 次以上。默认 30。'),
+      field('每轮最多调几次模型', maxSteps, '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要几十次；它干活时新到的话也接在这一轮里。默认 60，最多 500。'),
       field('每日 token 上限', daily, '输入加输出。0 表示不限。'),
       field('历史超过多少 token 就压缩', historyMax),
       field('记忆总长度上限（字符）', memoryMax),
-      field('单个工具结果上限（字符）', resultMax),
+      field('单个工具结果上限（字符）', resultMax, '它写的程序 return 的值也照这个数截。'),
+      field('例程默认最多跑多久（分钟）', routineMinutes, '例程是它写的、在后台一步步调工具的程序。不限它调多少次工具，靠时长、连着出错就停、随时可以点停止来管。默认 120。'),
+      field('例程最长能要到多久（分钟）', routineMaxMinutes, '它启动例程时可以自己要更长的时间，最多给到这个数。默认 720（12 小时）。'),
     ),
     h('h2', { text: '人设提示词' }),
     h('div', { class: 'row' }, personaState, h('span', { class: 'spacer' }), resetBtn),
