@@ -807,6 +807,16 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual([long.name.length, long.rules.length], [40, 4000])
   })
 
+  it('没登录也看得到这是哪个服务器的面板（名字，不给规矩）；没起名字时不带', async (t) => {
+    const s = await setup(t)
+    const anon = { cookie: '' }
+    assert.deepEqual((await s.call('GET', '/api/session', undefined, anon)).json, { authenticated: false })
+    await s.login()
+    await s.call('PUT', '/api/bot', { environment: { name: '正式服', rules: '别人的东西别动。' } })
+    assert.deepEqual((await s.call('GET', '/api/session')).json, { authenticated: true, server: '正式服' })
+    assert.deepEqual((await s.call('GET', '/api/session', undefined, anon)).json, { authenticated: false, server: '正式服' })
+  })
+
   it('游戏那边没连上时，操作给出看得懂的错误而不是 500', async (t) => {
     const s = await setup(t)
     await s.login()

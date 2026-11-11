@@ -371,9 +371,10 @@ export class PanelServer {
       throw new HttpError(403, 'bad_origin', '写操作必须来自面板页面本身（Origin 不匹配）')
     }
 
-    // 不需要会话的两个接口
+    // 不需要会话的两个接口。服务器的名字没登录也给：登录页上就分得清是哪个服务器的面板（规矩不给）
     if (route === '/session' && method === 'GET') {
-      this.json(res, 200, { authenticated: this.hasSession(req) })
+      const server = this.deps.config.get().bot.environment?.name ?? ''
+      this.json(res, 200, { authenticated: this.hasSession(req), ...(server ? { server } : {}) })
       return
     }
     if (route === '/login' && method === 'POST') {
