@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>AI 玩家 · 大脑面板</title>
+  <meta name="color-scheme" content="dark">
+  <title>AI 玩家</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div id="login" class="login" hidden>
-    <form id="login-form" class="card login-card">
-      <h1>AI 玩家 · 大脑面板</h1>
+    <form id="login-form" class="login-card">
+      <h1>AI 玩家 · 面板</h1>
       <input type="text" name="username" autocomplete="username" value="owner" hidden>
       <label for="login-password">访问口令</label>
       <input id="login-password" type="password" autocomplete="current-password" required autofocus>
@@ -21,57 +21,28 @@
     </form>
   </div>
 
-  <div id="app" hidden>
-    <header class="top">
-      <h1>AI 玩家</h1>
-      <div class="badges" aria-live="polite">
-        <span id="badge-bridge" class="badge">游戏：…</span>
-        <span id="badge-bot" class="badge">玩家：…</span>
-        <span id="badge-agent" class="badge">大脑：…</span>
+  <div id="app" class="app" hidden>
+    <aside id="side" class="side" aria-label="AI 玩家的状态和导航">
+      <div id="side-status" class="side-status" aria-live="polite"></div>
+      <nav id="nav" class="nav" aria-label="页面">
+        <button type="button" data-page="now"><span class="nav-mark" aria-hidden="true"></span>现在</button>
+        <button type="button" data-page="chat"><span class="nav-mark" aria-hidden="true"></span>对话</button>
+        <button type="button" data-page="knowledge"><span class="nav-mark" aria-hidden="true"></span>知识<span id="nav-feedback-count" class="count" title="意见簿里还没看过的条数" hidden></span></button>
+        <button type="button" data-page="build"><span class="nav-mark" aria-hidden="true"></span>建造</button>
+        <button type="button" data-page="settings"><span class="nav-mark" aria-hidden="true"></span>设置</button>
+      </nav>
+      <div class="side-bottom">
+        <div id="side-foot"></div>
+        <button id="logout" type="button" class="quiet small">退出登录</button>
       </div>
-      <label class="model-switch" title="现在用哪个模型思考。换了以后下一轮起生效，不用重启">
-        <span>模型</span>
-        <select id="model-switch" aria-label="现在用的模型" disabled><option>…</option></select>
-      </label>
-      <button id="logout" type="button" class="quiet">退出</button>
-    </header>
+    </aside>
 
-    <nav class="tabs" role="tablist" aria-label="页面">
-      <button type="button" role="tab" data-tab="overview" aria-selected="true">概览</button>
-      <button type="button" role="tab" data-tab="chat" aria-selected="false">对话</button>
-      <button type="button" role="tab" data-tab="models" aria-selected="false">模型</button>
-      <button type="button" role="tab" data-tab="bot" aria-selected="false">AI 玩家</button>
-      <button type="button" role="tab" data-tab="memory" aria-selected="false">记忆</button>
-      <button type="button" role="tab" data-tab="manuals" aria-selected="false">手册</button>
-      <button type="button" role="tab" data-tab="blueprints" aria-selected="false">图纸</button>
-      <button type="button" role="tab" data-tab="feedback" aria-selected="false">意见簿<span id="feedback-count" class="count" title="还没看过的条数" hidden></span></button>
-      <button type="button" role="tab" data-tab="settings" aria-selected="false">设置</button>
-    </nav>
-
-    <main>
-      <section id="tab-overview" role="tabpanel"></section>
-
-      <section id="tab-chat" role="tabpanel" hidden>
-        <div class="chat-tools">
-          <label class="check"><input id="chat-show-tools" type="checkbox" checked> 显示工具调用和结果</label>
-          <label class="check"><input id="chat-show-events" type="checkbox" checked> 显示游戏事件</label>
-          <span id="chat-stream-state" class="muted"></span>
-        </div>
-        <div id="chat-log" class="log" aria-live="polite"></div>
-        <form id="chat-form" class="chat-form">
-          <textarea id="chat-input" rows="2" maxlength="2000" placeholder="以主人身份直接给它下指令。回车发送，Shift+回车换行"></textarea>
-          <button type="submit" class="primary">发送</button>
-        </form>
-        <p class="hint">这里发的话只有它看得到，不会出现在游戏聊天里。它在游戏里说的话会显示在上面的日志里。</p>
-      </section>
-
-      <section id="tab-models" role="tabpanel" hidden></section>
-      <section id="tab-bot" role="tabpanel" hidden></section>
-      <section id="tab-memory" role="tabpanel" hidden></section>
-      <section id="tab-manuals" role="tabpanel" hidden></section>
-      <section id="tab-blueprints" role="tabpanel" hidden></section>
-      <section id="tab-feedback" role="tabpanel" hidden></section>
-      <section id="tab-settings" role="tabpanel" hidden></section>
+    <main id="main" class="main">
+      <section id="page-now" class="page page-now" aria-label="现在" hidden></section>
+      <section id="page-chat" class="page page-chat" aria-label="对话" hidden></section>
+      <section id="page-knowledge" class="page" aria-label="知识" hidden></section>
+      <section id="page-build" class="page" aria-label="建造" hidden></section>
+      <section id="page-settings" class="page" aria-label="设置" hidden></section>
     </main>
   </div>
 
