@@ -186,7 +186,7 @@ describe('对话线把事交给干活线', () => {
     const result = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
     assert.equal(
       result.type === 'tool_result' ? result.content : '',
-      'Handed to the worker. The worker was idle and starts on it now. Attached as they were said: 1 line(s) from the people who woke you this turn, with where they stood and what they pointed at. What it reports, asks or leaves at the end of its turn comes to you as an event.',
+      'Handed to the worker. The worker was idle and starts on it now. Attached as they were said: 1 line(s) from the people who woke you this turn, with where they stood and what they pointed at. When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it. What it reports or asks, and what it leaves when it has stopped, come to you as events.',
     )
     // 面板的日志里这次往来是一条 relay：谁交给谁、附了几句原话，详情里是交过去的全文
     const relay = relays(h, 'tell')
@@ -236,7 +236,7 @@ describe('对话线把事交给干活线', () => {
     t.after(h.cleanup)
     // 干活线：第 1 步查状态，第 2 步的模型调用一直没回来（它正在想）
     const thinking = held()
-    h.llm.enqueue(reply('', [{ name: 'get_status' }]), thinking.script, reply('', [{ name: 'go_to', input: { x: 5, y: 64, z: 5 } }]), reply('搬完了'))
+    h.llm.enqueue(reply('', [{ name: 'get_status' }]), thinking.script, reply('', [{ name: 'go_to', input: { x: 5, y: 64, z: 5 } }]), reply(''), reply('搬完了'))
     h.agent.handleEvent(told('把圆石搬到箱子里'))
     await waitFor('the worker is thinking about step 2', thinking.started)
     const turn = h.agent.state('work').turn!.id
@@ -257,9 +257,11 @@ describe('对话线把事交给干活线', () => {
     thinking.answer(reply('', [{ name: 'get_status' }]))
     await h.agent.whenIdle()
     assert.equal(h.game.callsOf('task.start').length, 1)
+    h.agent.handleEvent(taskEnded('t1', 'done', { type: 'goto' }))
+    await h.agent.whenIdle()
     assert.deepEqual(sentToTalk(h), ['搬完了'])
     assert.equal(JSON.stringify(h.llm.requests).includes('几个空格'), false)
-    assert.equal(h.history.get().turns.length, 1)
+    assert.equal(h.history.get().turns.length, 2)
   })
 
   it('对话线带的话在干活线的下一步就看到（接在工具结果后面），不用等它这一轮结束', async (t) => {
@@ -489,7 +491,7 @@ describe('干活线汇报和提问', () => {
     h.agent.handleEvent(chat('Steve', 'Alu 行，用车床'))
     await h.agent.whenIdle()
     // 对话线被主人这句话叫醒的那一轮，状态里写着干活线在等什么
-    assert.match(h.talk.lastUserText(talkBefore), /干活线：空闲，没有在想（上一轮（第 \d+ 轮）\d+ 秒前结束）。\n {2}它在等你回答（\d+ 秒前问的）：模头（杆）没有库存也没有配方。/)
+    assert.match(h.talk.lastUserText(talkBefore), /干活线：空闲，没有在想（上一轮（第 \d+ 轮）\d+ 秒前结束）；身体上没有它开的任务，也没有例程在跑。\n {2}它在等你回答（\d+ 秒前问的）：模头（杆）没有库存也没有配方。/)
     assert.match(h.llm.lastUserText(before), /对话线交给你的（这一句是它写的）：主人同意用车床\n[^\n]*\n {4}\[[\d:]+\] Steve 说：Alu 行，用车床/)
     assert.equal(h.game.callsOf('task.start').length, 1)
     assert.equal(h.agent.linkState().waiting, undefined)
@@ -521,7 +523,7 @@ describe('干活线汇报和提问', () => {
     // 对话线看到的两件事
     const seen = h.talk.requests.map((_, n) => todo(h.talk.lastUserText(n))).join('\n')
     assert.match(seen, /干活线汇报：箱子里只有 25 块石砖，还差 15 块，我先去挖。/)
-    assert.match(seen, /干活线这一轮做完了，它留下的话：挖够了，40 块石砖都在箱子里。/)
+    assert.match(seen, /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：挖够了，40 块石砖都在箱子里。/)
   })
 
   it('干活线能读最近的聊天记录（只读）：更早那句带着指向的话它自己查得到', async (t) => {
@@ -539,12 +541,149 @@ describe('干活线汇报和提问', () => {
   })
 })
 
+describe('干活线还在干的时候留下的话', () => {
+  /** 假的游戏照实报任务列表：开了的任务在跑或排着，finish 让它结束并把“任务结束”送回大脑（和真实的身体一样）。 */
+  function withTasks(h: AgentHarness): { finish(id: string, result?: Record<string, unknown>): void } {
+    const live: { id: string; type: string; state: 'running' | 'queued'; startedAt: number; progress?: { done: number; total: number } }[] = []
+    const start = h.game.handlers['task.start']!
+    h.game.handlers['task.start'] = (p) => {
+      const res = start(p) as { task: { id: string; type: string } }
+      live.push({ id: res.task.id, type: res.task.type, state: live.length === 0 ? 'running' : 'queued', startedAt: Date.now() - 12_000, progress: { done: 3, total: 8 } })
+      return res
+    }
+    h.game.handlers['task.list'] = () => ({ active: live[0] ?? null, queue: live.slice(1), recent: [] })
+    return {
+      finish: (id, result = {}) => {
+        const at = live.findIndex((task) => task.id === id)
+        const [task] = live.splice(at, 1)
+        if (live[0]) live[0].state = 'running'
+        h.agent.handleEvent(taskEnded(id, 'done', { type: task!.type, result }))
+      },
+    }
+  }
+
+  // 真实模型上发生过的事（2026-11-11）：主人让它“拿 8 个铁粉再放回 3 个”。干活线开了取料任务，这一轮结束时留了一句
+  // “正在取……取到后会放回 3 个”。这句话把对话线叫醒了，对话线以为它停在半路，带话去催；干活线又留一句，对话线又催……
+  // 一件两步的小事，对话线带了 4 次话，干活线多跑了三四轮（每次带着 21 万 token 的上下文）。
+  it('主人让它“拿 8 个铁粉再放回 3 个”：干活线开了取料任务后留的话只作背景，对话线没有被叫醒；任务结束干活线自己接着放回；全做完了留的话才叫醒对话线，由它说给主人', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const body = withTasks(h)
+    const CHEST = { x: 5, y: 64, z: 5 }
+    const DUST = { id: 'gregtech:gt.metaitem.01', meta: 2032 }
+
+    // 1. 主人交代 → 对话线应一声并交出去 → 干活线开了取料任务，留一句话，这一轮结束
+    h.talk.enqueue(reply('好，我去拿。', [{ id: 'tell', name: 'tell_worker', input: { text: '从箱子里拿 8 个铁粉，再放回去 3 个' } }]), reply(''))
+    h.llm.enqueue(reply('', [{ name: 'withdraw_items', input: { container: CHEST, items: [{ ...DUST, count: 8 }] } }]), reply('正在从箱子取 8 个铁粉；取到后会放回 3 个'))
+    h.agent.handleEvent(chat('Steve', 'Alu 拿 8 个铁粉再放回 3 个'))
+    await h.agent.whenIdle()
+    await sleep(40)
+    // 这句话到了对话线，但只是背景：它没有为这句话再想一轮，也就没有机会去催
+    assert.deepEqual(relays(h).map((e) => [e.relay!.type, e.relay!.waiting ?? null]), [['tell', null], ['progress', '在等它开的任务结束：t1（withdraw）']])
+    assert.equal(h.talk.requests.length, 2, 'the talk line is not woken by what the worker leaves while its task runs')
+    assert.equal(h.llm.requests.length, 2)
+    // 交事的结果里写着这个事实：干活线的任务结束时它自己会接着做
+    const told1 = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    assert.match(told1.type === 'tool_result' ? told1.content : '', / When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it\. What it reports or asks, and what it leaves when it has stopped, come to you as events\.$/)
+
+    // 2. 这时主人问到哪了：对话线从状态里就看得出干活线在等哪个任务、跑了多久、到哪了、任务结束后它自己会接着做
+    h.talk.enqueue(reply('在取铁粉，取了 3/8'))
+    h.agent.handleEvent(chat('Steve', 'Alu 到哪一步了'))
+    await h.agent.whenIdle()
+    const asked = h.talk.lastUserText(2)
+    assert.match(
+      asked,
+      /\n干活线：还在干，这会儿没有在想——在等它自己开的任务结束。任务一结束（做完、失败或被取消）它自己会被叫醒接着做，不需要提醒。\n {2}它开的任务 t1（withdraw）：在跑，进度 3\/8，已经跑了 1[23] 秒。\n {2}它最近一次送来的（还在干，中途留下的话，\d+ 秒前）：正在从箱子取 8 个铁粉；取到后会放回 3 个$/,
+    )
+    assert.match(asked.slice(asked.indexOf('[最近发生的事')), /干活线还在干（在等它开的任务结束：t1（withdraw）），这是它中途留下的话：正在从箱子取 8 个铁粉；取到后会放回 3 个/)
+    assert.equal(todo(asked).includes('干活线'), false)
+
+    // 3. 取料任务结束：干活线自己被叫醒接着做（没有人带话），开了放回的任务，又留一句——还是背景
+    h.llm.enqueue(reply('', [{ name: 'deposit_items', input: { container: CHEST, items: [{ ...DUST, count: 3 }] } }]), reply('取到了，正在放回 3 个'))
+    body.finish('t1', { moved: 8 })
+    await h.agent.whenIdle()
+    await sleep(40)
+    assert.deepEqual(h.game.callsOf('task.start').map((p) => (p.task as { type: string }).type), ['withdraw', 'deposit'])
+    assert.equal(h.talk.requests.length, 3)
+
+    // 4. 放回的任务也结束：这回它停下来了，留下的话叫醒对话线，对话线说给主人
+    h.llm.enqueue(reply('拿了 8 个铁粉，放回 3 个，身上留 5 个。'))
+    h.talk.enqueue(reply('弄好啦，身上留了 5 个铁粉'))
+    body.finish('t2', { moved: 3 })
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.said, ['好，我去拿。', '在取铁粉，取了 3/8', '弄好啦，身上留了 5 个铁粉'])
+    const done = h.talk.lastUserText(3)
+    assert.match(todo(done), /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：拿了 8 个铁粉，放回 3 个，身上留 5 个。/)
+    assert.match(done.slice(done.indexOf('[最近发生的事')), /干活线还在干（在等它开的任务结束：t2（deposit）），这是它中途留下的话：取到了，正在放回 3 个/)
+    assert.match(done, /\n干活线：空闲，没有在想（上一轮（第 \d+ 轮）\d+ 秒前结束）；身体上没有它开的任务，也没有例程在跑。\n/)
+    // 整件事：对话线只带了一次话；干活线三轮（领事、取完、放完），没有一轮是被催出来的
+    assert.deepEqual(relays(h).map((e) => e.relay!.type), ['tell', 'progress', 'progress', 'result'])
+    assert.deepEqual([h.talk.requests.length, h.llm.requests.length, h.history.get().turns.length], [4, 5, 3])
+    // 面板的状态里，最近一次送来的话是哪一种看得出来
+    assert.deepEqual([h.agent.linkState().lastReport?.type, h.agent.linkState().lastReport?.text], ['result', '拿了 8 个铁粉，放回 3 个，身上留 5 个。'])
+  })
+
+  it('它主动汇报和提问照旧叫醒对话线，哪怕它的任务还在跑；worker_status 写明它在等自己开的哪个任务', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    withTasks(h)
+    h.llm.enqueue(reply('', [{ name: 'go_to', input: { x: 30, y: 64, z: 30 } }, { name: 'report', input: { text: '路上有岩浆，我绕着走' } }]), reply(''))
+    h.talk.enqueue(reply('它说路上有岩浆，绕着走'), reply('', [{ id: 'ws', name: 'worker_status' }]), reply('还在路上'))
+    h.agent.handleEvent(told('去 30 64 30'))
+    await h.agent.whenIdle()
+    assert.deepEqual(relays(h).map((e) => e.relay!.type), ['report'])
+    assert.deepEqual(h.game.said, ['它说路上有岩浆，绕着走'])
+
+    h.agent.handleEvent(chat('Steve', 'Alu 走到哪了'))
+    await h.agent.whenIdle()
+    const status = h.talk.requests[2]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    assert.match(
+      status.type === 'tool_result' ? status.content : '',
+      /^Worker: still at work, not thinking right now: it is waiting for the task\(s\) it started to end\. Its last turn \(\d+\) ended \d+ s ago after 2 step\(s\)\. When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it\.\nStarted by the worker and not ended yet:\n- its task t1 \(goto\): running, 3\/8, for 1[23] s\nBody: on task t1 goto \[running\] 3\/8\./,
+    )
+  })
+
+  it('它的例程还在后台跑、或者还有刚到的事等它处理时留的话，同样只作背景，写明它在等什么', async (t) => {
+    const tmp = tmpDir()
+    const h = makeAgent({ dir: tmp.dir, design: new DesignWorkspace({ dataDir: tmp.dir }) })
+    t.after(async () => {
+      await h.agent.stop()
+      tmp.cleanup()
+    })
+    // 例程在跑
+    h.llm.enqueue(reply('', [{ name: 'start_routine', input: { code: `await tool('go_to', { x: 50, z: 50 }); return 'there'`, name: '走过去' } }]), reply('例程开了，在走'))
+    h.agent.handleEvent(told('写个例程走过去'))
+    await waitFor('the routine started its task', () => h.game.callsOf('task.start').length === 1)
+    await h.agent.whenIdle()
+    assert.deepEqual(relays(h).map((e) => [e.relay!.type, e.relay!.waiting]), [['progress', '它的例程 r1（走过去）在后台跑']])
+    assert.equal(h.talk.requests.length, 0)
+    // 对话线的状态里写着例程在跑、结束时干活线自己会被叫醒
+    h.talk.enqueue(reply('在走'))
+    h.agent.handleEvent(chat('Steve', 'Alu 在干嘛'))
+    await h.agent.whenIdle()
+    assert.match(h.talk.lastUserText(0), /\n干活线：还在干，这会儿没有在想——在等它自己开的例程结束。例程一结束（做完、失败或被取消）它自己会被叫醒接着做，不需要提醒。\n {2}例程 r1（走过去）在后台跑：已调 1 次工具，开了 1 个任务，\d+ 秒前开始。\n/)
+
+    // 例程跑完，干活线被叫醒；它最后一步还没回来的时候又来了一件事——这一轮留的话仍然只是中途的话
+    const last = held()
+    h.llm.enqueue(last.script, reply('都办完了'))
+    h.agent.handleEvent(taskEnded('t1', 'done', { type: 'goto' }))
+    await waitFor('the worker is thinking', last.started)
+    h.agent.handleEvent(told('再去仓库看一眼', []))
+    last.answer(reply('走到了'))
+    await h.agent.whenIdle()
+    assert.deepEqual(relays(h).map((e) => [e.relay!.type, e.relay!.waiting ?? null]), [['progress', '它的例程 r1（走过去）在后台跑'], ['progress', '还有 1 件刚到的事等它处理'], ['result', null]])
+    // 对话线只为最后那句“停下来了”的话醒了一次
+    assert.equal(h.talk.requests.length, 2)
+    assert.match(todo(h.talk.lastUserText(1)), /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：都办完了/)
+  })
+})
+
 describe('两条线互相叫醒', () => {
   it('两个模型客气个没完（带话 → “好的” → 再带话……），中间没人说话、游戏里也没事：话头倒够 12 次以后照常送到但不再互相叫醒，两边都被如实告知；有人说话后恢复', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     // 对话线：干活线说什么它都再带一句话过去；干活线：带来什么都回一句
-    h.talk.auto = (seen) => (/干活线这一轮做完了|Steve 说/.test(seen) && !/Handed to the worker|Delivered, but/.test(seen) ? reply('', [{ name: 'tell_worker', input: { text: '收到，辛苦了' } }]) : undefined)
+    h.talk.auto = (seen) => (/干活线停下来了|Steve 说/.test(seen) && !/Handed to the worker|Delivered, but/.test(seen) ? reply('', [{ name: 'tell_worker', input: { text: '收到，辛苦了' } }]) : undefined)
     h.llm.auto = (seen) => (/对话线交给你的/.test(seen.split('\n\n[')[0]!) ? reply('不客气') : undefined)
     h.agent.handleEvent(chat('Steve', 'Alu 你们俩聊聊'))
     await h.agent.whenIdle()
@@ -552,7 +691,7 @@ describe('两条线互相叫醒', () => {
     // 停下来了：话头倒了 12 次（6 个来回）以后，第 13 条送到了但没有叫醒对方
     const passed = relays(h)
     assert.equal(passed.length, VOLLEY_MAX + 1)
-    assert.deepEqual(passed.slice(-2).map((e) => e.text), ['干活线 → 对话线（做完留下的话）：不客气', '对话线 → 干活线（只作背景，没有叫醒它）：收到，辛苦了'])
+    assert.deepEqual(passed.slice(-2).map((e) => e.text), ['干活线 → 对话线（停下来了，留下的话）：不客气', '对话线 → 干活线（只作背景，没有叫醒它）：收到，辛苦了'])
     assert.equal(h.llm.requests.length, 6)
     // 发的那一方从工具结果里知道这一条没有叫醒对方、为什么、什么时候恢复
     assert.match(h.talk.lastUserText(h.talk.requests.length - 1), /^Delivered, but it does not wake the worker\. The two lines have now woken each other 12 times in a row with no one speaking and nothing happening in the game \(no task or routine ending\), so the program has stopped waking them for each other\./)
@@ -647,7 +786,7 @@ describe('主人问“你在干嘛”', () => {
     h.talk.enqueue(reply('闲着呢'))
     h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
     await h.agent.whenIdle()
-    assert.match(h.talk.lastUserText(0), /\[当前状态\]\n[\s\S]*\n干活线：空闲，没有在想（大脑启动以后它还没有做过事）。/)
+    assert.match(h.talk.lastUserText(0), /\[当前状态\]\n[\s\S]*\n干活线：空闲，没有在想（大脑启动以后它还没有做过事）；身体上没有它开的任务，也没有例程在跑。/)
 
     // 干活线在忙：领了事，查过一次状态，正在想第 2 步；身体正在做一个任务
     h.game.handlers['task.list'] = () => ({ active: { id: 't7', type: 'haul', state: 'running', progress: { done: 3, total: 8 } }, queue: [{ id: 't8', type: 'craft', state: 'queued' }], recent: [] })

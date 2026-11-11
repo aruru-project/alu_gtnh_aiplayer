@@ -148,7 +148,7 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   assert.equal(talkTurn.headers['x-api-key'], 'sk-ant-e2e-talk-key-0009')
   const talkSaw = JSON.stringify(talkTurn.body.messages.at(-1))
   assert.match(talkSaw, /Steve 说：Alu 把 0,0 到 15,15 这块平到 64/)
-  assert.match(talkSaw, /干活线：空闲，没有在想/)
+  assert.match(talkSaw, /干活线：空闲，没有在想（大脑启动以后它还没有做过事）；身体上没有它开的任务，也没有例程在跑。/)
   const talkTools = (talkTurn.body.tools as { name: string }[]).map((x) => x.name)
   assert.ok(talkTools.includes('tell_worker') && talkTools.includes('find_recipes') && !talkTools.includes('flatten_area') && !talkTools.includes('say'), talkTools.join(' '))
   // 干活线第一次看到的是交来的事（对话线写的一句，和主人的原话）和当前状态；它的清单里有平地的，没有对玩家说话的

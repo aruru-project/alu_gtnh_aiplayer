@@ -49,7 +49,7 @@ export const stopWork: Tool = {
 export const report: Tool = {
   name: 'report',
   description:
-    'Tell the talk line (the line of you that speaks with players) something now, without ending your turn: progress worth hearing, a finding, a question. question: true says you are waiting for the answer; it comes back as a message from the talk line, which asks your owner when it cannot answer itself. The text you leave when a turn ends is sent to it anyway, so that needs no report.',
+    'Tell the talk line (the line of you that speaks with players) something now, without ending your turn: progress worth hearing, a finding, a question. question: true says you are waiting for the answer; it comes back as a message from the talk line, which asks your owner when it cannot answer itself. The text you leave when a turn ends reaches it without a report: it wakes the talk line once you have stopped, and is only background for it while a task or routine of yours is still running.',
   inputSchema: obj(
     {
       text: str('What to tell it. It does not see your tool calls or their results: put in the names, numbers and places it needs.', { maxLength: REPORT_MAX_CHARS }),

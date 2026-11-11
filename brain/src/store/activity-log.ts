@@ -25,14 +25,17 @@ export type ActivityKind =
 /** 两条线之间的一次往来（docs/TALK_WORK.md）。 */
 export interface ActivityRelay {
   /**
-   * tell：对话线交事或带话；report：干活线中途汇报；question：干活线提问、在等回答；result：干活线一轮结束留下的文字；
-   * trouble：干活线出了状况（模型接口故障、到步数上限……程序替它报的）；stop：叫停。
+   * tell：对话线交事或带话；report：干活线中途汇报；question：干活线提问、在等回答；
+   * result：干活线停下来了，这是它留下的文字（叫醒对话线）；progress：干活线一轮结束留了文字，但它开的任务或例程还在跑、
+   * 它的事还没完（只作背景，不叫醒对话线）；trouble：干活线出了状况（模型接口故障、到步数上限……程序替它报的）；stop：叫停。
    */
-  type: 'tell' | 'report' | 'question' | 'result' | 'trouble' | 'stop'
+  type: 'tell' | 'report' | 'question' | 'result' | 'progress' | 'trouble' | 'stop'
   from: 'talk' | 'work' | 'panel'
   to: 'talk' | 'work'
   /** tell、stop：程序原样附了几句原话。 */
   quotes?: number
+  /** progress：干活线还在等什么（它开的哪个任务、哪个例程；那几样结束时它自己会被叫醒接着做）。 */
+  waiting?: string
 }
 
 /** 对话线说一段话时身体回的发送结果（有不寻常的才记）。 */
