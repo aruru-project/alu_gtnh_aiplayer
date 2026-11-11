@@ -60,7 +60,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `data.structure(名字)` 或 `data.structure(id, meta)`（名字是中文名，或者物品表里这台主机的英文名） | 一台多方块机器：`{ id, meta, name, tiers, info, structureInfo, rows, tier(n) }`。`rows` 的每一项是一种搭法 `{ tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }`，`palette[cells[(y * size[2] + z) * size[0] + x]]` 是那一格的方块，主机正面朝南；`tier(n)` 是第 n 级的搭法。没有是 `null`，重名的抛错并列出各自的 id/meta |
 | `log(…)`，`console.log(…)` | 打日志。一共留 4000 字符，多的丢掉并说明丢了几条 |
 | `await tool(名字, 参数)` | 调一个工具或库函数，参数和模型自己调时一样。返回 `{ ok, text, data }`：成没成、模型会看到的那段文字、同一个结果的数据形式（有些工具没有）。工具失败不抛错，只是 `ok` 为 `false` |
-| `return 值` | 显示在结果里。最多和一个工具结果一样长（面板上的“单个工具结果上限”，默认 6000 字符）；更长的只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
+| `return 值` | 显示在结果里。最多和一个工具结果一样长（面板上的“单个工具结果上限”，默认 20000 字符）；更长的只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
 
 没有的东西：`import`、`require`、`process`、文件、网络、定时器、`eval` / `new Function`。
 
@@ -148,6 +148,8 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **界面**：`open_screen`、`click_slot`、`use_control`（干活线的工具，例程里能调）的 `data` 是身体给的界面原样：`{ open, screen, slotCount, slots: [{ slot, own?, item?, takesNothing?, ghost? }], cursor?, controls?: [{ panel, key, kind, value?, open?, options?, readOnly?, fluid?, name?, amount?, capacity?, fills?, drains? }] }`。`controls` 是界面上格子以外的东西（开关、数字、文字、选项、页签、流体格、按钮），`panel` 和 `key` 是界面自己起的名字，原样交回给 `use_control`。
 
+**放下就走的加工**：`process_items` 带 `leave: true` 时任务在机器开工后就结束，`data.result` 是 `{ put, left: true, machine?, circuit?: { now, was }, freeSlots }`（`machine` 是那一刻机器的状态，带 `progress` / `maxProgress`，单位 tick；身体读不懂的机器没有这一项），没有 `outputs`。产物留在机器里，之后 `withdraw_items` 取。
+
 **产物是流体的加工**：例程里 `await tool("process_items", …)` 等到任务结束，`data.result` 里除了 `put`、`outputs`（这时是空的）还有 `fluids`：机器的罐（`[{ fluid, name, en?, amount, capacity }]`）或者多方块的输出仓（`[{ x, y, z, kind, capacity, fluid?, fluidName?, fluidEn?, amount? }]`）现在有什么。
 
 **覆盖板**在同一批 `data` 里是 `covers: [{ side, id, meta, name, screen, slots?, usedSlots?, items?, moreKinds? }]`；`find_in_storage` 的存放点带 `kind: "cover"`、`cover`、`side`。
@@ -202,7 +204,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | 常驻内存（大数组不在 JS 堆里） | 512 MiB | 大脑每 25 毫秒看一次 `/proc/<pid>/statm`，超了就杀。**只在 Linux 上有** |
 | 标准输出（草稿从这里回来） | 16 MiB | 杀掉 |
 | 日志 | 4000 字符 | 截断，并写明后面有多少条没留下 |
-| 返回值 | 和“单个工具结果上限”一样（默认 6000 字符） | 只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
+| 返回值 | 和“单个工具结果上限”一样（默认 20000 字符） | 只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
 
 程序交回来的草稿当作不可信的 JSON，在大脑这边逐项检查（`brain/src/design/draft.ts`：名字不能带路径、尺寸和格子数要对得上、方块写法要合规）过了才落盘。
 

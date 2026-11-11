@@ -16,7 +16,7 @@ GTNH（Minecraft 1.7.10）服务器里有一个由 mod 生成的 AI 玩家（“
 
 ## 技术约束
 
-- Node 24（本机 `/home/luziyi/.nvm/versions/node/v24.22.1/bin/node`），TypeScript 由 Node 原生执行，不设编译步骤。
+- Node 24，TypeScript 由 Node 原生执行，不设编译步骤。
   因此只用可擦除语法：不用 `enum`、参数属性、`namespace`；相对导入写 `.ts` 后缀。`tsconfig.json` 开 `strict`、`erasableSyntaxOnly`、`allowImportingTsExtensions`、`noEmit`。
 - **运行时零依赖**：只用 `node:http` `node:net` `node:fs` `node:crypto` `node:test` 和内置 `fetch`。开发依赖只有 `typescript` 和 `@types/node`（装包走环境变量里的代理）。
 - 面板前端是手写的静态 HTML/CSS/JS，没有构建工具和框架。界面文字用中文。

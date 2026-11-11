@@ -589,11 +589,11 @@ describe('沙箱', () => {
     assert.ok(log[1]!.startsWith('line 0\nline 1\n'))
     assert.ok(log[1]!.length <= 4000)
     assert.ok(Number(log[2]) > 4000)
-    // 返回值：一个结果最多 6000 字符（没人另说时的“单个工具结果上限”），前面的日志占了四千多
-    const returned = /^Returned \(CUT: this is only the first (\d+) of 100000 characters; one result holds at most 6000 characters, the log above included\. To get the rest, return less at a time: pick the fields you need from r\.data, narrow the tool call with its own filters or its page argument, or return a later slice of the text\): (y+)$/m.exec(res)
+    // 返回值：一个结果最多 20000 字符（没人另说时的“单个工具结果上限”），前面的日志占了四千多
+    const returned = /^Returned \(CUT: this is only the first (\d+) of 100000 characters; one result holds at most 20000 characters, the log above included\. To get the rest, return less at a time: pick the fields you need from r\.data, narrow the tool call with its own filters or its page argument, or return a later slice of the text\): (y+)$/m.exec(res)
     assert.ok(returned, res.slice(-600))
     assert.equal(returned[2]!.length, Number(returned[1]))
-    assert.ok(Number(returned[1]) > 1000 && res.length <= 6000, `${returned[1]} shown, ${res.length} in all`)
+    assert.ok(Number(returned[1]) > 15000 && res.length <= 20000, `${returned[1]} shown, ${res.length} in all`)
   })
 
   it('程序报错的那句话太长时只留开头，并写明留了多少', async (t) => {

@@ -341,13 +341,14 @@ interface ProcessInput {
   expect?: unknown[]
   bus?: unknown
   wait?: number
+  leave?: boolean
   queue?: boolean
 }
 
 export const processItems: Tool = {
   name: 'process_items',
   description:
-    'Run one batch through a machine (task): walks to it, puts the inputs in, waits, and takes the products out. Any block with a screen that takes items works (a multiblock: give its controller). Give "recipe" and "rounds", or "inputs" yourself. Everything it consumes, and a mold or shape, must be in your inventory; the programmed circuit is set on the machine, not carried. Details: crafting manual.',
+    'Run one batch through a machine (task): walks to it, puts the inputs in, waits for it to finish and takes the products out — the task holds you at the machine for as long as it runs. With leave: true it ends once the machine has started: the products stay inside, to be taken out later with withdraw_items. Any block with a screen that takes items works (a multiblock: give its controller). Give "recipe" and "rounds", or "inputs" yourself. Everything it consumes, and a mold or shape, must be in your inventory; the programmed circuit is set on the machine, not carried. Details: crafting manual.',
   inputSchema: obj(
     {
       machine: pos('Position of the machine (a multiblock: its controller).'),
@@ -360,6 +361,7 @@ export const processItems: Tool = {
       expect: stackList('Multiblock only: products to fetch from the chest its output bus pushes into, each {id, meta?, count}. Default: the recipe\'s.', 9),
       bus: pos('Multiblock only: the input bus to use. Default: the emptiest.'),
       wait: int('Seconds to wait for it to finish, at most (default 180).', { min: PROCESS_WAIT_MIN_SEC, max: PROCESS_WAIT_MAX_SEC }),
+      leave: bool('true: end the task once the machine has started; the circuit then stays as set.'),
       queue,
     },
     ['machine'],
@@ -369,6 +371,8 @@ export const processItems: Tool = {
     let circuit = i.circuit
     let expect = i.expect
     let fluidNote = ''
+    // 这一批是哪条配方的几轮、配方册上一轮多久：身体不认识这一项、原样带回（TaskInfo.params），放下就走时拿它算全部还要多久
+    let batch: { ref: number; rounds: number; ticks?: number } | undefined
     if (i.recipe !== undefined) {
       const book = ctx.packdata?.recipes
       if (!book) return fail('There is no recipe book on this brain: give "inputs" (and "circuit") yourself.')
@@ -379,6 +383,8 @@ export const processItems: Tool = {
         return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a machine recipe${recipe.handler.grid ? ': make it with craft_item' : ': no machine does it'}.`)
       }
       const plan = processPlan(recipe, i.rounds ?? 1, await carriedOrNone(ctx), ctx.packdata?.items, i.moldInside === true)
+      // 自己另给了 inputs 的，放进去的是几轮就说不准了
+      if (i.inputs === undefined) batch = { ref: recipe.ref, rounds: i.rounds ?? 1, ...(recipe.ticks !== undefined ? { ticks: recipe.ticks } : {}) }
       inputs ??= plan.inputs
       circuit ??= plan.circuit
       expect ??= plan.expect.length > 0 ? plan.expect : undefined
@@ -391,7 +397,8 @@ export const processItems: Tool = {
     }
     if (inputs === undefined) return fail('Give "recipe" (the # number from find_recipes) or "inputs".')
     if (inputs.length > PROCESS_MAX_INPUTS) return fail(`That is ${inputs.length} different inputs; a machine takes at most ${PROCESS_MAX_INPUTS}.`)
-    const started = await startTask(ctx, { type: 'process', machine: i.machine, inputs, circuit, fluids: i.fluids, expect, bus: i.bus, wait: i.wait }, i.queue)
+    const leave = i.leave === true
+    const started = await startTask(ctx, { type: 'process', machine: i.machine, inputs, circuit, fluids: i.fluids, expect, bus: i.bus, wait: i.wait, ...(leave ? { leave: true, ...(batch ? { recipe: batch } : {}) } : {}) }, i.queue)
     return typeof started === 'string' ? `${started}${fluidNote}` : started
   },
 }

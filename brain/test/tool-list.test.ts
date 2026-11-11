@@ -225,7 +225,9 @@ describe('模型拿到的工具清单', () => {
   //   物品的提示文字之后：干活线实际 48,710、上限 48,700 → 49,000；对话线实际 22,769、上限 22,800 → 23,000。多的是 find_item（+290）：
   //           结果里的物品少时带上它的提示（玩家把鼠标放上去看到的那几行）和指南里的页，新参数 tip（按提示里的字找物品）；
   //           find_machines、find_structure 的 name 说明里写了中英文都认（各 +十来个字符）。
-  for (const [line, ceiling] of [['work', 49_000], ['talk', 23_000]] as const) {
+  //   加工“放下就走”之后：干活线实际 49,032、上限 49,000 → 49,400（+400）。多的是 process_items（+322）：说明里写明不带 leave 时
+  //           这个任务从放料占着身体到取完产物、带了就放进去就走，和 leave 这个参数。对话线没变。
+  for (const [line, ceiling] of [['work', 49_400], ['talk', 23_000]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

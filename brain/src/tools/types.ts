@@ -212,7 +212,7 @@ export interface Tool {
 }
 
 /** 没人说“单个工具结果上限”是多少时用的数（和配置的默认值一样）。 */
-export const DEFAULT_RESULT_MAX_CHARS = 6000
+export const DEFAULT_RESULT_MAX_CHARS = 20_000
 
 export function fail(content: string): ToolResult {
   return { content, isError: true }

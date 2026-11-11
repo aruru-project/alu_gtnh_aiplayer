@@ -1710,6 +1710,86 @@ it('端到端：主人说“做一个直升机桨叶” → 它自己一层层�
   assert.equal(await brain.exited, 0, diag())
 })
 
+it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 → process_items 带 leave：料放进去、压模机开工，任务就结束，它被告知一轮多久、四轮大概多久、产物和模头留在机器里 → 趁这会儿去卷板机压 2 块钢板（也是放下就走，电路设成 1 不恢复）→ 回头从两台机器里把产物取回来，模头带 fromInputs 取回', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'], autoFinishMs: 30 })
+  const llm = new MockLlm()
+  const talk = relayTalk()
+  installMockBase(bridge, [stack(P.steelIngot, 40), stack(P.shaftShape, 1)])
+  await bridge.start()
+  await llm.start()
+  await talk.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const packdata = path.join(tmp.dir, 'packdata')
+  writePlanFixture(packdata)
+  const brain = startBrain(tmp.dir, bridge, { packdata, talk })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    await talk.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const at = (m: { x: number; y: number; z: number }) => ({ x: m.x, y: m.y, z: m.z })
+  const extruder = bridge.machines.find((m) => m.name === 'Advanced Extruder')!
+  const bender = bridge.machines.find((m) => m.name === 'Basic Bending Machine')!
+  const CHEST_AT = at(bridge.containers[0]!)
+
+  const call = (name: string, input: unknown) => ({ toolCalls: [{ name, input }] })
+  const done = /任务 \w+（withdraw）完成了/
+  const script: [RegExp, ReturnType<typeof call>][] = [
+    [/Steve 私聊你：压 4 根精炼铁柄/, call('withdraw_items', { container: CHEST_AT, items: [stack(P.steelIngot, 38), stack(P.shaftShape, 1)] })],
+    [done, call('process_items', { machine: at(extruder), recipe: R.shaft, rounds: 4, leave: true })],
+    // 压模机那边放下就走了：趁它转，去卷板机压两块钢板
+    [/任务 \w+（process）完成了。 结果：put 37 item/, call('process_items', { machine: at(bender), recipe: R.bendSteel, rounds: 2, leave: true })],
+    [/任务 \w+（process）完成了。 结果：put 2 item/, call('withdraw_items', { container: at(bender), items: [stack(P.steelPlate, 2)] })],
+    [done, call('withdraw_items', { container: at(extruder), items: [stack(P.shaft, 4)] })],
+    [done, call('withdraw_items', { container: at(extruder), items: [stack(P.shaftShape, 1)], fromInputs: true })],
+    [done, call('report', { text: '4 根柄和 2 块钢板都取回来了。' })],
+  ]
+  const seen: string[] = []
+  let next = 0
+  llm.fallback = (req) => {
+    const last = req.body.messages.at(-1)
+    const text = (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+    seen.push(text)
+    if (next < script.length && script[next]![0].test(text)) return script[next++]![1]
+    return { text: '' }
+  }
+
+  bridge.whisper('Alu', 'Steve', '压 4 根精炼铁柄，别站在机器前干等')
+  await waitFor('it reported everything fetched', () => bridge.commandLog.some((c) => c.command.includes('都取回来了')), 30_000).catch((e) => assert.fail(`${e.message}\n(script stopped at step ${next})\n${seen.at(-1)}${diag()}`))
+
+  // 交给身体的：带着 leave，和这一批是哪条配方的几轮（身体不用这一项，原样带回）
+  const started = bridge.requestsOf('task.start').map((p) => p.task as Record<string, unknown>)
+  assert.deepEqual(started.map((task) => task.type), ['withdraw', 'process', 'process', 'withdraw', 'withdraw', 'withdraw'])
+  assert.deepEqual(started[1], { type: 'process', machine: at(extruder), inputs: [stack(P.steelIngot, 36), stack(P.shaftShape, 1)], expect: [stack(P.shaft, 4)], leave: true, recipe: { ref: R.shaft, rounds: 4, ticks: 1280 } })
+  // 压模机一轮 1280 tick（64 秒），离开那一刻第一轮转了 1 秒：这一轮还剩 63 秒，四轮一共还要 4×64−1 = 255 秒
+  const left = seen.find((x) => /结果：put 37 item/.test(x))!
+  assert.match(left, /put 37 item\(s\) into the machine; it started, and the task ended there without waiting for it\. On this machine a round takes 1 min 4 s; the one running has about 1 min 3 s left, all 4 rounds about 4 min 15 s from now\. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy\./)
+  assert.match(left, /withdraw_items with container \(18,64,-8\) takes the products \(a multiblock: from its output bus\), and with fromInputs: true what sits in its input slots; freeSlots \d+/)
+  // 卷板机的电路设成了 1，没有恢复
+  assert.match(seen.find((x) => /结果：put 2 item/.test(x))!, /a round takes 2\.8 s; the one running has about 1\.8 s left, all 2 rounds about 4\.6 s from now\..*Programmed circuit: now 1, it was 0 \(none\); it stays 1 until someone sets it again/)
+  assert.equal(bender.circuit, 1)
+  // 回头取的时候东西都在机器里：产物在产物格，模头在原料格
+  assert.deepEqual([...bridge.bots.get('Alu')!.recent].reverse().map((task) => [task.type, task.state, (task.result as { moved?: number }).moved]), [
+    ['withdraw', 'done', 39],
+    ['process', 'done', undefined],
+    ['process', 'done', undefined],
+    ['withdraw', 'done', 2],
+    ['withdraw', 'done', 4],
+    ['withdraw', 'done', 1],
+  ])
+  const inventory = bridge.bots.get('Alu')!.inventory
+  const has = (p: { id: string; meta: number }) => inventory.filter((i) => i.id === p.id && i.meta === p.meta).reduce((n, i) => n + i.count, 0)
+  assert.deepEqual([has(P.shaft), has(P.shaftShape), has(P.steelPlate), has(P.steelIngot)], [4, 1, 2, 0])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
 it('端到端：主人让它用旁边的熔炉（身体不认识的机器）烧钢锭 → find_machines 照配方册认出它 → process_items 直接试，没放燃料所以没开工 → 它打开熔炉的界面自己看格子，把木炭 Shift 点进去，关掉 → 再试一次就烧出来了', async (t) => {
   const tmp = tmpDir('aiplayer-e2e-')
   const bridge = new MockBridge({ bots: ['Alu'], autoFinishMs: 30 })

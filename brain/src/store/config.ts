@@ -140,7 +140,7 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   historyTokenThreshold: 240_000,
   talkHistoryTokenThreshold: 120_000,
   memoryMaxChars: 4000,
-  toolResultMaxChars: 6000,
+  toolResultMaxChars: 20_000,
   // 例程不限调用次数（一口气搬一万多个东西的活要几千次调用），靠时长、连续失败和随时可停来管：默认两小时，最长十二小时
   routineMinutes: 120,
   routineMaxMinutes: 720,

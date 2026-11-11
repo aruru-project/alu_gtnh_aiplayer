@@ -122,6 +122,10 @@ export interface MockMachine {
    * withdraw 带 fromInputs 能把它们取出来，deposit 能放回去；占着的格子连同这次要放的超过 inputSlots 时，process 一样都放不进去。
    */
   inputs?: { id: string; meta: number; count: number; name: string }[]
+  /** 产物格里现在放着的东西：process 带 leave 时产物留在这里，withdraw（不带 fromInputs）从这里取。 */
+  outputs?: { id: string; meta: number; count: number; name: string }[]
+  /** 界面上设着的编程电路（0 或不给是没设）。process 带 leave 时设了不恢复。 */
+  circuit?: number
   /**
    * world.machines 里这台机器另外带的字段，原样给出去。多方块机器的主机靠它：
    * kind:"multiblock"、formed、heat、idleReason、inputBuses / outputBuses / inputHatches（总线和仓，可以带 attached）。
@@ -1606,9 +1610,9 @@ export class MockBridge {
         box = { items: (cover.items ??= []), kind: 'machine', slots: cover.slots! }
       } else {
         box = this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z)
-        // GregTech 机器：放是放进原料格；取默认只从产物格取（这里的机器做完就被 process 取空了，所以什么都没有），fromInputs 才从原料格取
+        // GregTech 机器：放是放进原料格；取默认只从产物格取（process 不带 leave 时做完就取空了，带 leave 的产物留在里面），fromInputs 才从原料格取
         const machine = box ? undefined : this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
-        if (machine) box = task.type === 'deposit' || p.fromInputs === true ? { items: (machine.inputs ??= []), kind: 'machine', slots: machine.inputSlots } : { items: [] }
+        if (machine) box = task.type === 'deposit' || p.fromInputs === true ? { items: (machine.inputs ??= []), kind: 'machine', slots: machine.inputSlots } : { items: (machine.outputs ??= []) }
         // 身体不认识的机器：界面里有“放不进东西的格子”的就是机器——取默认只取这些产物格，fromInputs 取其余的；放是放进能放的格子
         const device = box ? undefined : this.devices.find((d) => d.x === at.x && d.y === at.y && d.z === at.z)
         if (device) {
@@ -2099,6 +2103,11 @@ export class MockBridge {
     }
     pack.inventory = pack.inventory.filter((i) => i.count > 0)
     const rounds = put > 0 ? this.runDevice(trial) : 0
+    // 放下就走：身体读不懂这种机器开没开工，东西放进去就算数；产物留在它的产物格里
+    if (task.params.leave === true && put > 0) {
+      if (apply) bot.inventory = pack.inventory
+      return { result: { put, left: true, note: 'the things are in and the task ended without waiting; whether this machine started cannot be read. What it makes stays in it until it is taken out', freeSlots: 36 - pack.inventory.length } }
+    }
     if (rounds === 0) {
       // 放进去的原样取回
       if (apply) for (const want of wanted) this.deviceWithdraw(bot, d, [want], true)
@@ -2401,6 +2410,7 @@ export class MockBridge {
     const plan = this.processPlan(bot, task)
     if ('error' in plan) return plan
     const put = plan.given.reduce((n, g) => n + g.count, 0)
+    if (task.params.leave === true) return { result: this.processAndLeave(bot, task, plan, put) }
     const outputs: Json[] = []
     for (const out of (plan.recipe.outputs ?? []) as Json[]) {
       const made = { id: String(out.id), meta: Number(out.meta ?? 0), name: String(out.name ?? out.id), count: Number(out.count) * plan.rounds }
@@ -2436,6 +2446,42 @@ export class MockBridge {
       }
     }
     return { result: { put, outputs, freeSlots: 36 - bot.inventory.length } }
+  }
+
+  /**
+   * process 带 leave：原料放进去、电路设好、机器开工，任务就结束。产物和没消耗的东西（模具、没用完的原料）留在机器里，电路不恢复。
+   * 结果里的 machine 是开工那一刻的状态（第一轮刚转了 1 秒）；这里的机器不走时间，之后去取时它已经做完了。
+   */
+  private processAndLeave(bot: MockBot, task: MockTask, plan: { machine: MockMachine; recipe: Json; rounds: number; given: { id: string; meta: number | undefined; count: number }[] }, put: number): Json {
+    const m = plan.machine
+    const into = (box: { id: string; meta: number; count: number; name: string }[], item: { id: string; meta: number; name: string }, count: number): void => {
+      const stack = box.find((i) => i.id === item.id && i.meta === item.meta)
+      if (stack) stack.count += count
+      else box.push({ id: item.id, meta: item.meta, name: item.name, count })
+    }
+    for (const out of (plan.recipe.outputs ?? []) as Json[]) into((m.outputs ??= []), { id: String(out.id), meta: Number(out.meta ?? 0), name: String(out.name ?? out.id) }, Number(out.count) * plan.rounds)
+    for (const need of (plan.recipe.inputs ?? []) as Json[]) {
+      const fits = (i: { id: string; meta: number }) => i.id === need.id && i.meta === Number(need.meta ?? 0)
+      const g = plan.given.find((x) => x.id === need.id && (x.meta === undefined || x.meta === need.meta))
+      const used = need.notConsumed === true ? 0 : Number(need.count) * plan.rounds
+      // 放进去的都离开了背包；没被用掉的留在原料格里
+      takeItems(bot.inventory, fits, g?.count ?? 0)
+      const stays = (g?.count ?? 0) - used
+      if (stays > 0) into((m.inputs ??= []), { id: String(need.id), meta: Number(need.meta ?? 0), name: String(need.name ?? need.id) }, stays)
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    const was = m.circuit ?? 0
+    const circuit = typeof task.params.circuit === 'number' ? task.params.circuit : undefined
+    if (circuit !== undefined) m.circuit = circuit
+    const ticks = Math.round(Number(plan.recipe.seconds ?? 0) * 20)
+    return {
+      put,
+      left: true,
+      note: 'the machine has started and the task ended without waiting for it. What it makes stays in it until it is taken out (withdraw with the machine as the container); what was put in and is not used up, such as a mould, stays in it too',
+      machine: { ...describeMachine(m), active: true, ...(ticks > 0 ? { progress: Math.min(20, ticks), maxProgress: ticks } : {}) },
+      ...(circuit !== undefined ? { circuit: { now: circuit, was } } : {}),
+      freeSlots: 36 - bot.inventory.length,
+    }
   }
 
   // ── 图纸 ──

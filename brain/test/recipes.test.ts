@@ -435,6 +435,34 @@ describe('process_items：照配方册里的配方用机器加工', () => {
     assert.deepEqual(s.lastTask().expect, [{ id: 'gregtech:gt.metaitem.01', meta: 2305, count: 1 }])
   })
 
+  it('带 leave（放下就走）：这句话原样交给身体，并带上这一批是哪条配方的几轮、配方册上一轮多少 tick；自己写 inputs 时几轮说不准，不带', async (t) => {
+    const s = setup(t)
+    // 卷板机 #0：一轮 56 tick
+    await s.run('process_items', { machine: { x: 16, y: 64, z: -4 }, recipe: 0, rounds: 5, leave: true })
+    assert.deepEqual(s.lastTask(), {
+      type: 'process',
+      machine: { x: 16, y: 64, z: -4 },
+      inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 5 }],
+      circuit: 1,
+      expect: [{ id: 'gregtech:gt.metaitem.01', meta: 17305, count: 5 }],
+      leave: true,
+      recipe: { ref: 0, rounds: 5, ticks: 56 },
+    })
+    // 给了配方、又自己写了要放什么（7 个锭）：放进去的是几轮由不得配方说，所以不带
+    await s.run('process_items', { machine: { x: 16, y: 64, z: -4 }, recipe: 0, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 7 }], leave: true })
+    assert.deepEqual(s.lastTask(), {
+      type: 'process',
+      machine: { x: 16, y: 64, z: -4 },
+      inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 7 }],
+      circuit: 1,
+      expect: [{ id: 'gregtech:gt.metaitem.01', meta: 17305, count: 1 }],
+      leave: true,
+    })
+    // 不带 leave：和以前一样，这两项都没有
+    await s.run('process_items', { machine: { x: 16, y: 64, z: -4 }, recipe: 0, rounds: 5 })
+    assert.deepEqual(Object.keys(s.lastTask()).sort(), ['circuit', 'expect', 'inputs', 'machine', 'type'])
+  })
+
   it('配方点名的那个 id 身上没有、同一种东西的另一个 id 有：放身上有的那种', async (t) => {
     // 卷板机配方写的是 EnderIO 的玄钢锭，身上是 GregTech 的
     const s = setup(t, { inventory: [{ id: 'gregtech:gt.metaitem.01', meta: 11364, count: 4 }] })

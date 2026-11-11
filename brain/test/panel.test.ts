@@ -748,7 +748,7 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.equal(blueprint.source, 'default')
     assert.match(blueprint.summary, /图纸/)
     assert.match(blueprint.body, /check_blueprint/)
-    assert.deepEqual(listed.json.limits, { nameMaxChars: 40, summaryMaxChars: 150, bodyMaxChars: 8000, maxUserManuals: 50 })
+    assert.deepEqual(listed.json.limits, { nameMaxChars: 40, summaryMaxChars: 150, bodyMaxChars: 12000, maxUserManuals: 50 })
 
     const created = await s.call('PUT', '/api/manuals', { name: '基地布局', summary: '要在基地里找仓库、机器时看。', body: '仓库在 (100,64,200) 一带。' })
     assert.equal(created.status, 200)
@@ -800,9 +800,9 @@ describe('面板：对话、AI 玩家、记忆', () => {
       assert.equal((await s.call('DELETE', '/api/manuals', { name })).status, 400, `delete "${name}"`)
     }
     assert.equal(fs.readFileSync(path.join(s.tmp.dir, 'config.json'), 'utf8'), config)
-    const tooLong = await s.call('PUT', '/api/manuals', { name: 'base', summary: '找仓库时看', body: '长'.repeat(8001) })
+    const tooLong = await s.call('PUT', '/api/manuals', { name: 'base', summary: '找仓库时看', body: '长'.repeat(12001) })
     assert.equal(tooLong.status, 400)
-    assert.match(tooLong.json.error.message, /最长 8000/)
+    assert.match(tooLong.json.error.message, /最长 12000/)
     assert.equal((await s.call('PUT', '/api/manuals', { name: 'base', summary: '', body: '正文' })).status, 400)
     assert.equal((await s.call('PUT', '/api/manuals', { name: 'base', summary: '找仓库时看', body: '正文' }, { origin: 'https://evil.example' })).status, 403)
     assert.equal((await s.call('DELETE', '/api/manuals', { name: 'blueprint' }, { origin: 'https://evil.example' })).status, 403)

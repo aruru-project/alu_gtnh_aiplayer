@@ -338,7 +338,9 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
   } else if (task.type === 'process') {
     // 机器没收原料、没开工时，detail 是那台机器的状态
     if (detail && (typeof detail.storedEU === 'number' || typeof detail.recipes === 'string')) out.error = processErrorLines(detail)
-    if (result && Array.isArray(result.outputs)) out.result = processResultLines(result)
+    // 放下就走（leave）的结果里没有产物，是“放进去了、机器开工了”和那一刻机器的状态
+    if (result && result.left === true) out.result = processLeftLines(result, task.params)
+    else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   }
@@ -1349,6 +1351,44 @@ export function processErrorLines(detail: Record<string, unknown>): string[] {
  * 产物是流体的配方（流体提取机把钢板化成熔融钢）没有物品可取：身体看到机器的罐（多方块是输出仓）里的东西变了，算做成，
  * 结果带 fluids（那里现在有什么）。照实说：做成了，产物是流体，现在在哪、多少；它留在原处。
  */
+/** 多少 tick 写成人读的时长：一分钟以内写秒，以上写分秒。 */
+function ticksText(ticks: number): string {
+  const seconds = Math.max(0, ticks) / 20
+  if (seconds < 60) return `${+seconds.toFixed(seconds < 10 ? 1 : 0)} s`
+  const whole = Math.round(seconds)
+  return `${Math.floor(whole / 60)} min${whole % 60 > 0 ? ` ${whole % 60} s` : ''}`
+}
+
+/**
+ * process 任务带 leave 时的结果：原料放进去了、机器开工了，任务就结束了，产物和没消耗的模具留在机器里。
+ * 这一轮、全部几轮大概还要多久：照那一刻机器的进度算（progress / maxProgress，单位 tick）；几轮是 process_items 发任务时带上的（params.recipe）。
+ */
+export function processLeftLines(result: Record<string, unknown>, params: Record<string, unknown> | undefined): string[] {
+  const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, ...rest } = result
+  const batch = isObject(params?.recipe) ? params.recipe : {}
+  const rounds = typeof batch.rounds === 'number' && batch.rounds >= 1 ? batch.rounds : undefined
+  const at = isObject(params?.machine) && typeof params.machine.x === 'number' ? formatPos(params.machine as { x: number; y: number; z: number }) : undefined
+  let line = `put ${count(put)} item(s) into the machine${count(cellsPoured) > 0 ? `, poured ${count(cellsPoured)} cell(s) into it` : ''}`
+  if (isObject(machine)) {
+    line += '; it started, and the task ended there without waiting for it'
+    const max = count(machine.maxProgress)
+    const done = Math.min(max, count(machine.progress))
+    if (max > 0) {
+      line += `. On this machine a round takes ${ticksText(max)}; the one running has about ${ticksText(max - done)} left`
+      if (rounds !== undefined && rounds > 1) line += `, all ${rounds} rounds about ${ticksText(rounds * max - done)} from now`
+      else if (rounds === undefined) line += ' (how many rounds these inputs make is not known here)'
+    }
+  } else {
+    line += '; the task ended there without waiting, and whether this machine started cannot be read (it is not a machine the body knows)'
+    if (typeof batch.ticks === 'number' && batch.ticks > 0) line += `. By the recipe book a round takes ${ticksText(batch.ticks)}${rounds !== undefined && rounds > 1 ? `, ${rounds} rounds ${ticksText(rounds * batch.ticks)}` : ''}`
+  }
+  line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
+  if (isObject(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
+  if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
+  if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
+  return [line]
+}
+
 export function processResultLines(result: Record<string, unknown>): string[] {
   const { put, outputs, timedOut, freeSlots, fluids, ...rest } = result
   const got = kindList(outputs)

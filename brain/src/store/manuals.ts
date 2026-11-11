@@ -11,7 +11,7 @@ import { ensureDir, writeFileAtomic } from './files.ts'
 export const MANUAL_NAME_MAX_CHARS = 40
 export const MANUAL_SUMMARY_MAX_CHARS = 150
 /** 一本手册是整本给模型看的（不受“单个工具结果上限”截断），所以正文自己要有上限。 */
-export const MANUAL_BODY_MAX_CHARS = 8000
+export const MANUAL_BODY_MAX_CHARS = 12_000
 export const USER_MANUALS_MAX = 50
 /** 它自己写的手册（把主人教的做法记成一篇）：最多这么多本，每本正文最长这么多字符。 */
 export const SELF_MANUALS_MAX = 20

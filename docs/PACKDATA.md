@@ -36,7 +36,7 @@
 {
   "quests": {
     "format": 1,                              // quests.jsonl / questlines.json 的格式版本；大脑只读它认识的版本
-    "source": "GTNH-2.9.0-Aru-client.zip",    // 来源包的文件名
+    "source": "GTNH-2.9.0-client.zip",    // 来源包的文件名
     "generatedAt": "2026-11-10T17:13:14Z",
     "lang": "zh_CN",
     "quests": 3814,                           // 任务数
@@ -51,8 +51,10 @@
 ## 任务书
 
 ```sh
-tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip --out brain/packdata
+tools/make-packdata.py quests --client <客户端整合包>.zip --out brain/packdata
 ```
+
+`<客户端整合包>.zip` 是 GTNH 的客户端整合包 zip（启动器导出的那种）；下面几条命令里的也是它。
 
 来源（都在客户端包里，游戏目录下）：
 
@@ -189,7 +191,7 @@ tools/make-packdata.py quests --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-
 这本是玩家写给玩家的解释，两样互相补。
 
 ```sh
-tools/make-packdata.py guide --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip --out brain/packdata
+tools/make-packdata.py guide --client <客户端整合包>.zip --out brain/packdata
 ```
 
 不用开游戏，一秒以内。来源是客户端包里的 `config/guidenh/*.zip`（2.9.0 里是 `DefaultGuide.zip`，即 GTNH-Guide-Pack 0.1.26）；
@@ -546,7 +548,7 @@ tools/make-packdata.py guide --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-A
 
 ```sh
 tools/make-packdata.py textures \
-  --client /extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip \
+  --client <客户端整合包>.zip \
   --jar client/libraries/com/mojang/minecraft/1.7.10/minecraft-1.7.10-client.jar \
   --out brain/packdata
 ```

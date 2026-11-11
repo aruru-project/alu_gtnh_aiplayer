@@ -660,6 +660,60 @@ describe('agent 的一轮决策', () => {
     assert.match(h.llm.lastUserText(3), /took out: 20× gregtech:gt\.metaitem\.01\/23305 "Steel Rod"; timedOut: the wait ran out before it finished, the machine is still working on the rest; freeSlots 19/)
   })
 
+  it('放下就走的加工任务（leave）：结束时模型看到料放进去了、机器开工了，这一轮和全部几轮大概还要多久，产物和模具留在机器里怎么取，电路现在是几原来是几', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const GT = 'gregtech:gt.metaitem.01'
+    const lathe = { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 2, active: true, storedEU: 51200, inputVoltage: 128 }
+    const note = 'the machine has started and the task ended without waiting for it. What it makes stays in it until it is taken out (withdraw with the machine as the container); what was put in and is not used up, such as a mould, stays in it too'
+    const howToTake = 'Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with container (16,64,-4) takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots'
+    // 测试服上实测过的那一趟：8 个钢锭进车床，任务 1.2 秒就结束。这台车床一轮 80 tick（4 秒），那一刻第一轮转了 24 tick：
+    // 这一轮还剩 56 tick = 2.8 秒；8 轮一共 640 tick，还剩 616 tick ≈ 31 秒
+    h.agent.handleEvent(
+      taskEnded('t20', 'done', {
+        type: 'process',
+        params: { machine: { x: 16, y: 64, z: -4 }, inputs: [{ id: GT, meta: 11305, count: 8 }], leave: true, recipe: { ref: 198685, rounds: 8, ticks: 160 } },
+        result: { put: 8, left: true, note, machine: { ...lathe, progress: 24, maxProgress: 80 }, freeSlots: 30 },
+      }),
+    )
+    await h.agent.whenIdle()
+    const first = h.llm.lastUserText(0)
+    assert.ok(
+      first.includes(`任务 t20（process）完成了。 结果：put 8 item(s) into the machine; it started, and the task ended there without waiting for it. On this machine a round takes 4 s; the one running has about 2.8 s left, all 8 rounds about 31 s from now. ${howToTake}; freeSlots 30`),
+      first,
+    )
+
+    // 自己写的 inputs（几轮说不准），设了编程电路：一轮 1280 tick = 1 分 4 秒，刚开工；电路现在 2、原来 24，不恢复
+    h.agent.handleEvent(
+      taskEnded('t21', 'done', {
+        type: 'process',
+        params: { machine: { x: 16, y: 64, z: -4 }, inputs: [{ id: GT, meta: 11305, count: 36 }], circuit: 2, leave: true },
+        result: { put: 36, left: true, note, machine: { ...lathe, progress: 0, maxProgress: 1280 }, circuit: { now: 2, was: 24 }, freeSlots: 29 },
+      }),
+    )
+    await h.agent.whenIdle()
+    assert.match(
+      h.llm.lastUserText(1),
+      /put 36 item\(s\) into the machine; it started, and the task ended there without waiting for it\. On this machine a round takes 1 min 4 s; the one running has about 1 min 4 s left \(how many rounds these inputs make is not known here\)\. Nothing reports when it finishes: .* what sits in its input slots\. Programmed circuit: now 2, it was 24; it stays 2 until someone sets it again; freeSlots 29/,
+    )
+
+    // 身体读不懂的机器（别的 mod 的）：没有机器状态，开没开工读不出来；一轮多久只有配方册上的数（200 tick = 10 秒，4 轮 40 秒）
+    h.agent.handleEvent(
+      taskEnded('t22', 'done', {
+        type: 'process',
+        params: { machine: { x: 14, y: 64, z: -2 }, inputs: [{ id: GT, meta: 2032, count: 4 }], leave: true, recipe: { ref: 24, rounds: 4, ticks: 200 } },
+        result: { put: 4, left: true, note: 'the things are in and the task ended without waiting; whether this machine started cannot be read. What it makes stays in it until it is taken out', freeSlots: 31 },
+      }),
+    )
+    await h.agent.whenIdle()
+    assert.match(
+      h.llm.lastUserText(2),
+      /put 4 item\(s\) into the machine; the task ended there without waiting, and whether this machine started cannot be read \(it is not a machine the body knows\)\. By the recipe book a round takes 10 s, 4 rounds 40 s\. Nothing reports when it finishes: .* withdraw_items with container \(14,64,-2\) takes the products/,
+    )
+    // 身体那句英文说明讲的是同一件事，不再重复一遍
+    assert.doesNotMatch(h.llm.lastUserText(2), /other:/)
+  })
+
   it('自己取消任务后收到的“任务被取消”不会再叫醒它；别人取消的照常叫醒', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
