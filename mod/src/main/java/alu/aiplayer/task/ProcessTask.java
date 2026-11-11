@@ -46,6 +46,10 @@ public final class ProcessTask extends Task {
     private final int limitTicks;
 
     private boolean multi;
+    /** A machine known only by its screen; whether it is working is told from its contents changing. */
+    private boolean plain;
+    private long contents;
+    private int unchanged;
     private int[] loadAt;
     private int[] hatchAt;
     private final List<int[]> unloadAt = new ArrayList<>();
@@ -95,8 +99,13 @@ public final class ProcessTask extends Task {
             return;
         }
         if (!Machines.isRunnable(te)) {
-            fail("invalid", "that is neither a processing machine nor the controller of a multiblock", J.pos(at[0], at[1], at[2]));
-            return;
+            // Not a kind of machine this mod can read. It can still be used the way a player uses any machine:
+            // put things into its screen, wait for what it holds to stop changing, take what it made.
+            if (!(te instanceof IInventory)) {
+                fail("invalid", "there is nothing at that position that things can be put into", J.pos(at[0], at[1], at[2]));
+                return;
+            }
+            plain = true;
         }
         multi = Machines.isMultiblock(te);
         if (!multi) {
@@ -236,7 +245,7 @@ public final class ProcessTask extends Task {
                     return;
                 }
                 TileEntity te = machine();
-                if (!Machines.isRunnable(te)) {
+                if (!(te instanceof IInventory)) {
                     fail("invalid", "the machine is gone", J.pos(at[0], at[1], at[2]));
                     return;
                 }
@@ -310,19 +319,34 @@ public final class ProcessTask extends Task {
             }
             case 1: { // working
                 TileEntity te = machine();
-                if (!Machines.isRunnable(te)) {
+                if (!(te instanceof IInventory)) {
                     fail("invalid", "the machine is gone");
                     return;
                 }
                 waited++;
-                boolean active = Machines.isActive(te);
+                boolean active;
+                if (plain) {
+                    long now = fingerprint((IInventory) te);
+                    if (waited == 1) contents = now;
+                    if (now != contents) {
+                        contents = now;
+                        unchanged = 0;
+                        ran = true;
+                    } else {
+                        unchanged++;
+                    }
+                    // Still "working" for a while after the last change: a furnace takes ten seconds an item.
+                    active = ran && unchanged < 240;
+                } else {
+                    active = Machines.isActive(te);
+                }
                 if (active) {
                     ran = true;
                     idle = 0;
                 } else {
                     idle++;
                 }
-                if (!ran && waited > (multi ? START_WAIT_MULTI : START_WAIT)) {
+                if (!ran && waited > (multi || plain ? START_WAIT_MULTI : START_WAIT)) {
                     // It never started. Take the inputs back out rather than leave them sitting there.
                     phase = "taking the inputs back";
                     notStarted = multi ? Machines.idleReason(te) : null;
@@ -399,7 +423,7 @@ public final class ProcessTask extends Task {
                         + (notStarted != null ? ": " + notStarted + "."
                             : ": it may lack power, a programmed circuit or a fluid, or these inputs are not a recipe it runs.")
                         + (inputs.isEmpty() ? "" : " The inputs are back in the inventory."),
-                    te == null ? null : Machines.describe(te));
+                    te == null || plain ? null : Machines.describe(te));
                 break;
             }
         }
@@ -439,7 +463,7 @@ public final class ProcessTask extends Task {
                 "invalid",
                 "the machine ran but nothing could be taken out of it"
                     + (multi ? "; its products may be fluids, which stay in the output hatch" : ""),
-                Machines.describe(machine()));
+                plain ? null : Machines.describe(machine()));
         } else {
             done();
         }
@@ -451,6 +475,19 @@ public final class ProcessTask extends Task {
         circuitSet = false;
         TileEntity where = tile(loadAt);
         if (where != null && oldCircuit >= 0) Machines.setCircuit(where, oldCircuit);
+    }
+
+    /** A number that changes whenever anything in the machine's slots does. */
+    private static long fingerprint(IInventory inv) {
+        long h = 17;
+        try {
+            for (int i = 0; i < inv.getSizeInventory(); i++) {
+                ItemStack st = inv.getStackInSlot(i);
+                h = h * 31 + (st == null ? 0
+                    : (long) net.minecraft.item.Item.getIdFromItem(st.getItem()) * 65536L + st.getItemDamage() * 131L + st.stackSize);
+            }
+        } catch (Throwable ignored) {}
+        return h;
     }
 
     private boolean hatchDrained() {

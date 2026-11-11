@@ -170,17 +170,20 @@ public final class ContainerSession {
                 }
                 if (p.openContainer != p.inventoryContainer) {
                     TileEntity te = w.getTileEntity(x, y, z);
-                    machineIn = Machines.inputSlots(te);
-                    machineOut = Machines.outputSlots(te);
-                    if (machineIn != null && machineOut != null || !hasOwnSlots(p)) {
-                        // The screen opened, so the bot may use this; but it is not one that can be clicked through.
+                    if (hasOwnSlots(p)) {
+                        // The way a player uses anything: through the screen it opens. The screen itself says
+                        // where things may go and what may be taken, so nothing has to be known about the block.
+                        viaScreen = true;
+                        phase = 2;
+                    } else {
+                        // A screen that shows nothing of the bot's own cannot be clicked through. For the kinds
+                        // of block whose inner slots are known, reach into those instead.
+                        machineIn = Machines.inputSlots(te);
+                        machineOut = Machines.outputSlots(te);
                         bot.conn()
                             .closeWindow();
                         if (!(te instanceof IInventory)) return fail("invalid", "there is no container at that position");
                         phase = 3;
-                    } else {
-                        viaScreen = true;
-                        phase = 2;
                     }
                     wait = 0;
                     cursor = 0;
@@ -400,10 +403,97 @@ public final class ContainerSession {
             .swingArm();
     }
 
-    /** Whether the open screen shows the bot's own inventory in slots of the ordinary kind. */
+    /** Whether the open screen shows the bot's own inventory, so that things can be moved by clicking. */
     private static boolean hasOwnSlots(EntityPlayerMP p) {
-        for (Object o : p.openContainer.inventorySlots) if (((Slot) o).inventory == p.inventory) return true;
+        for (Object o : p.openContainer.inventorySlots) if (isOwn(p, (Slot) o)) return true;
         return false;
+    }
+
+    /**
+     * Whether a slot of the open screen is one of the bot's own inventory. Plain screens say so directly. Screens
+     * of other interface libraries (GregTech's among them) wrap the inventory in something of their own; there the
+     * stack in the slot is still the very stack the bot carries, and an empty one names its wrapper.
+     */
+    private static boolean isOwn(EntityPlayerMP p, Slot s) {
+        if (s.inventory == p.inventory) return true;
+        ItemStack shown = s.getStack();
+        if (shown != null) {
+            for (ItemStack mine : p.inventory.mainInventory) if (mine == shown) return true;
+            for (ItemStack worn : p.inventory.armorInventory) if (worn == shown) return true;
+            return false;
+        }
+        return wrapsPlayer(s);
+    }
+
+    private static final java.util.Map<Class<?>, java.lang.reflect.Method> HANDLER_OF = new java.util.HashMap<>();
+
+    private static boolean wrapsPlayer(Slot s) {
+        try {
+            Class<?> c = s.getClass();
+            java.lang.reflect.Method m;
+            synchronized (HANDLER_OF) {
+                if (!HANDLER_OF.containsKey(c)) {
+                    java.lang.reflect.Method found = null;
+                    try {
+                        found = c.getMethod("getItemHandler");
+                    } catch (NoSuchMethodException none) {
+                        // a slot of the ordinary kind
+                    }
+                    HANDLER_OF.put(c, found);
+                }
+                m = HANDLER_OF.get(c);
+            }
+            if (m == null) return false;
+            Object handler = m.invoke(s);
+            return handler != null && handler.getClass()
+                .getSimpleName()
+                .startsWith("Player");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Ghost slots (a programmed-circuit setting) show an item that is not really there. */
+    private static boolean isGhost(Slot s) {
+        ItemStack shown = s.getStack();
+        if (shown != null && shown.stackSize <= 0) return true;
+        try {
+            java.lang.reflect.Method m = s.getClass()
+                .getMethod("isPhantom");
+            return (Boolean) m.invoke(s);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** A slot nothing can be put into: where a machine lays its products. */
+    private static boolean takesNothing(Slot s, ItemStack probe) {
+        try {
+            return !s.isItemValid(probe);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static boolean isOwnSlot(EntityPlayerMP p, Slot s) {
+        return isOwn(p, s);
+    }
+
+    public static boolean isGhostSlot(Slot s) {
+        return isGhost(s);
+    }
+
+    public static boolean slotTakesNothing(Slot s, ItemStack probe) {
+        return takesNothing(s, probe);
+    }
+
+    /** Where in the bot's inventory the stack a slot shows is; -1 if it is not there. */
+    private static int ownIndex(EntityPlayerMP p, Slot s) {
+        ItemStack shown = s.getStack();
+        if (shown == null) return -1;
+        ItemStack[] inv = p.inventory.mainInventory;
+        for (int i = 0; i < inv.length; i++) if (inv[i] == shown) return i;
+        return -1;
     }
 
     public void abort() {
@@ -425,23 +515,36 @@ public final class ContainerSession {
         Container c = p.openContainer;
         List<Slot> mine = new ArrayList<>();
         List<Slot> theirs = new ArrayList<>();
+        // A screen with slots nothing can be put into is a machine's: a plain withdrawal takes its products and
+        // leaves what is waiting to be worked on; fromInputSlots turns that round. A screen without such slots
+        // is plain storage and everything in it may be taken.
+        boolean hasProductSlots = false;
+        ItemStack probe = new ItemStack(net.minecraft.init.Blocks.cobblestone);
         for (Object o : c.inventorySlots) {
             Slot s = (Slot) o;
-            if (s.inventory == p.inventory) mine.add(s);
-            else theirs.add(s);
+            if (isOwn(p, s)) {
+                if (ownIndex(p, s) >= 0 || s.getStack() == null) mine.add(s);
+                continue;
+            }
+            if (isGhost(s)) continue;
+            theirs.add(s);
+            ItemStack shown = s.getStack();
+            if (takesNothing(s, shown != null ? shown : probe)) hasProductSlots = true;
         }
         if (deposit != null) {
             for (; cursor < mine.size(); cursor++) {
                 Slot s = mine.get(cursor);
                 ItemStack stack = s.getStack();
                 if (stack == null) continue;
+                int index = ownIndex(p, s);
+                if (index < 0 || index >= Inventories.CARRY_SLOTS) continue;
                 // The bag in the hand does not go into itself.
-                if (opener != null && s.getSlotIndex() == openerSlot) continue;
+                if (opener != null && index == openerSlot) continue;
                 int want = deposit.wanted(stack);
                 if (want == 0) continue;
                 if (want > 0 && want < stack.stackSize) {
                     // Set the surplus aside in a free slot first, so the shift-click moves exactly the wanted part.
-                    if (!splitOff(p, s.getSlotIndex(), stack.stackSize - want)) want = stack.stackSize;
+                    if (!splitOff(p, index, stack.stackSize - want)) want = stack.stackSize;
                     stack = s.getStack();
                 }
                 ItemStack type = stack.copy();
@@ -470,6 +573,7 @@ public final class ContainerSession {
                 Slot s = theirs.get(cursor);
                 ItemStack stack = s.getStack();
                 if (stack == null || !s.canTakeStack(p)) continue;
+                if (hasProductSlots && takesNothing(s, stack) == fromInputs) continue;
                 int f = matchingFilter(stack);
                 if (f < 0) continue;
                 ItemStack type = stack.copy();

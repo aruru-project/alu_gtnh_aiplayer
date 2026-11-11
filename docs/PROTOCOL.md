@@ -276,9 +276,23 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 }
 ```
 
-- 总线和仓也是容器：`deposit` / `withdraw` 可以直接对着它们的位置用（输入总线的电路格碰不到；仓只有放单元和取单元的两格）。
+- 总线和仓也是容器：`deposit` / `withdraw` 可以直接对着它们的位置用，和对着箱子一样走它自己的界面。
 - `attached` 说明这个口有漏斗或管道在自动喂料、抽料：输入总线可能一直是满的，输出总线里的东西可能留不住。
-- 蒸汽多方块、以及用特殊总线的机器，`inputBuses` 等是空的，`process` 用不了它们。
+
+### 界面（通用）
+
+玩家用任何带界面的东西都是同一套动作：打开、看格子、点、关。存取、加工、合成这些任务是走某一类界面的现成办法；下面四个方法是它们底下那层，给没有现成任务的界面用。它们不认界面是哪个 mod 的，点了会怎样由界面自己决定。只在 bot 没有任务在跑时可用（否则 `busy`）。
+
+| 方法 | 参数 | 结果 |
+|---|---|---|
+| `screen.open` | `{bot, x,y,z}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
+| `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
+| `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
+| `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
+
+Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
+
+常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 
 ### 任务书（只读）
 
@@ -410,7 +424,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周 |
 | `flatten` | `{x1,z1,x2,z2, y, fill?=true, fillItems?:[id], maxFillDepth?=3, dropoff?, supply?, overflow?}`，≤64×64 | 把区域整成地面顶层在 y 的平地：挖掉 y 以上的一切，再把 y 及以下的坑由低到高填上 |
 | `deposit` | `{container:{x,y,z}, items?:[ItemFilter], keep?:[id]}` | 走过去把物品放进箱子。不给 items 则放入除工具、食物和 keep 以外的全部 |
-| `withdraw` | `{container:{x,y,z}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。对 GregTech 机器，默认只从产物格取；`fromInputs:true` 改成从原料格取（把留在里面的模具、模头、没用完的原料拿出来） |
+| `withdraw` | `{container:{x,y,z}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。界面里有“放不进东西的格子”的是机器：默认只从这些产物格取；`fromInputs:true` 改成从其余的格子取（把留在里面的模具、模头、没用完的原料拿出来）。没有这种格子的是普通仓储，哪格都取 |
 | `haul` | `{from:{x,y,z}, to:{x,y,z}, items?:[ItemFilter]}` | 在两个箱子之间来回搬，直到源箱子里符合条件的搬完或数量够。只搬这一趟取出来的东西，bot 自己的物品不动 |
 | `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
@@ -461,6 +475,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 右键打开了界面的（背包）会被马上关掉并带 `openedScreen:true`；要往里放、往外拿，用上一条说的 `deposit` / `withdraw`。
   - `sneak:true` 是蹲着右键，有些东西蹲着用是另一个意思（比如穿到身上而不是打开）。
 - **`process`**：
+  - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
   - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。
   - **多方块机器**：原料放进输入总线（有几个时挑空格最多的，或用 `bus` 指定），产物从各个输出总线取。
@@ -470,7 +485,8 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   - 机器没开工（单方块 3 秒、多方块 10 秒）就把原料取回来，以 `invalid` 失败，`error.message` 里带原因（多方块是它界面上的说法，如 `No valid recipe found`），`error.detail` 是这台机器的状态。可能是没电、缺电路或流体、没有这个配方、炉温或电压不够、输出口被占着。
   - 原料一样都放不进去（输入格、输入总线满了）也以 `invalid` 失败。输入总线带 `attached` 时多半是被自动喂料占满的，这要主人决定怎么办。
   - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], timedOut?, note?, passedTo?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
-  - 不行的：蒸汽机器、其他 mod 的机器、单方块机器的流体（要它已经接好流体来源）。
+  - 多方块的总线和仓不按名单找：主机名下登记的所有总线和仓都算（蒸汽多方块的蒸汽总线也在内）。
+  - 还不行的：单方块机器的流体格（要它已经接好流体来源）；界面里要点按钮才能开工的机器（用 `screen.*` 自己点）。
 - **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。
   会坐 OpenBlocks 电梯（站上去，相当于跳一下上楼、蹲一下下楼）。门打不开或电梯不动时换别的路。
 - **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。

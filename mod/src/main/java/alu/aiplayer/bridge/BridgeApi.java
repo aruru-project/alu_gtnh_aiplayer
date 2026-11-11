@@ -323,6 +323,27 @@ public final class BridgeApi {
             o.add("replaced", strings(replaced));
             return o;
         });
+        bridge.register("screen.open", p -> {
+            Bot b = bots.requireOnline(J.reqStr(p, "bot"));
+            JsonObject item = J.object(p, "item");
+            if (item != null) {
+                return alu.aiplayer.act.Screens.open(
+                    b,
+                    null,
+                    new alu.aiplayer.act.ItemFilter(J.reqStr(item, "id"), J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1));
+            }
+            return alu.aiplayer.act.Screens
+                .open(b, new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") }, null);
+        });
+        bridge.register("screen.look", p -> alu.aiplayer.act.Screens.look(bots.requireOnline(J.reqStr(p, "bot"))));
+        bridge.register(
+            "screen.click",
+            p -> alu.aiplayer.act.Screens.click(
+                bots.requireOnline(J.reqStr(p, "bot")),
+                J.reqInt(p, "slot"),
+                J.i(p, "button", 0),
+                J.bool(p, "shift", false)));
+        bridge.register("screen.close", p -> alu.aiplayer.act.Screens.close(bots.requireOnline(J.reqStr(p, "bot"))));
         bridge.register("task.cancel", p -> {
             Bot b = bots.require(J.reqStr(p, "bot"));
             List<String> ids = b.tasks.cancel(J.str(p, "id", null));

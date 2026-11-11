@@ -303,14 +303,27 @@ public final class Machines {
         java.util.List<TileEntity> out = new java.util.ArrayList<>();
         Object m = meta(controller);
         if (m == null || !isMultiblock(controller)) return out;
-        try {
-            Field f = "input bus".equals(kind) ? inBuses
-                : "output bus".equals(kind) ? outBuses : "input hatch".equals(kind) ? inHatches : outHatches;
-            for (Object part : new java.util.ArrayList<Object>((java.util.List<?>) f.get(m))) {
-                Object base = part == null ? null : baseOf.invoke(part);
-                if (base instanceof TileEntity && !((TileEntity) base).isInvalid()) out.add((TileEntity) base);
+        // Every list of parts the controller keeps, whatever it is called: steam machines and add-ons keep their
+        // buses in lists of their own, and a part is known by what it is, not by which list it sits in.
+        java.util.Set<TileEntity> seen = new java.util.HashSet<>();
+        for (Class<?> c = m.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) || !java.util.Collection.class.isAssignableFrom(f.getType())) continue;
+                try {
+                    f.setAccessible(true);
+                    Object value = f.get(m);
+                    if (!(value instanceof java.util.Collection)) continue;
+                    for (Object part : new java.util.ArrayList<Object>((java.util.Collection<?>) value)) {
+                        if (part == null || !baseOf.getDeclaringClass()
+                            .isInstance(part)) continue;
+                        Object base = baseOf.invoke(part);
+                        if (!(base instanceof TileEntity) || ((TileEntity) base).isInvalid()) continue;
+                        TileEntity te = (TileEntity) base;
+                        if (kind.equals(portKind(te)) && seen.add(te)) out.add(te);
+                    }
+                } catch (Throwable ignored) {}
             }
-        } catch (Throwable ignored) {}
+        }
         return out;
     }
 
