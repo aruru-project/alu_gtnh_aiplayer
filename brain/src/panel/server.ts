@@ -7,6 +7,8 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import type { AgentState, AgentStatus } from '../agent/agent.ts'
+import type { LinkState, StopResult } from '../agent/lines.ts'
+import type { LineName } from '../tools/index.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
 import { historyTokens } from '../agent/compaction.ts'
 import type { AgentEvent } from '../agent/events.ts'
@@ -53,7 +55,10 @@ export interface PanelDeps {
   memory: MemoryStore
   usage: UsageStore
   log: ActivityLog
+  /** 干活线的历史（只有一条线时就是“对话历史”）。 */
   history: HistoryStore
+  /** 对话线的历史。没提供时（老的装配、测试）面板只管干活线那一份。 */
+  talkHistory?: HistoryStore
   manuals: ManualStore
   /** 它自己出设计用的：图纸草稿和主人传的图片。 */
   design: DesignWorkspace
@@ -71,9 +76,16 @@ export interface PanelDeps {
   bridgeStatus(): BridgeStatus
   agent: {
     handleEvent(ev: AgentEvent): void
+    /** 干活线的状态（例程、盯着的任务在它那里）。 */
     status(): AgentStatus
-    /** 模型这一头、这一轮现在的样子（GET /api/status 用）。 */
-    state?(): AgentState
+    /** 一条线的状态。 */
+    statusOf?(line: LineName): AgentStatus
+    /** 一条线的模型和这一轮现在的样子（GET /api/status 用）。 */
+    state?(line: LineName): AgentState
+    /** 两条线之间留着的事：干活线在等的回答、它最近一次送来的话。 */
+    linkState?(): LinkState
+    /** 总停止：取消身体的全部任务、停掉例程、打断干活线正在想的那一步。 */
+    stopWork?(reason: string, by: 'panel'): Promise<StopResult>
     /** 执行一个会取消任务的请求；期间和之后收到的对应“任务被取消”不叫醒模型。 */
     ownCancel<T extends { ids?: string[]; replaced?: string[] }>(fn: () => Promise<T>): Promise<T>
     /** 停掉正在跑的例程；没有在跑的返回 false。 */
@@ -482,10 +494,11 @@ export class PanelServer {
             bridge: this.deps.bridge,
             connected: () => this.deps.bridgeStatus().state === 'connected',
             botName: () => this.deps.config.get().bot.name,
-            model: () => {
-              const active = this.deps.config.activeSelection()
-              return active ? { provider: active.provider.label, model: active.model.name } : undefined
+            model: (line) => {
+              const active = this.deps.config.lineSelection(line)
+              return active ? { provider: active.provider.label, model: active.model.name, providerId: active.provider.id, modelId: active.model.id } : undefined
             },
+            history: (line) => this.historySize(line),
           },
           this.now(),
         )
@@ -526,6 +539,8 @@ export class PanelServer {
         this.overviewCache = undefined
         return { stopped }
       }
+      case 'POST /work/stop':
+        return this.stopWork(body)
       case 'GET /memory':
         return this.memoryList()
       case 'PUT /memory':
@@ -572,10 +587,16 @@ export class PanelServer {
         return this.imageUpload(body)
       case 'DELETE /images':
         return this.imageDelete(body)
-      case 'POST /history/clear':
-        this.deps.history.clear()
-        this.deps.log.add({ kind: 'info', text: '对话历史已在面板上清空（记忆不受影响）。' })
+      case 'POST /history/clear': {
+        // 两条线各有一份历史：line 说清哪一份，不带就是两份都清
+        const line = body.line
+        if (line !== undefined && line !== 'talk' && line !== 'work') throw new HttpError(400, 'bad_request', 'line 只能是 talk 或 work')
+        if (line !== 'talk') this.deps.history.clear()
+        if (line !== 'work') this.deps.talkHistory?.clear()
+        this.overviewCache = undefined
+        this.deps.log.add({ kind: 'info', text: `${line === 'talk' ? '对话线的' : line === 'work' ? '干活线的' : '两条线的'}对话历史已在面板上清空（记忆不受影响）。` })
         return { ok: true }
+      }
       case 'DELETE /reminders':
         return { removed: typeof body.id === 'string' && this.deps.reminders.remove(body.id) }
       case 'GET /settings':
@@ -631,14 +652,23 @@ export class PanelServer {
 
     const active = this.deps.config.activeSelection()
     const h = this.deps.history.get()
+    const lineModel = (line: LineName) => {
+      const picked = this.deps.config.lineSelection(line)
+      return picked
+        ? { id: picked.provider.id, label: picked.provider.label, kind: picked.provider.kind, baseUrl: picked.provider.baseUrl, model: picked.model.name, modelId: picked.model.id, modelLabel: modelDisplayName(picked.model) }
+        : null
+    }
     const data = {
       time: now,
       bridge,
       bot: { name, wantOnline: cfg.bot.wantOnline, status, ...(statusError ? { error: statusError } : {}) },
       tasks,
       server,
+      // 干活线的状态（原来唯一的那个）；对话线的在 talk
       agent: this.deps.agent.status(),
-      // 现在用的是哪个服务商的哪个模型
+      talk: this.deps.agent.statusOf?.('talk') ?? null,
+      // 两条线各用哪个服务商的哪个模型（provider 是干活线的，留着给还没改的界面）
+      lineModels: { talk: lineModel('talk'), work: lineModel('work') },
       provider: active
         ? {
             id: active.provider.id,
@@ -657,9 +687,28 @@ export class PanelServer {
       feedback: { unread: this.deps.feedback.unread() },
       reminders: this.deps.reminders.list(),
       history: { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: historyTokens(h.summary, h.turns) },
+      histories: { talk: this.historySize('talk') ?? null, work: this.historySize('work') ?? null },
     }
     this.overviewCache = { at: now, data }
     return data
+  }
+
+  /** 一条线的历史有多长、离压缩还有多远。 */
+  private historySize(line: LineName): { turns: number; hasSummary: boolean; estimatedTokens: number; threshold: number } | undefined {
+    const store = line === 'talk' ? this.deps.talkHistory : this.deps.history
+    if (!store) return undefined
+    const h = store.get()
+    const limits = this.deps.config.get().bot.limits
+    return { turns: h.turns.length, hasSummary: h.summary.length > 0, estimatedTokens: historyTokens(h.summary, h.turns), threshold: line === 'talk' ? limits.talkHistoryTokenThreshold : limits.historyTokenThreshold }
+  }
+
+  /** 总停止（和对话线的 stop_work 是同一件事）：取消身体的全部任务、停掉例程、打断干活线正在想的那一步。 */
+  private async stopWork(body: Record<string, unknown>): Promise<unknown> {
+    if (!this.deps.agent.stopWork) throw new HttpError(501, 'not_supported', '这个大脑没有总停止')
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
+    const res = await this.deps.agent.stopWork(reason, 'panel')
+    this.overviewCache = undefined
+    return { ok: res.error === undefined, turn: res.turn !== undefined, routine: res.routine ?? null, tasks: res.tasks.length, dropped: res.dropped, ...(res.error !== undefined ? { error: res.error } : {}) }
   }
 
   // ── 对话 ──
@@ -676,7 +725,14 @@ export class PanelServer {
 
   private providers(): unknown {
     const cfg = this.deps.config.get()
-    return { providers: cfg.providers.map(maskProvider), activeProviderId: cfg.activeProviderId, activeModelId: cfg.activeModelId, adapters: listAdapters() }
+    return {
+      providers: cfg.providers.map(maskProvider),
+      // 干活线用的（只有一条线时“当前用的”就是它）；两条线各用哪个在 lines 里
+      activeProviderId: cfg.activeProviderId,
+      activeModelId: cfg.activeModelId,
+      lines: { talk: { providerId: cfg.talkProviderId, modelId: cfg.talkModelId }, work: { providerId: cfg.activeProviderId, modelId: cfg.activeModelId } },
+      adapters: listAdapters(),
+    }
   }
 
   private findProvider(id: string): StoredProvider {
@@ -725,22 +781,37 @@ export class PanelServer {
     return this.switchTo(provider, provider.models[0])
   }
 
-  /** 页头和“模型”页的切换：现在改用哪个服务商的哪个模型。下一轮决策起生效，不用重启。 */
+  /**
+   * 页头和“模型”页的切换：哪条线改用哪个服务商的哪个模型。line 是 talk 或 work；不带就是两条线一起换。
+   * 那条线的下一轮起生效，不用重启。
+   */
   private useModel(body: Record<string, unknown>): unknown {
     if (typeof body.providerId !== 'string' || typeof body.modelId !== 'string') throw new HttpError(400, 'bad_request', '需要 providerId 和 modelId')
+    if (body.line !== undefined && body.line !== 'talk' && body.line !== 'work') throw new HttpError(400, 'bad_request', 'line 只能是 talk 或 work')
     const provider = this.findProvider(body.providerId)
-    return this.switchTo(provider, this.findModel(provider, body.modelId))
+    return this.switchTo(provider, this.findModel(provider, body.modelId), body.line)
   }
 
-  private switchTo(provider: StoredProvider, model: ModelConfig | undefined): unknown {
+  private switchTo(provider: StoredProvider, model: ModelConfig | undefined, line?: LineName): unknown {
     const before = this.deps.config.get()
-    const changed = before.activeProviderId !== provider.id || before.activeModelId !== (model?.id ?? '')
+    const modelId = model?.id ?? ''
+    const workChanged = line !== 'talk' && (before.activeProviderId !== provider.id || before.activeModelId !== modelId)
+    const talkChanged = line !== 'work' && (before.talkProviderId !== provider.id || before.talkModelId !== modelId)
     this.deps.config.update((c) => {
-      c.activeProviderId = provider.id
-      c.activeModelId = model?.id ?? ''
+      if (line !== 'talk') {
+        c.activeProviderId = provider.id
+        c.activeModelId = modelId
+      }
+      if (line !== 'work') {
+        c.talkProviderId = provider.id
+        c.talkModelId = modelId
+      }
     })
     this.overviewCache = undefined
-    if (changed && model) this.deps.log.add({ kind: 'info', text: `在面板上把模型换成了 ${provider.label} / ${modelDisplayName(model)}，下一轮起生效。` })
+    if ((workChanged || talkChanged) && model) {
+      const which = workChanged && talkChanged ? '两条线的模型都' : workChanged ? '干活线的模型' : '对话线的模型'
+      this.deps.log.add({ kind: 'info', text: `在面板上把${which}换成了 ${provider.label} / ${modelDisplayName(model)}，下一轮起生效。` })
+    }
     return this.providers()
   }
 

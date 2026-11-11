@@ -21,6 +21,22 @@ export type AgentEvent =
   | { type: 'reminder'; time: number; note: string }
   /** 大脑自己产生的通知（重连、上一轮中断等）。wake 决定它是否触发一轮决策。 */
   | { type: 'notice'; time: number; text: string; wake: boolean }
+  // ── 两条线之间的往来（docs/TALK_WORK.md）──
+  /**
+   * 对话线交给干活线的事或带的话（tell_worker）。text 是对话线自己写的；said 是当时在跟对话线说话的人的原话，
+   * 由程序原样附上（带站位和指向），不是转述。saidBefore：这一轮的原话已经随上一条附过了，这一条不再重复。
+   */
+  | { type: 'told'; time: number; text: string; said: SaidEvent[]; saidBefore?: boolean }
+  /** 干活线被叫停了（对话线的 stop_work，或主人在面板上按的总停止）。只是告诉它发生了什么，不叫醒它。 */
+  | { type: 'halted'; time: number; by: 'talk' | 'panel'; reason: string; said: SaidEvent[] }
+  /**
+   * 干活线送给对话线的：中途汇报、提问（在等回答）、一轮结束留下的文字、它出了状况（程序替它报的：模型接口故障、到步数上限……）。
+   */
+  | { type: 'worker'; time: number; kind: WorkerNote; text: string }
+
+/** 人说的话：聊天、悄悄话、面板上发来的。交事和叫停时原样附给干活线的就是这些。 */
+export type SaidEvent = Extract<AgentEvent, { type: 'chat' | 'whisper' | 'panel_command' }>
+export type WorkerNote = 'report' | 'question' | 'result' | 'trouble'
 
 function s(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
@@ -181,7 +197,31 @@ export function describeEvent(ev: AgentEvent): string {
       return `你给自己定的提醒到点了：${ev.note}`
     case 'notice':
       return ev.text
+    case 'told':
+      return `对话线交给你的（这一句是它写的）：${ev.text}${saidBlock(ev.said, ev.saidBefore === true ? '（这一轮里的人的原话已经随上一条附过，这里不重复。）' : '（这次没有附原话：对话线这一轮不是被谁说的话叫醒的，是它自己的决定。）')}`
+    case 'halted':
+      return (
+        `你被叫停了（${ev.by === 'panel' ? '主人在控制面板上按的停止' : '对话线叫的'}）${ev.reason ? `：${ev.reason}` : '。'}` +
+        `\n  身体的任务队列和例程都已经取消，你当时正在想的那一步被打断，还没处理的事也放下了。这条只是告诉你发生了什么，不需要为它做任何事；之后要做什么等新的交代。` +
+        saidBlock(ev.said, '')
+      )
+    case 'worker':
+      return `${WORKER_NOTE_HEAD[ev.kind]}${ev.text}`
   }
+}
+
+const WORKER_NOTE_HEAD: Record<WorkerNote, string> = {
+  report: '干活线汇报：',
+  question: '干活线提问（它在等回答，用 tell_worker 带话给它）：',
+  result: '干活线这一轮做完了，它留下的话：',
+  trouble: '干活线出了状况（这句是程序替它报的）：',
+}
+
+/** 原样附上的原话：每句一行，带时间；说话的人的站位和指向照 describeEvent 的样子缩进在下面。 */
+function saidBlock(said: readonly SaidEvent[], none: string): string {
+  if (said.length === 0) return none ? `\n  ${none}` : ''
+  const lines = said.map((e) => `[${clockTime(e.time)}] ${describeEvent(e)}`.split('\n').map((l) => `    ${l}`).join('\n'))
+  return `\n  当时的原话（程序原样附上的，不是转述；括号里是说话的人站在哪、指着什么）：\n${lines.join('\n')}`
 }
 
 export function clockTime(time: number): string {
@@ -200,6 +240,6 @@ export function eventLine(ev: AgentEvent, now: number): string {
 }
 
 /** 是不是“有人在跟 bot 说话”这一类事件。兜底说话、对话窗口都只看这一类。 */
-export function isHumanInput(ev: AgentEvent): boolean {
+export function isHumanInput(ev: AgentEvent): ev is SaidEvent {
   return ev.type === 'chat' || ev.type === 'whisper' || ev.type === 'panel_command'
 }

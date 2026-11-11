@@ -3,10 +3,12 @@
 // 环境变量：AIPLAYER_DATA_DIR、AIPLAYER_PANEL_HOST、AIPLAYER_PANEL_PORT、
 //          AIPLAYER_BRIDGE_HOST、AIPLAYER_BRIDGE_PORT、AIPLAYER_BRIDGE_TOKEN、AIPLAYER_BRIDGE_TOKEN_FILE、AIPLAYER_PACKDATA
 
+import fs from 'node:fs'
 import path from 'node:path'
-import { Agent } from './agent/agent.ts'
 import type { AgentSettings, PersistedAgentState } from './agent/agent.ts'
 import type { AgentEvent } from './agent/events.ts'
+import { Lines } from './agent/lines.ts'
+import type { LinkState } from './agent/lines.ts'
 import { ReminderScheduler } from './agent/reminders.ts'
 import { BridgeApi } from './bridge/api.ts'
 import { BridgeClient } from './bridge/client.ts'
@@ -19,19 +21,20 @@ import { loadPackData } from './packdata/index.ts'
 import { useLocalNames } from './tools/format.ts'
 import { PanelServer } from './panel/server.ts'
 import { ActivityLog } from './store/activity-log.ts'
+import { ChatLog } from './store/chat-log.ts'
 import { RunLogStore } from './agent/run-log.ts'
 import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
 import { FeedbackStore } from './store/feedback.ts'
 import { PictureStore } from './store/pictures.ts'
 import type { BrainConfig } from './store/config.ts'
 import { ensureDir, isRecord } from './store/files.ts'
-import { HistoryStore } from './store/history.ts'
+import { HistoryStore, TurnIds } from './store/history.ts'
 import { JsonFile } from './store/json-file.ts'
 import { ManualStore } from './store/manuals.ts'
 import { MemoryStore } from './store/memory.ts'
 import { ReminderStore } from './store/reminders.ts'
 import { UsageStore } from './store/usage.ts'
-import { ALL_TOOLS } from './tools/index.ts'
+import type { LineName } from './tools/index.ts'
 
 const VERSION = '0.1.0'
 const BRAIN_ROOT = path.resolve(import.meta.dirname, '..')
@@ -40,7 +43,8 @@ function info(message: string): void {
   console.log(`${new Date().toISOString()} ${message}`)
 }
 
-function toAgentSettings(c: BrainConfig): AgentSettings {
+/** 一条线的设置：名字、主人这些两条线一样；每轮步数上限和历史压缩阈值各是各的。 */
+function toAgentSettings(c: BrainConfig, line: LineName): AgentSettings {
   return {
     botName: c.bot.name,
     aliases: c.bot.aliases,
@@ -48,9 +52,9 @@ function toAgentSettings(c: BrainConfig): AgentSettings {
     persona: c.bot.systemPrompt,
     wakeMode: c.bot.wake.mode,
     conversationWindowSec: c.bot.wake.conversationWindowSec,
-    maxSteps: c.bot.limits.maxSteps,
+    maxSteps: line === 'talk' ? c.bot.limits.talkMaxSteps : c.bot.limits.maxSteps,
     dailyTokenLimit: c.bot.limits.dailyTokenLimit,
-    historyTokenThreshold: c.bot.limits.historyTokenThreshold,
+    historyTokenThreshold: line === 'talk' ? c.bot.limits.talkHistoryTokenThreshold : c.bot.limits.historyTokenThreshold,
     toolResultMaxChars: c.bot.limits.toolResultMaxChars,
     routineMinutes: c.bot.limits.routineMinutes,
     routineMaxMinutes: c.bot.limits.routineMaxMinutes,
@@ -73,6 +77,17 @@ function parseAgentState(raw: unknown): PersistedAgentState {
   return { tracked: strings(raw.tracked), endedSeen: strings(raw.endedSeen), queue }
 }
 
+function parseLinkState(raw: unknown): LinkState {
+  if (!isRecord(raw)) return {}
+  const out: LinkState = {}
+  if (isRecord(raw.waiting) && typeof raw.waiting.text === 'string' && typeof raw.waiting.since === 'number') out.waiting = { text: raw.waiting.text, since: raw.waiting.since }
+  const r = raw.lastReport
+  if (isRecord(r) && typeof r.text === 'string' && typeof r.time === 'number' && (r.type === 'report' || r.type === 'question' || r.type === 'result' || r.type === 'trouble')) {
+    out.lastReport = { type: r.type, text: r.text, time: r.time }
+  }
+  return out
+}
+
 async function main(): Promise<void> {
   // 相对路径相对 brain/ 目录（和口令文件路径的规矩一样），不看当前目录在哪
   const dataDir = path.resolve(BRAIN_ROOT, process.env.AIPLAYER_DATA_DIR ?? 'data')
@@ -86,7 +101,16 @@ async function main(): Promise<void> {
   const memory = new MemoryStore(dataDir, () => config.get().bot.limits.memoryMaxChars)
   // 手册：默认的随代码发布（brain/manuals），主人写的和改过的在数据目录里；同名时主人的盖住默认的
   const manuals = new ManualStore(path.join(BRAIN_ROOT, 'manuals'), path.join(dataDir, 'manuals'))
-  const history = new HistoryStore(dataDir)
+  // 两条线各有一份历史和状态（docs/TALK_WORK.md）。干活线沿用原来的文件名（history.json、agent-state.json）：
+  // 只有一条线时留下的历史里大多是干活的记录，原样归它，不用搬；对话线从空的开始（talk-history.json、talk-state.json）。
+  // 轮的编号两条线共用一个计数器，日志里不重号。
+  const talkStateFile = path.join(dataDir, 'talk-state.json')
+  // 头一回带着老数据启动：有干活的历史，却还没有对话线的任何文件
+  const migrated = fs.existsSync(path.join(dataDir, 'history.json')) && !fs.existsSync(talkStateFile) && !fs.existsSync(path.join(dataDir, 'talk-history.json'))
+  const turnIds = new TurnIds()
+  const history = new HistoryStore(dataDir, { ids: turnIds })
+  const talkHistory = new HistoryStore(dataDir, { file: 'talk-history.json', ids: turnIds })
+  const chatLog = new ChatLog(dataDir)
   const usage = new UsageStore(dataDir)
   const reminderStore = new ReminderStore(dataDir)
   // 意见簿：存之前把这台大脑上真正的密钥从附带的现场里抹掉（正常不会出现在里面，这是兜底）
@@ -105,6 +129,14 @@ async function main(): Promise<void> {
   })
   const resumeFile = new JsonFile<ResumeState | undefined>(path.join(dataDir, 'bridge-state.json'), parseResume, { throttleMs: 250 })
   const agentStateFile = new JsonFile<PersistedAgentState>(path.join(dataDir, 'agent-state.json'), parseAgentState)
+  const talkState = new JsonFile<PersistedAgentState>(talkStateFile, parseAgentState)
+  const linkStateFile = new JsonFile<LinkState>(path.join(dataDir, 'lines-state.json'), parseLinkState)
+  // 对话线的状态文件头一次启动就写下：以后凭它知道“已经是两条线了”，不会把后来才出现的 history.json 当成老数据
+  if (!fs.existsSync(talkStateFile)) talkState.set(talkState.get())
+  if (migrated) {
+    log.add({ kind: 'info', text: '大脑升级：从这次启动起分成对话线和干活线。原来的对话历史和没处理完的事归干活线（里面排着的“有人说话”归对话线），对话线从空历史开始；记忆和手册两条线共用，照常在。' })
+  }
+  for (const note of config.upgradeNotes) log.add({ kind: 'info', text: note })
 
   // ── 本地资料（任务书、物品表）：启动时读一次；没有的部分，相关工具改问服务器 ──
   const packdata = loadPackData(path.resolve(BRAIN_ROOT, config.packdataDir()), (message) => info(`[packdata] ${message}`))
@@ -135,40 +167,43 @@ async function main(): Promise<void> {
   })
   const bridge = new BridgeApi(bridgeClient)
 
-  // ── 模型：当前服务商的配置变了就重建客户端，agent 那边不用知道 ──
-  let llm: LlmClient | undefined
-  let llmFingerprint = ''
-  const refreshLlm = (): boolean => {
-    const provider = config.activeProvider()
+  // ── 模型：两条线各用各的。哪条线选的服务商或模型变了就重建它的客户端，agent 那边不用知道 ──
+  const llms: Record<LineName, { client: LlmClient | undefined; fingerprint: string }> = { talk: { client: undefined, fingerprint: '' }, work: { client: undefined, fingerprint: '' } }
+  const refreshLlm = (line: LineName): boolean => {
+    const provider = config.lineProvider(line)
     const fingerprint = JSON.stringify(provider ?? null)
-    if (fingerprint === llmFingerprint) return false
-    llmFingerprint = fingerprint
+    if (fingerprint === llms[line].fingerprint) return false
+    llms[line].fingerprint = fingerprint
     try {
-      llm = provider ? createClient(provider, { onUsage: (record) => usage.add(record.usage) }) : undefined
+      // 用量记在同一本账上：每日 token 上限是两条线合计的
+      llms[line].client = provider ? createClient(provider, { onUsage: (record) => usage.add(record.usage) }) : undefined
     } catch (e) {
-      llm = undefined
-      info(`[llm] 当前服务商的配置用不了：${e instanceof Error ? e.message : String(e)}`)
+      llms[line].client = undefined
+      info(`[llm] ${line === 'talk' ? '对话线' : '干活线'}选的服务商配置用不了：${e instanceof Error ? e.message : String(e)}`)
     }
     return true
   }
-  refreshLlm()
+  refreshLlm('talk')
+  refreshLlm('work')
+  const lineModel = (line: LineName) => ({
+    llm: () => llms[line].client,
+    name: () => {
+      const active = config.lineSelection(line)
+      return active ? `${active.provider.label} / ${modelDisplayName(active.model)}` : undefined
+    },
+    canSee: () => config.lineSelection(line)?.model.vision === true,
+  })
 
-  // ── agent ──
-  let agent: Agent
+  // ── agent：对话线和干活线 ──
+  let agent: Lines
   const reminders = new ReminderScheduler(reminderStore, (r) => {
     agent.handleEvent({ type: 'reminder', time: Date.now(), note: r.note })
   })
-  agent = new Agent({
-    settings: () => toAgentSettings(config.get()),
-    llm: () => llm,
-    modelName: () => {
-      const active = config.activeSelection()
-      return active ? `${active.provider.label} / ${modelDisplayName(active.model)}` : undefined
-    },
-    canSeeImages: () => config.activeSelection()?.model.vision === true,
+  agent = new Lines({
+    settings: (line) => toAgentSettings(config.get(), line),
+    models: { talk: lineModel('talk'), work: lineModel('work') },
     pictures,
     bridge,
-    tools: ALL_TOOLS,
     memory,
     manuals,
     packdata,
@@ -179,11 +214,17 @@ async function main(): Promise<void> {
       return { brain: VERSION, ...(mod !== undefined ? { mod } : {}) }
     },
     reminders,
-    history,
+    histories: { talk: talkHistory, work: history },
     log,
+    chatLog,
     todayTokens: () => usage.todayTokens(),
-    persist: { load: () => agentStateFile.get(), save: (state) => agentStateFile.set(state) },
+    persist: {
+      talk: { load: () => talkState.get(), save: (state) => talkState.set(state) },
+      work: { load: () => agentStateFile.get(), save: (state) => agentStateFile.set(state) },
+      links: { load: () => linkStateFile.get(), save: (state) => linkStateFile.set(state) },
+    },
     runLogs,
+    migrated,
   })
 
   /** 面板上按过“上线”的 bot，连上游戏后要确保它在。 */
@@ -240,7 +281,8 @@ async function main(): Promise<void> {
   })
   let bridgeFingerprint = JSON.stringify(config.bridgeSettings())
   config.onChange(() => {
-    if (refreshLlm()) agent.notifyConfigChanged()
+    const talkChanged = refreshLlm('talk')
+    if (refreshLlm('work') || talkChanged) agent.notifyConfigChanged()
     // 面板上改了 bridge 的端口或口令：断开，按新的参数重连
     const next = JSON.stringify(config.bridgeSettings())
     if (next !== bridgeFingerprint) {
@@ -257,6 +299,7 @@ async function main(): Promise<void> {
     usage,
     log,
     history,
+    talkHistory,
     manuals,
     design,
     feedback,
@@ -283,7 +326,7 @@ async function main(): Promise<void> {
     info(`[panel] 访问口令在 ${config.file} 的 panel.password`)
   }
   info(`[store] 数据目录：${dataDir}`)
-  if (!config.activeProvider()) info('[llm] 还没有配置模型服务，请到面板的“模型”页添加')
+  if (!config.lineProvider('work') || !config.lineProvider('talk')) info('[llm] 还没有配置模型服务，请到面板的“模型”页添加')
   const b = config.bridgeSettings()
   if (b.token.length === 0 && b.tokenFile.length === 0) {
     info('[bridge] 还没配置 bridge 口令文件，暂时不连游戏。在面板的“设置”页填，或用环境变量 AIPLAYER_BRIDGE_TOKEN_FILE 指定')
@@ -307,6 +350,7 @@ async function main(): Promise<void> {
       bridgeClient.stop()
       await panel.close()
       resumeFile.flush()
+      chatLog.flush()
       process.exit(0)
     })()
   }

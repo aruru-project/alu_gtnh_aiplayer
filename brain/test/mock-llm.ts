@@ -417,25 +417,75 @@ function lastUserTurn(req: RecordedLlmRequest): { text: string; afterTool: boole
   }
 }
 
+/** 请求的系统提示词（两种线格式都认）。 */
+function systemOf(req: RecordedLlmRequest): string {
+  if (req.api === 'anthropic') return typeof req.body?.system === 'string' ? req.body.system : JSON.stringify(req.body?.system ?? '')
+  const first = (Array.isArray(req.body?.messages) ? req.body.messages : [])[0]
+  return first && (first.role === 'system' || first.role === 'developer') ? (typeof first.content === 'string' ? first.content : JSON.stringify(first.content)) : ''
+}
+
+/** 这次请求是对话线发的（它的系统提示词里写着“你是对话线”）。 */
+export function isTalkLine(req: RecordedLlmRequest): boolean {
+  return systemOf(req).includes('# 你是对话线')
+}
+
+/** “需要你处理的事”里的各件事（开头的、和做上一步时新到的），去掉时间。一件事可以有好几行。 */
+function thingsToHandle(text: string): string[] {
+  const out: string[] = []
+  for (const section of text.split(/\n\n(?=\[)/)) {
+    if (!section.startsWith('[需要你处理的事')) continue
+    const body = section.slice(section.indexOf('\n') + 1)
+    out.push(...body.split(/^\[(?:\d+月\d+日 )?\d\d:\d\d:\d\d\] /m).map((part) => part.trim()).filter((part) => part.length > 0))
+  }
+  return out
+}
+
+/**
+ * 只会传话的对话线（两条线的端到端场景里，要证明的是干活线怎么干活时用它）：
+ * 有人说话 → 原样交给干活线（tell_worker），自己不出声；干活线送来的话（汇报、提问、做完留下的、出了状况）→ 说给人听。
+ * whisperTo 给了就用悄悄话说给这个玩家，不给就在公共聊天里说（对话线写的文字就是它说的话）。
+ */
+export function talkRelay(opts: { whisperTo?: string } = {}): Responder {
+  return (req) => {
+    if (!Array.isArray(req.body?.tools) || req.body.tools.length === 0) return { text: 'pong' }
+    const { text } = lastUserTurn(req)
+    const toolCalls: MockToolCall[] = []
+    const say: string[] = []
+    for (const thing of thingsToHandle(text)) {
+      const fromWorker = /^干活线(?:汇报：|提问（[^）]*）：|这一轮做完了，它留下的话：|出了状况（[^）]*）：)([\s\S]*)$/.exec(thing)
+      const said = /^(?:\S+(?:（另一个 bot）)? 说：|\S+ 私聊你：|主人通过控制面板对你说：)([^\n]*)/.exec(thing)
+      if (fromWorker) {
+        if (opts.whisperTo !== undefined) toolCalls.push({ name: 'whisper', input: { player: opts.whisperTo, message: fromWorker[1]! } })
+        else say.push(fromWorker[1]!)
+      } else if (said) {
+        toolCalls.push({ name: 'tell_worker', input: { text: said[1]! } })
+      }
+    }
+    return { ...(say.length > 0 ? { text: say.join(' ') } : {}), ...(toolCalls.length > 0 ? { toolCalls } : {}) }
+  }
+}
+
+/** 独立运行时的假模型：对话线只传话；干活线认得“平”“跟”“停”“看看”这几个字。 */
 export const demoResponder: Responder = (req) => {
+  if (isTalkLine(req)) return talkRelay()(req)
   const { text, afterTool } = lastUserTurn(req)
   if (afterTool) return { text: '' }
   if (!Array.isArray(req.body?.tools) || req.body.tools.length === 0) return { text: 'pong' }
   const todo = text.split('[最近发生的事')[0]?.split('[当前状态]')[0] ?? ''
-  if (/完成了/.test(todo)) return { toolCalls: [{ name: 'say', input: { message: '搞定了。' } }] }
-  if (/失败了/.test(todo)) return { toolCalls: [{ name: 'say', input: { message: '刚才那个活没干成，你来看看？' } }] }
+  if (/完成了/.test(todo)) return { text: '搞定了。' }
+  if (/失败了/.test(todo)) return { text: '刚才那个活没干成，你来看看？' }
   if (/平/.test(todo)) {
     return {
       toolCalls: [
-        { name: 'say', input: { message: '好，我把脚下这块 8×8 平到 y=64。' } },
+        { name: 'report', input: { text: '好，我把脚下这块 8×8 平到 y=64。' } },
         { name: 'flatten_area', input: { x1: 6, z1: -8, x2: 13, z2: -1, y: 64 } },
       ],
     }
   }
   if (/跟/.test(todo)) return { toolCalls: [{ name: 'follow_player', input: { player: 'Steve' } }] }
-  if (/停/.test(todo)) return { toolCalls: [{ name: 'cancel_task', input: {} }, { name: 'say', input: { message: '停了。' } }] }
+  if (/停/.test(todo)) return { toolCalls: [{ name: 'cancel_task', input: {} }] }
   if (/看看|周围/.test(todo)) return { toolCalls: [{ name: 'look_around', input: {} }] }
-  return { toolCalls: [{ name: 'say', input: { message: '我是模拟模型，只认得“平”“跟”“停”“看看”这几个字。' } }] }
+  return { text: '我是模拟模型，只认得“平”“跟”“停”“看看”这几个字。' }
 }
 
 if (import.meta.main) {
@@ -448,7 +498,7 @@ if (import.meta.main) {
   console.log(`模拟模型服务在 127.0.0.1:${port} 监听。在面板的“模型”页添加：`)
   console.log(`  OpenAI 兼容：   服务地址 ${llm.openaiBaseUrl}   key 随便填，模型名随便填`)
   console.log(`  Anthropic 兼容：服务地址 ${llm.anthropicBaseUrl}        key 随便填，模型名随便填`)
-  console.log('它不是模型，只按几条固定规则回应（平/跟/停/看看）。')
+  console.log('它不是模型，只按几条固定规则回应：对话线只传话，干活线认得 平/跟/停/看看。两条线可以都选它。')
   let printed = 0
   setInterval(() => {
     while (printed < llm.requests.length) {

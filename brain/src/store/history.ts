@@ -23,12 +23,35 @@ function isMessage(v: unknown): v is Message {
   return isRecord(v) && (v.role === 'user' || v.role === 'assistant') && Array.isArray(v.content)
 }
 
+/**
+ * 轮的编号从哪来。两条线（对话线、干活线）各有一份历史，但共用一个计数器：日志里的 turn 不会重号，
+ * 单看编号就知道是哪一轮。
+ */
+export class TurnIds {
+  private nextId = 1
+
+  /** 至少从这个数起（各份历史启动时把自己存着的下一个编号报上来）。 */
+  atLeast(next: number): void {
+    this.nextId = Math.max(this.nextId, next)
+  }
+
+  next(): number {
+    return this.nextId++
+  }
+}
+
 export class HistoryStore {
   private readonly file: string
+  private readonly ids: TurnIds | undefined
   private state: HistoryState = { summary: '', turns: [], nextTurnId: 1 }
 
-  constructor(dataDir: string) {
-    this.file = path.join(dataDir, 'history.json')
+  /**
+   * file：历史落在数据目录的哪个文件（默认 history.json，干活线的；对话线是 talk-history.json）。
+   * ids：和别的历史共用的编号计数器；不给就自己数。
+   */
+  constructor(dataDir: string, opts: { file?: string; ids?: TurnIds } = {}) {
+    this.file = path.join(dataDir, opts.file ?? 'history.json')
+    this.ids = opts.ids
     const raw = readJson(this.file)
     if (isRecord(raw)) {
       const turns: Turn[] = []
@@ -49,6 +72,7 @@ export class HistoryStore {
         nextTurnId: Math.max(maxId + 1, typeof raw.nextTurnId === 'number' ? raw.nextTurnId : 1),
       }
     }
+    this.ids?.atLeast(this.state.nextTurnId)
   }
 
   get(): HistoryState {
@@ -56,7 +80,10 @@ export class HistoryStore {
   }
 
   newTurnId(): number {
-    return this.state.nextTurnId++
+    if (!this.ids) return this.state.nextTurnId++
+    const id = this.ids.next()
+    this.state.nextTurnId = id + 1
+    return id
   }
 
   /**

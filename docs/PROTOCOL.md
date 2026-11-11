@@ -90,6 +90,22 @@ Container：
 - 抽屉管理器自己不装东西：`items` 为空，`drawers` 是它管着几个抽屉方块，`slots`/`usedSlots` 是这些抽屉合计的格数。它管的东西用 `world.drawers` 看。
 - 带 `attached` 的箱子多半是自动化的一环（进货口、出货口），往里放的东西可能马上被抽走。
 
+**界面上的控件**（`screen.look` 等结果里的 `controls`，没有就不带）。界面上除了格子，还有开关、数字、选项、能再打开的面板（页签）、流体格、按钮。用 ModularUI 2 做的界面（GregTech 的单方块机器、覆盖板等），服务端给玩家能改的每一样东西都留着一个有名字的处理器；这里把它们原样列出来，并照玩家的客户端那样去操作。**名字是界面自己起的**（`fluidAutoOutput`、`cover_panel_west`、`powerSwitch`……），身体不知道任何一个界面是干什么的。别的做法的界面没有这一项，只能点格子。
+
+```jsonc
+"controls":[
+  {"panel":"basicmachine.fluidextractor.tier.02","key":"fluidAutoOutput:0","kind":"switch","value":false},
+  {"panel":"…","key":"powerfail:0","kind":"switch","value":false,"readOnly":true},          // 只显示、不收玩家的改动
+  {"panel":"…","key":"cover_panel_west","kind":"panel","open":false},                       // 能再打开的面板；打开后它的格子出现在 slots 里
+  {"panel":"…","key":"auto_sync:…:3","kind":"fluid","fluid":"molten.steel","name":"Molten Steel","amount":288,"capacity":32000,"fills":false,"drains":true},
+  {"panel":"…","key":"…","kind":"choice","value":"X","options":["X","Y"]},                  // 还有 number、text、button、value（只是显示）、other
+]
+```
+
+- `key` 可以写全（`fluidAutoOutput:0`），也可以只写冒号前的名字（不重名时）；`panel` 只在重名时需要。
+- 实测：流体提取机 `screen.press {key:"fluidAutoOutput"}` 之后，它罐里的 288 mB 熔融钢几秒内进了隔壁的固化器；固化器 `screen.press {key:"cover_panel_west"}` 之后格子从 40 个变成 49 个，多出来的 9 个就是西面覆盖板里的东西。
+- 这些改的是机器的设置，和玩家点那个按钮是一回事。
+
 **一个方块的全部数据**（`world.block` 带 `detail:true` 或 `path`）。不按方块的种类做任何假设：凡是存着东西的方块（里面有什么、怎么设置的、正在干什么），存档时都把自己的全部状态写成一棵树，这里把那棵树原样给出来；会对扫描器“自报家门”的方块再把那几行话给出来。所以没见过的机器、没人为它写过读取代码的状态（输出仓锁定了哪种流体、机器的各种开关、覆盖板的设置……）都在这里。
 
 ```jsonc
@@ -326,6 +342,8 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
+| `screen.press` | `{bot, key, panel?, button?=0, shift?=false}` | 按一下界面上格子以外的东西（见下面“界面上的控件”）：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格照鼠标上拿着的容器装或倒（`button` 0 左键、1 右键）。结果同 `screen.look`。界面没有这个控件、或者它只是显示用的，照实拒绝 |
+| `screen.set` | `{bot, key, panel?, value}` | 把一个开关、数字、文字或选项设成 `value`。只读的控件 `denied` |
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
 
 Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
@@ -519,6 +537,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 - **`process`**：
   - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
+  - **产物是流体的配方**（流体提取机把钢板化成熔融钢）：没有物品可取，但机器的罐（多方块是输出仓）里的东西变了，就算做成了；结果带 `note` 和 `fluids`（现在罐里有什么）。流体留在原处，怎么送到下一台机器是另一回事（机器界面上的自动输出开关、管道、单元）。
   - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。
   - **多方块机器**：原料放进输入总线（有几个时挑空格最多的，或用 `bus` 指定），产物从各个输出总线取。
     - `fluids`：身上装着流体的单元，放进第一个输入仓让它倒空，空单元取回；仓装不下的满单元也取回，不算倒了。配方要的流体如果已经由管道接好，就不用给。

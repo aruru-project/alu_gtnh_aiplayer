@@ -103,7 +103,7 @@ describe('数据目录', () => {
 
     const store = new ConfigStore(tmp.dir)
     const c = store.get()
-    assert.equal(c.version, 2)
+    assert.equal(c.version, 3)
     // 服务商上留下的是一家只有一份的东西；跟着模型走的挪到了模型上
     assert.deepEqual(c.providers[0], {
       id: 'main',
@@ -119,6 +119,8 @@ describe('数据目录', () => {
     // key 放在哪个请求头是这一家接口的事，留在服务商上；缓存开关跟着模型
     assert.deepEqual([c.providers[1]!.options, c.providers[1]!.models], [{ authStyle: 'bearer' }, [{ id: 'm1', name: 'claude-old', label: '', options: { promptCaching: false } }]])
     assert.deepEqual([c.activeProviderId, c.activeModelId], ['ant', 'm1'])
+    // 对话线没选过：和原来选的是同一个
+    assert.deepEqual([c.talkProviderId, c.talkModelId], ['ant', 'm1'])
     // 交给模型调用层的配置和迁移前的那一条一样
     assert.deepEqual(store.activeProvider(), {
       id: 'ant',
@@ -132,13 +134,78 @@ describe('数据目录', () => {
 
     // 文件已经是新格式；原来的那份留了底，权限一样收着
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
-    assert.deepEqual([saved.version, saved.providers[0].model, saved.providers[0].models[0].name, saved.panel.password], [2, undefined, 'gpt-old', 'keep-me'])
+    assert.deepEqual([saved.version, saved.providers[0].model, saved.providers[0].models[0].name, saved.panel.password], [3, undefined, 'gpt-old', 'keep-me'])
     assert.equal(fs.readFileSync(`${file}.v1.bak`, 'utf8'), old)
     assert.equal(fs.statSync(`${file}.v1.bak`).mode & 0o777, 0o600)
     // 再启动一次：已经是新格式，不会再动那份底
     fs.writeFileSync(`${file}.v1.bak`, 'untouched')
     assert.deepEqual(new ConfigStore(tmp.dir).get(), c)
     assert.equal(fs.readFileSync(`${file}.v1.bak`, 'utf8'), 'untouched')
+  })
+
+  it('只有一条线时的配置自动补上对话线的那几项：两条线用的都是原来选的模型，对话线有自己的步数上限和历史压缩阈值；原文件留了底；主人改过的旧人设清空并说明原文在哪', (t) => {
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    const file = path.join(tmp.dir, 'config.json')
+    const providers = [
+      { id: 'main', label: '主力', kind: 'openai-chat', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-key-123456', models: [{ id: 'a', name: 'gpt-a', label: '' }, { id: 'b', name: 'gpt-b', label: '快的' }] },
+      { id: 'ant', label: '备用', kind: 'anthropic-messages', baseUrl: 'https://api.anthropic.example', apiKey: 'sk-ant-key-654321', models: [{ id: 'c', name: 'claude-c', label: '' }] },
+    ]
+    const old = JSON.stringify({
+      version: 2,
+      panel: { password: 'keep-me', sessionSecret: 'keep-this-too' },
+      bot: { name: 'Alu', owners: ['Steve'], systemPrompt: '你是 {{name}}。玩家只能看到你用 say 说的话。干活靠任务。', limits: { maxSteps: 80, historyTokenThreshold: 200_000 } },
+      providers,
+      activeProviderId: 'main',
+      activeModelId: 'b',
+    })
+    fs.writeFileSync(file, old, { mode: 0o600 })
+
+    const store = new ConfigStore(tmp.dir)
+    const c = store.get()
+    assert.equal(c.version, 3)
+    assert.deepEqual([c.activeProviderId, c.activeModelId, c.talkProviderId, c.talkModelId], ['main', 'b', 'main', 'b'])
+    assert.deepEqual([store.lineProvider('talk')?.model, store.lineProvider('work')?.model], ['gpt-b', 'gpt-b'])
+    // 原来的上限是干活线的，原样留着；对话线的两项用默认值
+    assert.deepEqual([c.bot.limits.maxSteps, c.bot.limits.historyTokenThreshold, c.bot.limits.talkMaxSteps, c.bot.limits.talkHistoryTokenThreshold], [80, 200_000, 20, 60_000])
+    assert.deepEqual(c.bot.owners, ['Steve'])
+    // 旧人设是分线之前的整段核心提示词，不能当对话线的说话风格：清空，说明原文在哪份备份里
+    assert.equal(c.bot.systemPrompt, '')
+    assert.equal(store.upgradeNotes.length, 1)
+    assert.match(store.upgradeNotes[0]!, /已经清空、改用默认风格。原文（\d+ 字）留在 .*config\.json\.v2\.bak 的 bot\.systemPrompt 里/)
+    // 原文件留了底，权限收着；现在的文件是新格式
+    assert.equal(fs.readFileSync(`${file}.v2.bak`, 'utf8'), old)
+    assert.equal(fs.statSync(`${file}.v2.bak`).mode & 0o777, 0o600)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).version, 3)
+    // 再启动一次：已经是新格式，不再动那份底，也没有要说的
+    fs.writeFileSync(`${file}.v2.bak`, 'untouched')
+    const again = new ConfigStore(tmp.dir)
+    assert.deepEqual(again.get(), c)
+    assert.deepEqual(again.upgradeNotes, [])
+    assert.equal(fs.readFileSync(`${file}.v2.bak`, 'utf8'), 'untouched')
+
+    // 之后两条线各选各的；对话线选的那家被删了，就回到和干活线一样
+    again.update((draft) => {
+      draft.talkProviderId = 'ant'
+      draft.talkModelId = 'c'
+    })
+    assert.deepEqual([again.lineProvider('talk')?.model, again.lineProvider('work')?.model], ['claude-c', 'gpt-b'])
+    again.update((draft) => {
+      draft.providers = draft.providers.filter((p) => p.id !== 'ant')
+    })
+    assert.deepEqual([again.get().talkProviderId, again.get().talkModelId, again.lineProvider('talk')?.model], ['main', 'b', 'gpt-b'])
+  })
+
+  it('没改过人设的旧配置升上来：没有要说明的事；全新的数据目录不留底', (t) => {
+    const tmp = tmpDir()
+    const fresh = tmpDir()
+    t.after(tmp.cleanup)
+    t.after(fresh.cleanup)
+    fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ version: 2, bot: { systemPrompt: '' } }))
+    assert.deepEqual(new ConfigStore(tmp.dir).upgradeNotes, [])
+    assert.ok(fs.existsSync(path.join(tmp.dir, 'config.json.v2.bak')))
+    new ConfigStore(fresh.dir)
+    assert.deepEqual(fs.readdirSync(fresh.dir), ['config.json'])
   })
 
   it('当前用的模型不在了（手改配置改坏了）：改用这个服务商下面的第一个；一处写坏的模型不连累整个服务商和它的 key', (t) => {

@@ -227,7 +227,26 @@ public final class ProcessTask extends Task {
         stage = 5;
     }
 
+    /** What the machine's tanks (a multiblock's output hatches) hold, to tell afterwards whether that changed. */
+    private com.google.gson.JsonElement fluidState() {
+        try {
+            TileEntity m = machine();
+            if (m == null) return new JsonArray();
+            if (multi) {
+                JsonObject d = Machines.describe(m);
+                return d != null && d.has("outputHatches") ? d.get("outputHatches") : new JsonArray();
+            }
+            return Machines.tanks(m);
+        } catch (Throwable t) {
+            return new JsonArray();
+        }
+    }
+
+    private String fluidsBefore;
+    private com.google.gson.JsonElement fluidsAfter;
+
     private void beginWaiting() {
+        fluidsBefore = fluidState().toString();
         before = carried();
         phase = "waiting for the machine";
         stage = 1;
@@ -458,7 +477,13 @@ public final class ProcessTask extends Task {
             // set up, not a failure; the products are for whoever asked to go and find.
             passedOn = true;
             done();
-        } else if (outputs.size() == 0) {
+        } else if (outputs.size() == 0 && fluidsBefore != null && !fluidState().toString()
+            .equals(fluidsBefore)) {
+                // Nothing came out as an item, and what its tanks hold has changed: it ran, and what it made is
+                // a fluid. That stays where it is; the result says what is there now.
+                fluidsAfter = fluidState();
+                done();
+            } else if (outputs.size() == 0) {
             fail(
                 "invalid",
                 "the machine ran but nothing could be taken out of it"
@@ -560,6 +585,14 @@ public final class ProcessTask extends Task {
                     + " are not in the inventory; look for them in passedTo (give expect to have them fetched)");
         }
         if (passedToJson.size() > 0 && (passedOn || outputs.size() == 0)) o.add("passedTo", passedToJson);
+        if (fluidsAfter != null) {
+            o.addProperty(
+                "note",
+                "the machine ran and gave no item: what it made is a fluid, which stays in "
+                    + (multi ? "its output hatches" : "its tank")
+                    + " (fluids shows what is there now)");
+            o.add("fluids", fluidsAfter);
+        }
         if (timedOut) o.addProperty("timedOut", true);
         if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
         return o;

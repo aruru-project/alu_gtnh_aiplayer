@@ -112,10 +112,10 @@ export async function startTask(
   if (t.state === 'done') return `Task ${t.id} (${t.type}) finished immediately: ${formatTask(t)}`
   // 身体在响应里总是报 queued，哪怕它马上就开始；所以按“怎么启动的”来说，不按响应里的状态说。
   if (mode === 'append') {
-    return `Task ${t.id} (${t.type}) added to the end of your queue. It runs after the tasks before it (right away if there are none). You will be woken each time a task ends.`
+    return `Task ${t.id} (${t.type}) added to the end of your queue. It runs after the tasks before it (right away if there are none). The outcome of each task comes to you by itself when it ends.`
   }
   const dropped = replaced.length > 0 ? ` It replaced ${replaced.length} earlier task(s): ${replaced.join(', ')}.` : ''
-  return `Task ${t.id} (${t.type}) started.${dropped} It runs in the game on its own. End your turn now; you will be woken with the outcome when it ends.`
+  return `Task ${t.id} (${t.type}) started.${dropped} It runs in the game on its own: when it ends, the outcome comes to you by itself (waking you if your turn has ended), so there is nothing to wait or poll for; a look at its progress is one model call each time.`
 }
 
 function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }): number {

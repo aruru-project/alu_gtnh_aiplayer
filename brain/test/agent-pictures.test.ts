@@ -11,7 +11,7 @@ import type { GenerateRequest, ToolResultPart } from '../src/llm/index.ts'
 import { decodePng } from '../src/design/index.ts'
 import { PICTURES_KEPT, PictureStore } from '../src/store/pictures.ts'
 import { NO_VISION_NOTE } from '../src/tools/pictures.ts'
-import { chat, makeAgent, reply } from './agent-harness.ts'
+import { told, makeAgent, reply } from './agent-harness.ts'
 import type { MakeAgentOptions } from './agent-harness.ts'
 import { tmpDir, worldBlocksAnswer } from './helpers.ts'
 
@@ -33,8 +33,8 @@ function toolResults(req: GenerateRequest): ToolResultPart[] {
 describe('agent：把图给模型看', () => {
   it('能看图的模型：它要的图跟在工具结果里发过去；到了下一轮，这张图换成一句占位文字，不再重新发、不再算钱；历史文件里没有图', async (t) => {
     const h = agentWithWorld(t, { vision: true })
-    h.llm.enqueue(reply('', [{ id: 'look', name: 'view_area', input: { radius: 4 } }]), reply('', [{ id: 'say1', name: 'say', input: { message: '一小堆石头。' } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 看看你周围'))
+    h.llm.enqueue(reply('', [{ id: 'look', name: 'view_area', input: { radius: 4 } }]), reply('', [{ id: 'note', name: 'report', input: { text: '一小堆石头。' } }]), reply(''))
+    h.agent.handleEvent(told('看看你周围'))
     await h.agent.whenIdle()
 
     // 第 1 次请求：还没看过图
@@ -50,8 +50,8 @@ describe('agent：把图给模型看', () => {
     assert.equal(countImages(h.llm.requests[2]!.messages), 1)
 
     // 下一轮
-    h.llm.enqueue(reply('', [{ name: 'say', input: { message: '还是那堆石头。' } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 现在呢'))
+    h.llm.enqueue(reply('', [{ name: 'report', input: { text: '还是那堆石头。' } }]), reply(''))
+    h.agent.handleEvent(told('现在呢'))
     await h.agent.whenIdle()
     for (const n of [3, 4]) {
       const req = h.llm.requests[n]!
@@ -71,7 +71,7 @@ describe('agent：把图给模型看', () => {
   it('看不了图的模型：同一个工具只给文字（开头写明看不了图），请求里没有图；图照样存一份，面板的对话日志里看得到', async (t) => {
     const h = agentWithWorld(t)
     h.llm.enqueue(reply('', [{ id: 'look', name: 'view_area', input: { radius: 4 } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 看看你周围'))
+    h.agent.handleEvent(told('看看你周围'))
     await h.agent.whenIdle()
     assert.equal(countImages(h.llm.requests[1]!.messages), 0)
     const result = toolResults(h.llm.requests[1]!).find((r) => r.toolCallId === 'look')!
@@ -97,7 +97,7 @@ describe('agent：把图给模型看', () => {
     const looks = LIVE_IMAGES_MAX + 2
     for (let n = 0; n < looks; n++) h.llm.enqueue(reply('', [{ id: `look${n}`, name: 'view_area', input: { radius: 2 + n } }]))
     h.llm.enqueue(reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 多看几眼'))
+    h.agent.handleEvent(told('多看几眼'))
     await h.agent.whenIdle()
     // 每多看一次多一张，到上限为止
     assert.deepEqual(h.llm.requests.map((r) => countImages(r.messages)), [0, 1, 2, 3, 4, 4, 4])
