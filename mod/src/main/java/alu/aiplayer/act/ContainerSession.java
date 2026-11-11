@@ -138,6 +138,25 @@ public final class ContainerSession {
         return withdrawLeft[index] == Integer.MAX_VALUE ? 0 : withdrawLeft[index];
     }
 
+    /** The face to click to open the screen (0 down .. 5 east), or -1 for the one turned towards the bot. */
+    private int openSide = -1;
+    private boolean openSneak;
+
+    /**
+     * Opens the screen with a click on a chosen face, sneaking or not, instead of a plain click: some blocks show
+     * a different screen that way (a cover on a machine's face opens its own when the face is sneak-clicked).
+     * Whatever screen that click opens is then used as any screen is.
+     */
+    public ContainerSession via(int side, boolean sneak) {
+        openSide = side;
+        openSneak = sneak;
+        return this;
+    }
+
+    private boolean viaFace() {
+        return openSide >= 0 || openSneak;
+    }
+
     /** At a processing machine, take from the input slots instead of the output slots: getting back what was put in. */
     public ContainerSession fromInputSlots() {
         fromInputs = true;
@@ -156,6 +175,28 @@ public final class ContainerSession {
             case 0: {
                 if (!w.blockExists(x, y, z)) return fail("out_of_reach", "the container is out of reach");
                 TileEntity te = w.getTileEntity(x, y, z);
+                if (viaFace()) {
+                    // Whatever that click opens: nothing is assumed about the block.
+                    if (!Reach.canReach(p, x, y, z)) return fail("out_of_reach", "the block is out of reach");
+                    if (openSide >= 0 && !Drawers.inFront(p, x, y, z, openSide)) {
+                        return fail("out_of_reach", "that face of the block cannot be reached from here");
+                    }
+                    if (p.openContainer != p.inventoryContainer) bot.conn()
+                        .closeWindow();
+                    int side = openSide >= 0 ? openSide : Reach.facingSide(p, x, y, z);
+                    float[] at = middleOf(side);
+                    Motion.face(p, x + at[0], y + at[1], z + at[2]);
+                    boolean was = p.isSneaking();
+                    if (openSneak) p.setSneaking(true);
+                    try {
+                        clickEmptyHanded(bot, x, y, z, side, at[0], at[1], at[2]);
+                    } finally {
+                        if (openSneak) p.setSneaking(was);
+                    }
+                    phase = 1;
+                    wait = 0;
+                    return Status.WORKING;
+                }
                 if (!(te instanceof IInventory)) return fail("invalid", "there is no container at that position");
                 if (!Reach.canReach(p, x, y, z)) return fail("out_of_reach", "the container is out of reach");
                 // Some other screen left open would be mistaken for this container's.
@@ -187,6 +228,10 @@ public final class ContainerSession {
                         // where things may go and what may be taken, so nothing has to be known about the block.
                         viaScreen = true;
                         phase = 2;
+                    } else if (viaFace()) {
+                        bot.conn()
+                            .closeWindow();
+                        return fail("invalid", "that click opened a screen that shows nothing of the bot's own, so nothing can be moved through it");
                     } else {
                         // A screen that shows nothing of the bot's own cannot be clicked through. For the kinds
                         // of block whose inner slots are known, reach into those instead.
@@ -427,6 +472,24 @@ public final class ContainerSession {
     }
 
     /** Right-clicks a block as if nothing were held; see the instance method. */
+    /** The middle of a face, as a point within the block. */
+    public static float[] middleOf(int side) {
+        switch (side) {
+            case 0:
+                return new float[] { 0.5F, 0F, 0.5F };
+            case 1:
+                return new float[] { 0.5F, 1F, 0.5F };
+            case 2:
+                return new float[] { 0.5F, 0.5F, 0F };
+            case 3:
+                return new float[] { 0.5F, 0.5F, 1F };
+            case 4:
+                return new float[] { 0F, 0.5F, 0.5F };
+            default:
+                return new float[] { 1F, 0.5F, 0.5F };
+        }
+    }
+
     public static void clickEmptyHanded(Bot bot, int x, int y, int z) {
         clickEmptyHanded(bot, x, y, z, Reach.facingSide(bot.player(), x, y, z), 0.5F, 0.5F, 0.5F);
     }

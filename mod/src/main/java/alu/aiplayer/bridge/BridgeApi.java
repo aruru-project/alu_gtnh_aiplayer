@@ -348,8 +348,24 @@ public final class BridgeApi {
                     null,
                     new alu.aiplayer.act.ItemFilter(J.reqStr(item, "id"), J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1));
             }
-            return alu.aiplayer.act.Screens
-                .open(b, new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") }, null);
+            int side = -1;
+            if (J.has(p, "side")) {
+                String name = J.str(p, "side", "");
+                for (int i = 0; i < alu.aiplayer.act.Machines.SIDES.length; i++) {
+                    if (alu.aiplayer.act.Machines.SIDES[i].equalsIgnoreCase(name)) side = i;
+                }
+                if (side < 0) throw RpcException.badRequest("side is one of down, up, north, south, west, east");
+            }
+            JsonObject h = J.object(p, "hit");
+            float[] hit = h == null ? null
+                : new float[] { (float) J.d(h, "x", 0.5), (float) J.d(h, "y", 0.5), (float) J.d(h, "z", 0.5) };
+            return alu.aiplayer.act.Screens.open(
+                b,
+                new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") },
+                null,
+                side,
+                hit,
+                J.bool(p, "sneak", false));
         });
         bridge.register("screen.look", p -> alu.aiplayer.act.Screens.look(bots.requireOnline(J.reqStr(p, "bot"))));
         bridge.register(

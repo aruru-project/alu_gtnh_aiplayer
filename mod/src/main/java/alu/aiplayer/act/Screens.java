@@ -27,6 +27,43 @@ public final class Screens {
 
     /** Opens the screen of a block within reach, or the one a carried item opens when used. */
     public static JsonObject open(Bot bot, int[] at, ItemFilter item) {
+        return open(bot, at, item, -1, null, false);
+    }
+
+    /**
+     * The same, with the click a player would make chosen in full: which face of the block, where on it, sneaking
+     * or not. Some blocks open a different screen depending on that (a cover on a machine's face opens its own
+     * when the face is sneak-clicked).
+     */
+    public static JsonObject open(Bot bot, int[] at, ItemFilter item, int side, float[] hit, boolean sneak) {
+        if (item != null || (side < 0 && hit == null && !sneak)) return openPlain(bot, at, item);
+        EntityPlayerMP p = bot.player();
+        if (!bot.tasks.idle()) throw new RpcException("busy", "a task is running; screens are for when the bot is idle");
+        if (p.openContainer != p.inventoryContainer) bot.conn()
+            .closeWindow();
+        if (!p.worldObj.blockExists(at[0], at[1], at[2]) || !Reach.canReach(p, at[0], at[1], at[2])) {
+            throw new RpcException("out_of_reach", "the block is out of reach; go next to it first");
+        }
+        if (side >= 0 && !Drawers.inFront(p, at[0], at[1], at[2], side)) {
+            throw new RpcException("out_of_reach", "that face of the block cannot be clicked from where the bot stands; go to that side of it first");
+        }
+        int face = side >= 0 ? side : Reach.facingSide(p, at[0], at[1], at[2]);
+        float[] where = hit != null ? hit : ContainerSession.middleOf(face);
+        Motion.face(p, at[0] + where[0], at[1] + where[1], at[2] + where[2]);
+        boolean was = p.isSneaking();
+        if (sneak) p.setSneaking(true);
+        try {
+            ContainerSession.clickEmptyHanded(bot, at[0], at[1], at[2], face, where[0], where[1], where[2]);
+        } finally {
+            if (sneak) p.setSneaking(was);
+        }
+        if (bot.clickWasRefused(at[0], at[1], at[2])) {
+            throw RpcException.denied("opening that was refused; it may be protected");
+        }
+        return look(bot);
+    }
+
+    private static JsonObject openPlain(Bot bot, int[] at, ItemFilter item) {
         EntityPlayerMP p = bot.player();
         if (!bot.tasks.idle()) throw new RpcException("busy", "a task is running; screens are for when the bot is idle");
         if (p.openContainer != p.inventoryContainer) bot.conn()

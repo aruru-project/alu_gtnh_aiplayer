@@ -47,6 +47,18 @@ final class ContainerTrip {
         nav.go(Goal.reach(x, y, z, false), Rules.NATURAL_ONLY, false);
     }
 
+    /** To the block, and opening it by a click on one face (sneaking or not): see {@link ContainerSession#via}. */
+    ContainerTrip(Bot bot, int x, int y, int z, int side, boolean sneak) {
+        this.bot = bot;
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        session = new ContainerSession(bot, x, y, z).via(side, sneak);
+        nav = new Navigator(bot);
+        nav.go(side >= 2 ? Goal.reachFacing(x, y, z, side) : Goal.reach(x, y, z, false), Rules.NATURAL_ONLY, false);
+        frontChecked = true;
+    }
+
     Status tick() {
         if (!arrived) {
             Navigator.Status st = nav.tick();
