@@ -1,7 +1,7 @@
 // 面板前端的入口：登录、整体框架（左边常驻的状态区和导航，右边是各页）、页面切换。
 // 手写的原生 JS，没有框架和构建步骤；各页在各自的文件里（page-*.js）。
 
-import { bodyAgent, environmentOf, startPolling, state, stopPolling } from './data.js'
+import { bodyAgent, envTone, environmentOf, startPolling, state, stopPolling } from './data.js'
 import { clearLog, startLog } from './logstore.js'
 import { tickClocks } from './logview.js'
 import { SLOW_STEP_MS, STALE_TASK_MS, renderSide, taskStaleMs } from './side.js'
@@ -53,14 +53,29 @@ function show() {
 
 const ENV_COLORS = { prod: '#e5484d', test: '#2fa38a', other: '#6aa5ff', none: '#626b73' }
 let iconKey = ''
+/** 没登录时 /api/session 给的服务器名字（登录页用；没起名字时是空的）。 */
+let loginServer = ''
+
+/** 这个面板接的是哪个服务器：登录以后看状态里的，登录页上看 /api/session 给的。 */
+function currentEnv() {
+  if (state.status) return environmentOf()
+  return { name: loginServer, rules: '', tone: envTone(loginServer) }
+}
 
 function setTitle() {
-  const env = environmentOf()
-  const page = current ? PAGES[current].title : ''
+  const env = currentEnv()
+  const loggedIn = !$('#app').hidden
+  const page = !loggedIn ? '登录' : current ? PAGES[current].title : ''
   document.title = [env.name, page, state.overview?.bot?.name ?? 'AI 玩家'].filter(Boolean).join(' · ')
   $('#app').dataset.env = env.tone
+  $('#login').dataset.env = env.tone
+  // 登录页上那一条：和状态区最上面那条同样的颜色
+  const band = $('#login-env')
+  band.hidden = env.tone === 'none'
+  band.className = `env-band ${env.tone}`
+  band.textContent = env.name
   const key = `${env.tone}|${env.name}`
-  if (key === iconKey || !state.status) return
+  if (key === iconKey) return
   iconKey = key
   // 一个色块，上面是名字的头一个字；用 SVG 拼，不加载任何东西
   const letter = [...(env.name || '?')][0].replace(/[<>&"']/g, '')
@@ -79,6 +94,7 @@ function showLogin() {
   $('#toast').hidden = true
   $('#login').hidden = false
   $('#login-password').focus()
+  setTitle()
 }
 
 function showApp() {
@@ -166,7 +182,10 @@ setInterval(() => !document.hidden && tickClocks(), 1000)
 // ── 启动 ──
 
 api('GET', '/session').then(
-  (s) => (s.authenticated ? showApp() : showLogin()),
+  (s) => {
+    loginServer = typeof s.server === 'string' ? s.server.trim() : ''
+    return s.authenticated ? showApp() : showLogin()
+  },
   () => showLogin(),
 )
 

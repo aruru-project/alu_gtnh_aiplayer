@@ -642,14 +642,43 @@ function playTwoLines(): void {
  *   查 / 怎么做      对话线自己查一下再回答，不惊动干活线
  * 别的话对话线只回一句。
  */
+/** 模拟模型写的交接记录（照提示词要的小节，内容是随手编的，看面板怎么显示）。 */
+function handover(talk: boolean): string {
+  const sections = talk
+    ? [
+        ['主人和别人交代的事、提的要求', '- [00:05] 阿露：“帮我把脚下这块地平一下。”\n- [00:06] 阿露：“慢慢平，别把路挖了。”'],
+        ['这一段结束时在聊的', '主人让它慢慢平地，它答了“好，我去办”，交给了干活线。之后主人在面板上点了“全部停下”。'],
+        ['交给干活线的事', '- 平地（-526,39）到（-519,46），y=69：第一次做完了；第二次被叫停。'],
+        ['干活线问过的、主人答过的', '- 问：要平到哪一层？答：“就平到 y=69”。'],
+        ['答应过的事', '（无）'],
+        ['查到的结论', '- 脚下 y=69，旁边的路 y=68。'],
+        ['人', '- 阿露：主人。'],
+      ]
+    : [
+        ['主人交代的事和要求', '- 平地到 y=69，别动路。'],
+        ['这一段结束时在做的事', '第二次平地被叫停，没有在跑的任务。'],
+        ['做完的事', '- t1 flatten：移走 37 块。'],
+        ['动过的东西、还没还原的', '（无）'],
+        ['地点和东西', '- 基地 (-522,69,43)。'],
+        ['查到的事实', '（无）'],
+        ['试过不行的、踩过的坑', '（无）'],
+        ['没解决的问题、答应过的事', '（无）'],
+      ]
+  return `<analysis>按时间过一遍：先是平地，问了一层，主人答了 y=69，做完了；又让慢慢平，被叫停。</analysis>\n<summary>\n${sections.map(([title, body]) => `## ${title}\n${body}`).join('\n\n')}\n</summary>`
+}
+
 function twoLineResponder(req: RecordedLlmRequest): MockReply {
   const messages: any[] = Array.isArray(req.body?.messages) ? req.body.messages : []
   const last = messages[messages.length - 1]
   const text = typeof last?.content === 'string' ? last.content : Array.isArray(last?.content) ? last.content.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n') : ''
   const afterTool = last?.role === 'tool'
   const tools: string[] = Array.isArray(req.body?.tools) ? req.body.tools.map((t: any) => t?.function?.name ?? t?.name) : []
-  // 测试连接、压缩历史这类不带工具的调用
-  if (tools.length === 0) return { text: 'pong' }
+  // 写交接记录（压缩历史、面板上的试写）：照它要的小节写一份；别的不带工具的调用（测试连接）回一句
+  if (tools.length === 0) {
+    const system = String(messages.find((m) => m.role === 'system')?.content ?? req.body?.system ?? '')
+    if (/交接记录/.test(system)) return { text: handover(/对话线/.test(system.slice(0, 80))), delayMs: 2500, usage: { input: 30000, output: 1800 } }
+    return { text: 'pong' }
+  }
   const talk = tools.includes('tell_worker')
   const todo = text.split('[最近发生的事')[0]?.split('[当前状态]')[0] ?? ''
   const usage = { input: talk ? 6200 : 48000, output: 90, cacheRead: talk ? 5400 : 45000 }
@@ -936,6 +965,11 @@ async function seedMethods(packdata: ReturnType<typeof import('../src/packdata/i
       [{ part: 'plate', way: '卷板机', from: 'ingot', by: 'owner', why: '卷板机一锭一板，比锤子省一半' }, 6],
       [{ part: 'stick', material: 'Steel', way: '车床', from: 'ingot', by: 'self', why: '车床还多出小堆粉；压模机的模头还没做' }, 4],
       [{ part: 'screw', way: '车床', from: 'bolt', by: 'owner', why: '' }, 3],
+      [{ part: 'ring', way: '压模机', from: 'stick', by: 'self', why: '压模机一杆一环' }, 3.5],
+      [{ ready: 'ingot', by: 'owner', why: '锭都从仓库里拿，不用从矿算起' }, 2.5],
+      [{ ready: 'minecraft:stone/0', by: 'self', why: '仓库里有一大箱石头' }, 2.2],
+      [{ ready: 'gregtech:gt.metaitem.01/11019', by: 'owner', why: '铝锭找主人要' }, 2.1],
+      [{ use: '有序合成', over: '组装机', noTools: true, by: 'owner', why: '组装机费电，手搓不用工具时就手搓' }, 1.5],
       [{ order: ['卷板机', '车床', '压模机', '有序合成'], by: 'owner', why: '能用机器就别手搓' }, 5],
       [{ id: 'gregtech:gt.metaitem.01', meta: 23305, recipe: 198685, by: 'self', why: '车床一锭一杆' }, 2],
       [{ id: 'gregtech:gt.metaitem.01', meta: 17305, recipe: 206332, by: 'owner', why: '钢块切成板，九块一次' }, 1],
@@ -947,8 +981,10 @@ async function seedMethods(packdata: ReturnType<typeof import('../src/packdata/i
         console.log(`[dev] 一条基地的做法没放进去：${built.error}`)
         continue
       }
-      // 钢板那一条：改成配方册里对不回来的样子（像配方册重新导出以后那样）
+      // 几条故意弄成对不上的样子（像配方册、物品表重新导出以后那样）：钢板的配方、环用的做法、铝锭那样物品
       if (built.entry.kind === 'thing' && built.entry.thing === 'ore:plateSteel') built.entry.recipe = { ...built.entry.recipe, ref: 999_999, in: built.entry.recipe.in.map(([k, n]) => [k, n + 1] as [string, number]) }
+      if (built.entry.kind === 'part' && built.entry.prefix === 'ring') built.entry.way = '环形压制机（旧版）'
+      if (built.entry.kind === 'ready' && built.entry.text === 'gregtech:gt.metaitem.01' && built.entry.meta === 11019) Object.assign(built.entry, { key: 'ready:oldmod:aluminium_ingot/0', text: 'oldmod:aluminium_ingot', meta: 0, name: '铝锭（旧版）' })
       store.set(built.entry)
     }
     console.log(`[dev] 放了 ${store.list().length} 条基地的做法。`)
