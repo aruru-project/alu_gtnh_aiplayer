@@ -265,7 +265,10 @@ export function buildTimeline(entries) {
     const kind = entry.kind
     const hasTurn = typeof entry.turn === 'number'
 
-    if (kind === 'chat' || kind === 'whisper' || kind === 'say' || kind === 'command') {
+    if (kind === 'chat' || kind === 'whisper' || kind === 'say' || kind === 'reply' || kind === 'command') {
+      const where = whereSaid(entry)
+      // 程序替它说的（不是模型写的）：detail 里写着
+      const program = (kind === 'say' || kind === 'reply') && /程序替它说/.test(String(entry.detail ?? ''))
       push({
         type: 'msg',
         level: LEVEL.talk,
@@ -273,12 +276,16 @@ export function buildTimeline(entries) {
         id: entry.id,
         time: entry.time,
         agent: entry.agent,
-        role: kind === 'command' ? 'owner' : kind === 'say' ? 'bot' : 'player',
-        whisper: kind === 'whisper',
+        role: kind === 'command' ? 'owner' : kind === 'say' || kind === 'reply' ? 'bot' : 'player',
+        // 在哪里说的：public 游戏公屏 | whisper 游戏里私聊（它说的带 to：私聊给谁）| panel 只在面板上（主人和它之间，游戏里没人看到）
+        channel: where.channel,
+        to: where.to,
+        whisper: where.channel === 'whisper',
+        program,
         who: entry.who ?? (kind === 'command' ? '面板' : ''),
-        text: entry.text,
-        // 聊天：为什么这句没叫醒模型；它说的：这句是程序替它说的、发出去时被截了几行
-        note: entry.detail,
+        text: where.text,
+        // 聊天：为什么这句没叫醒模型；它说的：发出去时被截了几行。只说“这是程序替它说的”的那句不再写（有记号了）
+        note: program && /^这句话是程序替它说的(，不是模型说的)?。?$/.test(String(entry.detail ?? '').trim()) ? undefined : entry.detail,
         sent: entry.sent,
         rev: seqOf(entry),
       })
@@ -583,6 +590,9 @@ export function buildTimeline(entries) {
  * 干活线上的东西后面又来了对话线上的，就另起一行：所以从上到下、每行先左后右，还是时间顺序。
  * minLevel 以上的不要（1 只要对话，2 加上模型的决策，3 全部）。
  */
+/** 左右两边的事差这么多以内算“同时”，画在同一行里。 */
+const SIDE_BY_SIDE_MS = 120_000
+
 export function layoutRows(items, maxLevel = LEVEL.all) {
   const rows = []
   let row
@@ -595,7 +605,10 @@ export function layoutRows(items, maxLevel = LEVEL.all) {
       continue
     }
     const left = item.lane === 'talk'
-    if (!row || (left && row.right.length > 0)) {
+    // 右边的一件挨着左边这一行的头上画：只有它和这一行开头差不多同时（两分钟内）才这样；
+    // 左边已经连着说了好一阵（比如半小时的聊天）以后才来的，另起一行，排在它们下面
+    const late = !left && row && row.right.length === 0 && row.left.length > 0 && item.time - row.left[0].time > SIDE_BY_SIDE_MS
+    if (!row || (left && row.right.length > 0) || late) {
       row = { key: item.key, left: [], right: [] }
       rows.push(row)
     }
@@ -619,6 +632,44 @@ export function toolHistogram(calls) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }))
 }
 
+/**
+ * 一句话是在哪里说的：{ channel, to?, text }。
+ *   say      它在游戏里说的：channel 是 public（公屏）或 whisper（私聊，to 是给谁）。旧日志没有 channel：
+ *            正文以“（私聊 某人）”开头的是私聊（去掉这一段），别的都是公屏。
+ *   reply    对话线写给主人的字：只在面板上，游戏里没人看到（panel）。
+ *   chat     玩家在游戏公屏说的（public）；whisper 玩家私聊它的（whisper）；command 主人在面板上说的（panel）。
+ */
+export function whereSaid(entry) {
+  const text = String(entry.text ?? '')
+  switch (entry.kind) {
+    case 'say': {
+      if (entry.channel === 'whisper') return { channel: 'whisper', to: typeof entry.to === 'string' ? entry.to : undefined, text }
+      if (entry.channel === 'public') return { channel: 'public', text }
+      const old = /^（私聊 ([^）]*)）/.exec(text)
+      if (old) return { channel: 'whisper', to: old[1] || undefined, text: text.slice(old[0].length) }
+      return { channel: 'public', text }
+    }
+    case 'reply':
+    case 'command':
+      return { channel: 'panel', text }
+    case 'whisper':
+      return { channel: 'whisper', text }
+    default:
+      return { channel: 'public', text }
+  }
+}
+
+/** “现在”页“最近几步”里一句话的那个小标签：谁、在哪里说的。 */
+export function msgLabel(item) {
+  if (item.role === 'owner') return '你（面板）'
+  if (item.role === 'bot') {
+    if (item.channel === 'panel') return '它·只在面板'
+    if (item.channel === 'whisper') return item.to ? `它·私聊 ${item.to}` : '它·私聊'
+    return '它·公屏'
+  }
+  return item.channel === 'whisper' ? `${item.who}·私聊它` : `${item.who}·公屏`
+}
+
 /** 两条线之间一次往来的叫法。 */
 export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', progress: '干活线留话', trouble: '干活线出了状况', stop: '叫停' }
 
@@ -632,7 +683,7 @@ export function recentActivity(items, limit = 12, liveTurns = undefined) {
   for (let i = items.length - 1; i >= 0 && rows.length < limit * 3; i--) {
     const item = items[i]
     if (item.type === 'msg') {
-      rows.push({ key: item.key, time: item.time, kind: item.role === 'bot' ? 'say' : 'heard', label: item.role === 'bot' ? '它说' : item.role === 'owner' ? '你（面板）' : item.who, text: item.text })
+      rows.push({ key: item.key, time: item.time, kind: item.role === 'bot' ? 'say' : 'heard', channel: item.channel, label: msgLabel(item), text: item.text, program: item.program })
     } else if (item.type === 'relay') {
       rows.push({ key: item.key, time: item.time, kind: 'relay', label: RELAY_LABELS[item.kind] ?? item.kind, text: item.text, isError: item.isError, pending: item.kind === 'question' })
     } else if (item.type === 'run') {

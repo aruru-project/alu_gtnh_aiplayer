@@ -690,6 +690,9 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
       return { text: asked === 'todo' ? '记上了。' : '', usage }
     }
     // 主人说“记一下：……”：记到工作清单上（和干活线送来的话一起到的时候也先办这件）
+    // 主人说“悄悄告诉某人：……”：在游戏里私聊那个人
+    const secret = /对你说[:：]\s*悄悄告诉\s*(\S+?)\s*[:：，,]\s*([^\n]+)/.exec(todo)
+    if (secret) return { toolCalls: [{ name: 'whisper', input: { player: secret[1]!, message: secret[2]!.trim() } }], usage }
     const remember = /对你说[:：]\s*记(?:一下|上)[:：，,]?\s*([^\n]+)/.exec(todo)
     if (remember) return { toolCalls: [{ name: 'todo', input: { add: [{ text: remember[1]!.trim() }] } }], usage }
     const fromWorker = /干活线(.*?)[:：]\s*([\s\S]*)/.exec(todo)
@@ -1000,6 +1003,40 @@ async function seedMethods(packdata: ReturnType<typeof import('../src/packdata/i
   }
 }
 
+/**
+ * 一段对话（数据目录里还没有日志时放进今天的日志）：她说的话在各个地方各来一句——
+ * 公屏、私聊、只在面板（reply），程序替她说的，以及旧日志的样子（say 没有 channel，私聊写在正文开头的“（私聊 某人）”里）。
+ * 大脑起来时把它当自己的日志读回来，面板上看到的就是大脑给的。不写轮次（大脑自己的轮次从头数，写了会和它撞上）。
+ */
+function seedConversation(): void {
+  const dir = path.join(DATA_DIR, 'logs')
+  if (fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.startsWith('activity-'))) return
+  fs.mkdirSync(dir, { recursive: true })
+  const t0 = Date.now() - 40 * 60_000
+  let id = 0
+  const at = (minutes: number) => t0 + minutes * 60_000
+  const rows: Json[] = [
+    // 旧日志的样子：say 没有 channel；私聊在正文开头
+    { kind: 'chat', who: '阿露', text: 'Alu 你在哪', time: at(0) },
+    { kind: 'say', agent: 'talk', who: BOT, text: '在基地南边平地呢', time: at(0.2) },
+    { kind: 'say', agent: 'talk', who: BOT, text: '（私聊 阿露）我在你家门口了，开个门？', time: at(0.3) },
+    // 新的样子
+    { kind: 'chat', who: 'Steve', text: 'Alu 帮我看看高炉', time: at(10) },
+    { kind: 'say', agent: 'talk', who: BOT, channel: 'public', text: '好，等我过去', time: at(10.2) },
+    { kind: 'whisper', who: 'Steve', text: '顺便借我两组铁锭', time: at(12) },
+    { kind: 'say', agent: 'talk', who: BOT, channel: 'whisper', to: 'Steve', text: '主人没说能借，我先问问她', time: at(12.2) },
+    { kind: 'command', who: '面板', text: '今天进度怎么样？', time: at(20) },
+    { kind: 'reply', agent: 'talk', who: BOT, text: '南边的地平完了；二号高炉还差耐火砖，在等 Steve 送来。Steve 想借两组铁锭，你同意吗？', time: at(20.2) },
+    // 程序替她说的：在游戏里的（模型接口出问题时）、只在面板的
+    { kind: 'say', who: BOT, channel: 'public', text: '我这边的脑子出了点问题，先停一下，马上回来。', detail: '这句话是程序替它说的，不是模型说的', time: at(30) },
+    { kind: 'reply', who: BOT, text: '对话线的模型接口连着失败 3 次，30 秒后再试。', detail: '这句话是程序替它说的，不是模型说的', time: at(30.1) },
+  ]
+  const lines = rows.map((r) => JSON.stringify({ id: ++id, ...r }))
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  fs.writeFileSync(path.join(dir, `activity-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.jsonl`), `${lines.join('\n')}\n`)
+}
+
 /** 样本里那张简图的编号（没做成是空的）。 */
 let samplePicture = ''
 
@@ -1040,6 +1077,7 @@ b.save('三色旗')`
     const png = renderView(grid, new BlockLooks(design.colors()), { view: 'iso', from: 'southeast' }, { maxSize: 480, title: 'Draft' }).png
     samplePicture = new PictureStore(DATA_DIR).save(png, blocksOfGrid(grid))
   }
+  seedConversation()
   // 工作清单：几条没做的、一条在等人的、两条做完的，谁写的都有
   const { TodoStore } = await import('../src/store/todo.ts')
   const todoStore = new TodoStore(DATA_DIR)

@@ -293,7 +293,7 @@ describe('对话页的时间线：排成左右两道', () => {
     )
     assert.deepEqual(rows.map((r) => [r.kind, r.label, r.text]), [
       ['tool', 'get_status', 'online'],
-      ['say', '它说', '在'],
+      ['say', '它·公屏', '在'],
     ])
   })
 })
@@ -317,5 +317,71 @@ describe('工具参数读成一句话', () => {
     assert.equal(model.describeArgs('{}'), '')
     assert.equal(model.describeArgs('{"item":{"id":"chisel:diamondChi…'), undefined)
     assert.equal(model.describeArgs(undefined), undefined)
+  })
+})
+
+describe('对话页：左右两道怎么对齐', () => {
+  it('左边连着说了半小时以后才来的干活线的一轮，排在那些话下面，不挨着最早的那句', () => {
+    const t = clock
+    const items = model.buildTimeline([
+      e('chat', 'Alu 你在哪', { who: '阿露', time: t + 1000 }),
+      e('chat', '在吗', { who: '阿露', time: t + 30 * 60_000 }),
+      e('turn', '第 9 轮开始', { agent: 'work', turn: 9, time: t + 31 * 60_000 }),
+    ]).items
+    const rows = model.layoutRows(items)
+    assert.deepEqual(rows.map((r) => [r.left.map((i) => i.text), r.right.map((i) => i.type)]), [
+      [['Alu 你在哪', '在吗'], []],
+      [[], ['work']],
+    ])
+  })
+
+  it('差不多同时的（两分钟内）还是画在同一行的两边', () => {
+    const t = clock
+    const items = model.buildTimeline([e('chat', 'Alu 过来', { who: '阿露', time: t + 1000 }), e('turn', '第 10 轮开始', { agent: 'work', turn: 10, time: t + 20_000 })]).items
+    const rows = model.layoutRows(items)
+    assert.deepEqual(rows.map((r) => [r.left.length, r.right.length]), [[1, 1]])
+  })
+})
+
+describe('对话页：每一句话是在哪里说的', () => {
+  const msgs = (entries: Json[]): Json[] => model.buildTimeline(entries).items.filter((i) => i.type === 'msg')
+  const where = (items: Json[]): string[][] => items.map((i) => [i.role, i.channel, i.to ?? '', i.text, i.program ? '程序' : ''])
+
+  it('新日志：say 带 channel，公屏的、私聊的（带 to）分开；reply 是只在面板上的', () => {
+    const items = msgs([
+      e('say', '好，等我过去', { agent: 'talk', who: 'Alu', channel: 'public' }),
+      e('say', '主人没说能借', { agent: 'talk', who: 'Alu', channel: 'whisper', to: 'Steve' }),
+      e('reply', '南边的地平完了', { agent: 'talk', who: 'Alu', turn: 4, step: 1 }),
+    ])
+    assert.deepEqual(where(items), [
+      ['bot', 'public', '', '好，等我过去', ''],
+      ['bot', 'whisper', 'Steve', '主人没说能借', ''],
+      ['bot', 'panel', '', '南边的地平完了', ''],
+    ])
+  })
+
+  it('旧日志：say 没有 channel；正文以“（私聊 某人）”开头的是私聊给那个人（这一段去掉），别的都是公屏', () => {
+    const items = msgs([e('say', '（私聊 阿露）我在你家门口了', { who: 'Alu' }), e('say', '在基地南边平地呢', { who: 'Alu' })])
+    assert.deepEqual(where(items), [
+      ['bot', 'whisper', '阿露', '我在你家门口了', ''],
+      ['bot', 'public', '', '在基地南边平地呢', ''],
+    ])
+  })
+
+  it('程序替它说的（detail 里写着）：在哪里说的照样分，另外标出来；只说这一件事的那句说明不再重复写', () => {
+    const [say, reply] = msgs([
+      e('say', '先停一下', { who: 'Alu', channel: 'public', detail: '这句话是程序替它说的，不是模型说的' }),
+      e('reply', '接口连着失败 3 次', { who: 'Alu', detail: '这句话是程序替它说的，不是模型说的' }),
+    ])
+    assert.deepEqual([say!.channel, say!.program, say!.note, reply!.channel, reply!.program], ['public', true, undefined, 'panel', true])
+  })
+
+  it('别人说的：玩家在公屏说的、私聊它的、主人在面板上说的', () => {
+    const items = msgs([e('chat', 'Alu 你在哪', { who: '阿露' }), e('whisper', '借我两组铁锭', { who: 'Steve' }), e('command', '今天进度怎么样？', { who: '面板' })])
+    assert.deepEqual(where(items), [
+      ['player', 'public', '', 'Alu 你在哪', ''],
+      ['player', 'whisper', '', '借我两组铁锭', ''],
+      ['owner', 'panel', '', '今天进度怎么样？', ''],
+    ])
   })
 })

@@ -48,14 +48,38 @@ function fold(title, text, key, cls = '') {
 
 // ── 对话：一句话 ──
 
+/**
+ * 这句话在哪里说的那个记号：公屏（游戏里所有人看得到）、私聊（→ 给谁）、只在面板（游戏里没人看到）。
+ * 主人在面板上说的已经写着“你（面板）”，不再加。
+ */
+function channelChip(item) {
+  if (item.role === 'owner') return null
+  if (item.channel === 'panel') return h('span', { class: 'ch ch-panel', title: '对话线写给你的：只在面板上，游戏里没人看到', text: '只在面板' })
+  if (item.channel === 'whisper') {
+    if (item.role === 'bot') return h('span', { class: 'ch ch-whisper', title: item.to ? `游戏里私聊给 ${item.to}：只有他看得到` : '游戏里的私聊', text: item.to ? `私聊 → ${item.to}` : '私聊' })
+    return h('span', { class: 'ch ch-whisper', title: '在游戏里私聊它的：别人看不到', text: '私聊它' })
+  }
+  return h('span', { class: 'ch ch-public', title: '游戏的公屏聊天：服务器上所有人都看得到', text: '公屏' })
+}
+
 function renderMsg(item, prev) {
-  const grouped = prev && prev.type === 'msg' && prev.role === item.role && prev.who === item.who && item.time - prev.time < 120000
+  const grouped = prev && prev.type === 'msg' && prev.role === item.role && prev.who === item.who && prev.channel === item.channel && prev.to === item.to && prev.program === item.program && item.time - prev.time < 120000
   const who = item.role === 'owner' ? '你（面板）' : item.who
-  const el = h('div', { class: `msg from-${item.role}${item.whisper ? ' whisper' : ''}${grouped ? ' grouped' : ''}${item.role === 'player' && item.note ? ' unheard' : ''}` })
+  const el = h('div', { class: `msg from-${item.role} at-${item.channel ?? 'public'}${item.whisper ? ' whisper' : ''}${grouped ? ' grouped' : ''}${item.role === 'player' && item.note ? ' unheard' : ''}` })
   if (!grouped) {
     const name = h('span', { class: 'who', text: who })
     if (item.role === 'player') name.style.color = `hsl(${nameHue(item.who)}, 55%, 70%)`
-    el.append(h('div', { class: 'msg-meta' }, item.role === 'bot' ? playerHead(item.who, 2) : null, name, item.whisper ? h('span', { class: 'chip', text: '私聊' }) : null, time(item.time)))
+    el.append(
+      h(
+        'div',
+        { class: 'msg-meta' },
+        item.role === 'bot' ? playerHead(item.who, 2) : null,
+        name,
+        channelChip(item),
+        item.program ? h('span', { class: 'ch ch-program', title: '这句话是程序替它说的，不是模型写的', text: '程序代说' }) : null,
+        time(item.time),
+      ),
+    )
   }
   const bubble = h('div', { class: 'bubble', text: item.text })
   if (grouped) bubble.title = dateTime(item.time)
