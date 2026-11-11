@@ -81,8 +81,11 @@ function clipText(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
-/** 把若干轮排成给“写摘要”的模型看的纯文本。不含任何工具调用结构，所以哪家接口都能用。 */
-export function renderTranscript(turns: readonly Turn[], maxChars = 60_000): string {
+/**
+ * 把若干轮排成给“写摘要”的模型看的纯文本。不含任何工具调用结构，所以哪家接口都能用。
+ * spoken：这是对话线的记录，它写的文字是它说出口的话，不是想法。
+ */
+export function renderTranscript(turns: readonly Turn[], maxChars = 60_000, spoken = false): string {
   const names = new Map<string, string>()
   const blocks: string[] = []
   for (const turn of turns) {
@@ -90,7 +93,7 @@ export function renderTranscript(turns: readonly Turn[], maxChars = 60_000): str
     for (const m of turn.messages) {
       if (m.role === 'assistant') {
         for (const p of m.content) {
-          if (p.type === 'text') lines.push(`[它的想法] ${clipText(p.text, 600)}`)
+          if (p.type === 'text') lines.push(`[${spoken ? '它说的话' : '它的想法'}] ${clipText(p.text, 600)}`)
           else if (p.type === 'tool_call') {
             names.set(p.id, p.name)
             lines.push(`[它调用工具] ${p.name} ${clipText(JSON.stringify(p.input ?? {}), 400)}`)
@@ -121,19 +124,29 @@ export const SUMMARY_SYSTEM = `你在替一个 Minecraft 服务器里的 AI 玩�
 - 答应过别人但还没做的事。
 已经做完且没有后续的事一句带过或不写。它读过哪些手册、手册里写了什么都不要写：手册的内容不会留在摘要里，要用时它会重新读。直接写摘要正文，不要开场白。`
 
+/** 对话线的历史怎么压：它只跟人说话、查资料，动手的事交给干活线，所以要留的是话和约定，不是坐标和任务参数。 */
+export const TALK_SUMMARY_SYSTEM = `你在替一个 Minecraft 服务器里的 AI 玩家的“对话线”整理记忆：它只负责跟人说话和查资料，要动手的事交给干活线去做。下面是它之前的记录（它听到的话、它说的话、它查的东西、交给干活线的事、干活线的汇报和提问）。
+请用中文写一份给它自己以后看的摘要，不超过 400 字，只保留以后还用得上的内容：
+- 主人交代过、现在仍然有效的要求和偏好；
+- 交给了干活线、还没有结果的事；干活线问了、还没人回答的问题；
+- 答应过别人但还没做到的事，别人问了还没答上的事；
+- 查到的、之后还会用到的结论（带上具体的名字、数量、坐标）。
+已经了结的事一句带过或不写。它读过哪些手册、手册里写了什么都不要写。直接写摘要正文，不要开场白。`
+
 /** 调一次不带工具的模型，把旧摘要和若干轮合并成新摘要。失败时把错误抛给调用方。 */
 export async function summarize(
   llm: LlmClient,
   previousSummary: string,
   turns: readonly Turn[],
   signal?: AbortSignal,
+  talk = false,
 ): Promise<string> {
-  const transcript = renderTranscript(turns)
+  const transcript = renderTranscript(turns, undefined, talk)
   const text =
     (previousSummary.trim().length > 0 ? `【更早的摘要】\n${previousSummary.trim()}\n\n` : '') +
     `【之后的记录】\n${transcript}\n\n请写出合并后的新摘要。`
   const result = await llm.generate({
-    system: SUMMARY_SYSTEM,
+    system: talk ? TALK_SUMMARY_SYSTEM : SUMMARY_SYSTEM,
     messages: [{ role: 'user', content: [{ type: 'text', text }] }],
     tools: [],
     ...(signal ? { signal } : {}),
@@ -148,6 +161,8 @@ export interface CompactOptions {
   threshold: number
   llm: LlmClient
   signal?: AbortSignal
+  /** 这是对话线的历史：摘要按“话和约定”来写。 */
+  talk?: boolean
 }
 
 export interface CompactResult {
@@ -179,7 +194,7 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
     return { summary, turns: current, action: hard.changed || truncated.changed ? 'truncated' : 'nothing', removedTurns: 0 }
   }
   try {
-    const next = await summarize(opts.llm, summary, current.slice(0, cut), opts.signal)
+    const next = await summarize(opts.llm, summary, current.slice(0, cut), opts.signal, opts.talk === true)
     return { summary: next, turns: current.slice(cut), action: 'summarized', removedTurns: cut }
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)

@@ -57,6 +57,8 @@ export interface WakeDecision {
     | 'death'
     | 'low_health'
     | 'notice'
+    | 'told'
+    | 'worker'
     | 'not_owner'
     | 'not_addressed'
     | 'other_bot'
@@ -135,6 +137,13 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
     }
     case 'notice':
       return ev.wake ? yes('notice') : no('background')
+    // 两条线之间的往来：交来的事、汇报和提问都要处理；“被叫停了”只是让它知道，不为它另想一轮
+    case 'told':
+      return yes('told')
+    case 'worker':
+      return yes('worker')
+    case 'halted':
+      return no('background')
     case 'task_started':
     case 'bot_message':
     case 'spawned':

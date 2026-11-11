@@ -1,8 +1,9 @@
-// 面板要的“数据那一半”：日志翻页、程序运行的明细、状态（模型 / 例程 / 身体三样分开）、图纸里有什么。
+// 面板要的“数据那一半”：日志翻页、程序运行的明细、状态（两条线各一项：模型、这一轮；例程和身体挂在干活线下面）、图纸里有什么。
 // 界面在 panel/public/（另一个 Work 在做）；这里只出数据，形状写在 docs/BRAIN_SPEC.md 的“面板的数据接口”。
 // 和 server.ts 分开放，是为了两边并行改的时候少撞：server.ts 里只有几行路由指到这里。
 
 import type { AgentState, AgentStatus } from '../agent/agent.ts'
+import type { LinkState } from '../agent/lines.ts'
 import type { RoutineView } from '../agent/routine.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
 import type { BridgeApi } from '../bridge/api.ts'
@@ -11,6 +12,7 @@ import type { DesignWorkspace } from '../design/index.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
 import type { ActivityLog, ActivityRun } from '../store/activity-log.ts'
+import type { LineName } from '../tools/index.ts'
 
 /** 出错时怎么回（server.ts 给的是抛它自己的 HttpError）。 */
 export type Reject = (status: number, code: string, message: string) => never
@@ -62,14 +64,32 @@ export function runRecords(runs: RunLogStore | undefined, params: URLSearchParam
   return { file, total, next: after + records.length, records }
 }
 
+/** 一条线的历史有多长（面板上显示它离压缩还有多远）。 */
+export interface HistorySize {
+  turns: number
+  hasSummary: boolean
+  estimatedTokens: number
+  /** 超过它就压缩（这条线的设置）。 */
+  threshold: number
+}
+
 export interface StatusDeps {
-  agent: { status(): AgentStatus; state?(): AgentState }
+  agent: {
+    /** 干活线的状态（例程在它那里）。 */
+    status(): AgentStatus
+    /** 一条线的模型和这一轮现在的样子。 */
+    state?(line: LineName): AgentState
+    /** 两条线之间留着的事：干活线在等的回答、它最近一次送来的话。 */
+    linkState?(): LinkState
+  }
   bridge: BridgeApi
   /** 身体连着没有。 */
   connected(): boolean
   botName(): string
-  /** 现在配置用的是哪家的哪个模型。 */
-  model(): { provider: string; model: string } | undefined
+  /** 这条线现在配置用的是哪家的哪个模型。 */
+  model(line: LineName): { provider: string; model: string; providerId: string; modelId: string } | undefined
+  /** 这条线的历史有多长。 */
+  history?(line: LineName): HistorySize | undefined
 }
 
 /** 例程在状态里的样子：结构化的那几项，不带最近的调用和日志（那些在明细接口里）。 */
@@ -102,16 +122,19 @@ function taskState(task: TaskInfo): Record<string, unknown> {
   }
 }
 
+const LINE_TITLE: Record<LineName, string> = { talk: '对话线', work: '干活线' }
+
 /**
- * GET /api/status：三样分开给——模型（空闲 / 正在想 / 在执行工具 / 接口故障）、例程（哪个在跑）、身体（在做的任务和排队的）。
- * agents 是数组：现在只有 main 一项，以后每个帮手一项，各有自己的模型、自己的一轮、自己的例程。
+ * GET /api/status：两条线各一项，固定顺序 talk、work。每项有自己的模型（空闲 / 正在想 / 在执行工具 / 接口故障）、
+ * 正在跑的一轮、排着的事、历史有多长。例程和身体（在做的任务和排队的）只有一份，挂在干活线下面；对话线那一项没有这几个键。
  */
 export async function panelStatus(deps: StatusDeps, now: number): Promise<unknown> {
   const status = deps.agent.status()
-  const state: AgentState = deps.agent.state?.() ?? { agent: 'main', model: { state: status.busy ? 'tools' : 'idle' }, turn: null, pending: status.pending, botOnline: status.botOnline }
-  const model = deps.model()
+  const stateOf = (line: LineName): AgentState =>
+    deps.agent.state?.(line) ?? { agent: line, model: { state: line === 'work' && status.busy ? 'tools' : 'idle' }, turn: null, pending: line === 'work' ? status.pending : 0, botOnline: status.botOnline }
+  const work = stateOf('work')
   const routine = status.routine
-  const body: { online: boolean | null; task: unknown; queue: unknown[]; error?: string } = { online: state.botOnline ?? null, task: null, queue: [] }
+  const body: { online: boolean | null; task: unknown; queue: unknown[]; error?: string } = { online: work.botOnline ?? null, task: null, queue: [] }
   if (!deps.connected()) {
     body.online = false
     body.error = '没连上游戏里的身体'
@@ -124,15 +147,28 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
       body.error = e instanceof Error ? e.message : String(e)
     }
   }
+  const line = (name: LineName, state: AgentState): Record<string, unknown> => {
+    const history = deps.history?.(name)
+    return {
+      agent: name,
+      name: deps.botName(),
+      title: LINE_TITLE[name],
+      model: { ...state.model, ...(deps.model(name) ?? {}) },
+      turn: state.turn,
+      pending: state.pending,
+      ...(history ? { history } : {}),
+    }
+  }
+  const links = deps.agent.linkState?.() ?? {}
   return {
     time: now,
     agents: [
+      line('talk', stateOf('talk')),
       {
-        agent: state.agent,
-        name: deps.botName(),
-        model: { ...state.model, ...(model ?? {}) },
-        turn: state.turn,
-        pending: state.pending,
+        ...line('work', work),
+        // 它提了问、还没人带话回答；它最近一次送给对话线的话
+        waitingAnswer: links.waiting ?? null,
+        lastReport: links.lastReport ?? null,
         routine: routine && routine.status === 'running' ? routineState(routine) : null,
         lastRoutine: routine && routine.status !== 'running' ? routineState(routine) : null,
         body,

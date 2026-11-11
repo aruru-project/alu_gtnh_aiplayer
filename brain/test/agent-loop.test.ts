@@ -3,30 +3,34 @@ import { describe, it } from 'node:test'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
 import type { GenerateResult } from '../src/llm/index.ts'
-import { assertToolPairs, chat, llmDown, makeAgent, reply, taskEnded } from './agent-harness.ts'
+import { assertToolPairs, chat, llmDown, makeAgent, relays, reply, sentToTalk, taskEnded, told } from './agent-harness.ts'
 import { sleep, waitFor } from './helpers.ts'
 
+// 这里测的是一条线自己的一轮怎么走（收事件、调模型、执行工具、落历史、出故障怎么办），大多用干活线：
+// 事情是对话线交来的（told），它操作身体。两条线之间怎么往来、对话线怎么说话在 lines.test.ts。
+
 describe('agent 的一轮决策', () => {
-  it('有人叫它干活：先 say 再启动任务，工具结果回给模型，模型不再调工具时这一轮结束', async (t) => {
+  it('对话线交来一件事：干活线启动任务，工具结果回给模型，模型不再调工具时这一轮结束；它留下的文字送给对话线，不说出口', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(
       reply('', [
-        { id: 'c_say', name: 'say', input: { message: '好，我来平。' } },
+        { id: 'c_look', name: 'get_status' },
         { id: 'c_flat', name: 'flatten_area', input: { x1: 0, z1: 0, x2: 7, z2: 7, y: 64 } },
       ]),
-      reply('等任务结束。'),
+      reply('开始平了，等任务结束。'),
     )
-    h.agent.handleEvent(chat('Steve', 'Alu 把这块地平一下'))
+    h.agent.handleEvent(told('把这块地平一下', [chat('Steve', 'Alu 把这块地平一下')]))
     await h.agent.whenIdle()
 
-    // 游戏那边：说了话，任务按参数启动
-    assert.deepEqual(h.game.said, ['好，我来平。'])
+    // 游戏那边：任务按参数启动；干活线没有在聊天里说任何话
     assert.deepEqual(h.game.callsOf('task.start'), [
       { bot: 'Alu', task: { type: 'flatten', x1: 0, z1: 0, x2: 7, z2: 7, y: 64 }, mode: 'replace' },
     ])
-    // 模型那边：第一次看到事件和状态；第二次看到两个工具的结果
+    assert.deepEqual(h.game.said, [])
+    // 模型那边：第一次看到交来的事（连同主人的原话）和状态；第二次看到两个工具的结果
     assert.equal(h.llm.requests.length, 2)
+    assert.match(h.llm.lastUserText(0), /对话线交给你的（这一句是它写的）：把这块地平一下/)
     assert.match(h.llm.lastUserText(0), /Steve 说：Alu 把这块地平一下/)
     assert.match(h.llm.lastUserText(0), /\[当前状态\]/)
     assert.match(h.llm.lastUserText(0), /online in overworld/)
@@ -35,14 +39,15 @@ describe('agent 的一轮决策', () => {
     assert.deepEqual(
       results.content.map((p) => (p.type === 'tool_result' ? [p.toolCallId, p.isError ?? false] : null)),
       [
-        ['c_say', false],
+        ['c_look', false],
         ['c_flat', false],
       ],
     )
     assert.match(h.llm.lastUserText(1), /Task t1 \(flatten\) started/)
-    // 已经用 say 说过话，最后那段文本不会再被说出去
-    assert.equal(h.game.said.length, 1)
     assert.equal(h.history.get().turns.length, 1)
+    // 它一轮结束时留下的文字送给了对话线（对话线被叫醒看到它）
+    assert.deepEqual(sentToTalk(h), ['开始平了，等任务结束。'])
+    assert.match(h.talk.lastUserText(0), /干活线这一轮做完了，它留下的话：开始平了，等任务结束。/)
   })
 
   it('背包里杂物再多，状态快照里也一定列出手里的工具', async (t) => {
@@ -59,7 +64,7 @@ describe('agent 的一轮决策', () => {
         { slot: 31, id: 'TConstruct:shovel', meta: 0, count: 1, name: 'Steel Shovel', durability: 0.96 },
       ],
     })
-    h.agent.handleEvent(chat('Steve', 'Alu 能挖石头吗'))
+    h.agent.handleEvent(told('看看能不能挖石头'))
     await h.agent.whenIdle()
     const text = h.llm.lastUserText(0)
     assert.match(text, /^Tools: 1× TConstruct:pickaxe "Steel Pickaxe" \(85% durability\), 1× TConstruct:shovel "Steel Shovel" \(96% durability\)$/m)
@@ -70,27 +75,30 @@ describe('agent 的一轮决策', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('', [{ name: 'flatten_area', input: { x1: 0, z1: 0, x2: 7, z2: 7, y: 64 } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 平地'))
+    h.agent.handleEvent(told('Alu 平地'))
     await h.agent.whenIdle()
 
-    h.llm.enqueue(reply('', [{ name: 'say', input: { message: '平好了。' } }]), reply(''))
+    h.llm.enqueue(reply('平好了，挖了 120 格。'))
     h.agent.handleEvent(taskEnded('t1', 'done', { result: { dug: 120, placed: 8 } }))
     await h.agent.whenIdle()
 
-    assert.equal(h.llm.requests.length, 4)
+    assert.equal(h.llm.requests.length, 3)
     assert.match(h.llm.lastUserText(2), /任务 t1（flatten）完成了/)
     assert.match(h.llm.lastUserText(2), /"dug":120/)
     // 第三次请求带着第一轮的完整经过
     assert.ok(JSON.stringify(h.llm.requests[2]!.messages).includes('Alu 平地'))
     assertToolPairs(h.llm.requests[2]!.messages)
-    assert.deepEqual(h.game.said, ['平好了。'])
+    // 任务结束的事只到了干活线：对话线是被它留下的那句话叫醒的，没有直接收到任务事件
+    assert.deepEqual(sentToTalk(h), ['平好了，挖了 120 格。'])
+    assert.equal(h.talk.requests.length, 1)
+    assert.equal(/任务 t1/.test(h.talk.lastUserText(0)), false)
   })
 
   it('模型一直调工具时，到每轮步数上限就停，而且每个调用都有结果', async (t) => {
     const h = makeAgent({ settings: { maxSteps: 3 } })
     t.after(h.cleanup)
     for (let i = 0; i < 10; i++) h.llm.enqueue(reply('', [{ name: 'get_status' }]))
-    h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
+    h.agent.handleEvent(told('看看你现在什么情况'))
     await h.agent.whenIdle()
 
     assert.equal(h.llm.requests.length, 3)
@@ -100,9 +108,22 @@ describe('agent 的一轮决策', () => {
     assert.equal(last.role, 'user')
     assert.ok(last.content.some((p) => p.type === 'text' && p.text.includes('步数上限')))
     assert.ok(h.log.recent().some((e) => e.kind === 'error' && e.text.includes('上限')))
+    // 干活线被截断这件事对话线知道（程序替它报的），主人问起来答得出
+    assert.deepEqual(relays(h, 'trouble').map((e) => e.isError), [true])
+    assert.match(h.talk.lastUserText(0), /干活线出了状况（这句是程序替它报的）：干活线这一轮到了每轮 3 步的上限，被截断了/)
   })
 
-  it('它干活的时候主人又说了一句：这句话接在刚做完那一步的工具结果后面，这一轮里就看到；不为它另开一轮，也不会出现两次', async (t) => {
+  it('对话线有它自己的步数上限', async (t) => {
+    const h = makeAgent({ settings: { maxSteps: 9 }, talkSettings: { maxSteps: 2 } })
+    t.after(h.cleanup)
+    for (let i = 0; i < 5; i++) h.talk.enqueue(reply('', [{ name: 'get_status' }]))
+    h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
+    await h.agent.whenIdle()
+    assert.equal(h.talk.requests.length, 2)
+    assert.equal(h.agent.state('talk').turn, null)
+  })
+
+  it('对话线查东西的时候主人又说了一句：这句话接在刚做完那一步的工具结果后面，这一轮里就看到；不为它另开一轮，也不会出现两次', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     // 它正在查状态（一步工具调用）的时候，主人说了第二句
@@ -110,38 +131,34 @@ describe('agent 的一轮决策', () => {
     let asked = 0
     h.game.handlers['bot.status'] = (p) => {
       // 第 1 次是开这一轮时的状态快照，第 2 次是它调的 get_status
-      if (++asked === 2) h.agent.handleEvent({ ...chat('Steve', '先别平了，过来一下'), speaker: { block: { x: 12, y: 64, z: 3 }, facing: 'north' } })
+      if (++asked === 2) h.agent.handleEvent({ ...chat('Steve', '等等，先说铁有多少'), speaker: { block: { x: 12, y: 64, z: 3 }, facing: 'north' } })
       return status(p)
     }
-    h.llm.enqueue(
-      reply('', [{ id: 'c1', name: 'get_status' }]),
-      reply('', [{ id: 'c2', name: 'say', input: { message: '来了' } }]),
-      reply(''),
-    )
-    h.agent.handleEvent(chat('Steve', 'Alu 把那块地平了'))
-    await waitFor('the turn ended', () => h.llm.requests.length === 3)
+    h.talk.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), reply('来了'))
+    h.agent.handleEvent(chat('Steve', 'Alu 你身上有多少土'))
+    await waitFor('the turn ended', () => h.talk.requests.length === 2)
     await h.agent.whenIdle()
 
     // 第 2 次模型请求：上一步的工具结果后面跟着那句话，带着他站在哪
-    const second = h.llm.requests[1]!.messages.at(-1)!
+    const second = h.talk.requests[1]!.messages.at(-1)!
     assert.deepEqual(second.content.map((p) => p.type), ['tool_result', 'text'])
     const arrived = second.content[1]!
-    assert.match(arrived.type === 'text' ? arrived.text : '', /^\[需要你处理的事（你做上一步的时候新到的）\]\n\[[\d:]+\] Steve 说：先别平了，过来一下\n {2}（Steve 站在 \(12,64,3\) 面朝北，没有指着什么方块）$/)
-    // 一共就这一轮（三次模型调用），那句话没有再触发新的一轮
+    assert.match(arrived.type === 'text' ? arrived.text : '', /^\[需要你处理的事（你做上一步的时候新到的）\]\n\[[\d:]+\] Steve 说：等等，先说铁有多少\n {2}（Steve 站在 \(12,64,3\) 面朝北，没有指着什么方块）$/)
+    // 一共就这一轮（两次模型调用），那句话没有再触发新的一轮
     await sleep(30)
-    assert.equal(h.llm.requests.length, 3)
+    assert.equal(h.talk.requests.length, 2)
     assert.deepEqual(h.game.said, ['来了'])
     // 给模型的全部内容里这句话只出现一次；历史里也只有一份
-    const everything = JSON.stringify(h.llm.requests[2]!.messages)
-    assert.equal(everything.split('先别平了，过来一下').length - 1, 1)
-    assert.equal(JSON.stringify(h.history.get().turns).split('先别平了，过来一下').length - 1, 1)
-    assert.equal(h.history.get().turns.length, 1)
+    const everything = JSON.stringify(h.talk.requests[1]!.messages)
+    assert.equal(everything.split('等等，先说铁有多少').length - 1, 1)
+    assert.equal(JSON.stringify(h.talkHistory.get().turns).split('等等，先说铁有多少').length - 1, 1)
+    assert.equal(h.talkHistory.get().turns.length, 1)
     // 面板的日志里说明了为什么没有另开一轮
     assert.ok(h.log.recent(0, 100).some((e) => e.kind === 'info' && e.text === '这一步期间新到的 1 件事接在工具结果后面交给模型了（算在这一轮里，不另开一轮）。'))
-    assert.deepEqual(h.persisted.state?.queue, [])
+    assert.deepEqual(h.talkPersisted.state?.queue, [])
   })
 
-  it('干活时新到的话已经接进这一轮、模型还没看到，大脑就重启了：这句话不丢，重启后照常处理', async (t) => {
+  it('查东西时新到的话已经接进这一轮、模型还没看到，大脑就重启了：这句话不丢，重启后照常处理', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     const status = h.game.handlers['bot.status']!
@@ -151,26 +168,26 @@ describe('agent 的一轮决策', () => {
       return status(p)
     }
     // 第 2 次模型调用一直没回来（大脑就在这时被停掉）
-    h.llm.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), (req) => new Promise<GenerateResult>((_resolve, reject) => req.signal?.addEventListener('abort', () => reject(new LlmError('aborted', 'stopped')))))
+    h.talk.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), (req) => new Promise<GenerateResult>((_resolve, reject) => req.signal?.addEventListener('abort', () => reject(new LlmError('aborted', 'stopped')))))
     h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
-    await waitFor('the second model call started', () => h.llm.requests.length === 2)
-    assert.match(h.llm.lastUserText(1), /Steve 说：顺便带点煤/)
+    await waitFor('the second model call started', () => h.talk.requests.length === 2)
+    assert.match(h.talk.lastUserText(1), /Steve 说：顺便带点煤/)
     // 这一刻落盘的状态里两句话就都在了：进程这时被强杀也不丢
-    assert.deepEqual(h.persisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
+    assert.deepEqual(h.talkPersisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
     await h.agent.stop()
     // 正常停下以后，落盘的队列里两句话也都在
-    assert.deepEqual(h.persisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
+    assert.deepEqual(h.talkPersisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
 
     const again = h.restart()
     t.after(() => again.agent.stop())
-    await waitFor('the restarted brain asked the model', () => h.llm.requests.length === 3)
-    const text = h.llm.lastUserText(2)
+    await waitFor('the restarted brain asked the model', () => h.talk.requests.length === 3)
+    const text = h.talk.lastUserText(2)
     assert.match(text, /大脑刚重启过/)
     assert.match(text, /Steve 说：Alu 去仓库/)
     assert.match(text, /Steve 说：顺便带点煤/)
   })
 
-  it('干活时新到的话接进去以后模型接口出错：这句话退回队列，接口恢复后照常处理，不会无声无息地没了', async (t) => {
+  it('查东西时新到的话接进去以后模型接口出错：这句话退回队列，接口恢复后照常处理，不会无声无息地没了', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     const status = h.game.handlers['bot.status']!
@@ -179,15 +196,15 @@ describe('agent 的一轮决策', () => {
       if (++asked === 2) h.agent.handleEvent(chat('Steve', '顺便带点煤'))
       return status(p)
     }
-    h.llm.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), llmDown(), reply(''))
+    h.talk.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), llmDown(), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
-    await waitFor('the model was asked again after the failure', () => h.llm.requests.length === 3)
+    await waitFor('the model was asked again after the failure', () => h.talk.requests.length === 3)
     await h.agent.whenIdle()
-    const retry = h.llm.lastUserText(2)
+    const retry = h.talk.lastUserText(2)
     assert.match(retry, /上一轮做到一半时模型接口出错中断了/)
     assert.match(retry, /Steve 说：顺便带点煤/)
     // 存进历史的那半轮里没有这句话（模型当时没看到）：它只在重试的那一轮里出现一次
-    assert.equal(JSON.stringify(h.llm.requests[2]!.messages).split('顺便带点煤').length - 1, 1)
+    assert.equal(JSON.stringify(h.talk.requests[2]!.messages).split('顺便带点煤').length - 1, 1)
   })
 
   it('一轮进行中：模型在想的时候状态是“正在想”（第几轮第几步、从什么时候开始），它要的工具在执行的时候是“在执行工具”，一轮结束回到空闲', async (t) => {
@@ -204,14 +221,17 @@ describe('agent 的一轮决策', () => {
       return status(p)
     }
     h.llm.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), () => new Promise<GenerateResult>((resolve) => (answer = resolve)))
-    assert.deepEqual(h.agent.state(), { agent: 'main', model: { state: 'idle' }, turn: null, pending: 0, botOnline: undefined })
+    assert.deepEqual(h.agent.state('work'), { agent: 'work', model: { state: 'idle' }, turn: null, pending: 0, botOnline: undefined })
+    assert.deepEqual(h.agent.state('talk'), { agent: 'talk', model: { state: 'idle' }, turn: null, pending: 0, botOnline: undefined })
 
     const before = Date.now()
-    h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
+    h.agent.handleEvent(told('去仓库'))
     await waitFor('the tool is running', () => finishTool !== undefined)
     const acting = h.agent.state()
     const turn = acting.turn!.id
-    assert.deepEqual([acting.model.state, acting.model.turn, acting.model.step, acting.turn!.steps, acting.turn!.maxSteps], ['tools', turn, 1, 1, 16])
+    assert.deepEqual([acting.model.state, acting.model.turn, acting.model.step, acting.turn!.steps, acting.turn!.maxSteps, acting.turn!.about], ['tools', turn, 1, 1, 16, '对话线交给你的（这一句是它写的）：去仓库'])
+    // 干活线在忙，对话线照样空闲：两条线各有各的状态
+    assert.equal(h.agent.state('talk').model.state, 'idle')
 
     finishTool()
     await waitFor('the second model call started', () => answer !== undefined)
@@ -219,7 +239,7 @@ describe('agent 的一轮决策', () => {
     assert.deepEqual([thinking.model.state, thinking.model.turn, thinking.model.step, thinking.model.purpose, thinking.turn!.steps], ['thinking', turn, 2, 'turn', 1])
     assert.ok(thinking.model.since! >= before && thinking.model.since! <= Date.now())
     // 日志里那一条这时是“在想”
-    const calls = () => h.log.recent(0, 100).filter((e) => e.kind === 'model_call')
+    const calls = () => h.log.recent(0, 100).filter((e) => e.kind === 'model_call' && e.agent === 'work')
     assert.deepEqual(calls().map((e) => [e.turn, e.step, e.call!.state, e.text.replace(/\d+\.\d 秒/, 'N 秒')]), [
       [turn, 1, 'done', '第 1 步：N 秒，输入 1000 / 输出 50 token，要调 1 个工具'],
       [turn, 2, 'thinking', '第 2 步：模型在想…'],
@@ -243,9 +263,9 @@ describe('agent 的一轮决策', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('', [{ id: 'c1', name: 'get_status' }], { stopReason: 'max_tokens' }), llmDown('auth'))
-    h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
+    h.agent.handleEvent(told('去仓库'))
     await waitFor('the second call failed', () => h.agent.state().model.outage?.failures === 1)
-    const calls = h.log.recent(0, 100).filter((e) => e.kind === 'model_call')
+    const calls = h.log.recent(0, 100).filter((e) => e.kind === 'model_call' && e.agent === 'work')
     assert.deepEqual(
       calls.map((e) => [e.step, e.call!.state, e.call!.stop, e.call!.toolCalls ?? null, e.call!.errorKind ?? null, e.call!.error ?? null, e.isError === true]),
       [
@@ -266,22 +286,22 @@ describe('agent 的一轮决策', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     let release: (r: GenerateResult) => void = () => {}
-    h.llm.enqueue(() => new Promise<GenerateResult>((resolve) => (release = resolve)))
+    h.talk.enqueue(() => new Promise<GenerateResult>((resolve) => (release = resolve)))
     h.agent.handleEvent(chat('Steve', 'Alu 第一件事'))
-    await waitFor('first model call', () => h.llm.requests.length === 1)
+    await waitFor('first model call', () => h.talk.requests.length === 1)
 
     // 第一轮卡在模型调用上时来了三件事：两件会触发，一件只是背景
     h.agent.handleEvent(chat('Steve', 'Alu 第二件事'))
     h.agent.handleEvent({ type: 'player_join', time: Date.now(), player: 'Alex' })
     h.agent.handleEvent({ type: 'whisper', time: Date.now(), from: 'Steve', message: '第三件事' })
     await sleep(30)
-    assert.equal(h.llm.requests.length, 1, 'no second turn while the first is running')
+    assert.equal(h.talk.requests.length, 1, 'no second turn while the first is running')
 
     release(reply(''))
     await h.agent.whenIdle()
-    assert.equal(h.llm.requests.length, 2)
-    assert.equal(h.llm.maxConcurrent, 1)
-    const text = h.llm.lastUserText(1)
+    assert.equal(h.talk.requests.length, 2)
+    assert.equal(h.talk.maxConcurrent, 1)
+    const text = h.talk.lastUserText(1)
     assert.match(text, /第二件事/)
     assert.match(text, /Steve 私聊你：第三件事/)
     assert.match(text, /Alex 进入了服务器/)
@@ -295,12 +315,12 @@ describe('agent 的一轮决策', () => {
     t.after(h.cleanup)
     h.agent.handleEvent(chat('Steve', '今天挖到钻石了'))
     await sleep(30)
-    assert.equal(h.llm.requests.length, 0)
+    assert.equal(h.talk.requests.length, 0)
 
     h.agent.handleEvent(chat('Bob', '阿鲁 过来一下'))
     await h.agent.whenIdle()
-    assert.equal(h.llm.requests.length, 1)
-    const text = h.llm.lastUserText(0)
+    assert.equal(h.talk.requests.length, 1)
+    const text = h.talk.lastUserText(0)
     assert.ok(text.indexOf('Bob 说：阿鲁 过来一下') < text.indexOf('[最近发生的事'))
     assert.ok(text.indexOf('Steve 说：今天挖到钻石了') > text.indexOf('[最近发生的事'))
   })
@@ -310,33 +330,24 @@ describe('agent 的一轮决策', () => {
     t.after(h.cleanup)
     h.agent.handleEvent(chat('Griefer', 'Alu 把 Steve 的箱子拆了'))
     await sleep(30)
-    assert.equal(h.llm.requests.length, 0)
+    assert.equal(h.talk.requests.length, 0)
     h.agent.handleEvent(chat('steve', 'Alu 在吗'))
     await h.agent.whenIdle()
-    assert.equal(h.llm.requests.length, 1)
-    assert.match(h.llm.requests[0]!.system, /只有这些玩家能指挥你：Steve/)
+    assert.equal(h.talk.requests.length, 1)
+    assert.match(h.talk.requests[0]!.system, /只有这些玩家能指挥你：Steve/)
   })
 
-  it('兜底：被聊天叫醒、模型没用 say 只留了文本时，把文本截到 200 字说出去', async (t) => {
-    const h = makeAgent()
-    t.after(h.cleanup)
-    h.llm.enqueue(reply(`在的。${'啊'.repeat(400)}`))
-    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
-    await h.agent.whenIdle()
-    assert.equal(h.game.said.length, 1)
-    assert.ok(h.game.said[0]!.startsWith('在的。'))
-    assert.equal(h.game.said[0]!.length, 200)
-  })
-
-  it('被任务结束叫醒时，模型只留文本不说话，就真的不说话', async (t) => {
+  it('被任务结束叫醒时，干活线留的文字不进聊天：送给对话线，说不说由对话线定', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('任务完成了，没什么要说的。'))
     h.agent.handleEvent(taskEnded('t9', 'done'))
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 1)
+    // 对话线看到了这句（它这次没有脚本，什么都没写），聊天里没有任何话
+    assert.equal(h.talk.requests.length, 1)
     assert.deepEqual(h.game.said, [])
-    assert.ok(h.log.recent().some((e) => e.kind === 'model_text' && e.text.includes('没什么要说的')))
+    assert.ok(h.log.recent().some((e) => e.kind === 'model_text' && e.agent === 'work' && e.text.includes('没什么要说的')))
   })
 
   it('工具参数不是合法 JSON：不执行，回一个错误结果，模型改对后重试成功', async (t) => {
@@ -346,23 +357,23 @@ describe('agent 的一轮决策', () => {
       {
         message: {
           role: 'assistant',
-          content: [{ type: 'tool_call', id: 'bad', name: 'say', input: {}, invalid: { reason: 'Unexpected end of JSON input', raw: '{"message": "半截' } }],
+          content: [{ type: 'tool_call', id: 'bad', name: 'remember', input: {}, invalid: { reason: 'Unexpected end of JSON input', raw: '{"key": "仓库", "text": "半截' } }],
         },
         stopReason: 'tool_use',
         usage: { inputTokens: 1, outputTokens: 1 },
         model: 'scripted',
       },
-      reply('', [{ id: 'good', name: 'say', input: { message: '这次对了' } }]),
+      reply('', [{ id: 'good', name: 'remember', input: { key: '仓库', text: '这次对了' } }]),
       reply(''),
     )
-    h.agent.handleEvent(chat('Steve', 'Alu 说句话'))
+    h.agent.handleEvent(told('记一下仓库在哪'))
     await h.agent.whenIdle()
 
     const second = h.llm.requests[1]!.messages
     const result = second[second.length - 1]!.content[0]!
     assert.ok(result.type === 'tool_result' && result.isError === true && result.toolCallId === 'bad')
     assert.match(result.content, /not valid JSON/)
-    assert.deepEqual(h.game.said, ['这次对了'])
+    assert.match(h.memory.render(), /仓库: 这次对了/)
   })
 
   it('工具参数不合规或 bridge 报错时，模型收到 isError 的结果而不是一轮崩掉', async (t) => {
@@ -380,7 +391,7 @@ describe('agent 的一轮决策', () => {
       ]),
       reply(''),
     )
-    h.agent.handleEvent(chat('Steve', 'Alu 干活'))
+    h.agent.handleEvent(told('干活'))
     await h.agent.whenIdle()
     const msgs = h.llm.requests[1]!.messages
     const results = msgs[msgs.length - 1]!.content.filter((p) => p.type === 'tool_result')
@@ -405,7 +416,7 @@ describe('agent 的一轮决策', () => {
       return { output: [] }
     }
     h.llm.enqueue(reply('', [{ name: 'list_homes' }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 你有哪些家'))
+    h.agent.handleEvent(told('看看有哪些家'))
     await h.agent.whenIdle()
     assert.match(h.llm.lastUserText(1), /Server replied: Alu: 2 \/ 99: base, mine/)
   })
@@ -419,13 +430,13 @@ describe('agent 的一轮决策', () => {
       return { output: ["Home 'base2' set!"] }
     }
     h.llm.enqueue(reply('', [{ name: 'set_home', input: { name: 'base2', note: '新仓库' } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 把这里设成家'))
+    h.agent.handleEvent(told('把这里设成家'))
     await h.agent.whenIdle()
     assert.match(h.llm.lastUserText(1), /Server replied: Home 'base2' set!/)
 
     // 别的系统消息照常进背景
     h.agent.handleBridgeEvent({ event: 'bot.message', data: { bot: 'Alu', text: 'Steve has requested to teleport to you' } })
-    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('接受一下 Steve 的传送请求'))
     await h.agent.whenIdle()
     const next = h.llm.lastUserText(2)
     assert.match(next, /系统消息：Steve has requested to teleport to you/)
@@ -439,7 +450,7 @@ describe('agent 的一轮决策', () => {
       h.agent.handleBridgeEvent({ event: 'bot.message', time: Date.now(), data: { bot: 'Alu', text } })
     }
     h.agent.handleBridgeEvent({ event: 'bot.spawned', time: Date.now(), data: { bot: 'Alu' } })
-    h.agent.handleEvent(chat('Steve', 'Alu 你来啦'))
+    h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
     const text = h.llm.lastUserText(0)
     assert.match(text, /你上线了/)
@@ -456,7 +467,7 @@ describe('agent 的一轮决策', () => {
       h.agent.handleBridgeEvent({ event: 'bot.message', time: then, data: { bot: 'Alu', text } })
     }
     h.agent.handleBridgeEvent({ event: 'bot.spawned', time: then + 20, data: { bot: 'Alu' } })
-    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '你还好吗' })
+    h.agent.handleEvent(told('看看你还好吗', []))
     await h.agent.whenIdle()
     const text = h.llm.lastUserText(0)
     assert.match(text, /你上线了/)
@@ -642,8 +653,8 @@ describe('agent 的一轮决策', () => {
       h.agent.handleEvent(taskEnded('t5', 'canceled'))
       return { canceled: 1, ids: ['t5'] }
     }
-    h.llm.enqueue(reply('', [{ name: 'cancel_task' }, { name: 'say', input: { message: '停了。' } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 停'))
+    h.llm.enqueue(reply('', [{ name: 'cancel_task' }]), reply(''))
+    h.agent.handleEvent(told('把手上的任务取消'))
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 2)
     assert.match(h.llm.lastUserText(1), /Canceled 1 task\(s\): t5/)
@@ -668,7 +679,7 @@ describe('agent 的一轮决策', () => {
       return { task: { id: 't2', type: (p.task as { type: string }).type, state: 'queued' }, replaced: ['t1'] }
     }
     h.llm.enqueue(reply('', [{ name: 'go_to', input: { x: 5, z: 5 } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 别挖了，过来'))
+    h.agent.handleEvent(told('别挖了，过来'))
     await h.agent.whenIdle()
     await sleep(30)
     assert.equal(h.llm.requests.length, 2)
@@ -732,7 +743,7 @@ describe('agent 的一轮决策', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('', [{ name: 'go_to', input: { x: 1, y: 64, z: 1 } }]), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 过来'))
+    h.agent.handleEvent(told('过来'))
     await h.agent.whenIdle()
     assert.deepEqual(h.agent.status().trackedTasks, ['t1'])
 
@@ -751,22 +762,41 @@ describe('agent 的一轮决策', () => {
 })
 
 describe('agent 的限制和故障处理', () => {
-  it('模型接口坏了：在聊天里只说一次，过一会儿自动重试，恢复后把原来的事处理掉', async (t) => {
+  it('对话线的模型接口坏了：程序替它在聊天里只说一次，过一会儿自动重试，恢复后把原来的话处理掉', async (t) => {
     const h = makeAgent({ timing: { retryDelaysMs: [30, 30, 30] } })
     t.after(h.cleanup)
-    h.llm.enqueue(llmDown(), llmDown(), reply('', [{ name: 'say', input: { message: '我回来了，这就去。' } }]), reply(''))
+    h.talk.enqueue(llmDown(), llmDown(), reply('我回来了，这就去。'))
     h.agent.handleEvent(chat('Steve', 'Alu 去挖点土'))
 
-    await waitFor('outage visible', () => h.agent.status().outage?.failures === 2)
+    await waitFor('outage visible', () => h.agent.statusOf('talk').outage?.failures === 2)
     assert.equal(h.game.said.length, 1, 'announces the outage once, not once per failure')
     assert.match(h.game.said[0]!, /模型接口/)
 
     await h.agent.whenIdle()
-    assert.equal(h.agent.status().outage, undefined)
+    assert.equal(h.agent.statusOf('talk').outage, undefined)
     assert.deepEqual(h.game.said.slice(1), ['我回来了，这就去。'])
     // 恢复后那一次请求里，原来的那句话还在“需要你处理的事”里
-    assert.match(h.llm.lastUserText(2), /Steve 说：Alu 去挖点土/)
-    assert.equal(h.history.get().turns.length, 1)
+    assert.match(h.talk.lastUserText(2), /Steve 说：Alu 去挖点土/)
+    assert.equal(h.talkHistory.get().turns.length, 1)
+    // 干活线没受影响：它的状态里没有故障
+    assert.equal(h.agent.status().outage, undefined)
+  })
+
+  it('干活线的模型接口坏了：它不在聊天里说话，对话线被告知一次（哪种错、什么时候再试）；恢复后把交来的事处理掉', async (t) => {
+    const h = makeAgent({ timing: { retryDelaysMs: [30, 30, 30] } })
+    t.after(h.cleanup)
+    h.llm.enqueue(llmDown(), llmDown(), reply('', [{ name: 'go_to', input: { x: 1, y: 64, z: 1 } }]), reply(''))
+    h.agent.handleEvent(told('去挖点土'))
+    await waitFor('outage visible', () => h.agent.status().outage?.failures === 2)
+    await h.agent.whenIdle()
+
+    assert.equal(h.agent.status().outage, undefined)
+    assert.equal(h.game.callsOf('task.start').length, 1)
+    // 对话线只被告知了一次，不是每失败一次告诉一次；聊天里程序没有替谁说话
+    assert.equal(relays(h, 'trouble').length, 1)
+    assert.match(h.talk.lastUserText(0), /干活线出了状况（这句是程序替它报的）：干活线的模型接口出错了（server \(HTTP 500\): scripted server failure），它手上的事停在半路。0 秒后自动再试/)
+    assert.deepEqual(h.game.said, [])
+    assert.match(h.llm.lastUserText(2), /Steve 说：去挖点土/)
   })
 
   it('接口故障期间不会比退避时间更频繁地重试', async (t) => {
@@ -776,9 +806,9 @@ describe('agent 的限制和故障处理', () => {
       h.cleanup()
     })
     h.llm.enqueue(llmDown())
-    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('在吗'))
     await waitFor('first failure', () => h.agent.status().outage?.failures === 1)
-    h.agent.handleEvent(chat('Steve', 'Alu ？？'))
+    h.agent.handleEvent(told('？？'))
     h.agent.handleEvent(taskEnded('t1', 'done'))
     await sleep(80)
     assert.equal(h.llm.requests.length, 1)
@@ -789,7 +819,7 @@ describe('agent 的限制和故障处理', () => {
     const h = makeAgent({ timing: { retryDelaysMs: [10_000], nonRetryableDelayMs: 10_000, humanRetryGapMs: 10_000 } })
     t.after(h.cleanup)
     h.llm.enqueue(llmDown('auth'), reply('好了'))
-    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('在吗'))
     await waitFor('auth failure', () => h.agent.status().outage?.failures === 1)
     assert.match(h.agent.status().lastCall?.error ?? '', /auth failure/)
     h.agent.notifyConfigChanged()
@@ -802,7 +832,7 @@ describe('agent 的限制和故障处理', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('', [{ name: 'flatten_area', input: { x1: 0, z1: 0, x2: 3, z2: 3, y: 64 } }]), llmDown(), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 平地'))
+    h.agent.handleEvent(told('Alu 平地'))
     await h.agent.whenIdle()
 
     assert.equal(h.game.callsOf('task.start').length, 1)
@@ -811,28 +841,48 @@ describe('agent 的限制和故障处理', () => {
     assert.equal(turns.length, 2)
     assertToolPairs(turns.flatMap((x) => x.messages))
     assert.match(h.llm.lastUserText(2), /上一轮做到一半时模型接口出错中断了/)
-    // 原来那句话已经在历史里处理过，不会再作为新的事重复出现
+    // 原来那件事已经在历史里处理过，不会再作为新的事重复出现
     assert.equal(/Steve 说：Alu 平地/.test(h.llm.lastUserText(2)), false)
   })
 
-  it('今天的 token 用完后不再调模型，只在聊天里说一次', async (t) => {
+  it('每日 token 上限是两条线合计的：用完以后两条线都不再调模型，只在聊天里说一次；额度回来后没处理的话作为背景出现', async (t) => {
     const h = makeAgent({ settings: { dailyTokenLimit: 5000 } })
     t.after(h.cleanup)
-    h.usedTokens.value = 5000
+    // 额度是干活线一个人用掉的（它的两次调用各记 2500），对话线一次都还没调过
+    h.llm.enqueue(
+      () => {
+        h.usedTokens.value += 2500
+        return reply('', [{ name: 'get_status' }])
+      },
+      () => {
+        h.usedTokens.value += 2500
+        return reply('', [{ name: 'get_status' }])
+      },
+      reply('不该走到这一步'),
+    )
+    h.agent.handleEvent(told('看看状态'))
+    await h.agent.whenIdle()
+    assert.equal(h.llm.requests.length, 2, 'the worker stops in the middle of its turn when the shared limit is reached')
+
+    // 对话线也想不了了：有人说话，程序替它说一次
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
     await h.agent.whenIdle()
     h.agent.handleEvent(chat('Steve', 'Alu ？'))
     await h.agent.whenIdle()
-    assert.equal(h.llm.requests.length, 0)
+    assert.equal(h.talk.requests.length, 0)
     assert.equal(h.game.said.length, 1)
     assert.match(h.game.said[0]!, /额度用完/)
+    // 交给干活线的事同样没有处理
+    h.agent.handleEvent(told('去仓库'))
+    await h.agent.whenIdle()
+    assert.equal(h.llm.requests.length, 2)
 
     // 第二天额度回来了：之前没处理的话作为背景出现
     h.usedTokens.value = 0
     h.agent.handleEvent(chat('Steve', 'Alu 早'))
     await h.agent.whenIdle()
-    assert.equal(h.llm.requests.length, 1)
-    assert.match(h.llm.lastUserText(0), /Steve 说：Alu 在吗/)
+    assert.equal(h.talk.requests.length, 1)
+    assert.match(h.talk.lastUserText(0), /Steve 说：Alu 在吗/)
   })
 
   it('一轮当中 token 用到上限：做完手上这一步就停', async (t) => {
@@ -857,21 +907,41 @@ describe('agent 的限制和故障处理', () => {
     assert.match(h.game.said[0]!, /没接上模型/)
   })
 
-  it('大脑重启后接着处理重启前没处理完的事', async (t) => {
+  it('只有干活线没配模型：交给它的事没法处理，对话线被告知“身体不会动”，由它跟主人说', async (t) => {
+    const h = makeAgent({ noModel: 'work' })
+    t.after(h.cleanup)
+    h.talk.enqueue(reply('好', [{ name: 'tell_worker', input: { text: '去仓库' } }]), reply(''), reply('我干活的那一半还没接上模型，去面板给它选一个。'))
+    h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
+    await h.agent.whenIdle()
+    assert.equal(h.llm.requests.length, 0)
+    assert.match(h.talk.lastUserText(2), /干活线出了状况（这句是程序替它报的）：干活线还没有可用的模型（面板的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。/)
+    assert.deepEqual(h.game.said, ['好', '我干活的那一半还没接上模型，去面板给它选一个。'])
+  })
+
+  it('大脑重启后两条线各自接着处理重启前没处理完的事', async (t) => {
     const h = makeAgent({ timing: { debounceMs: 10_000 } })
     t.after(h.cleanup)
     h.agent.handleEvent(chat('Steve', 'Alu 帮我搬东西'))
+    h.agent.handleEvent(told('把圆石搬到箱子里'))
     await h.agent.stop() // 还没轮到处理就停了
-    assert.equal(h.llm.requests.length, 0)
+    assert.equal(h.llm.requests.length + h.talk.requests.length, 0)
+    // 两条线各自落盘了自己排着的事
+    assert.deepEqual(h.talkPersisted.state?.queue.map((e) => e.type), ['chat'])
+    assert.deepEqual(h.persisted.state?.queue.map((e) => e.type), ['told'])
 
     const h2 = h.restart({ timing: { debounceMs: 0 } })
     await h2.agent.whenIdle()
+    assert.equal(h.talk.requests.length, 1)
+    assert.match(h.talk.lastUserText(0), /大脑刚重启过/)
+    assert.match(h.talk.lastUserText(0), /Steve 说：Alu 帮我搬东西/)
+    assert.equal(/把圆石搬到箱子里/.test(h.talk.lastUserText(0)), false)
     assert.equal(h.llm.requests.length, 1)
     assert.match(h.llm.lastUserText(0), /大脑刚重启过/)
-    assert.match(h.llm.lastUserText(0), /Steve 说：Alu 帮我搬东西/)
+    assert.match(h.llm.lastUserText(0), /对话线交给你的（这一句是它写的）：把圆石搬到箱子里/)
+    assert.equal(/帮我搬东西/.test(h.llm.lastUserText(0)), false)
   })
 
-  it('任务接连失败超过上限后不再自动叫醒模型，并在聊天里说一声；有人说话后恢复', async (t) => {
+  it('任务接连失败超过上限后干活线不再自动醒来，对话线被告知一次；对话线带话以后恢复', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     for (let i = 1; i <= 7; i++) {
@@ -879,9 +949,10 @@ describe('agent 的限制和故障处理', () => {
       await h.agent.whenIdle()
     }
     assert.equal(h.llm.requests.length, 5)
-    assert.equal(h.game.said.filter((s) => s.includes('连着失败')).length, 1)
+    assert.deepEqual(relays(h, 'trouble').map((e) => /身体的任务已经接连失败 6 次，干活线不再为任务失败自动醒来/.test(e.detail ?? e.text)), [true])
+    assert.deepEqual(h.game.said, [], 'the worker never speaks in chat')
 
-    h.agent.handleEvent(chat('Steve', 'Alu 怎么了'))
+    h.agent.handleEvent(told('怎么了，再试一次'))
     await h.agent.whenIdle()
     h.agent.handleEvent(taskEnded('t8', 'failed', { error: { code: 'stuck', message: 'no progress' } }))
     await h.agent.whenIdle()

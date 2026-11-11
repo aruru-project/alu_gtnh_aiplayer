@@ -118,9 +118,13 @@ export function manualsInContext(messages: readonly Message[], manuals: readonly
   return manuals.filter((m) => found.has(m.name)).map((m) => m.name)
 }
 
-/** “当前状态”里讲手册的那一行。没有手册时返回空字符串。 */
-export function manualStatusLine(manuals: readonly Manual[], inContext: readonly string[]): string {
+/**
+ * “当前状态”里讲手册的那一行。没有手册时返回空字符串。
+ * 对话线不动手，不用“做事之前先看”：只在它读过的还留着时说一声。
+ */
+export function manualStatusLine(manuals: readonly Manual[], inContext: readonly string[], line: 'talk' | 'work' = 'work'): string {
   if (manuals.length === 0) return ''
+  if (line === 'talk') return inContext.length > 0 ? `手册：${inContext.join('、')} 的内容还在这段对话里。` : ''
   if (inContext.length === 0) return '手册：这段对话里现在没有任何一本手册的内容，要做某类事之前先 read_manual。'
   if (inContext.length === manuals.length) return '手册：每一本的内容都还在这段对话里，不用重看。'
   return `手册：${inContext.join('、')} 的内容还在这段对话里，不用重看；其余的要用之前先 read_manual。`
