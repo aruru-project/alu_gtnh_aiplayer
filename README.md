@@ -113,4 +113,4 @@ AIPLAYER_CLIENT_PACK=/path/to/GTNH-2.9.0-client.zip          # tools/client setu
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。`mod/` 的构建脚手架来自 GTNH 的 mod 模板（MIT）。仓库里不含 GTNH 整合包的任何内容。
+MIT，见 [LICENSE](LICENSE)。`mod/` 的构建脚手架来自 GTNH 的 mod 模板（MIT），仓库里不含 GTNH 整合包的任何内容，见 [NOTICE](NOTICE)。
