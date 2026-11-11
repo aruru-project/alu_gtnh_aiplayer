@@ -4,7 +4,7 @@
 
 import { actions, agentHint, agentLabel, bodyAgent, refresh, serverNow, state } from './data.js'
 import { foodIcon, heartIcon, playerHead } from './items.js'
-import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, taskName } from './ui.js'
+import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, taskName, toast } from './ui.js'
 
 /** 模型一步想了这么久算“比平时久”（默认的接口超时是 120 秒）。 */
 export const SLOW_STEP_MS = 90_000
@@ -78,15 +78,15 @@ function playerCard() {
       : button('上线', { class: 'small primary', title: '让它进入游戏' }, (btn) => act(btn, actions.spawn, '已让它上线').then(refresh))
   return h(
     'div',
-    { class: 'player' },
+    { class: 'pcard' },
     playerHead(name, 5),
     h(
       'div',
-      { class: 'player-info' },
-      h('div', { class: 'player-name' }, h('span', { text: name }), toggle),
+      { class: 'pcard-info' },
+      h('div', { class: 'pcard-name' }, h('span', { text: name }), toggle),
       h(
         'div',
-        { class: 'player-state' },
+        { class: 'pcard-state' },
         !o
           ? h('span', { class: 'muted', text: state.error ? '连不上大脑' : '…' })
           : !connected
@@ -98,7 +98,7 @@ function playerCard() {
       online && live?.online
         ? h(
             'div',
-            { class: 'player-vitals', title: `血量 ${live.health ?? '?'} / ${live.maxHealth ?? 20}，饱食度 ${live.food ?? '?'} / 20` },
+            { class: 'pcard-vitals', title: `血量 ${live.health ?? '?'} / ${live.maxHealth ?? 20}，饱食度 ${live.food ?? '?'} / 20` },
             heartIcon(1),
             h('span', { class: live.health !== null && live.health <= 6 ? 'bad' : '', text: live.health === null ? '?' : String(Math.ceil(live.health)) }),
             foodIcon(1),
@@ -116,9 +116,9 @@ function modelPicker(agent) {
   const o = state.overview
   const choices = o?.models ?? []
   const m = agent.model ?? {}
-  // 这条线现在用的：后端给了就用它的（按显示名对），否则是全局的那个“当前模型”
+  // 这条线现在用的：后端给了就用它的（没给 id 的按显示名对），否则是全局的那个“当前模型”
   const byLabel = choices.find((c) => c.providerLabel === m.provider && c.label === m.model)
-  const current = byLabel ? `${byLabel.providerId}/${byLabel.modelId}` : o?.provider ? `${o.provider.id}/${o.provider.modelId}` : ''
+  const current = m.providerId && m.modelId ? `${m.providerId}/${m.modelId}` : byLabel ? `${byLabel.providerId}/${byLabel.modelId}` : o?.provider ? `${o.provider.id}/${o.provider.modelId}` : ''
   const select = h('select', { class: 'model-pick', 'aria-label': `${agentLabel(agent)}用的模型`, title: '换了以后下一轮起生效，不用重启', disabled: choices.length === 0 })
   if (current === '') select.append(h('option', { value: '', text: choices.length === 0 ? '还没配模型' : '还没选模型', selected: true }))
   for (const c of choices) select.append(h('option', { value: `${c.providerId}/${c.modelId}`, text: `${c.providerLabel} / ${c.label}`, selected: `${c.providerId}/${c.modelId}` === current }))
@@ -196,6 +196,19 @@ function bodyRow(agent) {
   )
 }
 
+/** 干活线提了问、还没人带话回答：整件事就停在这里，要显眼。 */
+function waitingRow(agent) {
+  const w = agent.waitingAnswer
+  if (!w) return null
+  return h(
+    'div',
+    { class: 'waiting', role: 'status' },
+    h('div', { class: 'waiting-head' }, h('span', { class: 'state warn', 'data-since': w.since, 'data-label': '在等回答', text: `在等回答 ${duration(Math.max(0, serverNow() - w.since))}` })),
+    h('div', { class: 'waiting-text', text: w.text }),
+    h('div', { class: 'hint' }, '在', h('a', { href: '#chat', text: '对话页' }), '回它一句，对话线会带话过去。'),
+  )
+}
+
 function lineCard(agent, ownsBody, alone) {
   const s = modelState(agent)
   const m = agent.model ?? {}
@@ -204,7 +217,7 @@ function lineCard(agent, ownsBody, alone) {
   if (m.state === 'outage' && m.outage) {
     extra.push(h('div', { class: 'lane-note bad', text: `连着失败 ${m.outage.failures} 次，${clock(m.outage.nextRetryAt)} 再试` }))
   } else if (turn) {
-    extra.push(h('div', { class: 'lane-note muted', text: `第 ${turn.id} 轮${turn.maxSteps ? ` · 已 ${turn.steps ?? 0}/${turn.maxSteps} 步` : ''}` }))
+    extra.push(h('div', { class: 'lane-note muted', title: turn.about ?? '', text: `第 ${turn.id} 轮${turn.maxSteps ? ` · 已 ${turn.steps ?? 0}/${turn.maxSteps} 步` : ''}${turn.about ? ` · ${turn.about}` : ''}` }))
   }
   if (agent.pending > 0) extra.push(h('div', { class: 'lane-note muted', text: `还有 ${agent.pending} 件事排着等它` }))
   return h(
@@ -213,26 +226,29 @@ function lineCard(agent, ownsBody, alone) {
     h('div', { class: 'line-head' }, h('span', { class: 'line-name', title: agentHint(agent), text: alone ? '模型' : agentLabel(agent) }), stateChip(s)),
     modelPicker(agent),
     extra,
+    waitingRow(agent),
     ownsBody ? [routineRow(agent), bodyRow(agent)] : null,
   )
 }
 
 function stopAll() {
   const agents = state.status?.agents ?? []
-  const busy = agents.some((a) => a.routine || a.body?.task || (a.body?.queue ?? []).length > 0)
+  // 有总停止接口的后端连“正在想的那一步”也打断得了；没有的只停得了例程和任务
+  const working = agents.filter((a) => a.agent !== 'talk')
+  const busy = working.some((a) => a.routine || a.body?.task || (a.body?.queue ?? []).length > 0 || (state.status?.source === 'status' && (a.model?.state === 'thinking' || a.model?.state === 'tools')))
   return button(
     '全部停下',
     {
       class: 'stop-all danger',
       disabled: !busy,
-      title: busy ? '停掉例程，取消身体正在做的和排着队的全部任务' : '现在没有在跑的例程和任务',
+      title: busy ? '让一切停下：打断干活的那条线正在想的那一步，停掉例程，取消身体正在做的和排着队的全部任务' : '现在没有在干的活',
     },
     (btn) =>
-      act(btn, async () => {
-        const res = await actions.stopAll()
-        return res
-      }).then((res) => {
-        if (res) refresh()
+      act(btn, actions.stopAll).then((res) => {
+        if (!res) return
+        const did = [res.turn ? '打断了正在想的那一步' : '', res.routine ? `停了例程${typeof res.routine === 'string' && res.routine !== '例程' ? ` ${res.routine}` : ''}` : '', res.tasks > 0 ? `取消了 ${res.tasks} 个任务` : ''].filter(Boolean)
+        toast(did.length > 0 ? `已停下：${did.join('，')}` : '没有要停的')
+        refresh()
       }),
   )
 }
@@ -270,7 +286,7 @@ export function renderSide(root, footRoot) {
   root.replaceChildren(
     playerCard(),
     h('div', { class: 'lines-head' }, h('span', { class: 'side-label', text: agents.length > 1 ? '两条线' : '它在干什么' }), stopAll()),
-    agents.length === 0 ? h('p', { class: 'muted pad', text: state.error ? `连不上大脑进程：${state.error}` : '正在问大脑…' }) : agents.map((a) => lineCard(a, a === owner, agents.length === 1)),
+    ...(agents.length === 0 ? [h('p', { class: 'muted pad', text: state.error ? `连不上大脑进程：${state.error}` : '正在问大脑…' })] : agents.map((a) => lineCard(a, a === owner, agents.length === 1))),
   )
   footRoot.replaceChildren(foot())
 }

@@ -13,7 +13,7 @@ const openState = new Map()
 const isOpen = (key, fallback) => openState.get(key) ?? fallback
 
 const RUN_STATES = { running: '在跑', done: '跑完了', failed: '出错停了', stopped: '被停掉了', limit: '到上限停了' }
-const RUN_TONES = { running: 'live', done: 'ok', failed: 'bad', stopped: 'warn', limit: 'warn' }
+const RUN_TONES = { running: 'running', done: 'ok', failed: 'bad', stopped: 'warn', limit: 'warn' }
 const STOP_REASONS = { tool_calls: '要调工具', end: '说完了', truncated: '被输出上限截断', other: '别的原因停下', error: '出错' }
 
 /** 玩家名字的颜色：由名字定，同一个人总是同一种。 */
@@ -50,7 +50,7 @@ function fold(title, text, key, cls = '') {
 function renderMsg(item, prev) {
   const grouped = prev && prev.type === 'msg' && prev.role === item.role && prev.who === item.who && item.time - prev.time < 120000
   const who = item.role === 'owner' ? '你（面板）' : item.who
-  const el = h('div', { class: `msg ${item.role}${item.whisper ? ' whisper' : ''}${grouped ? ' grouped' : ''}${item.role === 'player' && item.note ? ' unheard' : ''}` })
+  const el = h('div', { class: `msg from-${item.role}${item.whisper ? ' whisper' : ''}${grouped ? ' grouped' : ''}${item.role === 'player' && item.note ? ' unheard' : ''}` })
   if (!grouped) {
     const name = h('span', { class: 'who', text: who })
     if (item.role === 'player') name.style.color = `hsl(${nameHue(item.who)}, 55%, 70%)`
@@ -59,7 +59,8 @@ function renderMsg(item, prev) {
   const bubble = h('div', { class: 'bubble', text: item.text })
   if (grouped) bubble.title = dateTime(item.time)
   el.append(bubble)
-  if (item.note) el.append(h('div', { class: 'msg-note', text: item.note }))
+  // 连着几句都是同一个说明（“没有叫醒模型：这是另一个 bot 说的”）：只在头一句下面写
+  if (item.note && !(grouped && prev.note === item.note)) el.append(h('div', { class: `msg-note${item.sent ? ' warn' : ''}`, text: item.note }))
   return el
 }
 
@@ -111,7 +112,6 @@ function prettyArgs(tool) {
 }
 
 function renderTool(tool) {
-  if (tool.cross) return renderCross(tool)
   const key = `tool:${tool.key}`
   const tone = tool.pending ? 'pending' : tool.isError ? 'bad' : 'ok'
   const summary = h(
@@ -142,17 +142,32 @@ function renderTool(tool) {
   return out
 }
 
-/** 两条线之间的往来：画成一句带方向的话，不是一次工具调用。 */
-function renderCross(tool) {
-  const labels = { handoff: '交给干活线', report: tool.question ? '问对话线' : '向对话线汇报', stop: '叫停干活线' }
-  return h(
+/**
+ * 两条线之间的一次往来：横跨两边的一条，左边写“对话线”、右边写“干活线”（和两条线在页面上的位置一致），箭头是话往哪边去。
+ * 它是连着两边的线索：对话线把什么交给了手、手汇报了什么、卡在什么问题上等回答。
+ */
+const RELAY_KINDS = {
+  tell: ['交事', ''],
+  report: ['汇报', ''],
+  question: ['提问，在等回答', 'warn'],
+  result: ['做完了', 'ok'],
+  trouble: ['出了状况', 'bad'],
+  stop: ['叫停', 'bad'],
+}
+
+function renderRelay(item) {
+  const [label, tone] = RELAY_KINDS[item.kind] ?? [item.kind, '']
+  const toWork = item.to === 'work'
+  const left = item.kind === 'stop' && item.from === 'panel' ? '面板' : '对话线'
+  const el = h(
     'div',
-    { class: `cross ${tool.cross}${tool.question ? ' question' : ''}` },
-    h('span', { class: 'cross-arrow', 'aria-hidden': 'true', text: tool.cross === 'report' ? '←' : tool.cross === 'stop' ? '■' : '→' }),
-    h('span', { class: 'cross-label', text: labels[tool.cross] }),
-    tool.crossText ? h('span', { class: 'cross-text', text: tool.crossText }) : null,
-    time(tool.time),
+    { class: `rband k-${item.kind}${item.isError ? ' is-error' : ''} ${toWork ? 'to-work' : 'to-talk'}` },
+    h('div', { class: 'relay-route', title: toWork ? `${left}交给干活线的` : '干活线送给对话线的' }, h('span', { class: 'tag talk', text: left }), h('span', { class: 'relay-arrow', 'aria-label': toWork ? '交给' : '送回', text: item.kind === 'stop' ? '■→' : toWork ? '──→' : '←──' }), h('span', { class: 'tag work', text: '干活线' })),
+    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
+    time(item.time),
   )
+  if (item.detail && item.detail !== item.text) el.append(fold('全文', item.detail, `relay:${item.id}`))
+  return el
 }
 
 function stepHead(step, live) {
@@ -196,7 +211,7 @@ function toolChips(turn) {
       for (const tool of step.tools) {
         const last = chips[chips.length - 1]
         if (last && last.name === tool.name && last.bad === tool.isError) last.n++
-        else chips.push({ name: tool.name, n: 1, bad: tool.isError, cross: tool.cross })
+        else chips.push({ name: tool.name, n: 1, bad: tool.isError })
       }
     }
   }
@@ -214,68 +229,68 @@ function lastText(turn) {
   return ''
 }
 
-function turnStats(turn, live) {
+function statsText(turn) {
   const bits = []
   if (turn.calls !== undefined) bits.push(`${turn.calls} 步`)
   if (turn.tools > 0) bits.push(`${turn.tools} 次工具`)
   if (turn.startedAt !== undefined && turn.endedAt !== undefined) bits.push(duration(turn.endedAt - turn.startedAt))
   if (turn.hasTokens) bits.push(tokensText(turn.inputTokens, turn.outputTokens, turn.cacheReadTokens))
-  const out = [h('span', { class: 'stats', text: bits.join(' · ') })]
+  return bits.join(' · ')
+}
+
+function turnFlags(turn, live) {
+  const out = []
   if (turn.errors > 0) out.push(h('span', { class: 'chip bad', text: `${turn.errors} 处出错` }))
   if (turn.open) out.push(live ? h('span', { class: 'chip live', 'data-since': turn.startedAt ?? turn.firstTime, 'data-label': '进行中', text: '进行中' }) : h('span', { class: 'chip', title: '没有这一轮结束的记录：多半是大脑重启时被打断了', text: '没有结束记录' }))
   return out
 }
 
+const chipEls = (chips) => chips.map((c) => h('span', { class: `tchip${c.bad ? ' bad' : ''}`, text: c.n > 1 ? `${c.name} ×${c.n}` : c.name }))
+
+/**
+ * 一轮决策里的一段。头一段带这一轮的头：收着时是一行汇总（被什么叫醒的、几步、多久、多少 token、依次调了哪些工具），点开是每一步。
+ * 对话那条线上的一轮画得更省：它的起因就是上面那句话，头上只留几步、多久和调了什么。
+ */
 function renderWork(item, ctx) {
   const turn = item.turn
   const live = ctx.liveTurns.has(turn.id) && turn.open
   const open = isOpen(`turn:${turn.key}`, ctx.latestTurns.has(turn.key))
-  const el = h('div', { class: `work${open ? ' open' : ''}${live ? ' live' : ''}${turn.errors > 0 ? ' has-error' : ''}` })
+  const quiet = item.lane === 'talk'
+  const el = h('div', { class: `turn${open ? ' open' : ''}${live ? ' live' : ''}${quiet ? ' quiet' : ''}${turn.errors > 0 ? ' has-error' : ''}` })
   if (item.index === 0) {
+    const chips = toolChips(turn)
+    const trigger = turn.hasStart ? h('span', { class: 'turn-trigger', text: turn.trigger || '（没写是被什么叫醒的）' }) : h('span', { class: 'turn-trigger muted', text: '（开头在更早的记录里）' })
     const head = h(
       'button',
       { type: 'button', class: 'turn-head', 'aria-expanded': String(open), title: open ? '收起这一轮' : '展开看每一步' },
       h('span', { class: 'caret', 'aria-hidden': 'true' }),
-      h('span', { class: 'tag model', text: state.status?.agents?.length > 1 ? agentLabel(item.agent ?? 'main') : '模型' }),
-      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: `第 ${turn.id} 轮` }), turn.hasStart ? h('span', { class: 'turn-trigger', text: turn.trigger || '（没写是被什么叫醒的）' }) : h('span', { class: 'turn-trigger muted', text: '（开头在更早的记录里）' })),
-      h('span', { class: 'turn-meta' }, time(turn.startedAt ?? turn.firstTime), turnStats(turn, live)),
+      h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: state.status?.agents?.length > 1 ? agentLabel(state.status.agents.find((a) => a.agent === item.agent) ?? item.agent ?? 'main') : '模型' }),
+      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', text: statsText(turn) }) : trigger),
+      time(turn.startedAt ?? turn.firstTime),
+      h('span', { class: 'turn-meta' }, quiet ? (open ? [] : chipEls(chips)) : h('span', { class: 'stats', text: statsText(turn) }), turnFlags(turn, live)),
     )
     head.addEventListener('click', () => {
       openState.set(`turn:${turn.key}`, !open)
       ctx.rerender()
     })
     el.append(head)
-    if (!open) {
-      const chips = toolChips(turn)
+    if (!open && !quiet) {
       const text = lastText(turn)
-      if (chips.length > 0 || text) {
-        el.append(
-          h(
-            'div',
-            { class: 'turn-brief' },
-            chips.length > 0 ? h('div', { class: 'tool-chips' }, chips.map((c) => h('span', { class: `tchip${c.bad ? ' bad' : ''}${c.cross ? ' cross' : ''}`, text: c.n > 1 ? `${c.name} ×${c.n}` : c.name }))) : null,
-            text ? h('div', { class: 'turn-said', title: '这一轮最后模型写的文字', text }) : null,
-          ),
-        )
-      }
+      if (chips.length > 0 || text) el.append(h('div', { class: 'turn-brief' }, chips.length > 0 ? h('div', { class: 'tool-chips' }, chipEls(chips)) : null, text ? h('div', { class: 'turn-said', title: '这一轮最后模型写的文字', text }) : null))
     }
   }
   if (open) {
     const body = h('div', { class: 'work-body' })
     if (item.index === 0) {
+      if (quiet && turn.hasStart) body.append(h('div', { class: 'turn-model' }, h('span', { class: 'muted', text: '起因：' }), turn.trigger || '（没写）'))
       if (turn.model) body.append(h('div', { class: 'turn-model muted', text: `用的模型：${turn.model}` }))
       if (turn.seen) body.append(fold('这一轮开始时给模型看的内容', turn.seen, `seen:${turn.key}`))
     }
     body.append(...item.notes.map(renderInlineNote), ...item.steps.map((s) => renderStep(s, live)))
     if (body.childElementCount > 0) el.append(body)
   } else if (item.index > 0) {
-    // 收起来的一轮：后面几段只留两条线之间的往来（它是连接两边的线索）
-    const cross = item.steps.flatMap((s) => s.tools.filter((t) => t.cross))
-    if (cross.length === 0) el.classList.add('blank')
-    else el.append(h('div', { class: 'work-body' }, cross.map(renderCross)))
-  } else {
-    const cross = item.steps.flatMap((s) => s.tools.filter((t) => t.cross))
-    if (cross.length > 0) el.append(h('div', { class: 'work-body' }, cross.map(renderCross)))
+    // 收起来的一轮：汇总在头一段，后面几段不占地方
+    el.classList.add('blank')
   }
   return el
 }
@@ -314,41 +329,74 @@ function recordRow(rec) {
   return null
 }
 
-/** 新日志的明细：点开时去取，一页一页往后读；还在跑的，读到头以后可以接着读新的。 */
+/**
+ * 新日志的明细：点开时去取。先给最后一页（最近的那些步），前面的点了再取；还在跑的每两秒接着读新追加的。
+ * 每次运行记着读到了哪：{ from, next, total, rows }，rows 是第 from 行到第 next 行。
+ */
 function remoteCalls(item) {
   const run = item.run
   const id = run.file ?? run.id
   const box = h('div', { class: 'run-calls' })
-  const more = h('div', { class: 'row' })
-  const data = runRecords.get(id) ?? { next: 0, total: undefined, rows: [], error: null }
+  const before = h('div', { class: 'row' })
+  const after = h('div', { class: 'row' })
+  const data = runRecords.get(id) ?? { from: 0, next: 0, total: undefined, rows: [], error: null }
   runRecords.set(id, data)
-  const paint = () => {
+  const q = run.file !== undefined ? `file=${encodeURIComponent(run.file)}` : `id=${encodeURIComponent(run.id)}`
+  const fetchPage = (from, limit) => api('GET', `/runs/records?${q}&after=${from}&limit=${limit}`)
+  const paint = (stick) => {
     box.replaceChildren(...data.rows.map(recordRow).filter(Boolean))
-    const left = data.total !== undefined ? data.total - data.next : undefined
-    more.replaceChildren()
-    if (data.error) more.append(h('span', { class: 'bad', text: `明细没取到：${data.error}` }))
-    if (left === undefined || left > 0 || run.status === 'running') {
-      more.append(button(left ? `接着读（还有 ${left} 行）` : data.total === undefined ? '读明细' : '看看有没有新的', { class: 'small' }, (btn) => act(btn, load)))
-    } else if (data.rows.length === 0) {
-      more.append(h('span', { class: 'muted', text: '没有记录。' }))
-    }
+    if (stick) box.scrollTop = box.scrollHeight
+    before.replaceChildren()
+    after.replaceChildren()
+    if (data.error) after.append(h('span', { class: 'bad', text: `明细没取到：${data.error}` }), button('再试', { class: 'small' }, (btn) => act(btn, first)))
+    else if (data.total === undefined) after.append(h('span', { class: 'muted', text: '正在取…' }))
+    else if (data.rows.length === 0) after.append(h('span', { class: 'muted', text: '没有记录。' }))
+    if (data.from > 0) before.append(button(`前面还有 ${data.from} 行，再看 ${Math.min(data.from, RECORDS_PAGE)} 行`, { class: 'small quiet' }, (btn) => act(btn, earlier)))
   }
-  const load = async () => {
+  const guard = async (fn) => {
     data.error = null
     try {
-      const q = run.file !== undefined ? `file=${encodeURIComponent(run.file)}` : `id=${encodeURIComponent(run.id)}`
-      const res = await api('GET', `/runs/records?${q}&after=${data.next}&limit=${RECORDS_PAGE}`)
-      data.rows.push(...(res.records ?? []))
-      data.next = res.next ?? data.next + (res.records ?? []).length
-      data.total = res.total
+      await fn()
     } catch (e) {
-      data.error = e.status === 404 ? '这个版本的大脑还没有程序运行的明细' : e.message
+      data.error = e.status === 404 ? '这次运行的记录已经不在了（只留最近 300 次）' : e.message
     }
-    paint()
   }
-  paint()
-  if (data.total === undefined) load()
-  return [box, more]
+  const first = () =>
+    guard(async () => {
+      let res = await fetchPage(0, RECORDS_PAGE)
+      let from = 0
+      // 不止一页：要最后那一页
+      if (res.total > res.next) {
+        from = Math.max(0, res.total - RECORDS_PAGE)
+        res = await fetchPage(from, RECORDS_PAGE)
+      }
+      Object.assign(data, { from, next: res.next, total: res.total, rows: res.records ?? [] })
+    }).then(() => paint(true))
+  const earlier = () =>
+    guard(async () => {
+      const from = Math.max(0, data.from - RECORDS_PAGE)
+      const res = await fetchPage(from, data.from - from)
+      data.rows.unshift(...(res.records ?? []))
+      data.from = from
+    }).then(() => paint(false))
+  const follow = () =>
+    guard(async () => {
+      const res = await fetchPage(data.next, RECORDS_PAGE)
+      data.rows.push(...(res.records ?? []))
+      data.next = res.next
+      data.total = res.total
+    }).then(() => paint(box.scrollHeight - box.scrollTop - box.clientHeight < 40))
+  paint(false)
+  if (data.total === undefined) first()
+  else if (run.status === 'running' || data.next < (data.total ?? 0)) follow()
+  // 还在跑：开着的时候每两秒接着读
+  if (run.status === 'running') {
+    const timer = setInterval(() => {
+      if (!box.isConnected) clearInterval(timer)
+      else if (data.total !== undefined && !data.error) follow()
+    }, 2000)
+  }
+  return [before, box, after]
 }
 
 /** 旧日志的明细：每一步都在日志里。只画最后 60 步，再往前的点了才画。 */
@@ -465,6 +513,7 @@ function renderEvents(item) {
 
 function renderItem(item, prev, ctx) {
   if (item.type === 'msg') return renderMsg(item, prev)
+  if (item.type === 'relay') return renderRelay(item)
   if (item.type === 'work') return renderWork(item, ctx)
   if (item.type === 'run') return renderRun(item)
   if (item.type === 'note') return renderNote(item)
@@ -517,10 +566,10 @@ export function createLogView(container, opts = {}) {
     const rows = layoutRows(timeline.items, level)
     let prevTime
     for (const row of rows) {
-      const first = row.left[0] ?? row.right[0]
+      const first = row.both ?? row.left[0] ?? row.right[0]
       row.day = prevTime === undefined || !sameDay(prevTime, first.time) ? first.time : undefined
       prevTime = first.time
-      row.rev = `${row.day ?? ''}|${level}|${[...row.left, ...row.right].map((i) => `${i.key}=${itemRev(i, ctx)}`).join(',')}`
+      row.rev = `${row.day ?? ''}|${level}|${[...(row.both ? [row.both] : []), ...row.left, ...row.right].map((i) => `${i.key}=${itemRev(i, ctx)}`).join(',')}`
     }
     container.classList.toggle('talk-only', level === LEVEL.talk)
     reconcile(container, rows, {
@@ -537,7 +586,9 @@ export function createLogView(container, opts = {}) {
           }
           return el
         }
-        return h('div', { class: `trow${row.left.length === 0 ? ' no-talk' : ''}${row.right.length === 0 ? ' no-work' : ''}` }, row.day !== undefined ? h('div', { class: 'day', text: dayLabel(row.day) }) : null, cell(row.left, 'talk'), cell(row.right, 'work'))
+        const day = row.day !== undefined ? h('div', { class: 'day', text: dayLabel(row.day) }) : null
+        if (row.both) return h('div', { class: 'trow span' }, day, h('div', { class: 'lane both' }, renderItem(row.both, undefined, ctx)))
+        return h('div', { class: `trow${row.left.length === 0 ? ' no-talk' : ''}${row.right.length === 0 ? ' no-work' : ''}` }, day, cell(row.left, 'talk'), cell(row.right, 'work'))
       },
     })
     opts.onPaint?.(rows.length)

@@ -17,7 +17,7 @@ import type { BridgeApi } from '../bridge/api.ts'
 import type { BridgeStatus } from '../bridge/client.ts'
 import type { BotStatus, InventoryItem, Item, ScanResult, ScreenState, ServerInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
-import { loadItemIcons } from '../packdata/icons.ts'
+import { itemIconsStillValid, loadItemIcons } from '../packdata/icons.ts'
 import type { ItemIcons } from '../packdata/icons.ts'
 import type { TextureAtlas } from '../packdata/index.ts'
 import { BlockLooks, stableColor } from '../render/index.ts'
@@ -68,6 +68,8 @@ export const MINIMAP_MAX_RADIUS = 31
 const MINIMAP_DEFAULT_RADIUS = 24
 const MINIMAP_CACHE_MS = 2500
 const LIVE_CACHE_MS = 700
+/** 隔这么久看一眼物品图标的说明文件有没有被换过。 */
+const ICONS_RECHECK_MS = 5000
 
 function finite(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
@@ -77,6 +79,7 @@ export class PanelLive {
   private readonly deps: LiveDeps
   private icons: ItemIcons | undefined
   private iconsLooked = false
+  private iconsCheckedAt = 0
   private looks: { table: object; looks: BlockLooks } | undefined
   private liveCache: { at: number; data: unknown } | undefined
   private mapCache: { at: number; key: string; data: unknown } | undefined
@@ -89,10 +92,22 @@ export class PanelLive {
     }
   }
 
+  /**
+   * 物品图标图集：头一次用到时读一次，记住结论。之后只隔一阵看一眼说明文件有没有被换过（大脑运行期间重新导出了资料）：
+   * 换过就当没有图标，直到大脑重启——那时内存里的行号对不上磁盘上的图了。
+   */
   private itemIcons(): ItemIcons | undefined {
+    const log = (message: string): void => console.log(`${new Date().toISOString()} [packdata] ${message}`)
     if (!this.iconsLooked) {
       this.iconsLooked = true
-      this.icons = loadItemIcons(path.resolve(BRAIN_ROOT, this.deps.config.packdataDir()), (message) => console.log(`${new Date().toISOString()} [packdata] ${message}`))
+      this.icons = loadItemIcons(path.resolve(BRAIN_ROOT, this.deps.config.packdataDir()), log)
+      this.iconsCheckedAt = this.deps.now()
+    } else if (this.icons && this.deps.now() - this.iconsCheckedAt > ICONS_RECHECK_MS) {
+      this.iconsCheckedAt = this.deps.now()
+      if (!itemIconsStillValid(this.icons)) {
+        this.icons = undefined
+        log('物品图标在大脑运行期间被重新导出了，和内存里的物品表对不上：面板先用替代的画法，重启大脑后再用新的图标。')
+      }
     }
     return this.icons
   }

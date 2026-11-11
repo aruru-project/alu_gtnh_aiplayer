@@ -9,6 +9,7 @@
 //
 // 画出来的是一条时间线（按条目的先后）：
 //   msg    一句话：玩家说的、它说的、主人在面板上说的                             —— 对话
+//   relay  两条线之间的一次往来：对话线交事、干活线汇报或提问、叫停                  —— 对话（它是连着两边的线索）
 //   work   一轮决策里的一段：模型的若干步，每步下面是它调的工具                     —— 模型的决策
 //   run    它写的程序的一次运行（例程，或者没挂在哪一步下面的 run_program）          —— 模型的决策
 //   note   一条说明或报错                                                        —— 报错算“模型的决策”，说明算“全部”
@@ -25,38 +26,30 @@ export const LEVEL = { talk: 1, work: 2, all: 3 }
 
 const ROUTINE_PREFIX = /^\[例程 (r\d+)\] ?/
 const PROGRAM_PREFIX = /^\[程序\] ?/
+const RUN_STEP_PREFIX = /^\[(?:例程|程序)[^\]#]*(?:#(\d+))?\] ?/
 const TURN_START = /^第 (\d+) 轮开始(?:（(.*?)）)?：?([\s\S]*)$/
 const TURN_END = /^第 (\d+) 轮结束（调了 (\d+) 次模型(?:，(.*?))?）/
 const ROUTINE_START = /^例程 (r\d+)（([\s\S]*?)）开始在后台跑/
 const ROUTINE_END = /^例程 (r\d+)（([\s\S]*?)）(跑完了|停了)：?([\s\S]*)$/
 const SYSTEM_MESSAGE = /^系统消息：/
 const COMINGS = /(进入了服务器|离开了服务器)$/
-/** 两条线之间的往来（设计见 docs/TALK_WORK.md）：对话线把事交给干活线、干活线汇报或提问、对话线叫停。 */
-const CROSS_TOOLS = { tell_worker: 'handoff', report: 'report', stop_work: 'stop' }
+/** 两条线之间一次往来的正文：去掉开头的“对话线 → 干活线：”“干活线 → 对话线（提问）：”。 */
+const RELAY_PREFIX = /^[^：\n]{0,40}→[^：\n]{0,40}：/
 
 /** 条目的 agent → 画在哪条线上。 */
 export const laneOfAgent = (agent) => (agent === 'talk' ? 'talk' : 'work')
 
-/** 工具参数（一行的那个，或者全文）里的某个字段；解不出来就是 undefined。 */
-function argOf(tool, name) {
-  for (const text of [tool.argsDetail, tool.args]) {
-    if (typeof text !== 'string' || !text.startsWith('{')) continue
-    try {
-      const value = JSON.parse(text)[name]
-      if (value !== undefined) return value
-    } catch {
-      /* 截短了的 JSON：换下一个 */
-    }
-  }
-  return undefined
-}
-
-/** 一条工具调用或结果是谁发起的，属于哪次程序运行，去掉前缀以后的正文。 */
+/**
+ * 一条工具调用或结果是谁发起的（模型自己、run_program 的程序、后台的例程），属于哪次程序运行，去掉前缀以后的正文。
+ * 新日志用 source / runId 字段；旧日志只能从正文开头的“[例程 r3] ”“[程序] ”认。
+ */
 export function sourceOf(entry) {
-  if (entry.source === 'model' || entry.source === 'program' || entry.source === 'routine') {
-    return { source: entry.source, runId: entry.runId, text: entry.text }
-  }
   const text = String(entry.text ?? '')
+  if (entry.source === 'model' || entry.source === 'program' || entry.source === 'routine') {
+    // 程序运行里出错的那一步，正文开头带着“[例程 r3 #12] ”：是第几次调用单拎出来
+    const tagged = entry.source === 'model' ? null : RUN_STEP_PREFIX.exec(text)
+    return { source: entry.source, runId: entry.runId, text: tagged ? text.slice(tagged[0].length) : text, n: tagged?.[1] !== undefined ? Number(tagged[1]) : undefined }
+  }
   const routine = ROUTINE_PREFIX.exec(text)
   if (routine) return { source: 'routine', runId: routine[1], text: text.slice(routine[0].length) }
   const program = PROGRAM_PREFIX.exec(text)
@@ -67,16 +60,7 @@ export function sourceOf(entry) {
 const seqOf = (entry) => (typeof entry._seq === 'number' ? entry._seq : entry.id)
 
 function newTool(entry, text) {
-  const tool = { key: `c${entry.id}`, id: entry.id, name: entry.who ?? '?', time: entry.time, args: text, argsDetail: entry.detail, pending: true, isError: false, result: undefined, resultDetail: undefined, ms: undefined, pictures: [], scenes: [], run: undefined }
-  const cross = CROSS_TOOLS[tool.name]
-  if (cross) {
-    // 两条线之间的往来：带的话单拎出来，面板把它画成一句话而不是一次工具调用
-    tool.cross = cross
-    const said = argOf(tool, 'text')
-    tool.crossText = typeof said === 'string' ? said : undefined
-    tool.question = argOf(tool, 'question') === true
-  }
-  return tool
+  return { key: `c${entry.id}`, id: entry.id, name: entry.who ?? '?', time: entry.time, args: text, argsDetail: entry.detail, pending: true, isError: false, result: undefined, resultDetail: undefined, ms: undefined, pictures: [], scenes: [], run: undefined }
 }
 
 function finishTool(tool, entry, text) {
@@ -293,8 +277,34 @@ export function buildTimeline(entries) {
         whisper: kind === 'whisper',
         who: entry.who ?? (kind === 'command' ? '面板' : ''),
         text: entry.text,
-        // 聊天：为什么这句没叫醒模型；它说的：这句是程序替它说的
+        // 聊天：为什么这句没叫醒模型；它说的：这句是程序替它说的、发出去时被截了几行
         note: entry.detail,
+        sent: entry.sent,
+        rev: seqOf(entry),
+      })
+      continue
+    }
+
+    if (kind === 'relay') {
+      const relay = entry.relay ?? {}
+      const text = String(entry.text ?? '')
+      push({
+        type: 'relay',
+        level: LEVEL.talk,
+        lane: 'both',
+        key: `y${entry.id}`,
+        id: entry.id,
+        time: entry.time,
+        agent: entry.agent,
+        // tell 交事或带话 | report 中途汇报 | question 提问、在等回答 | result 一轮结束留下的话 | trouble 出了状况 | stop 叫停
+        kind: relay.type ?? 'tell',
+        from: relay.from ?? entry.agent ?? 'talk',
+        to: relay.to ?? (entry.agent === 'work' ? 'talk' : 'work'),
+        quotes: relay.quotes ?? 0,
+        text: text.replace(RELAY_PREFIX, ''),
+        detail: entry.detail,
+        isError: entry.isError === true,
+        turn: entry.turn,
         rev: seqOf(entry),
       })
       continue
@@ -573,6 +583,12 @@ export function layoutRows(items, maxLevel = LEVEL.all) {
   let row
   for (const item of items) {
     if (item.level > maxLevel) continue
+    // 两条线之间的往来横跨两边，自己占一行
+    if (item.lane === 'both') {
+      rows.push({ key: item.key, left: [], right: [], both: item })
+      row = undefined
+      continue
+    }
     const left = item.lane === 'talk'
     if (!row || (left && row.right.length > 0)) {
       row = { key: item.key, left: [], right: [] }
@@ -590,6 +606,9 @@ export function toolHistogram(calls) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }))
 }
 
+/** 两条线之间一次往来的叫法。 */
+export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', trouble: '干活线出了状况', stop: '叫停' }
+
 /**
  * “现在”页的“最近几步”：时间线最后的若干样东西，摊平成一行一件事（新的在后）。
  * 每行：{ key, time, kind: 'say' | 'heard' | 'step' | 'tool' | 'run' | 'error', label, text, isError, pending }
@@ -600,6 +619,8 @@ export function recentActivity(items, limit = 12) {
     const item = items[i]
     if (item.type === 'msg') {
       rows.push({ key: item.key, time: item.time, kind: item.role === 'bot' ? 'say' : 'heard', label: item.role === 'bot' ? '它说' : item.role === 'owner' ? '你（面板）' : item.who, text: item.text })
+    } else if (item.type === 'relay') {
+      rows.push({ key: item.key, time: item.time, kind: 'relay', label: RELAY_LABELS[item.kind] ?? item.kind, text: item.text, isError: item.isError, pending: item.kind === 'question' })
     } else if (item.type === 'run') {
       const r = item.run
       rows.push({ key: item.key, time: r.endedAt ?? item.lastTime ?? item.time, kind: 'run', label: r.kind === 'program' ? '程序' : `例程 ${r.id}`, text: `${r.name || '（没有名字）'}：${r.calls} 次调用`, pending: r.status === 'running', isError: r.status === 'failed' || r.errors > 0, run: r })
@@ -610,6 +631,8 @@ export function recentActivity(items, limit = 12) {
         const step = item.steps[s]
         for (let t = step.tools.length - 1; t >= 0; t--) {
           const tool = step.tools[t]
+          // 它说的话已经单独有一行了
+          if ((tool.name === 'say' || tool.name === 'whisper') && !tool.isError) continue
           rows.push({ key: tool.key, time: tool.time, kind: 'tool', label: tool.name, text: tool.pending ? (tool.args ?? '') : (tool.result ?? ''), args: tool.args, isError: tool.isError, pending: tool.pending, turn: item.turn.id, step: step.n })
         }
         for (let x = step.texts.length - 1; x >= 0; x--) rows.push({ key: `x${step.texts[x].id}`, time: step.texts[x].time, kind: 'step', label: '模型的文字', text: step.texts[x].text, turn: item.turn.id, step: step.n })

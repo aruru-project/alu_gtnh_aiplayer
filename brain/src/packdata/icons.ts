@@ -34,6 +34,8 @@ export interface ItemIcons {
   count: number
   /** 这份图集的版本（生成时间）。面板把它带在地址里，重新生成以后浏览器不会接着用旧的。 */
   version: string
+  /** 读的时候 icons.json 的修改时刻（毫秒）。之后它变了，就是图集在大脑运行期间被重新导出了：行号对不上了，不能再用。 */
+  loadedMtimeMs?: number
   /**
    * 一样东西的图标是第几个；没有就是 undefined。
    * 按 id/meta 找不到时，退到同一个 id 不限 meta 的那一行，再退到同一个 id 的头一行。
@@ -153,6 +155,7 @@ export function loadItemIcons(packdataDir: string, log: (message: string) => voi
       return undefined
     }
     const icons = parseItemIcons(JSON.parse(manifest), dir, itemLines(items))
+    icons.loadedMtimeMs = fs.statSync(path.join(dir, 'icons.json')).mtimeMs
     const gone = icons.files.filter((file) => !fs.existsSync(file))
     if (gone.length > 0) {
       log(`物品图标少了 ${gone.length} 张图（头一张是 ${path.basename(gone[0]!)}），${fallback}。`)
@@ -163,5 +166,18 @@ export function loadItemIcons(packdataDir: string, log: (message: string) => voi
   } catch (e) {
     log(`物品图标用不了（${e instanceof Error ? e.message : String(e)}），${fallback}。`)
     return undefined
+  }
+}
+
+/**
+ * 这份图集还是不是读的时候那一份：icons.json 没被换过。图集是整套重新导出的，物品表的行数和顺序每次都会变一点，
+ * 换过以后内存里的“哪样东西是第几个”就对不上磁盘上的图了——宁可没图也不能错位。只看文件的修改时刻，不重读。
+ */
+export function itemIconsStillValid(icons: ItemIcons): boolean {
+  if (icons.loadedMtimeMs === undefined) return true
+  try {
+    return fs.statSync(path.join(icons.dir, 'icons.json')).mtimeMs === icons.loadedMtimeMs
+  } catch {
+    return false
   }
 }

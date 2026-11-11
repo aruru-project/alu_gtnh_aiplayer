@@ -4,7 +4,7 @@
 
 import { actions, state } from './data.js'
 import { LEVEL } from './logmodel.js'
-import { entryCount, getTimeline, loadOlder, logState } from './logstore.js'
+import { entryCount, getTimeline, lastId, loadOlder, logState } from './logstore.js'
 import { createLogView } from './logview.js'
 import { act, bus, button, h, segmented } from './ui.js'
 
@@ -15,8 +15,8 @@ let view = null
 let scroller = null
 let unsubscribe = []
 let pinned = true
-let unseen = 0
-let lastRows = 0
+/** 离开底部时最新的那条是哪一条；之后来了更新的，“回到最新”上写一声。 */
+let seenUpTo = 0
 
 const savedLevel = () => {
   const v = Number(localStorage.getItem(LEVEL_KEY))
@@ -28,14 +28,14 @@ const atBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.cli
 function toBottom() {
   scroller.scrollTop = scroller.scrollHeight
   pinned = true
-  unseen = 0
+  seenUpTo = lastId()
   paintJump()
 }
 
 function paintJump() {
   const jump = root.querySelector('.jump')
   jump.hidden = pinned
-  jump.textContent = unseen > 0 ? `回到最新（有 ${unseen} 处新的）` : '回到最新'
+  jump.textContent = lastId() > seenUpTo ? '回到最新（有新的）' : '回到最新'
 }
 
 function paintState() {
@@ -100,6 +100,7 @@ function build(el) {
     (next) => {
       localStorage.setItem(LEVEL_KEY, String(next))
       const stick = pinned
+      root.classList.toggle('talk-only', next === LEVEL.talk)
       view.setLevel(next)
       if (stick) toBottom()
     },
@@ -127,17 +128,17 @@ function build(el) {
     form,
     h('p', { class: 'hint composer-hint', text: '这里发的话只有它看得到，不会出现在游戏聊天里。它在游戏里说的话会出现在上面。' }),
   )
+  el.classList.toggle('talk-only', level === LEVEL.talk)
   view = createLogView(timelineEl, {
     level,
-    onPaint: (rows) => {
-      if (!pinned && rows > lastRows) unseen += rows - lastRows
-      lastRows = rows
+    onPaint: () => {
+      if (pinned) seenUpTo = lastId()
       paintJump()
     },
   })
   scroller.addEventListener('scroll', () => {
     pinned = atBottom()
-    if (pinned) unseen = 0
+    if (pinned) seenUpTo = lastId()
     paintJump()
     // 翻到顶：自己去取更早的
     if (scroller.scrollTop < 40 && logState.more !== false && logState.canPage !== false && !logState.loadingOlder && entryCount() > 0) older()

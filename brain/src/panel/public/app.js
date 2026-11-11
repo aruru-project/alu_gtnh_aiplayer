@@ -121,7 +121,7 @@ function paintSide() {
   const owner = bodyAgent(s)
   // 只在看得见的东西变了的时候重画（会跳的秒数由 tickClocks 改），免得正要点的按钮被换掉
   const key = JSON.stringify([
-    s?.agents?.map((a) => [a.agent, a.model?.state, a.model?.step, a.model?.since, a.model?.provider, a.model?.model, a.model?.outage, a.turn, a.pending, a.routine, a.lastRoutine?.id, a.lastRoutine?.status, a.body]),
+    s?.agents?.map((a) => [a.agent, a.model?.state, a.model?.step, a.model?.since, a.model?.provider, a.model?.model, a.model?.outage, a.turn, a.pending, a.routine, a.lastRoutine?.id, a.lastRoutine?.status, a.body, a.waitingAnswer, a.title, a.model?.providerId, a.model?.modelId]),
     s?.agents?.some((a) => a.model?.state === 'thinking' && typeof a.model.since === 'number' && Date.now() + state.skew - a.model.since > SLOW_STEP_MS),
     taskStaleMs(owner?.body?.task) > STALE_TASK_MS,
     o ? [o.bridge?.state, o.bridge?.lastError, o.bot?.name, o.bot?.status?.online, o.provider, o.models, o.usage, o.server?.tps] : null,

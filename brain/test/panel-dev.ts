@@ -1,17 +1,17 @@
 // 看面板用的一整套假环境（不连真的游戏，不用真的模型）：
 //   模拟身体（mock-bridge，身上带一背包真实物品 id 的东西）← 真的大脑（子进程，src/main.ts）← 一层代理 ← 浏览器
 //
-//   node test/panel-dev.ts [--shape new|legacy] [--lines 1|2] [--scene idle|thinking|tools|routine|outage] [--sample <活动日志.jsonl>]
+//   node test/panel-dev.ts [--shape fake|real] [--lines 1|2] [--scene idle|thinking|tools|routine|outage] [--sample <活动日志.jsonl>]
 //
 // 代理（127.0.0.1:28771）把请求原样转给大脑的面板（127.0.0.1:28772），只有“它在干什么”这几个接口可以由这里顶替：
-//   --shape legacy  什么都不顶替：看到的就是这个分支的大脑真实给的（旧形状的日志，没有 /api/status）。
-//   --shape new     （默认）/api/status、/api/log、/api/events、/api/runs、/api/runs/records 由这里给，
-//                   形状照着后端定下来的新接口：每次模型调用一条 model_call、工具带 source 和 step、程序运行一条 run 原地更新。
-//                   数据是把样本日志（--sample，旧形状）转过来的，后面接一段照 --scene 摆的“现在”。
-//   --lines 2       新形状下把一条线换成“对话”“干活”两条线（各有各的模型状态和日志），日志是这里写的一段戏。
+//   --shape real    什么都不顶替：看到的就是大脑真实给的（模型是模拟的，只认得“平”“跟”“停”“看看”几个字）。
+//   --shape fake    （默认）/api/status、/api/log、/api/events、/api/runs、/api/runs/records 由这里给，形状和大脑给的一样
+//                   （docs/BRAIN_SPEC.md 的“面板的数据接口”）。这样可以把“正在想第 3 步”“例程跑到一半”这些一闪而过的时刻摆住了看。
+//                   时间线是把样本日志（--sample，旧形状：没有 model_call，例程每一步各两条）转成新形状得来的，后面接一段照 --scene 摆的“现在”。
+//   --lines 2       假数据里把一条线换成“对话”“干活”两条线（docs/TALK_WORK.md，后端还没实现）：各有各的模型状态，日志条目带 agent。
 // 换场景不用重启：POST /__dev/scene {"name":"routine"}；GET /__dev 看现在的设置和面板口令。
 //
-// 端口只用留给模拟服务的那些（见 ports.ts 和任务说明）：身体 25610，模型 25611，大脑面板 28772，代理 28771。
+// 端口只用留给模拟服务的那些（见 ports.ts）：身体 25610，模型 25611，大脑面板 28772，代理 28771。
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -27,7 +27,7 @@ const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf(`--${name}`)
   return i !== -1 && process.argv[i + 1] !== undefined ? process.argv[i + 1]! : fallback
 }
-const SHAPE = arg('shape', 'new')
+const SHAPE = arg('shape', 'fake')
 const LINES = Number(arg('lines', '1'))
 let scene = arg('scene', 'idle')
 const DATA_DIR = path.resolve(BRAIN, arg('data', 'data/panel-dev'))
@@ -386,17 +386,21 @@ let ticker: NodeJS.Timeout | undefined
 let liveTurn = 900
 
 function idleAgent(agent: string, extra: Json = {}): Json {
+  const two = agent !== 'main'
   return {
     agent,
     name: BOT,
-    model: { state: 'idle', ...MODELS[agent as keyof typeof MODELS], lastCall: { time: Date.now() - 95_000, ok: true, durationMs: 4210, model: 'mock', inputTokens: 48211, outputTokens: 212, cacheReadTokens: 44100 } },
+    ...(two ? { title: agent === 'talk' ? '对话线' : '干活线', history: agent === 'talk' ? { turns: 12, hasSummary: false, estimatedTokens: 5400, threshold: 60000 } : { turns: 80, hasSummary: true, estimatedTokens: 152000, threshold: 200000 } } : {}),
+    model: { state: 'idle', ...MODELS[agent as keyof typeof MODELS], lastCall: { time: Date.now() - 95_000, ok: true, durationMs: agent === 'talk' ? 1400 : 4210, model: 'mock', inputTokens: agent === 'talk' ? 9800 : 48211, outputTokens: 212, cacheReadTokens: agent === 'talk' ? 8800 : 44100 } },
     turn: null,
     pending: 0,
     ...extra,
   }
 }
 
-const noBody = (): Json => ({ routine: null, lastRoutine: runList.find((r) => r.kind === 'routine') ?? null, body: { online: bot.online, task: null, queue: [] } })
+const noBody = (): Json => ({ ...(LINES === 2 ? { waitingAnswer: null, lastReport: lastReport } : {}), routine: null, lastRoutine: runList.find((r) => r.kind === 'routine') ?? null, body: { online: bot.online, task: null, queue: [] } })
+/** 两条线的那段戏里，干活线最后一次送给对话线的。 */
+let lastReport: Json | null = null
 
 function setScene(name: string): void {
   scene = name
@@ -410,18 +414,17 @@ function setScene(name: string): void {
   const tag = LINES === 2 ? { agent: worker } : {}
   if (name === 'thinking' || name === 'tools') {
     if (LINES === 2) {
-      add({ kind: 'command', who: '面板', text: '把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。' })
-      add({ kind: 'turn', turn: turn + 1000, agent: 'talk', text: `第 ${turn + 1000} 轮开始（模拟接口 / mock-fast）：主人通过控制面板对你说：把身上的泥土都凿成凿子泥土…`, detail: '[需要你处理的事]\n主人通过控制面板对你说：把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。\n\n[干活线]\n空闲' })
-      const c = { state: 'done', purpose: 'turn', step: 1, startedAt: now - 30_000, ms: 1900, model: 'mock-fast', inputTokens: 5210, outputTokens: 96, cacheReadTokens: 4400, stop: 'tool_calls', toolCalls: 2 }
+      add({ kind: 'command', who: '面板', time: now - 31_000, text: '把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。' })
+      add({ kind: 'turn', turn: turn + 1000, agent: 'talk', time: now - 30_500, text: `第 ${turn + 1000} 轮开始（模拟接口 / mock-fast）：主人通过控制面板对你说：把身上的泥土都凿成凿子泥土…`, detail: '[需要你处理的事]\n主人通过控制面板对你说：把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。\n\n[干活线]\n空闲' })
+      const c = { state: 'done', purpose: 'turn', step: 1, startedAt: now - 30_000, ms: 1900, model: 'mock-fast', inputTokens: 5210, outputTokens: 96, cacheReadTokens: 4400, stop: 'tool_calls', toolCalls: 1 }
       add({ kind: 'model_call', turn: turn + 1000, step: 1, agent: 'talk', time: now - 30_000, text: callText(c), call: c })
-      add({ kind: 'tool_call', turn: turn + 1000, step: 1, agent: 'talk', source: 'model', who: 'say', time: now - 28_000, text: '{"message":"好，我这就去凿。"}' })
-      add({ kind: 'say', who: BOT, agent: 'talk', time: now - 28_000, text: '好，我这就去凿。' })
-      add({ kind: 'tool_result', turn: turn + 1000, step: 1, agent: 'talk', source: 'model', who: 'say', time: now - 27_900, text: 'Said in public chat.' })
+      add({ kind: 'say', who: BOT, agent: 'talk', turn: turn + 1000, step: 1, time: now - 28_000, text: '好，我这就去凿。' })
       add({ kind: 'tool_call', turn: turn + 1000, step: 1, agent: 'talk', source: 'model', who: 'tell_worker', time: now - 27_800, text: '{"text":"把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。"}' })
+      add({ kind: 'relay', agent: 'talk', turn: turn + 1000, step: 1, time: now - 27_750, text: '对话线 → 干活线：把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。', detail: '把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。\n\n[主人的原话]\n（面板）把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。', relay: { type: 'tell', from: 'talk', to: 'work', quotes: 1 } })
       add({ kind: 'tool_result', turn: turn + 1000, step: 1, agent: 'talk', source: 'model', who: 'tell_worker', time: now - 27_700, text: 'Handed to the working line; it starts now.' })
       add({ kind: 'turn', turn: turn + 1000, agent: 'talk', time: now - 26_000, text: `第 ${turn + 1000} 轮结束（调了 1 次模型，模拟接口 / mock-fast）` })
     } else {
-      add({ kind: 'command', who: '面板', text: '把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。' })
+      add({ kind: 'command', who: '面板', time: now - 27_000, text: '把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。' })
     }
     add({ kind: 'turn', turn, ...tag, time: now - 26_000, text: `第 ${turn} 轮开始（模拟接口 / mock-deep）：${LINES === 2 ? '对话线交来的事：把身上的泥土都用钻石凿子凿成凿子泥土…' : '主人通过控制面板对你说：把身上的泥土都凿成凿子泥土…'}`, detail: `[需要你处理的事]\n${LINES === 2 ? '对话线交来的事：把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。\n主人的原话：把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。' : '主人通过控制面板对你说：把身上的泥土都凿成凿子泥土，放进 (-519,69,85) 的箱子。'}\n\n[当前状态]\nAlu: online in overworld (dim 0) at block (-522,69,43), health 17/20, food 15` })
     const c1 = { state: 'done', purpose: 'turn', step: 1, startedAt: now - 26_000, ms: 6400, model: 'mock-deep', inputTokens: 181204, outputTokens: 412, cacheReadTokens: 176900, cacheWriteTokens: 4100, stop: 'tool_calls', toolCalls: 1 }
@@ -439,13 +442,13 @@ function setScene(name: string): void {
       const c3 = { state: 'thinking', purpose: 'turn', step: 3, startedAt: now - 8000 }
       add({ kind: 'model_call', turn, step: 3, ...tag, time: now - 8000, text: callText(c3), call: c3 })
       w.model = { state: 'thinking', ...MODELS[worker as keyof typeof MODELS], turn, step: 3, since: now - 8000, lastCall: { time: now - 14_300, ok: true, durationMs: 5100, model: 'mock-deep', inputTokens: 184460, outputTokens: 158, cacheReadTokens: 181204 } }
-      w.turn = { id: turn, startedAt: now - 26_000, steps: 2, maxSteps: 60 }
+      w.turn = { id: turn, startedAt: now - 26_000, steps: 2, maxSteps: 60, ...(LINES === 2 ? { about: '对话线交来的事：把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。' } : {}) }
     } else {
       const c3 = { state: 'done', purpose: 'turn', step: 3, startedAt: now - 13_800, ms: 4900, model: 'mock-deep', inputTokens: 186020, outputTokens: 122, cacheReadTokens: 184460, stop: 'tool_calls', toolCalls: 1 }
       add({ kind: 'model_call', turn, step: 3, ...tag, time: now - 13_800, text: callText(c3), call: c3 })
       add({ kind: 'tool_call', turn, step: 3, ...tag, source: 'model', who: 'deposit_items', time: now - 8800, text: '{"container":{"x":-519,"y":69,"z":85},"items":[{"id":"chisel:dirt","meta":0,"count":64}]}' })
       w.model = { state: 'tools', ...MODELS[worker as keyof typeof MODELS], turn, step: 3, lastCall: { time: now - 8900, ok: true, durationMs: 4900, model: 'mock-deep', inputTokens: 186020, outputTokens: 122, cacheReadTokens: 184460 } }
-      w.turn = { id: turn, startedAt: now - 26_000, steps: 3, maxSteps: 60 }
+      w.turn = { id: turn, startedAt: now - 26_000, steps: 3, maxSteps: 60, ...(LINES === 2 ? { about: '对话线交来的事：把身上的泥土都用钻石凿子凿成凿子泥土（chisel:dirt），放进 (-519,69,85) 的箱子。' } : {}) }
       w.body = { online: true, task: { id: 'tmwbq001', type: 'deposit', state: 'running', progress: { done: 2, total: 5, phase: '走到箱子旁边' }, startedAt: now - 8700 }, queue: [{ id: 'tmwbq002', type: 'withdraw', state: 'queued' }] }
       w.pending = 1
     }
@@ -479,6 +482,10 @@ function setScene(name: string): void {
       update(runEntry.id, { run: { ...run }, text: `例程 ${id}（${run.name}）：在跑，已调 ${run.calls} 次工具` })
       w.body.task = { id: `tmwbr${run.tasks}`, type: run.tasks % 2 ? 'deposit' : 'withdraw', state: 'running', progress: { done: run.tasks % 3, total: 3, phase: run.tasks % 2 ? '放进箱子' : '打开箱子' }, startedAt: Date.now() }
     }, 1000)
+  } else if (name === 'waiting' && LINES === 2) {
+    // 干活线提了问，还没人回答（那段戏的结尾就是一个问题）
+    w.waitingAnswer = { text: '桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？', since: now - 95_000 }
+    w.lastReport = { type: 'question', text: '桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？', time: now - 95_000 }
   } else if (name === 'outage') {
     add({ kind: 'error', ...tag, text: '模型调用失败：HTTP 529 overloaded_error: Overloaded。60 秒后再试，改了模型配置会立刻再试。' })
     w.model = { state: 'outage', ...MODELS[worker as keyof typeof MODELS], outage: { failures: 4, since: now - 240_000, nextRetryAt: now + 42_000, lastError: 'HTTP 529 overloaded_error: Overloaded' }, lastCall: { time: now - 18_000, ok: false, errorKind: 'overloaded', error: 'HTTP 529 overloaded_error: Overloaded' } }
@@ -487,59 +494,70 @@ function setScene(name: string): void {
   live = { agents }
 }
 
-/** 两条线的一段戏：主人说话 → 对话线回话并派活 → 干活线干 → 汇报 → 对话线转告。 */
+/**
+ * 两条线的一段戏（形状照后端定的：对话线写的字就是 say，两条线之间的往来是 relay）：
+ * 主人说话 → 对话线回话并交事 → 干活线干（开了个例程）→ 汇报 → 对话线转告 → 再交一件事 → 干活线做完提了个问题。
+ */
 function playTwoLines(): void {
   const t0 = Date.now() - 9 * 60_000
   let t = t0
   const at = (sec: number): number => (t = t0 + sec * 1000)
+  const model = (agent: string): string => (agent === 'talk' ? 'mock-fast' : 'mock-deep')
   const call = (agent: string, turn: number, step: number, ms: number, tools: number, input: number, stop = 'tool_calls'): void => {
-    const c = { state: 'done', purpose: 'turn', step, startedAt: t, ms, model: agent === 'talk' ? 'mock-fast' : 'mock-deep', inputTokens: input, outputTokens: 80 + step * 31, cacheReadTokens: Math.round(input * 0.9), stop, toolCalls: tools }
+    const c = { state: 'done', purpose: 'turn', step, startedAt: t, ms, model: model(agent), inputTokens: input, outputTokens: 80 + step * 31, cacheReadTokens: Math.round(input * 0.9), stop, toolCalls: tools }
     add({ kind: 'model_call', agent, turn, step, time: t, text: callText(c), call: c })
     t += ms
   }
   const tool = (agent: string, turn: number, step: number, who: string, args: string, result: string, detail?: string, ms = 60): void => {
     add({ kind: 'tool_call', agent, turn, step, source: 'model', who, time: t, text: args })
-    if (who === 'say') add({ kind: 'say', who: BOT, agent, time: t + 20, text: JSON.parse(args).message })
     t += ms
     add({ kind: 'tool_result', agent, turn, step, source: 'model', who, time: t, text: result, ...(detail ? { detail } : {}) })
   }
-  const start = (agent: string, turn: number, trigger: string): void => void add({ kind: 'turn', agent, turn, time: t, text: `第 ${turn} 轮开始（模拟接口 / ${agent === 'talk' ? 'mock-fast' : 'mock-deep'}）：${trigger}`, detail: `[需要你处理的事]\n${trigger}` })
-  const end = (agent: string, turn: number, calls: number): void => void add({ kind: 'turn', agent, turn, time: t, text: `第 ${turn} 轮结束（调了 ${calls} 次模型，模拟接口 / ${agent === 'talk' ? 'mock-fast' : 'mock-deep'}）` })
+  const say = (turn: number, step: number, text: string): void => void add({ kind: 'say', who: BOT, agent: 'talk', turn, step, time: (t += 40), text })
+  const relay = (agent: string, turn: number, step: number, type: string, text: string, extra: Json = {}): void => {
+    const head = agent === 'talk' ? '对话线 → 干活线' : `干活线 → 对话线${type === 'question' ? '（提问）' : type === 'result' ? '（做完了）' : ''}`
+    add({ kind: 'relay', agent, turn, step, time: (t += 30), text: `${head}：${text}`, relay: { type, from: agent, to: agent === 'talk' ? 'work' : 'talk', ...(extra.quotes ? { quotes: extra.quotes } : {}) }, ...(extra.detail ? { detail: extra.detail } : {}) })
+    if (agent === 'work') lastReport = { type, text, time: t }
+  }
+  const start = (agent: string, turn: number, trigger: string): void => void add({ kind: 'turn', agent, turn, time: t, text: `第 ${turn} 轮开始（模拟接口 / ${model(agent)}）：${trigger}`, detail: `[需要你处理的事]\n${trigger}` })
+  const end = (agent: string, turn: number, calls: number): void => void add({ kind: 'turn', agent, turn, time: (t += 20), text: `第 ${turn} 轮结束（调了 ${calls} 次模型，模拟接口 / ${model(agent)}）` })
 
+  add({ kind: 'info', time: at(-30), text: '已连上游戏服务器（mod v0.1.0-mock）。' })
   add({ kind: 'event', time: at(0), text: '阿露 进入了服务器' })
   add({ kind: 'chat', who: '阿露', time: at(20), text: 'Alu 把抽屉里数量不到 128 的东西都搬到我面前这个箱子里' })
   at(21)
-  start('talk', 2101, '阿露 说：Alu 把抽屉里数量不到 128 的东西都搬到我面前这个箱子里（她指着 (-509,69,90) 的压缩箱子）')
-  call('talk', 2101, 1, 1800, 2, 6120)
-  tool('talk', 2101, 1, 'say', '{"message":"好，我去搬，搬完告诉你。"}', 'Said in public chat.')
-  tool('talk', 2101, 1, 'tell_worker', '{"text":"把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到 (-509,69,90) 的压缩箱子里。搬完汇报一共搬了几种。"}', 'Handed to the working line; it starts now.')
-  end('talk', 2101, 1)
+  start('talk', 41, '阿露 说：Alu 把抽屉里数量不到 128 的东西都搬到我面前这个箱子里')
+  call('talk', 41, 1, 1800, 1, 6120)
+  say(41, 1, '好，我去搬，搬完告诉你。')
+  tool('talk', 41, 1, 'tell_worker', '{"text":"把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到她面前的箱子里。搬完汇报一共搬了几种。"}', 'Handed to the working line; it starts now.')
+  relay('talk', 41, 1, 'tell', '把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到她面前的箱子里。搬完汇报一共搬了几种。', { quotes: 1, detail: '把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到她面前的箱子里。搬完汇报一共搬了几种。\n\n[主人的原话]\n阿露：Alu 把抽屉里数量不到 128 的东西都搬到我面前这个箱子里\n（她站在 (-513,69,93)，朝北，指着 (-509,69,90) 的压缩箱子）' })
+  end('talk', 41, 1)
 
-  start('work', 3101, '对话线交来的事：把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到 (-509,69,90) 的压缩箱子里…')
-  call('work', 3101, 1, 5200, 1, 42100)
-  tool('work', 3101, 1, 'read_manual', '{"name":"routines"}', 'Manual "routines": 一件事要连着调几十次工具时看。', 'Manual "routines": 一件事要连着调几十次工具时看。\n\n……')
-  call('work', 3101, 2, 4700, 1, 47900)
-  tool('work', 3101, 2, 'list_drawers', '{"x":-511,"y":71,"z":86,"below":128}', '81 drawer slot(s) hold fewer than 128; these are 1–40.', '81 drawer slot(s) hold fewer than 128; these are 1–40.\n- (-515,70,86) slot 0: 4× 银锭 [gregtech:gt.metaitem.01/11054]\n…')
-  call('work', 3101, 3, 7900, 1, 52300)
+  start('work', 42, '对话线交来的事：把抽屉管理器 (-511,71,86) 管着的、数量不到 128 的东西，都搬到她面前的箱子里…')
+  call('work', 42, 1, 5200, 1, 42100)
+  tool('work', 42, 1, 'read_manual', '{"name":"routines"}', 'Manual "routines": 一件事要连着调几十次工具时看。', 'Manual "routines": 一件事要连着调几十次工具时看。\n\n……')
+  call('work', 42, 2, 4700, 1, 47900)
+  tool('work', 42, 2, 'list_drawers', '{"x":-511,"y":71,"z":86,"below":128}', '81 drawer slot(s) hold fewer than 128; these are 1–40.', '81 drawer slot(s) hold fewer than 128; these are 1–40.\n- (-515,70,86) slot 0: 4× 银锭 [gregtech:gt.metaitem.01/11054]\n…')
+  call('work', 42, 3, 7900, 1, 52300)
   const rid = 'r7'
   const file = 'routine-two-lines-r7.jsonl'
   const run: Json = { id: rid, kind: 'routine', name: '整理低库存抽屉物品', status: 'running', startedAt: t, calls: 0, tasks: 0, errors: 0, file }
-  tool('work', 3101, 3, 'start_routine', '{"name":"整理低库存抽屉物品","code":"const controller={x:-511,y:71,z:86}…"}', `Routine ${rid} started. It runs in the background; end your turn now.`)
+  tool('work', 42, 3, 'start_routine', '{"name":"整理低库存抽屉物品","code":"const controller={x:-511,y:71,z:86}…"}', `Routine ${rid} started. It runs in the background; end your turn now.`)
   add({ kind: 'info', agent: 'work', time: t, text: `例程 ${rid}（${run.name}）开始在后台跑。`, detail: "const controller={x:-511,y:71,z:86}, chest={x:-509,y:69,z:90}\nfor (const s of slots) {\n  await tool('haul_items', {from: s, to: chest})\n}", source: 'routine', runId: rid, run: { ...run } })
   const runEntry = add({ kind: 'run', agent: 'work', time: t, source: 'routine', runId: rid, text: '', run: { ...run } })
-  call('work', 3101, 4, 2100, 0, 53100, 'end')
-  add({ kind: 'model_text', agent: 'work', turn: 3101, step: 4, time: t, text: '例程已经在跑，等它的结果。' })
-  end('work', 3101, 4)
+  call('work', 42, 4, 2100, 0, 53100, 'end')
+  add({ kind: 'model_text', agent: 'work', turn: 42, step: 4, time: t, text: '例程已经在跑，等它的结果。' })
+  end('work', 42, 4)
 
   add({ kind: 'chat', who: '阿露', time: at(70), text: '对了，直升机背包的桨叶怎么做来着' })
   at(71)
-  start('talk', 2102, '阿露 说：对了，直升机背包的桨叶怎么做来着')
-  call('talk', 2102, 1, 1500, 2, 6900)
-  tool('talk', 2102, 1, 'find_item', '{"query":"直升机桨叶"}', '"直升机桨叶" matches 1 item.', '"直升机桨叶" matches 1 item.\n- 直升机桨叶 [adventurebackpack:backpackComponent/6]: 1 recipe(s)')
-  tool('talk', 2102, 1, 'find_recipes', '{"id":"adventurebackpack:backpackComponent","meta":6}', '直升机桨叶 can be made 1 way(s).', '直升机桨叶 [adventurebackpack:backpackComponent/6] can be made 1 way(s), 1 recipe(s) in all.\n1. 有序合成 — 4× 精炼铁柄, 3× 钢螺丝, 螺丝刀（不消耗）')
-  call('talk', 2102, 2, 1700, 1, 7800)
-  tool('talk', 2102, 2, 'say', '{"message":"桨叶是工作台合成：4 个精炼铁柄、3 个钢螺丝，再拿一把螺丝刀。料我身上都有，要我做一个吗？"}', 'Said in public chat.')
-  end('talk', 2102, 2)
+  start('talk', 43, '阿露 说：对了，直升机背包的桨叶怎么做来着')
+  call('talk', 43, 1, 1500, 2, 6900)
+  tool('talk', 43, 1, 'find_item', '{"query":"直升机桨叶"}', '"直升机桨叶" matches 1 item.', '"直升机桨叶" matches 1 item.\n- 直升机桨叶 [adventurebackpack:backpackComponent/6]: 1 recipe(s)')
+  tool('talk', 43, 1, 'find_recipes', '{"id":"adventurebackpack:backpackComponent","meta":6}', '直升机桨叶 can be made 1 way(s).', '直升机桨叶 [adventurebackpack:backpackComponent/6] can be made 1 way(s), 1 recipe(s) in all.\n1. 有序合成 — 4× 精炼铁柄, 3× 钢螺丝, 螺丝刀（不消耗）')
+  call('talk', 43, 2, 1700, 0, 7800, 'end')
+  say(43, 2, '桨叶是工作台合成：4 个精炼铁柄、3 个钢螺丝，再拿一把螺丝刀。料我身上都有，要我做一个吗？')
+  end('talk', 43, 2)
 
   at(118)
   const recs: Json[] = [{ t: 'start', time: run.startedAt, id: rid, kind: 'routine', name: run.name, code: '' }]
@@ -550,35 +568,38 @@ function playTwoLines(): void {
   update(runEntry.id, { run: { ...run }, text: `例程 ${rid}（${run.name}）：跑完了，调了 83 次工具，开了 81 个任务` })
   add({ kind: 'info', agent: 'work', time: t, text: `例程 ${rid}（${run.name}）跑完了：the program finished`, detail: `Routine ${rid} ("${run.name}") finished: the program finished. 83 tool call(s), 81 task(s), 77 s in all.\nIt returned: 搬运成功 81/81 种；失败 []`, source: 'routine', runId: rid, run: { ...run } })
   runList.unshift({ ...run })
-  start('work', 3102, `你启动的例程有结果了，看完决定下一步：Routine ${rid} finished…`)
-  call('work', 3102, 1, 4300, 1, 55800)
-  tool('work', 3102, 1, 'report', '{"text":"抽屉里不到 128 的 81 种都搬进 (-509,69,90) 的压缩箱子了，没有失败的。箱子还剩 12 格。"}', 'Reported to the talking line.')
-  end('work', 3102, 1)
-  start('talk', 2103, '干活线汇报：抽屉里不到 128 的 81 种都搬进 (-509,69,90) 的压缩箱子了，没有失败的。箱子还剩 12 格。')
-  call('talk', 2103, 1, 1300, 1, 8400)
-  tool('talk', 2103, 1, 'say', '{"message":"搬完了：81 种都进了你面前的压缩箱子，没有失败的，箱子还剩 12 格。"}', 'Said in public chat.')
-  end('talk', 2103, 1)
+  start('work', 44, `你启动的例程有结果了，看完决定下一步：Routine ${rid} finished…`)
+  call('work', 44, 1, 4300, 0, 55800, 'end')
+  add({ kind: 'model_text', agent: 'work', turn: 44, step: 1, time: t, text: '抽屉里不到 128 的 81 种都搬进 (-509,69,90) 的压缩箱子了，没有失败的。箱子还剩 12 格。' })
+  relay('work', 44, 1, 'result', '抽屉里不到 128 的 81 种都搬进 (-509,69,90) 的压缩箱子了，没有失败的。箱子还剩 12 格。')
+  end('work', 44, 1)
+  start('talk', 45, '干活线做完了：抽屉里不到 128 的 81 种都搬进 (-509,69,90) 的压缩箱子了，没有失败的。箱子还剩 12 格。')
+  call('talk', 45, 1, 1300, 0, 8400, 'end')
+  say(45, 1, '搬完了：81 种都进了你面前的压缩箱子，没有失败的，箱子还剩 12 格。')
+  end('talk', 45, 1)
 
   add({ kind: 'chat', who: '阿露', time: at(150), text: '好，那桨叶做一个吧' })
   at(151)
-  start('talk', 2104, '阿露 说：好，那桨叶做一个吧')
-  call('talk', 2104, 1, 1600, 2, 9100)
-  tool('talk', 2104, 1, 'say', '{"message":"好，这就做。"}', 'Said in public chat.')
-  tool('talk', 2104, 1, 'tell_worker', '{"text":"做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。"}', 'Handed to the working line; it starts now.')
-  end('talk', 2104, 1)
-  start('work', 3103, '对话线交来的事：做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。')
-  call('work', 3103, 1, 5600, 1, 58200)
-  tool('work', 3103, 1, 'craft_item', '{"id":"adventurebackpack:backpackComponent","meta":6,"count":1}', 'Task tmwd001 (craft) started. It runs in the game on its own.')
-  end('work', 3103, 1)
+  start('talk', 46, '阿露 说：好，那桨叶做一个吧')
+  call('talk', 46, 1, 1600, 1, 9100)
+  say(46, 1, '好，这就做。')
+  tool('talk', 46, 1, 'tell_worker', '{"text":"做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。"}', 'Handed to the working line; it starts now.')
+  relay('talk', 46, 1, 'tell', '做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。', { quotes: 1, detail: '做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。\n\n[主人的原话]\n阿露：好，那桨叶做一个吧' })
+  end('talk', 46, 1)
+  start('work', 47, '对话线交来的事：做 1 个直升机桨叶（adventurebackpack:backpackComponent/6）：工作台合成，料在身上。')
+  call('work', 47, 1, 5600, 1, 58200)
+  tool('work', 47, 1, 'craft_item', '{"id":"adventurebackpack:backpackComponent","meta":6,"count":1}', 'Task tmwd001 (craft) started. It runs in the game on its own.')
+  end('work', 47, 1)
   add({ kind: 'event', agent: 'work', time: at(166), text: '任务 tmwd001（craft）完成了。 结果：crafted 1× 直升机桨叶' })
-  start('work', 3104, '任务 tmwd001（craft）完成了。')
-  call('work', 3104, 1, 3900, 1, 59000)
-  tool('work', 3104, 1, 'report', '{"text":"桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？","question":true}', 'Reported to the talking line; waiting for an answer.')
-  end('work', 3104, 1)
-  start('talk', 2105, '干活线提问：桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？')
-  call('talk', 2105, 1, 1400, 1, 9800)
-  tool('talk', 2105, 1, 'say', '{"message":"桨叶做好了，在我身上。钢螺丝只剩 13 个了，要我补一些吗？"}', 'Said in public chat.')
-  end('talk', 2105, 1)
+  start('work', 48, '任务 tmwd001（craft）完成了。')
+  call('work', 48, 1, 3900, 1, 59000)
+  tool('work', 48, 1, 'report', '{"text":"桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？","question":true}', 'Sent to the talking line; waiting for an answer.')
+  relay('work', 48, 1, 'question', '桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？')
+  end('work', 48, 1)
+  start('talk', 49, '干活线提问：桨叶做好了，在我身上。钢螺丝只剩 13 个，要不要补一些？')
+  call('talk', 49, 1, 1400, 0, 9800, 'end')
+  say(49, 1, '桨叶做好了，在我身上。钢螺丝只剩 13 个了，要我补一些吗？')
+  end('talk', 49, 1)
 }
 
 // ── 代理 ──
@@ -703,17 +724,31 @@ async function fake(req: http.IncomingMessage, res: http.ServerResponse, url: UR
       who.model = { ...before, state: 'thinking', turn, step: 1, since: startedAt }
       who.turn = { id: turn, startedAt, steps: 0, maxSteps: 60 }
       setTimeout(() => {
-        const c = { state: 'done', purpose: 'turn', step: 1, startedAt, ms: Date.now() - startedAt, model: 'mock', inputTokens: 5120, outputTokens: 48, cacheReadTokens: 4000, stop: 'tool_calls', toolCalls: 1 }
+        const c = { state: 'done', purpose: 'turn', step: 1, startedAt, ms: Date.now() - startedAt, model: 'mock', inputTokens: 5120, outputTokens: 48, cacheReadTokens: 4000, stop: agent ? 'end' : 'tool_calls', toolCalls: agent ? 0 : 1 }
         update(thinking.id, { text: callText(c), call: c })
-        add({ kind: 'tool_call', turn, step: 1, ...(agent ? { agent } : {}), source: 'model', who: 'say', text: JSON.stringify({ message: `（模拟）收到：${text.slice(0, 60)}` }) })
-        add({ kind: 'say', who: BOT, ...(agent ? { agent } : {}), text: `（模拟）收到：${text.slice(0, 60)}` })
-        add({ kind: 'tool_result', turn, step: 1, ...(agent ? { agent } : {}), source: 'model', who: 'say', text: 'Said in public chat.' })
+        if (agent) {
+          // 两条线：对话线写的字就是它说的话
+          add({ kind: 'say', who: BOT, agent, turn, step: 1, text: `（模拟）收到：${text.slice(0, 60)}` })
+        } else {
+          add({ kind: 'tool_call', turn, step: 1, source: 'model', who: 'say', text: JSON.stringify({ message: `（模拟）收到：${text.slice(0, 60)}` }) })
+          add({ kind: 'say', who: BOT, text: `（模拟）收到：${text.slice(0, 60)}` })
+          add({ kind: 'tool_result', turn, step: 1, source: 'model', who: 'say', text: 'Said in public chat.' })
+        }
         add({ kind: 'turn', turn, ...(agent ? { agent } : {}), text: `第 ${turn} 轮结束（调了 1 次模型，模拟接口 / mock）` })
         who.model = before
         who.turn = null
       }, 2500)
     }, 800)
     json(res, 200, { ok: true })
+    return true
+  }
+  if (route === 'POST /api/work/stop') {
+    if (LINES !== 2) return false
+    const w = live.agents[live.agents.length - 1]!
+    const result = { ok: true, turn: w.model?.state === 'thinking' || w.model?.state === 'tools', routine: w.routine?.id ?? null, tasks: (w.body?.task ? 1 : 0) + (w.body?.queue?.length ?? 0), dropped: w.pending ?? 0 }
+    add({ kind: 'relay', text: '面板 → 干活线：停下', relay: { type: 'stop', from: 'panel', to: 'work' } })
+    setScene('idle')
+    json(res, 200, result)
     return true
   }
   if (route === 'POST /api/routine/stop' || route === 'POST /api/tasks/cancel') {
@@ -743,7 +778,7 @@ const proxy = http.createServer((req, res) => {
       if (typeof body.screen === 'boolean') setScreen(body.screen)
       return json(res, 200, { ok: true })
     }
-    if (SHAPE === 'new' && url.pathname.startsWith('/api/') && ['/api/status', '/api/log', '/api/events', '/api/runs', '/api/runs/records', '/api/command', '/api/routine/stop', '/api/tasks/cancel'].includes(url.pathname)) {
+    if (SHAPE !== 'real' && url.pathname.startsWith('/api/') && ['/api/status', '/api/log', '/api/events', '/api/runs', '/api/runs/records', '/api/command', '/api/routine/stop', '/api/tasks/cancel', '/api/work/stop'].includes(url.pathname)) {
       if (!(await authed(req))) return json(res, 401, { error: { code: 'unauthorized', message: '请先登录' } })
       if (await fake(req, res, url)) return
     }
@@ -789,8 +824,8 @@ async function main(): Promise<void> {
   llm.fallback = demoResponder
   await llm.start(LLM_PORT)
 
-  // 新形状的时间线不用大脑自己的日志；旧形状时大脑读的就是数据目录里那份样本
-  if (SHAPE === 'new') {
+  // 假数据的时间线不用大脑自己的日志；--shape real 时大脑读的就是数据目录里那份样本
+  if (SHAPE !== 'real') {
     if (LINES === 2) playTwoLines()
     else convertSample(SAMPLE)
     setScene(scene)
@@ -809,7 +844,7 @@ async function main(): Promise<void> {
     if (!ready && text.includes('面板地址')) {
       ready = true
       void seedBrain().then(
-        () => console.log(`[dev] 面板：http://127.0.0.1:${PROXY_PORT}/  （${SHAPE === 'new' ? `新形状，${LINES} 条线，场景 ${scene}` : '旧形状，直接是大脑给的'}；口令在 GET /__dev 里）`),
+        () => console.log(`[dev] 面板：http://127.0.0.1:${PROXY_PORT}/  （${SHAPE !== 'real' ? `假数据，${LINES} 条线，场景 ${scene}` : '大脑真实给的数据'}；口令在 GET /__dev 里）`),
         (e) => console.log(`[dev] 给大脑配模型时出错：${e instanceof Error ? e.message : String(e)}`),
       )
     }

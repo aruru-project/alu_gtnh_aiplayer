@@ -28,10 +28,14 @@ function headline() {
   if (agents.length === 0) return { tone: 'idle', text: state.error ? '连不上大脑进程' : '正在问大脑…', sub: state.error ?? '' }
   const owner = bodyAgent(state.status)
   const many = agents.length > 1
-  const name = (a) => (many ? `${agentLabel(a)}线` : '')
+  const name = (a) => (many ? agentLabel(a) : '')
   for (const a of agents) {
     const m = a.model ?? {}
     if (m.state === 'outage') return { tone: 'bad', text: `${name(a)}模型接口故障`, sub: m.outage ? `连着失败 ${m.outage.failures} 次，${clock(m.outage.nextRetryAt)} 再试：${m.outage.lastError}` : '' }
+  }
+  for (const a of agents) {
+    // 干活线提了问还没人回答：整件事停在这里
+    if (a.waitingAnswer) return { tone: 'warn', text: `${agentLabel(a)}在等回答`, since: a.waitingAnswer.since, sub: a.waitingAnswer.text }
   }
   for (const a of [...agents].reverse()) {
     const s = modelState(a)
@@ -61,19 +65,23 @@ function modelBlock(agent, many) {
   const s = modelState(agent)
   const turn = agent.turn
   const timeline = getTimeline()
-  // 这一轮是被什么叫醒的：从日志里那一轮的开头拿
-  const trigger = turn ? timeline.turns.get(turn.id)?.trigger : undefined
+  // 这一轮是被什么叫醒的：后端给了就用它的，否则从日志里那一轮的开头拿
+  const trigger = turn ? (turn.about ?? timeline.turns.get(turn.id)?.trigger) : undefined
+  const hist = agent.history
   return h(
     'div',
     { class: 'now-lane' },
-    h('div', { class: 'now-lane-head' }, h('span', { class: 'tag model', text: many ? `${agentLabel(agent)} · 模型` : '模型' }), h('span', { class: `state ${s.tone}`, ...(s.since !== undefined ? { 'data-since': s.since, 'data-label': s.text } : {}), text: s.since !== undefined ? `${s.text} ${duration(Math.max(0, serverNow() - s.since))}` : s.text })),
+    h('div', { class: 'now-lane-head' }, h('span', { class: `tag ${agent.agent === 'talk' ? 'talk' : 'model'}`, text: many ? agentLabel(agent) : '模型' }), h('span', { class: `state ${s.tone}`, ...(s.since !== undefined ? { 'data-since': s.since, 'data-label': s.text } : {}), text: s.since !== undefined ? `${s.text} ${duration(Math.max(0, serverNow() - s.since))}` : s.text })),
     kv([
       ['用的模型', m.provider || m.model ? `${m.provider ?? '?'} / ${m.model ?? '?'}` : h('span', { class: 'bad', text: '还没配置' })],
       turn ? ['这一轮', `第 ${turn.id} 轮，已经 ${turn.steps ?? 0}${turn.maxSteps ? ` / ${turn.maxSteps}` : ''} 步${turn.startedAt ? `，开始于 ${clock(turn.startedAt)}` : ''}`] : null,
       trigger ? ['在处理', trigger] : null,
       m.state === 'outage' && m.outage ? ['故障', h('span', { class: 'bad', text: `从 ${when(m.outage.since)} 起连着失败 ${m.outage.failures} 次，${clock(m.outage.nextRetryAt)} 再试。${m.outage.lastError}` })] : null,
       agent.pending > 0 ? ['排着队', `${agent.pending} 件事等它处理`] : null,
+      agent.waitingAnswer ? ['在等回答', h('span', { class: 'warn', text: agent.waitingAnswer.text })] : null,
+      agent.lastReport && !agent.waitingAnswer ? ['上一次汇报', `${when(agent.lastReport.time)}：${agent.lastReport.text}`] : null,
       ['上一次调用', lastCallText(m.lastCall)],
+      hist ? ['它记得的', `${hist.turns} 轮，约 ${compact(hist.estimatedTokens)} token${hist.threshold ? `（到 ${compact(hist.threshold)} 就压缩）` : ''}${hist.hasSummary ? '，更早的已压成摘要' : ''}`] : null,
     ]),
   )
 }
@@ -84,10 +92,8 @@ function routineBlock(agent) {
   const head = h('div', { class: 'now-lane-head' }, h('span', { class: 'tag routine', text: '例程' }))
   if (!r) return h('div', { class: 'now-lane' }, head, h('p', { class: 'muted', text: '没有在跑的例程。例程是它自己写的后台脚本：一步步调工具，不用每一步都问模型。' }))
   const now = serverNow()
-  head.append(
-    h('span', { class: `state ${running ? 'routine' : r.status === 'done' ? 'ok' : 'warn'}`, ...(running ? { 'data-since': r.startedAt, 'data-label': '在跑' } : {}), text: running ? `在跑 ${duration(Math.max(0, now - r.startedAt))}` : `上一个：${RUN_STATES[r.status] ?? r.status}` }),
-    running ? button('停止例程', { class: 'small danger', title: '停掉它；它正在做的任务也取消，模型会被叫醒看结果' }, (btn) => act(btn, actions.stopRoutine, '已停止例程').then(refresh)) : null,
-  )
+  head.append(h('span', { class: `state ${running ? 'routine' : r.status === 'done' ? 'ok' : 'warn'}`, ...(running ? { 'data-since': r.startedAt, 'data-label': '在跑' } : {}), text: running ? `在跑 ${duration(Math.max(0, now - r.startedAt))}` : `上一个：${RUN_STATES[r.status] ?? r.status}` }))
+  if (running) head.append(button('停止例程', { class: 'small danger', title: '停掉它；它正在做的任务也取消，模型会被叫醒看结果' }, (btn) => act(btn, actions.stopRoutine, '已停止例程').then(refresh)))
   const recent = (r.recent ?? []).slice(-6)
   const logs = (r.logs ?? []).slice(-8)
   return h(
@@ -131,10 +137,8 @@ function bodyBlock(agent) {
     return h('div', { class: 'now-lane' }, head, h('p', { class: 'muted', text: `${body.error}。身体的任务存在游戏那边，连上、上线以后才看得到。` }))
   }
   const stale = taskStaleMs(task)
-  head.append(
-    h('span', { class: `state ${task ? (stale > STALE_TASK_MS ? 'warn' : 'body') : 'idle'}`, text: task ? (stale > STALE_TASK_MS ? `进度 ${duration(stale)}没动` : '在做任务') : '没有任务' }),
-    task || queue.length > 0 ? cancel(undefined, queue.length > 0 ? '全部取消' : '取消') : null,
-  )
+  head.append(h('span', { class: `state ${task ? (stale > STALE_TASK_MS ? 'warn' : 'body') : 'idle'}`, text: task ? (stale > STALE_TASK_MS ? `进度 ${duration(stale)}没动` : '在做任务') : '没有任务' }))
+  if (task || queue.length > 0) head.append(cancel(undefined, queue.length > 0 ? '全部取消' : '取消'))
   const p = task?.progress
   return h(
     'div',
@@ -193,7 +197,7 @@ function renderWork(el) {
 
 // ── 左边：最近几步、最近说的话 ──
 
-const FEED_TAGS = { say: ['它说', 'say'], heard: ['', 'heard'], step: ['模型', 'model'], tool: ['', 'model'], run: ['', 'routine'], error: ['出错', 'bad'] }
+const FEED_TAGS = { say: ['它说', 'say'], heard: ['', 'heard'], step: ['模型', 'model'], tool: ['', 'model'], run: ['', 'routine'], relay: ['', 'relay'], error: ['出错', 'bad'] }
 
 function renderFeed(el) {
   const { items } = getTimeline()
@@ -209,10 +213,10 @@ function renderFeed(el) {
             const [label, tone] = FEED_TAGS[r.kind] ?? ['', '']
             return h(
               'li',
-              { class: `feed-row ${r.kind}${r.isError ? ' is-error' : ''}${r.pending ? ' pending' : ''}` },
+              { class: `feed-row k-${r.kind}${r.isError ? ' is-error' : ''}${r.pending ? ' pending' : ''}` },
               h('time', { class: 'time', text: clock(r.time) }),
-              h('span', { class: `tag ${tone}`, text: label || r.label }),
-              h('span', { class: 'feed-text' }, r.kind === 'tool' && r.args ? h('span', { class: 'mono muted', text: `${r.args.slice(0, 60)}${r.args.length > 60 ? '…' : ''} ` }) : null, r.kind === 'heard' || r.kind === 'say' || r.kind === 'step' || r.kind === 'error' || r.kind === 'run' ? r.text : r.pending ? '（还没回来）' : `→ ${r.text}`),
+              r.kind === 'tool' ? h('span', { class: 'feed-tool', text: r.label }) : h('span', { class: `tag ${tone}`, text: label || r.label }),
+              h('span', { class: 'feed-text' }, r.kind === 'tool' && r.args ? h('span', { class: 'feed-args', text: `${r.args.slice(0, 48)}${r.args.length > 48 ? '…' : ''} ` }) : null, r.kind !== 'tool' ? r.text : r.pending ? '（还没回来）' : `→ ${r.text}`),
             )
           }),
         ),

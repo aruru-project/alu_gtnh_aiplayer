@@ -26,8 +26,8 @@ const AGENT_HINTS = {
   work: '操作身体的那条线：任务和例程归它',
   main: '说话和干活现在是同一条线',
 }
-/** 一条线给人看的名字。 */
-export const agentLabel = (a) => AGENT_LABELS[a?.agent ?? a] ?? a?.name ?? String(a?.agent ?? a)
+/** 一条线给人看的名字：后端给了 title（“对话线”“干活线”）就用它的。 */
+export const agentLabel = (a) => (typeof a === 'object' && a?.title) || AGENT_LABELS[a?.agent ?? a] || a?.name || String(a?.agent ?? a)
 export const agentHint = (a) => AGENT_HINTS[a?.agent ?? a] ?? ''
 /** 哪条线管着身体（例程和任务挂在它下面）：带 body 的那条；都没带就是最后一条。 */
 export function bodyAgent(status) {
@@ -196,15 +196,25 @@ document.addEventListener('visibilitychange', () => {
 export const actions = {
   stopRoutine: () => api('POST', '/routine/stop', {}),
   cancelTask: (id) => api('POST', '/tasks/cancel', id ? { id } : {}),
-  /** 全部停下：停掉例程，取消身体正在做的和排着队的任务。 */
+  /**
+   * 全部停下：打断干活线正在想的那一步，停掉例程，取消身体正在做的和排着队的任务。
+   * 返回 { turn, routine, tasks }：打断了一轮没有、停了哪个例程、取消了几个任务。
+   * 还没有总停止接口的后端（404）：分别停例程、取消任务（打断不了正在想的那一步）。
+   */
   async stopAll() {
+    try {
+      const res = await api('POST', '/work/stop', { reason: '主人在面板上点了“全部停下”' })
+      return { turn: res.turn === true, routine: res.routine || null, tasks: res.tasks ?? 0, whole: true }
+    } catch (e) {
+      if (e.status !== 404) throw e
+    }
     const routine = await api('POST', '/routine/stop', {})
     const tasks = await api('POST', '/tasks/cancel', {})
-    return { routineStopped: routine?.stopped === true, canceled: tasks?.canceled ?? 0 }
+    return { turn: false, routine: routine?.stopped === true ? '例程' : null, tasks: tasks?.canceled ?? 0, whole: false }
   },
   spawn: () => api('POST', '/bot/spawn', {}),
   despawn: () => api('POST', '/bot/despawn', {}),
-  /** 换某条线用的模型。现在的后端只有一个“当前模型”，agent 先带着，后端分了线以后用得上。 */
-  useModel: (agent, providerId, modelId) => api('POST', '/models/use', { agent, providerId, modelId }),
+  /** 换某条线用的模型：line 是 talk 或 work；不带是全部一起换（只有一条线的后端也是这样）。 */
+  useModel: (agent, providerId, modelId) => api('POST', '/models/use', { providerId, modelId, ...(agent === 'talk' || agent === 'work' ? { line: agent } : {}) }),
   command: (text) => api('POST', '/command', { text }),
 }
