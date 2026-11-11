@@ -171,6 +171,8 @@ interface Place {
   z: number
   container?: string
   count: number
+  /** 接着管道、漏斗的容器（automated: true 时也算进库存）：接的是什么 */
+  by?: string
 }
 
 interface Held {
@@ -207,7 +209,7 @@ function queriesOf(thing: TreeThing<Note>): StockQuery[] {
  * 看整个基地的库存里这些东西各有多少、在哪。机器（和它的总线、仓）里的不算库存；接着管道、漏斗的容器里的另记。
  * 问不到（没连上、不在线）时返回原因。
  */
-async function lookIntoStorage(ctx: ToolContext, things: readonly TreeThing<Note>[], around: Surroundings): Promise<Storage | { error: string }> {
+async function lookIntoStorage(ctx: ToolContext, things: readonly TreeThing<Note>[], around: Surroundings, countAutomated = false): Promise<Storage | { error: string }> {
   try {
     const me = await whereItStands(ctx)
     if (!me) return { error: `offline: ${ctx.botName} is not in the game world` }
@@ -247,12 +249,12 @@ async function lookIntoStorage(ctx: ToolContext, things: readonly TreeThing<Note
           const flag = flags.get(posKey(place))
           if (flag?.machine && place.kind !== 'cover') continue
           const at: Place = { x: place.x, y: place.y, z: place.z, count: place.count, ...(place.container ? { container: place.container } : {}) }
-          if (flag?.attached) {
+          if (flag?.attached && !countAutomated) {
             h.automated += place.count
             h.automatedPlaces.push({ ...at, by: attachedText(flag.attached) })
           } else {
             h.free += place.count
-            h.places.push(at)
+            h.places.push(flag?.attached ? { ...at, by: attachedText(flag.attached) } : at)
           }
         }
       })
@@ -278,6 +280,7 @@ interface Input {
   recipes?: number[]
   chisel?: { id: string; meta?: number; from: { id: string; meta?: number } }[]
   stock?: boolean
+  automated?: boolean
   from?: number
 }
 
@@ -311,7 +314,7 @@ export const totalMaterials: Tool = {
   brief: "{id | fluid, meta?, count?, recipes?, chisel?, stock?, from?}: what making it takes down the whole tree, by the base's methods, storage deducted -> undecided[{ways}], missing[], jobs[{wave, way, recipe, rounds, makes, rule}], raw[], fluids[], kept[]",
   description:
     "What making a thing takes, down its whole tree, and what to do first. For each thing to make the recipe is: one you name in \"recipes\" (or a \"chisel\" step); else the one the base's methods record for it; else the way they record for its kind of part; else the first way of their order that makes it; else its only recipe, when it has just one. Otherwise it is NOT DECIDED: the tree stops there and its ways are laid out — nothing is chosen for you; record a choice with set_base_method (or name a recipe) and run it again. " +
-    'Storage is looked into first: what is there is used, only what is short is expanded, and where it was taken from is listed; what sits in containers with pipes or hoppers attached is listed apart and not counted; stock: false counts everything from nothing. ' +
+    'Storage is looked into first: what is there is used, only what is short is expanded, and where it was taken from is listed; what sits in containers with pipes or hoppers attached is listed apart and not counted (automated: true counts it too); stock: false counts everything from nothing. ' +
     'The result: the things not decided; the raw materials still missing; missing capability (ways with no usable machine here, fluids to supply and what the tanks hold); and the jobs, grouped by way and by when they can start. Amounts are multiplied down the tree, rounds rounded up, molds and tools counted once.',
   inputSchema: obj({
     id: str('Item id of the target.'),
@@ -325,6 +328,7 @@ export const totalMaterials: Tool = {
       { max: CHISEL_MAX },
     ),
     stock: bool('false: do not look into storage; count everything from nothing.'),
+    automated: bool('true: count what sits in containers with pipes or hoppers attached as storage too (default: listed apart, not counted).'),
     from: int('Which job to list from (default 1), when the list of jobs did not fit.', { min: 1 }),
   }),
   async run(ctx: ToolContext, i: Input): Promise<ToolResult | string> {
@@ -391,7 +395,7 @@ export const totalMaterials: Tool = {
     // ── 基地里有什么：机器、合成台、库存 ──
     const around = await lookAround(ctx)
     const wantStock = i.stock !== false
-    const storage = wantStock && !around.error ? await lookIntoStorage(ctx, everything, around) : undefined
+    const storage = wantStock && !around.error ? await lookIntoStorage(ctx, everything, around, i.automated === true) : undefined
     const stockError = !wantStock ? undefined : around.error ? around.error : storage && 'error' in storage ? storage.error : undefined
     const held = storage && !('error' in storage) ? storage.held : undefined
     const tree: TreeResult<Note> = walker.count(count, held ? (t) => held.get(t)?.free ?? 0 : undefined)
@@ -543,7 +547,7 @@ export const totalMaterials: Tool = {
           out.push(`Used from storage (${tree.stocked.length}): ${listed(tree.stocked, (t) => {
             const h = held.get(t)
             // 那里一共有多少、在哪（拿几个是上面那个数）
-            const where = [...(h && h.carried > 0 ? [`${quantity(h.carried)} on you`] : []), ...(h?.places ?? []).slice(0, 2).map((p) => `${quantity(p.count)} at ${formatPos(p)}`)]
+            const where = [...(h && h.carried > 0 ? [`${quantity(h.carried)} on you`] : []), ...(h?.places ?? []).slice(0, 2).map((p) => `${quantity(p.count)} at ${formatPos(p)}${p.by ? ` (AUTOMATED: ${p.by})` : ''}`)]
             return `${amount(t, t.fromStock)}${where.length > 0 ? ` (there are ${where.join(', ')}${(h?.places.length ?? 0) > 2 ? ', …' : ''})` : ''}`
           }, '; ')}`)
         }

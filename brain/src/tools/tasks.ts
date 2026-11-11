@@ -344,7 +344,7 @@ export const fillArea: Tool = {
 
 export const digBlocks: Tool = {
   name: 'dig_blocks',
-  description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). clear_area does whole boxes.`,
+  description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). A chest, drawer or machine listed here is dug as a player digs it: what is inside drops on the ground. clear_area does whole boxes.`,
   inputSchema: obj({ blocks: arr('Positions to dig.', pos(), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
   run: (ctx, i: { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks }, i.queue),
 }

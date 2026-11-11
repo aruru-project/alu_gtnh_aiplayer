@@ -125,6 +125,18 @@ describe('total_materials：照基地的做法展开整棵树', () => {
     assert.deepEqual(res.data.missing, [{ id: 'gregtech:gt.metaitem.02', meta: 31305, name: '钢齿轮', count: 1, needed: 1, why: 'none', inStorage: 0 }])
   })
 
+  it('给 automated: true：接着漏斗的箱子里的钢锭也算库存，钢锭够了就不用做；用了哪里写着它接着什么', async (t) => {
+    const s = setup(t)
+    const res = await s.total({ ...P.blades, automated: true })
+    assert.deepEqual(
+      res.data.undecided.map((u: any) => u.name),
+      ['模头（转轴）'],
+    )
+    const used = res.lines.find((l: string) => l.startsWith('Used from storage'))
+    assert.match(used ?? '', /36× 钢锭 \[gregtech:gt\.metaitem\.01\/11305\] \(there are 64 at \(\S+\) \(AUTOMATED: [^)]+\), 20 at \(12,64,-4\)\)/)
+    assert.equal(res.lines.includes(AUTOMATED), false)
+  })
+
   it('主人教过几条以后做 3 个桨叶：每样照基地的做法走到底，每一步写明是照哪一条定的；活儿按先后分批、按做法分组，记过用途的机器带着它的进料和收货的地方；只把库存不够的那部分往下算', async (t) => {
     const s = setup(t)
     await s.teach()
