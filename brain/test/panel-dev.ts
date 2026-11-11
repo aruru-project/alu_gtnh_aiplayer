@@ -31,7 +31,7 @@ const SHAPE = arg('shape', 'fake')
 const LINES = Number(arg('lines', '1'))
 let scene = arg('scene', 'idle')
 const DATA_DIR = path.resolve(BRAIN, arg('data', 'data/panel-dev'))
-const SAMPLE = path.resolve(BRAIN, arg('sample', 'data/panel-dev/logs/activity-2026-11-11.jsonl'))
+const SAMPLE = path.resolve(BRAIN, arg('sample', 'data/panel-sample/activity-2026-11-11.jsonl'))
 const PACKDATA = arg('packdata', process.env.AIPLAYER_PACKDATA ?? '/home/luziyi/workshop/alu_gtnh_aiplayer/brain/packdata')
 const BRIDGE_PORT = 25610
 const LLM_PORT = 25611
@@ -234,8 +234,8 @@ function convertSample(file: string): void {
     console.log(`[dev] 没有样本日志（${file}），时间线从空的开始。`)
     return
   }
-  // 样本的最后是别的测试刷的一串聊天，不要
-  const cut = rows.findLastIndex((r) => r.kind === 'turn')
+  // 只要到样本里主人最后一次测试为止（后面是别的测试刷的一串聊天）
+  const cut = rows.findLastIndex((r) => r.kind === 'turn' && r.time < 1794383400000)
   rows = rows.slice(0, cut + 1)
   const shift = Date.now() - 20 * 60_000 - (rows[rows.length - 1]?.time ?? Date.now())
   const routines = new Map<string, { entry: Entry; file: string; records: Json[]; run: Json; pending: Map<string, Json> }>()
@@ -817,8 +817,49 @@ async function seedBrain(): Promise<void> {
   }
 }
 
+/** 数据目录里是空的时候放几样东西进去，各页才有的看：两张草稿、几条记忆、两条意见。 */
+async function seedData(): Promise<void> {
+  const { DesignWorkspace } = await import('../src/design/index.ts')
+  const { loadPackData } = await import('../src/packdata/index.ts')
+  const { MemoryStore } = await import('../src/store/memory.ts')
+  const { FeedbackStore } = await import('../src/store/feedback.ts')
+  const design = new DesignWorkspace({ dataDir: DATA_DIR, packdata: loadPackData(PACKDATA, () => {}) })
+  if (design.drafts.list().length === 0) {
+    const hut = `const b = blueprint(9, 7, 7)
+b.fill(0, 0, 0, 8, 0, 6, 'minecraft:cobblestone')
+b.walls(0, 1, 0, 8, 3, 6, 'minecraft:planks')
+for (const [x, z] of [[0,0],[8,0],[0,6],[8,6]]) b.line(x, 1, z, x, 3, z, 'minecraft:log')
+b.set(4, 1, 6, null).set(4, 2, 6, null)
+for (const x of [2, 6]) b.set(x, 2, 6, 'minecraft:glass').set(x, 2, 0, 'minecraft:glass')
+for (let y = 0; y < 3; y++) b.fill(y, 4 + y, 0, 8 - y, 4 + y, 6, 'minecraft:stonebrick')
+b.save('小木屋')
+return '9×7×7 的小木屋'`
+    const flag = `const colors = [14, 14, 0, 0, 11, 11]
+const b = blueprint(12, 6, 1)
+for (let y = 0; y < 6; y++) for (let x = 0; x < 12; x++) b.set(x, y, 0, 'minecraft:wool/' + colors[5 - y])
+b.save('三色旗')`
+    for (const code of [hut, flag]) {
+      const made = await design.run(code)
+      if (made.outcome.status !== 'ok') console.log(`[dev] 草稿没做成：${JSON.stringify(made.outcome).slice(0, 200)}`)
+    }
+  }
+  const memory = new MemoryStore(DATA_DIR, () => 4000)
+  if (memory.list().length === 0) {
+    memory.set('home:base', '主基地，(-522,69,43) 附近。仓库在南边那排压缩箱子，抽屉矩阵在 (-511,71,86)。')
+    memory.set('主人的习惯', '阿露说“这个箱子”时指的是她准星对着的那个；动接着管道的容器之前先问。')
+    memory.set('凿子', '钻石凿子右键打开界面，Shift 点泥土进去，再 Shift 点要的花纹取出来。一次一组。')
+  }
+  const feedback = new FeedbackStore(DATA_DIR)
+  if (feedback.list().length === 0) {
+    const context = { bot: BOT, brainVersion: '0.1.0', modVersion: 'v0.1.0-mock', turn: 93, instruction: '主人通过控制面板对你说：把 192 个泥土一次存进抽屉', recentTools: [{ tool: 'use_item', input: '{"id":"minecraft:dirt","on":{"x":-519,"y":69,"z":85}}', result: 'Task tmwbpmfe7 (use) started.' }, { tool: 'deposit_items', input: '{"container":{"x":-519,"y":69,"z":85},"items":[{"id":"minecraft:dirt","count":192}]}', result: 'tmwbpmfe8 deposit [done] result={"moved":192}' }], tasks: [{ id: 'tmwbpmfe7', type: 'use', state: 'done' }] }
+    feedback.submit({ title: '无法测试持续右键抽屉', category: 'missing_tool', goal: '像玩家那样按住右键，把同一种东西一次全存进抽屉', problem: 'use_item 只能点一次，单次右键只存进去手上的一组，192 个泥土还在身上。', wish: '给 use_item 一个按住多久（或者连点几次）的参数。' }, context)
+    feedback.submit({ title: 'screens 手册没写凿子界面的格子编号', category: 'data_or_manual', goal: '用钻石凿子把泥土凿成凿子泥土', problem: '手册里说“看格子”，但凿子界面有 60 个产物格，不知道哪个是哪种花纹，只能一个个试。', wish: '在手册里补一句：产物格按界面上的顺序排，名字在工具结果里。' }, { ...context, turn: 78 })
+  }
+}
+
 async function main(): Promise<void> {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 })
+  await seedData().catch((e) => console.log(`[dev] 没能往数据目录里放样本：${e instanceof Error ? e.message : String(e)}`))
   await bridge.start()
   const llm = new MockLlm()
   llm.fallback = demoResponder

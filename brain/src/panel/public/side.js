@@ -4,7 +4,7 @@
 
 import { actions, agentHint, agentLabel, bodyAgent, refresh, serverNow, state } from './data.js'
 import { foodIcon, heartIcon, playerHead } from './items.js'
-import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, taskName, toast } from './ui.js'
+import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, put, taskName, toast } from './ui.js'
 
 /** 模型一步想了这么久算“比平时久”（默认的接口超时是 120 秒）。 */
 export const SLOW_STEP_MS = 90_000
@@ -42,7 +42,7 @@ export function modelState(agent) {
   if (m.state === 'thinking') {
     const since = m.since
     const slow = typeof since === 'number' && now - since > SLOW_STEP_MS
-    return { tone: slow ? 'warn' : 'think', text: m.step !== undefined ? `正在想第 ${m.step} 步` : '正在想', since, slow }
+    return { tone: slow ? 'warn' : 'think', text: m.step !== undefined ? `正在想第 ${m.step} 步` : '正在想', since, slow, ...(slow ? { hint: `这一步已经想了超过 ${SLOW_STEP_MS / 1000} 秒，比平时久：可能是接口慢，也可能卡住了（接口默认 120 秒超时）。` } : {}) }
   }
   if (m.state === 'tools') return { tone: 'tools', text: m.step !== undefined ? `在执行第 ${m.step} 步的工具` : '在执行工具' }
   if (!m.provider && !m.model && state.overview && !state.overview.provider) return { tone: 'bad', text: '没配模型' }
@@ -50,7 +50,7 @@ export function modelState(agent) {
 }
 
 function stateChip(s) {
-  const attrs = { class: `state ${s.tone}` }
+  const attrs = { class: `state ${s.tone}`, title: s.hint ?? '' }
   if (s.since !== undefined) {
     attrs['data-since'] = s.since
     attrs['data-label'] = s.text
@@ -188,7 +188,7 @@ function bodyRow(agent) {
       h(
         'div',
         { class: 'lane-sub' },
-        stale > STALE_TASK_MS ? h('span', { class: 'state warn', text: `进度 ${duration(stale)}没动` }) : p?.phase ? h('span', { class: 'muted', text: p.phase }) : null,
+        stale > STALE_TASK_MS ? h('span', { class: 'state warn', title: `任务进度已经 ${duration(stale)}没动（身体报的进度一直是同一个数），可能卡住了。可以取消它。`, text: `进度 ${duration(stale)}没动` }) : p?.phase ? h('span', { class: 'muted', text: p.phase }) : null,
         queue.length > 0 ? h('span', { class: 'muted', text: `后面排着 ${queue.length} 个` }) : null,
       ),
     ),
@@ -239,9 +239,9 @@ function stopAll() {
   return button(
     '全部停下',
     {
-      class: 'stop-all danger',
+      class: `stop-all${busy ? ' armed' : ''}`,
       disabled: !busy,
-      title: busy ? '让一切停下：打断干活的那条线正在想的那一步，停掉例程，取消身体正在做的和排着队的全部任务' : '现在没有在干的活',
+      title: busy ? '让一切停下：打断干活的那条线正在想的那一步，停掉例程，取消身体正在做的和排着队的全部任务' : '现在没有在跑的东西',
     },
     (btn) =>
       act(btn, actions.stopAll).then((res) => {
@@ -283,10 +283,10 @@ export function renderSide(root, footRoot) {
   const owner = bodyAgent(state.status)
   // 正在挑模型的时候不重画，免得下拉被换掉
   if (root.contains(document.activeElement) && document.activeElement?.tagName === 'SELECT') return
-  root.replaceChildren(
+  put(root, 
     playerCard(),
     h('div', { class: 'lines-head' }, h('span', { class: 'side-label', text: agents.length > 1 ? '两条线' : '它在干什么' }), stopAll()),
     ...(agents.length === 0 ? [h('p', { class: 'muted pad', text: state.error ? `连不上大脑进程：${state.error}` : '正在问大脑…' })] : agents.map((a) => lineCard(a, a === owner, agents.length === 1))),
   )
-  footRoot.replaceChildren(foot())
+  put(footRoot, foot())
 }

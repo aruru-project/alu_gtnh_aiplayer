@@ -1,7 +1,7 @@
 // 游戏味的那几样组件：物品格子（图标、数量、耐久条、悬停说明）、物品栏、开着的界面、血量和饥饿、玩家的头。
 // 图都是整数倍放大、不抹匀的（image-rendering: pixelated）。心、鸡腿、头是照着像素表画在 canvas 上的，不用任何图片文件。
 
-import { h } from './ui.js'
+import { h, put } from './ui.js'
 
 /** 一个格子里图标的边长（像素）。格子本身是 36：四周各 2 像素的凹槽边。 */
 const ICON = 32
@@ -91,7 +91,7 @@ function tipLines(slot) {
 
 function showTip(slot, x, y) {
   const el = tipEl()
-  el.replaceChildren(...tipLines(slot))
+  put(el, ...tipLines(slot))
   el.hidden = false
   const pad = 14
   const w = el.offsetWidth
@@ -212,6 +212,7 @@ export function screenPanel(screen, looks, onPick) {
     'div',
     { class: 'mc-panel screen' },
     h('div', { class: 'mc-title' }, h('span', { text: `开着的界面：${screen.name || '（没有名字）'}` }), h('span', { class: 'mc-note', text: `${theirs.length} 格，${filled} 格有东西` })),
+    h('p', { class: 'mc-note mc-sub', text: `按格子编号排，不是游戏里的位置。${theirs.some((s) => s.takesNothing) ? '浅色底的是产物格。' : ''}` }),
     theirs.length === 0
       ? h('p', { class: 'mc-note', text: '这个界面没有自己的格子。' })
       : h(
@@ -220,7 +221,6 @@ export function screenPanel(screen, looks, onPick) {
           theirs.map((s) => slotEl(s, looks, onPick)),
         ),
     screen.cursor ? h('p', { class: 'mc-note', text: `鼠标上拿着：${screen.cursor.name} ×${screen.cursor.count}` }) : null,
-    h('p', { class: 'mc-note', text: '格子按编号排，不是游戏里界面上的位置。浅色底的是产物格。' }),
   )
 }
 

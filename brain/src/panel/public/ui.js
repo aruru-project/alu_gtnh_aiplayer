@@ -22,6 +22,15 @@ export function h(tag, attrs, ...children) {
   return el
 }
 
+/**
+ * 把 el 里面换成这些孩子。和 h 一样：数组摊平，undefined / null / false 跳过
+ * （直接用 replaceChildren 的话 null 会被写成“null”四个字）。
+ */
+export function put(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((c) => c !== undefined && c !== null && c !== false))
+  return el
+}
+
 // ── 时间和数字 ──
 
 const pad = (n) => String(n).padStart(2, '0')

@@ -70,6 +70,7 @@ const MINIMAP_CACHE_MS = 2500
 const LIVE_CACHE_MS = 700
 /** 隔这么久看一眼物品图标的说明文件有没有被换过。 */
 const ICONS_RECHECK_MS = 5000
+const NAMES_PER_REQUEST = 200
 
 function finite(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
@@ -165,6 +166,23 @@ export class PanelLive {
       }
     }
     return { color: stableColor(id), known: false }
+  }
+
+  /**
+   * 一批物品的中文名（对话页把工具参数里的物品 id 写成名字用）。q 是逗号隔开的 "id/meta"（meta 不写当 0），一次最多 200 个。
+   * 只回查得到名字的那些。
+   */
+  itemNames(q: string): { names: Record<string, string> } {
+    const names: Record<string, string> = {}
+    for (const key of q.split(',').slice(0, NAMES_PER_REQUEST)) {
+      const slash = key.lastIndexOf('/')
+      const id = slash > 0 ? key.slice(0, slash) : key
+      const meta = slash > 0 ? Number(key.slice(slash + 1)) : 0
+      if (id.length === 0 || id.length > 200 || !Number.isInteger(meta)) continue
+      const name = nameOf({ id, meta })
+      if (name !== undefined) names[`${id}/${meta}`] = name
+    }
+    return { names }
   }
 
   /** 身体给的一样东西 → 面板画的一样东西。认不出来（没有 id）时返回 undefined。 */

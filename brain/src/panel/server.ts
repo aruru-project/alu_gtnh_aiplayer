@@ -470,6 +470,8 @@ export class PanelServer {
         return this.live.live()
       case 'GET /minimap':
         return this.live.minimap(url.searchParams.get('radius'))
+      case 'GET /items/names':
+        return this.live.itemNames(url.searchParams.get('q') ?? '')
       // 下面五个是面板要的数据（形状见 docs/BRAIN_SPEC.md 的“面板的数据接口”），实现在 data-api.ts
       case 'GET /log':
         return logPage(this.deps.log, url.searchParams)

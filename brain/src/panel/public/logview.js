@@ -3,8 +3,9 @@
 // 开合的状态记在这个模块里（按键），所以重画、切页都不丢。
 
 import { actions, agentLabel, serverNow, state } from './data.js'
-import { LEVEL, layoutRows, toolHistogram } from './logmodel.js'
-import { act, api, button, clock, compact, dateTime, dayLabel, duration, h, reconcile, sameDay } from './ui.js'
+import { LEVEL, describeArgs, layoutRows, toolHistogram } from './logmodel.js'
+import { itemName, namesVersion } from './names.js'
+import { act, api, button, clock, compact, dateTime, dayLabel, duration, h, put, reconcile, sameDay } from './ui.js'
 import { playerHead } from './items.js'
 import { createViewer } from './viewer3d.js'
 
@@ -71,7 +72,7 @@ let logViewer = null
 function closeLogViewer() {
   if (!logViewer) return
   logViewer.viewer?.destroy()
-  logViewer.holder.replaceChildren()
+  put(logViewer.holder)
   logViewer.button.textContent = '三维预览'
   logViewer = null
 }
@@ -102,6 +103,13 @@ function pictures(tool) {
   })
 }
 
+/** 收起来时参数那一小段：能读成一句话的写成一句话，读不成的照原样（等宽）。 */
+function argsEl(raw, fallback) {
+  const said = describeArgs(raw, itemName)
+  if (said !== undefined) return said === '' ? null : h('span', { class: 'tool-args said', text: said })
+  return fallback ? h('span', { class: 'tool-args', text: fallback }) : null
+}
+
 function prettyArgs(tool) {
   const raw = tool.argsDetail ?? tool.args ?? ''
   try {
@@ -119,7 +127,7 @@ function renderTool(tool) {
     null,
     h('span', { class: `dot ${tone}`, title: tool.pending ? '还没回来' : tool.isError ? '出错了' : '成功' }),
     h('span', { class: 'tool-name', text: tool.name }),
-    tool.args !== undefined ? h('span', { class: 'tool-args', text: tool.args }) : null,
+    tool.args !== undefined ? argsEl(tool.argsDetail ?? tool.args, tool.args) : null,
     h('span', { class: `tool-result${tool.isError ? ' bad' : ''}`, text: tool.pending ? '…' : `→ ${tool.result ?? ''}` }),
     typeof tool.ms === 'number' && !tool.pending ? h('span', { class: 'ms', text: duration(tool.ms) }) : null,
   )
@@ -155,18 +163,19 @@ const RELAY_KINDS = {
   stop: ['叫停', 'bad'],
 }
 
-function renderRelay(item) {
+function renderRelay(item, compact = false) {
   const [label, tone] = RELAY_KINDS[item.kind] ?? [item.kind, '']
   const toWork = item.to === 'work'
   const left = item.kind === 'stop' && item.from === 'panel' ? '面板' : '对话线'
   const el = h(
     'div',
-    { class: `rband k-${item.kind}${item.isError ? ' is-error' : ''} ${toWork ? 'to-work' : 'to-talk'}` },
+    { class: `rband k-${item.kind}${item.isError ? ' is-error' : ''} ${toWork ? 'to-work' : 'to-talk'}${compact ? ' compact' : ''}`, title: compact ? item.text : '' },
     h('div', { class: 'relay-route', title: toWork ? `${left}交给干活线的` : '干活线送给对话线的' }, h('span', { class: 'tag talk', text: left }), h('span', { class: 'relay-arrow', 'aria-label': toWork ? '交给' : '送回', text: item.kind === 'stop' ? '■→' : toWork ? '──→' : '←──' }), h('span', { class: 'tag work', text: '干活线' })),
-    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
+    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 && !compact ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
     time(item.time),
   )
-  if (item.detail && item.detail !== item.text) el.append(fold('全文', item.detail, `relay:${item.id}`))
+  // “只看对话”那一档里它只占一行，不抢人话的位置；全文在另外两档里看
+  if (!compact && item.detail && item.detail !== item.text) el.append(fold('全文', item.detail, `relay:${item.id}`))
   return el
 }
 
@@ -309,7 +318,7 @@ function recordRow(rec) {
     const el = h(
       'details',
       { class: `tool ${rec.ok ? 'ok' : 'bad'}` },
-      h('summary', null, h('span', { class: `dot ${rec.ok ? 'ok' : 'bad'}` }), h('span', { class: 'ms', text: `#${rec.n}` }), h('span', { class: 'tool-name', text: rec.tool }), h('span', { class: 'tool-args', text: input }), h('span', { class: `tool-result${rec.ok ? '' : ' bad'}`, text: `→ ${first}` }), h('span', { class: 'ms', text: duration(rec.ms) })),
+      h('summary', null, h('span', { class: `dot ${rec.ok ? 'ok' : 'bad'}` }), h('span', { class: 'ms', text: `#${rec.n}` }), h('span', { class: 'tool-name', text: rec.tool }), argsEl(input, input), h('span', { class: `tool-result${rec.ok ? '' : ' bad'}`, text: `→ ${first}` }), h('span', { class: 'ms', text: duration(rec.ms) })),
     )
     el.addEventListener('toggle', () => {
       if (el.open && el.childElementCount === 1) {
@@ -344,10 +353,10 @@ function remoteCalls(item) {
   const q = run.file !== undefined ? `file=${encodeURIComponent(run.file)}` : `id=${encodeURIComponent(run.id)}`
   const fetchPage = (from, limit) => api('GET', `/runs/records?${q}&after=${from}&limit=${limit}`)
   const paint = (stick) => {
-    box.replaceChildren(...data.rows.map(recordRow).filter(Boolean))
+    put(box, ...data.rows.map(recordRow).filter(Boolean))
     if (stick) box.scrollTop = box.scrollHeight
-    before.replaceChildren()
-    after.replaceChildren()
+    put(before)
+    put(after)
     if (data.error) after.append(h('span', { class: 'bad', text: `明细没取到：${data.error}` }), button('再试', { class: 'small' }, (btn) => act(btn, first)))
     else if (data.total === undefined) after.append(h('span', { class: 'muted', text: '正在取…' }))
     else if (data.rows.length === 0) after.append(h('span', { class: 'muted', text: '没有记录。' }))
@@ -406,7 +415,7 @@ function localCalls(item) {
   let shown = SHOWN
   const paint = () => {
     const from = Math.max(0, item.calls.length - shown)
-    box.replaceChildren(
+    put(box, 
       from > 0
         ? button(`前面还有 ${from} 步，再看 ${Math.min(from, 200)} 步`, { class: 'small quiet' }, () => {
             shown += 200
@@ -513,7 +522,7 @@ function renderEvents(item) {
 
 function renderItem(item, prev, ctx) {
   if (item.type === 'msg') return renderMsg(item, prev)
-  if (item.type === 'relay') return renderRelay(item)
+  if (item.type === 'relay') return renderRelay(item, ctx.level === LEVEL.talk)
   if (item.type === 'work') return renderWork(item, ctx)
   if (item.type === 'run') return renderRun(item)
   if (item.type === 'note') return renderNote(item)
@@ -524,9 +533,9 @@ function renderItem(item, prev, ctx) {
 function itemRev(item, ctx) {
   if (item.type === 'work') {
     const key = item.turn.key
-    return `${item.rev}:${isOpen(`turn:${key}`, ctx.latestTurns.has(key)) ? 1 : 0}:${ctx.liveTurns.has(item.turn.id) ? 1 : 0}`
+    return `${item.rev}:${isOpen(`turn:${key}`, ctx.latestTurns.has(key)) ? 1 : 0}:${ctx.liveTurns.has(item.turn.id) ? 1 : 0}:${namesVersion}`
   }
-  if (item.type === 'run') return `${item.rev}:${ctx.runningRoutine}`
+  if (item.type === 'run') return `${item.rev}:${ctx.runningRoutine}:${namesVersion}`
   return String(item.rev)
 }
 
@@ -558,7 +567,7 @@ export function createLogView(container, opts = {}) {
       if (busy && liveTurns.size === 0 && item.turn.open) liveTurns.add(item.turn.id)
     }
     const routine = agents.map((a) => a.routine).find((r) => r && r.status === 'running')
-    return { liveTurns, latestTurns, runningRoutine: routine ? `${routine.id}/${routine.file ?? ''}` : '', rerender: paint }
+    return { liveTurns, latestTurns, level, runningRoutine: routine ? `${routine.id}/${routine.file ?? ''}` : '', rerender: paint }
   }
 
   function paint() {

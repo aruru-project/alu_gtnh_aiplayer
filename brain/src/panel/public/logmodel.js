@@ -633,7 +633,7 @@ export function recentActivity(items, limit = 12) {
           const tool = step.tools[t]
           // 它说的话已经单独有一行了
           if ((tool.name === 'say' || tool.name === 'whisper') && !tool.isError) continue
-          rows.push({ key: tool.key, time: tool.time, kind: 'tool', label: tool.name, text: tool.pending ? (tool.args ?? '') : (tool.result ?? ''), args: tool.args, isError: tool.isError, pending: tool.pending, turn: item.turn.id, step: step.n })
+          rows.push({ key: tool.key, time: tool.time, kind: 'tool', label: tool.name, text: tool.pending ? (tool.args ?? '') : (tool.result ?? ''), args: tool.args, argsFull: tool.argsDetail, isError: tool.isError, pending: tool.pending, turn: item.turn.id, step: step.n })
         }
         for (let x = step.texts.length - 1; x >= 0; x--) rows.push({ key: `x${step.texts[x].id}`, time: step.texts[x].time, kind: 'step', label: '模型的文字', text: step.texts[x].text, turn: item.turn.id, step: step.n })
         if (step.call?.state === 'thinking') rows.push({ key: `k${step.call.id}`, time: step.time, kind: 'step', label: `第 ${step.n ?? '?'} 步`, text: '正在想…', pending: true, turn: item.turn.id, step: step.n })
@@ -642,4 +642,98 @@ export function recentActivity(items, limit = 12) {
   }
   rows.sort((a, b) => a.time - b.time)
   return rows.slice(Math.max(0, rows.length - limit))
+}
+
+// ── 工具参数：收起来时给人读的一句，不是半截 JSON ──
+
+const QUOTED_KEYS = new Set(['message', 'text', 'note', 'question', 'reason', 'problem', 'goal', 'wish'])
+const BARE_KEYS = new Set(['name', 'query', 'player', 'title', 'key', 'home', 'command', 'tool', 'machine', 'kind', 'category'])
+const PLACE_WORDS = { from: '从', to: '到', on: '对着', near: '靠近', container: '', at: '', pos: '', block: '', target: '' }
+const isPos = (v) => v !== null && typeof v === 'object' && typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number'
+const isItem = (v) => v !== null && typeof v === 'object' && typeof v.id === 'string' && v.id.includes(':')
+const clipText = (text, max) => (text.length > max ? `${text.slice(0, max)}…` : text)
+
+function itemText(item, itemName) {
+  const name = itemName(item.id, typeof item.meta === 'number' ? item.meta : 0) ?? item.id
+  return `${name}${typeof item.count === 'number' ? ` ×${item.count}` : ''}`
+}
+
+function placeText(key, v) {
+  const word = PLACE_WORDS[key] ?? key
+  const slot = typeof v.slot === 'number' ? ` 第 ${v.slot} 格` : ''
+  return `${word}${word ? ' ' : ''}(${v.x},${v.y},${v.z})${slot}`
+}
+
+function valueText(key, v, itemName) {
+  if (v === null || v === undefined) return undefined
+  if (typeof v === 'string') {
+    if (key === 'code') return `程序（${v.split('\n').length} 行）`
+    if (QUOTED_KEYS.has(key)) return `“${clipText(v, 80)}”`
+    if (BARE_KEYS.has(key)) return clipText(v, 60)
+    // 物品的 id 单独给的（{"id":"mod:name","meta":3}）在外面一起处理；别的字符串写成 键=值
+    return `${key}=${clipText(v, 40)}`
+  }
+  if (typeof v === 'boolean') return v ? key : `${key}=否`
+  if (typeof v === 'number') return `${key}=${v}`
+  if (Array.isArray(v)) {
+    if (v.length === 0) return undefined
+    if (v.every(isItem)) return `${v.slice(0, 3).map((i) => itemText(i, itemName)).join('、')}${v.length > 3 ? ` 等 ${v.length} 样` : ''}`
+    if (v.every(isPos)) return `${v.length} 个位置`
+    if (v.every((x) => typeof x === 'string' || typeof x === 'number')) return `${BARE_KEYS.has(key) || key === 'ids' || key === 'blocks' ? '' : `${key}=`}${clipText(v.join('、'), 60)}`
+    return `${key}：${v.length} 项`
+  }
+  if (isPos(v)) return placeText(key, v)
+  if (isItem(v)) return itemText(v, itemName)
+  // 套了一层的：{"item":{"id":…}}（随身的包当容器）、{"container":{"item":{…}}}
+  const inner = describeObject(v, itemName)
+  const word = PLACE_WORDS[key] ?? ''
+  return inner ? `${word}${word ? ' ' : ''}${inner}` : undefined
+}
+
+function describeObject(obj, itemName) {
+  const parts = []
+  const rest = { ...obj }
+  // 一样东西直接摊在最外面：{"id":"mod:name","meta":0,"count":3}
+  if (isItem(rest)) {
+    parts.push(itemText(rest, itemName))
+    delete rest.id
+    delete rest.meta
+    delete rest.count
+  }
+  // 一块区域、一个位置摊在最外面
+  if (['x1', 'z1', 'x2', 'z2'].every((k) => typeof rest[k] === 'number')) {
+    const y = typeof rest.y1 === 'number' && typeof rest.y2 === 'number'
+    parts.push(y ? `(${rest.x1},${rest.y1},${rest.z1})–(${rest.x2},${rest.y2},${rest.z2})` : `(${rest.x1},${rest.z1})–(${rest.x2},${rest.z2})`)
+    for (const k of ['x1', 'y1', 'z1', 'x2', 'y2', 'z2']) delete rest[k]
+  } else if (isPos(rest)) {
+    parts.push(`(${rest.x},${rest.y},${rest.z})`)
+    for (const k of ['x', 'y', 'z']) delete rest[k]
+  } else if (typeof rest.x === 'number' && typeof rest.z === 'number') {
+    parts.push(`(${rest.x},${rest.z})`)
+    delete rest.x
+    delete rest.z
+  }
+  for (const [key, value] of Object.entries(rest)) {
+    const text = valueText(key, value, itemName)
+    if (text) parts.push(text)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * 一次工具调用的参数 → 一句给人读的话：物品写名字（itemName(id, meta) 查得到就是中文名）和数量，位置写成 (x,y,z)，
+ * 说的话加引号，程序只写几行。不认识工具，只看参数长什么样。
+ * raw 是参数的 JSON（一行的那个被截短了就解不出来）：解不出来返回 undefined，调用的地方照原样显示。
+ * 没有参数（{}）返回空字符串。
+ */
+export function describeArgs(raw, itemName = () => undefined) {
+  if (typeof raw !== 'string') return undefined
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return describeObject(value, itemName)
 }

@@ -6,7 +6,7 @@ import { actions, state } from './data.js'
 import { LEVEL } from './logmodel.js'
 import { entryCount, getTimeline, lastId, loadOlder, logState } from './logstore.js'
 import { createLogView } from './logview.js'
-import { act, bus, button, h, segmented } from './ui.js'
+import { act, bus, button, h, put, segmented } from './ui.js'
 
 const LEVEL_KEY = 'aiplayer.chat.level'
 
@@ -44,12 +44,12 @@ function paintState() {
   el.textContent = text
   el.className = `stream-state ${logState.stream === 'retrying' ? 'bad' : 'muted'}`
   const top = root.querySelector('.older')
-  if (logState.loadingOlder) top.replaceChildren(h('span', { class: 'muted', text: '正在取更早的记录…' }))
-  else if (logState.olderError) top.replaceChildren(h('span', { class: 'bad', text: `更早的记录没取到：${logState.olderError}` }), button('再试', { class: 'small' }, older))
-  else if (logState.canPage === false) top.replaceChildren(h('span', { class: 'muted', text: '这里是大脑内存里留着的最早一条；这个版本的大脑不会往回翻文件里的。' }))
-  else if (logState.more === false) top.replaceChildren(h('span', { class: 'muted', text: '到头了：更早的记录已经过期删掉了（留 14 天）。' }))
-  else if (entryCount() > 0) top.replaceChildren(button('看更早的', { class: 'small quiet' }, older))
-  else top.replaceChildren()
+  if (logState.loadingOlder) put(top, h('span', { class: 'muted', text: '正在取更早的记录…' }))
+  else if (logState.olderError) put(top, h('span', { class: 'bad', text: `更早的记录没取到：${logState.olderError}` }), button('再试', { class: 'small' }, older))
+  else if (logState.canPage === false) put(top, h('span', { class: 'muted', text: '这里是大脑内存里留着的最早一条；这个版本的大脑不会往回翻文件里的。' }))
+  else if (logState.more === false) put(top, h('span', { class: 'muted', text: '到头了：更早的记录已经过期删掉了（留 14 天）。' }))
+  else if (entryCount() > 0) put(top, button('看更早的', { class: 'small quiet' }, older))
+  else put(top)
 }
 
 async function older() {
@@ -151,8 +151,11 @@ function collapseAll() {
 
 export function enter(el) {
   root = el
+  // 同一页里换一块也会再进来一次：先把上一次接的通知退掉
+  for (const off of unsubscribe) off()
+  unsubscribe = []
   if (el.childElementCount === 0) build(el)
-  unsubscribe = [bus.on('log', update), bus.on('log-stream', paintState), bus.on('status', () => view.repaint())]
+  unsubscribe = [bus.on('log', update), bus.on('log-stream', paintState), bus.on('status', () => view.repaint()), bus.on('names', () => view.repaint())]
   pinned = true
   update()
   toBottom()

@@ -39,13 +39,6 @@ function parseHash() {
   return page in PAGES ? { page, sub } : { page: 'now', sub: undefined }
 }
 
-/** 换到某一页（sub 是页内的哪一块，比如 knowledge/manuals）。 */
-export function go(page, sub) {
-  const hash = `#${page}${sub ? `/${sub}` : ''}`
-  if (location.hash !== hash) history.pushState(null, '', hash)
-  show()
-}
-
 function show() {
   const { page, sub } = parseHash()
   if (current && current !== page) PAGES[current].module.leave?.()
@@ -106,9 +99,8 @@ bus.on('auth-lost', () => {
 
 // ── 导航 ──
 
-for (const b of document.querySelectorAll('#nav button')) b.addEventListener('click', () => go(b.dataset.page))
+for (const b of document.querySelectorAll('#nav button')) b.addEventListener('click', () => (location.hash = `#${b.dataset.page}`))
 window.addEventListener('hashchange', () => !$('#app').hidden && show())
-window.addEventListener('popstate', () => !$('#app').hidden && show())
 
 // ── 常驻的状态区 ──
 
