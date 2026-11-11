@@ -523,6 +523,14 @@ export function buildTimeline(entries) {
         stamp(turn, part, entry)
         continue
       }
+      // 一模一样的话连着来（“和游戏服务器的连接断了，正在重连”）：并成一条，记次数和最近一次的时刻
+      const before = items[items.length - 1]
+      if (before && before.type === 'note' && before.tone === kind && before.text === entry.text && before.detail === entry.detail && before.agent === entry.agent) {
+        before.times = (before.times ?? 1) + 1
+        before.lastTime = entry.time
+        before.rev = seqOf(entry)
+        continue
+      }
       push({ type: 'note', level: kind === 'error' ? LEVEL.work : LEVEL.all, key: `n${entry.id}`, id: entry.id, time: entry.time, agent: entry.agent, tone: kind, label: kind === 'error' ? '出错' : '说明', text: entry.text, detail: entry.detail, rev: seqOf(entry) })
       continue
     }
@@ -611,9 +619,10 @@ export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报'
 
 /**
  * “现在”页的“最近几步”：时间线最后的若干样东西，摊平成一行一件事（新的在后）。
- * 每行：{ key, time, kind: 'say' | 'heard' | 'step' | 'tool' | 'run' | 'error', label, text, isError, pending }
+ * 每行：{ key, time, kind: 'say' | 'heard' | 'step' | 'tool' | 'run' | 'relay' | 'error', label, text, isError, pending }
+ * liveTurns：现在真的在跑的那几轮的编号（Set）。
  */
-export function recentActivity(items, limit = 12) {
+export function recentActivity(items, limit = 12, liveTurns = undefined) {
   const rows = []
   for (let i = items.length - 1; i >= 0 && rows.length < limit * 3; i--) {
     const item = items[i]
@@ -625,7 +634,7 @@ export function recentActivity(items, limit = 12) {
       const r = item.run
       rows.push({ key: item.key, time: r.endedAt ?? item.lastTime ?? item.time, kind: 'run', label: r.kind === 'program' ? '程序' : `例程 ${r.id}`, text: `${r.name || '（没有名字）'}：${r.calls} 次调用`, pending: r.status === 'running', isError: r.status === 'failed' || r.errors > 0, run: r })
     } else if (item.type === 'note' && item.tone === 'error') {
-      rows.push({ key: item.key, time: item.time, kind: 'error', label: '出错', text: item.text, isError: true })
+      rows.push({ key: item.key, time: item.lastTime ?? item.time, kind: 'error', label: '出错', text: item.times > 1 ? `${item.text}（连着 ${item.times} 次）` : item.text, isError: true })
     } else if (item.type === 'work') {
       for (let s = item.steps.length - 1; s >= 0; s--) {
         const step = item.steps[s]
@@ -636,12 +645,23 @@ export function recentActivity(items, limit = 12) {
           rows.push({ key: tool.key, time: tool.time, kind: 'tool', label: tool.name, text: tool.pending ? (tool.args ?? '') : (tool.result ?? ''), args: tool.args, argsFull: tool.argsDetail, isError: tool.isError, pending: tool.pending, turn: item.turn.id, step: step.n })
         }
         for (let x = step.texts.length - 1; x >= 0; x--) rows.push({ key: `x${step.texts[x].id}`, time: step.texts[x].time, kind: 'step', label: '模型的文字', text: step.texts[x].text, turn: item.turn.id, step: step.n })
-        if (step.call?.state === 'thinking') rows.push({ key: `k${step.call.id}`, time: step.time, kind: 'step', label: `第 ${step.n ?? '?'} 步`, text: '正在想…', pending: true, turn: item.turn.id, step: step.n })
+        // “正在想”只对真的还在跑的那一轮写（liveTurns 给了就照它；想到一半被打断的旧记录不算）
+        if (step.call?.state === 'thinking' && (liveTurns === undefined || liveTurns.has(item.turn.id))) rows.push({ key: `k${step.call.id}`, time: step.time, kind: 'step', label: `第 ${step.n ?? '?'} 步`, text: '正在想…', pending: true, turn: item.turn.id, step: step.n })
       }
     }
   }
   rows.sort((a, b) => a.time - b.time)
-  return rows.slice(Math.max(0, rows.length - limit))
+  // 一模一样的报错连着好几行（断线重连了几回）：只留最后一行，写上几次
+  const merged = []
+  for (const row of rows) {
+    const last = merged[merged.length - 1]
+    if (last && row.kind === 'error' && last.kind === 'error' && (last.same ?? last.text) === row.text) {
+      merged[merged.length - 1] = { ...row, same: row.text, times: (last.times ?? 1) + 1, text: `${row.text}（连着 ${(last.times ?? 1) + 1} 次）` }
+    } else {
+      merged.push(row)
+    }
+  }
+  return merged.slice(Math.max(0, merged.length - limit))
 }
 
 // ── 工具参数：收起来时给人读的一句，不是半截 JSON ──

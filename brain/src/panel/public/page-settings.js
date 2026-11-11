@@ -648,7 +648,7 @@ function renderGame(data) {
 
 function renderPassword() {
   const el = root?.querySelector('[data-tab="panel"]')
-  if (!el || el.childElementCount > 0) return
+  if (!el || el.querySelector('form')) return
   const currentPw = h('input', { id: 'sf-pw-current', type: 'password', autocomplete: 'current-password', required: true })
   const next = h('input', { id: 'sf-pw-next', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 })
   const repeat = h('input', { id: 'sf-pw-repeat', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 })
@@ -749,6 +749,9 @@ function renderRecords(force = false) {
 
 function show(tab) {
   current = tab
+  // 头一次进这一块：数据到之前先写一句，不留白
+  const target = root.querySelector(`[data-tab="${tab}"]`)
+  if (target && target.childElementCount === 0) put(target, h('p', { class: 'muted loading', text: '正在取…' }))
   for (const pane of root.querySelectorAll('[data-tab]')) pane.hidden = pane.dataset.tab !== tab
   for (const b of root.querySelectorAll('.subtabs button')) b.setAttribute('aria-selected', String(b.dataset.id === tab))
   if (tab === 'models') loadModels()

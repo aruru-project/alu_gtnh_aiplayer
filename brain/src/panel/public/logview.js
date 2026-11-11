@@ -496,6 +496,7 @@ function renderNote(item) {
     time(item.time),
     h('span', { class: `chip${item.tone === 'error' ? ' bad' : ''}`, text: item.label }),
     h('span', { class: 'note-text', text: item.text }),
+    item.times > 1 ? h('span', { class: 'chip', title: `一模一样的连着 ${item.times} 条，最近一次 ${dateTime(item.lastTime)}`, text: `×${item.times}，最近 ${clock(item.lastTime)}` }) : null,
     item.detail ? fold('详情', item.detail, `note:${item.id}`) : null,
   )
 }

@@ -159,6 +159,26 @@ export function slotDetail(slot) {
   )
 }
 
+/**
+ * 一组格子只占一个 Tab 位：Tab 进到这一组，方向键在格子之间走（一行 columns 格），不用按几十下 Tab 才出得去。
+ */
+function grid(className, label, columns, cells) {
+  const el = h('div', { class: className, role: 'group', 'aria-label': `${label}（方向键在格子之间移动）` }, cells)
+  cells.forEach((cell, n) => (cell.tabIndex = n === 0 ? 0 : -1))
+  el.addEventListener('keydown', (ev) => {
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns, Home: -Infinity, End: Infinity }[ev.key]
+    if (step === undefined) return
+    const at = cells.indexOf(document.activeElement)
+    if (at < 0) return
+    const next = Math.max(0, Math.min(cells.length - 1, step === -Infinity ? 0 : step === Infinity ? cells.length - 1 : at + step))
+    ev.preventDefault()
+    cells[at].tabIndex = -1
+    cells[next].tabIndex = 0
+    cells[next].focus()
+  })
+  return el
+}
+
 const ARMOR = [
   { index: 3, label: '头盔（空）', mark: '头' },
   { index: 2, label: '胸甲（空）', mark: '胸' },
@@ -192,15 +212,16 @@ export function inventoryPanel(live, onPick) {
     h(
       'div',
       { class: 'inv-top' },
-      h(
-        'div',
-        { class: 'slots armor', role: 'group', 'aria-label': '盔甲' },
+      grid(
+        'slots armor',
+        '盔甲',
+        4,
         ARMOR.map((a) => slotEl({ item: live.armor?.[a.index] ?? undefined, label: a.label, mark: a.mark }, looks, onPick)),
       ),
       h('div', { class: 'inv-held' }, h('span', { class: 'mc-note', text: '手里拿着' }), h('span', { class: 'inv-held-name', text: held ? held.name : '空手' })),
     ),
-    h('div', { class: 'slots grid9', role: 'group', 'aria-label': '背包' }, range(9, 36)),
-    h('div', { class: 'slots grid9 hotbar', role: 'group', 'aria-label': '快捷栏' }, range(0, 9)),
+    grid('slots grid9', '背包', 9, range(9, 36)),
+    grid('slots grid9 hotbar', '快捷栏', 9, range(0, 9)),
   )
 }
 
@@ -215,9 +236,10 @@ export function screenPanel(screen, looks, onPick) {
     h('p', { class: 'mc-note mc-sub', text: `按格子编号排，不是游戏里的位置。${theirs.some((s) => s.takesNothing) ? '浅色底的是产物格。' : ''}` }),
     theirs.length === 0
       ? h('p', { class: 'mc-note', text: '这个界面没有自己的格子。' })
-      : h(
-          'div',
-          { class: 'slots grid9' },
+      : grid(
+          'slots grid9',
+          '界面的格子',
+          9,
           theirs.map((s) => slotEl(s, looks, onPick)),
         ),
     screen.cursor ? h('p', { class: 'mc-note', text: `鼠标上拿着：${screen.cursor.name} ×${screen.cursor.count}` }) : null,

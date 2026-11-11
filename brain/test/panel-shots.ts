@@ -4,19 +4,21 @@
 //   node test/panel-shots.ts --base http://127.0.0.1:28771 --out ../.shots --plan '<JSON>'
 //   node test/panel-shots.ts --base … --out … --plan-file plan.json
 //
-// 步骤单是一个数组，每一步是一个对象，里面这些键按这个顺序生效（都可以不写）：
-//   size: [宽, 高]        改窗口大小
-//   goto: "#chat"         换到这个地址（# 开头的只换 hash，不重新加载）
-//   reload: true          重新加载页面
-//   dev: { scene: "routine" } 或 { bot: {…} }   先改假环境（POST /__dev/scene、/__dev/bot）
-//   eval: "…"             在页面里跑一段 JS（可以是返回 Promise 的表达式）；结果打印出来
-//   type: ["选择器", "文字"] 往输入框里填字（触发 input 事件）
-//   click: "选择器"        点第一个匹配的元素（找不到就报错）
-//   hover: "选择器"        把鼠标移到元素中间
-//   wait: 毫秒            等一会儿
-//   waitFor: "选择器"      等到有这个元素（最多 10 秒）
-//   shot: "名字.png"       截图存到 --out 目录
-//   full: true            和 shot 一起用：截整页而不是窗口
+// 步骤单是一个数组，每一步是一个对象；一步里的几件事照写的顺序做：
+//   size: [宽, 高]            改窗口大小
+//   goto: "#chat"             换到这个地址（# 开头的只换 hash，不重新加载）
+//   reload: true              重新加载页面
+//   dev: { scene: "routine" } 或 { bot: {…} }   改假环境（POST /__dev/scene、/__dev/bot）
+//   waitFor: "选择器"          等到有这个元素（最多 10 秒）
+//   eval: "…"                 在页面里跑一段 JS（可以是返回 Promise 的表达式）；结果打印出来
+//   type: ["选择器", "文字"]    往输入框里填字（触发 input、change 事件）
+//   files: ["选择器", "路径"]   给文件输入框选文件
+//   click: "选择器"            点第一个匹配的元素（直接调它的 click()）
+//   press: "文字" 或 ["文字", "范围的选择器"]   点写着这几个字的按钮
+//   mouse: "选择器" / hover: "选择器"          真的用鼠标点 / 把鼠标移上去
+//   key: "Tab"                按一个键
+//   wait: 毫秒                等一会儿
+//   shot: "名字.png"           截图存到 --out 目录；同一步里写 full: true 是截整页
 // 页面里的报错（console.error、没接住的异常、失败的请求）会打印出来，最后一行写一共几条。
 
 import { spawn } from 'node:child_process'
@@ -88,6 +90,8 @@ async function main(): Promise<void> {
   await page('Page.enable')
   await page('Runtime.enable')
   await page('Log.enable')
+  // 无头的窗口没有焦点：让页面当自己有焦点，Tab 键才会走
+  await page('Emulation.setFocusEmulationEnabled', { enabled: true })
   const evaluate = async (expression: string): Promise<unknown> => {
     const res = await page('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: true })
     if (res.exceptionDetails) throw new Error(`页面里的脚本出错：${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text}`)
@@ -109,53 +113,93 @@ async function main(): Promise<void> {
     await sleep(1200)
   }
 
-  for (const step of plan) {
-    if (step.size) {
-      size = step.size
+  const find = (selector: string, what: string): Promise<[number, number]> =>
+    evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })()`).then((box) => {
+      if (!box) throw new Error(`没有可${what}的 ${selector}`)
+      return box as [number, number]
+    })
+  const actions: Record<string, (value: any, step: Json) => Promise<void>> = {
+    size: async (v) => {
+      size = v
       await setSize(size[0], size[1])
-    }
-    if (step.dev?.scene) await fetch(`${BASE}/__dev/scene`, { method: 'POST', body: JSON.stringify({ name: step.dev.scene }) })
-    if (step.dev?.bot) await fetch(`${BASE}/__dev/bot`, { method: 'POST', body: JSON.stringify(step.dev.bot) })
-    if (typeof step.goto === 'string') {
-      if (step.goto.startsWith('#')) await evaluate(`location.hash = ${JSON.stringify(step.goto)}`)
-      else await page('Page.navigate', { url: step.goto.startsWith('http') ? step.goto : `${BASE}${step.goto}` })
-    }
-    if (step.reload) await page('Page.reload')
-    if (typeof step.waitFor === 'string') {
+    },
+    dev: async (v) => {
+      if (v.scene) await fetch(`${BASE}/__dev/scene`, { method: 'POST', body: JSON.stringify({ name: v.scene }) })
+      if (v.bot) await fetch(`${BASE}/__dev/bot`, { method: 'POST', body: JSON.stringify(v.bot) })
+    },
+    goto: async (v) => {
+      if (v.startsWith('#')) await evaluate(`location.hash = ${JSON.stringify(v)}`)
+      else await page('Page.navigate', { url: v.startsWith('http') ? v : `${BASE}${v}` })
+    },
+    reload: async () => void (await page('Page.reload')),
+    waitFor: async (v) => {
       const deadline = Date.now() + 10_000
-      while (!(await evaluate(`!!document.querySelector(${JSON.stringify(step.waitFor)})`))) {
-        if (Date.now() > deadline) throw new Error(`等不到 ${step.waitFor}`)
+      while (!(await evaluate(`!!document.querySelector(${JSON.stringify(v)})`))) {
+        if (Date.now() > deadline) throw new Error(`等不到 ${v}`)
         await sleep(100)
       }
-    }
-    if (typeof step.eval === 'string') console.log(`eval → ${JSON.stringify(await evaluate(step.eval))}`)
-    if (Array.isArray(step.type)) {
-      const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(step.type[0])}); if (!el) return false; el.focus(); el.value = ${JSON.stringify(step.type[1])}; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true })()`)
-      if (!found) throw new Error(`没有可填的 ${step.type[0]}`)
-    }
-    if (typeof step.click === 'string') {
-      const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(step.click)}); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true })()`)
-      if (!found) throw new Error(`没有可点的 ${step.click}`)
-    }
-    if (typeof step.hover === 'string') {
-      const box = (await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(step.hover)}); if (!el) return null; el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })()`)) as [number, number] | null
-      if (!box) throw new Error(`没有可指的 ${step.hover}`)
+    },
+    eval: async (v) => console.log(`eval → ${JSON.stringify(await evaluate(v))}`),
+    files: async (v) => {
+      const doc = await page('DOM.getDocument')
+      const node = await page('DOM.querySelector', { nodeId: doc.root.nodeId, selector: v[0] })
+      if (!node.nodeId) throw new Error(`没有可选文件的 ${v[0]}`)
+      await page('DOM.setFileInputFiles', { nodeId: node.nodeId, files: v.slice(1) })
+    },
+    type: async (v) => {
+      const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(v[0])}); if (!el) return false; el.focus(); el.value = ${JSON.stringify(v[1])}; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true })()`)
+      if (!found) throw new Error(`没有可填的 ${v[0]}`)
+    },
+    click: async (v) => {
+      const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(v)}); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true })()`)
+      if (!found) throw new Error(`没有可点的 ${v}`)
+    },
+    // 点一个按钮：在 within（选择器，可以不给）里找文字正好是 text 的按钮
+    press: async (v) => {
+      const [text, within] = Array.isArray(v) ? v : [v, 'body']
+      const found = await evaluate(`(() => { const root = [...document.querySelectorAll(${JSON.stringify(within)})].filter((r) => r.offsetParent !== null || r === document.body); for (const r of root) { const b = [...r.querySelectorAll('button, a.button, summary')].find((x) => x.textContent.trim() === ${JSON.stringify(text)} && x.offsetParent !== null); if (b) { b.scrollIntoView({block:'center'}); b.click(); return true } } return false })()`)
+      if (!found) throw new Error(`没有写着“${text}”的按钮（在 ${within} 里）`)
+    },
+    hover: async (v) => {
+      const box = await find(v, '指')
       await page('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box[0], y: box[1] })
-    }
-    if (typeof step.wait === 'number') await sleep(step.wait)
-    if (typeof step.shot === 'string') {
-      let params: Json = { format: 'png' }
-      if (step.full) {
-        const metrics = (await evaluate('[document.documentElement.scrollWidth, Math.max(document.documentElement.scrollHeight, ...[...document.querySelectorAll(".main, .side")].map((e) => e.scrollHeight))]')) as [number, number]
-        await setSize(size[0], Math.min(6000, metrics[1]))
-        await sleep(300)
-        params = { format: 'png' }
+    },
+    // 真的用鼠标点（会触发 hover、focus 这些），click 是直接调元素的 click()
+    mouse: async (v) => {
+      const box = await find(v, '点')
+      for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await page('Input.dispatchMouseEvent', { type, x: box[0], y: box[1], button: 'left', clickCount: 1 })
+    },
+    key: async (v) => {
+      // 可以写成 "Tab×5"：连按几次
+      const [name, times] = String(v).split('×')
+      const code = name === 'Tab' ? 9 : name === 'Enter' ? 13 : name === ' ' ? 32 : name === 'Escape' ? 27 : 0
+      for (let n = 0; n < Number(times ?? 1); n++) {
+        await page('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: name, code: name === ' ' ? 'Space' : name, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code })
+        if (name === 'Enter' || name === ' ') await page('Input.dispatchKeyEvent', { type: 'char', text: name === 'Enter' ? '\r' : ' ' })
+        await page('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name === ' ' ? 'Space' : name, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code })
       }
-      const { data } = await page('Page.captureScreenshot', params)
-      const file = path.join(OUT, step.shot)
+    },
+    wait: (v) => sleep(v),
+    shot: async (v, step) => {
+      if (step.full) {
+        const height = (await evaluate('Math.max(document.documentElement.scrollHeight, ...[...document.querySelectorAll(".main, .side, .page:not([hidden])")].map((e) => e.scrollHeight + 40))')) as number
+        await setSize(size[0], Math.min(6000, height))
+        await sleep(300)
+      }
+      const { data } = await page('Page.captureScreenshot', { format: 'png' })
+      const file = path.join(OUT, v)
       fs.writeFileSync(file, Buffer.from(data, 'base64'))
       console.log(`截图 → ${file}`)
       if (step.full) await setSize(size[0], size[1])
+    },
+    full: async () => {},
+  }
+  for (const step of plan) {
+    // 一步里的几件事照写的顺序做
+    for (const [name, value] of Object.entries(step)) {
+      const action = actions[name]
+      if (!action) throw new Error(`步骤单里有不认识的动作：${name}`)
+      await action(value, step)
     }
   }
   for (const p of problems) console.log(p)

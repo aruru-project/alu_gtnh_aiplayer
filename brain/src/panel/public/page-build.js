@@ -527,12 +527,15 @@ async function showStructure(detail, machine, tier) {
 
 function show(tab) {
   current = tab
+  // 头一次进这一块：数据到之前先写一句，不留白
+  const target = root.querySelector(`[data-tab="${tab}"]`)
+  if (target && target.childElementCount === 0) put(target, h('p', { class: 'muted loading', text: '正在取…' }))
   for (const p of root.querySelectorAll('[data-tab]')) p.hidden = p.dataset.tab !== tab
   for (const b of root.querySelectorAll('.subtabs button')) b.setAttribute('aria-selected', String(b.dataset.id === tab))
   if (tab === 'drafts') loadDrafts()
   else if (tab === 'blueprints') loadBlueprints()
   else if (tab === 'images') loadImages()
-  else if (pane('structures').childElementCount === 0) loadStructures()
+  else if (!pane('structures').querySelector('.card')) loadStructures()
 }
 
 export function enter(el, sub) {

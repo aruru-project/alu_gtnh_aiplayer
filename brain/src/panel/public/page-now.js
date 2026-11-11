@@ -304,7 +304,8 @@ const FEED_TAGS = { say: ['它说', 'say'], heard: ['', 'heard'], step: ['模型
 
 function renderFeed(el) {
   const { items } = getTimeline()
-  const rows = recentActivity(items, 14)
+  const live = new Set((state.status?.agents ?? []).map((a) => a.turn?.id ?? a.model?.turn).filter((id) => id !== undefined))
+  const rows = recentActivity(items, 14, live)
   put(el, 
     h('div', { class: 'card-head' }, h('h3', { text: '最近几步' }), h('a', { class: 'more', href: '#chat', text: '去对话页看全部' })),
     rows.length === 0
@@ -316,10 +317,10 @@ function renderFeed(el) {
             const [label, tone] = FEED_TAGS[r.kind] ?? ['', '']
             return h(
               'li',
-              { class: `feed-row k-${r.kind}${r.isError ? ' is-error' : ''}${r.pending ? ' pending' : ''}` },
+              { class: `feed-row k-${r.kind}${r.isError ? ' is-error' : ''}${r.pending && (r.kind !== 'tool' || live.has(r.turn)) ? ' pending' : ''}` },
               h('time', { class: 'time', text: clock(r.time) }),
               r.kind === 'tool' ? h('span', { class: 'feed-tool', text: r.label }) : h('span', { class: `tag ${tone}`, text: label || r.label }),
-              h('span', { class: 'feed-text' }, r.kind === 'tool' && r.args ? h('span', { class: 'feed-args', text: `${describeArgs(r.argsFull ?? r.args, itemName) ?? r.args.slice(0, 48)} ` }) : null, r.kind !== 'tool' ? r.text : r.pending ? '（还没回来）' : `→ ${r.text}`),
+              h('span', { class: 'feed-text' }, r.kind === 'tool' && r.args ? h('span', { class: 'feed-args', text: `${describeArgs(r.argsFull ?? r.args, itemName) ?? r.args.slice(0, 48)} ` }) : null, r.kind !== 'tool' ? r.text : r.pending ? (live.has(r.turn) ? '（还没回来）' : '（没有结果的记录）') : `→ ${r.text}`),
             )
           }),
         ),
@@ -552,7 +553,7 @@ function paintFeed() {
   if (!root || root.hidden) return
   const { items } = getTimeline()
   const last = items[items.length - 1]
-  const next = `${items.length}:${last?.key}:${last?.rev}`
+  const next = `${items.length}:${last?.key}:${last?.rev}:${(state.status?.agents ?? []).map((a) => a.turn?.id ?? '').join(',')}`
   if (next === feedKey) return
   feedKey = next
   renderFeed(root.querySelector('.now-feed'))
@@ -574,7 +575,7 @@ export function enter(el) {
   paint(true)
   paintFeed()
   unsubscribe = [
-    bus.on('status', () => paint()),
+    bus.on('status', () => (paint(), paintFeed())),
     bus.on('overview', () => paint()),
     bus.on('live', () => paint()),
     bus.on('status-error', () => paint()),
