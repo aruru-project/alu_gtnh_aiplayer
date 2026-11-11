@@ -14,7 +14,7 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { InventoryItem } from '../bridge/protocol.ts'
 import { StructureBook, structureCells } from '../packdata/index.ts'
-import type { Structure, StructurePart, StructureRow } from '../packdata/index.ts'
+import type { ItemTable, Structure, StructurePart, StructureRow } from '../packdata/index.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
 import { guideNote } from './guide.ts'
 import { spread, whereItStands } from './recipe-book.ts'
@@ -81,16 +81,28 @@ interface StructureQuery {
   meta?: number
 }
 
+/**
+ * 按名字找机器：中文名（结构数据里的）和英文名（物品表里这台主机的 en）都认，问的每个词都要在其中一个名字里。
+ * 名字正好是它的排前面。
+ */
+function searchMachines(book: StructureBook, items: ItemTable | undefined, name: string): { hits: Structure[]; exact: Structure[] } {
+  const whole = name.trim().toLowerCase()
+  const words = whole.split(/\s+/).filter((w) => w.length > 0)
+  const names = (m: Structure): string[] => [m.name.toLowerCase(), (items?.get(m.id, m.meta)?.en ?? '').toLowerCase()].filter((n) => n.length > 0)
+  const exact = book.machines.filter((m) => names(m).includes(whole))
+  const partial = book.machines.filter((m) => !exact.includes(m) && names(m).some((n) => words.every((w) => n.includes(w))))
+  return { hits: [...exact, ...partial], exact }
+}
+
 /** 找到问的是哪台机器；找不到、有好几台重名时返回给模型的一段话。 */
-function resolve(book: StructureBook, q: StructureQuery): Structure | ToolResult | string {
+function resolve(book: StructureBook, q: StructureQuery, items?: ItemTable): Structure | ToolResult | string {
   if (q.id !== undefined) {
     const machine = book.get(q.id.trim(), q.meta ?? 0)
     return machine ?? fail(`No multiblock structure is known for ${itemKey({ id: q.id.trim(), meta: q.meta ?? 0 })}. It has to be the controller of a multiblock machine: search by "name" instead, or get the id and meta with find_item.`)
   }
   if (q.name === undefined || q.name.trim().length === 0) return fail('Give "name" (the machine\'s name, or part of it) or "id" and "meta" of its controller.')
-  const hits = book.search(q.name)
-  if (hits.length === 0) return fail(`No multiblock machine whose name contains "${q.name.trim()}" is in the structure data. Try a shorter part of the name, or find the controller with find_item and give its id and meta.`)
-  const exact = hits.filter((m) => m.name.toLowerCase() === q.name!.trim().toLowerCase())
+  const { hits, exact } = searchMachines(book, items, q.name)
+  if (hits.length === 0) return fail(`No multiblock machine whose Chinese or English name contains "${q.name.trim()}" is in the structure data. Try a shorter part of the name, or find the controller with find_item and give its id and meta.`)
   if (exact.length === 1) return exact[0]!
   if (hits.length === 1) return hits[0]!
   const lines = hits.slice(0, MATCHES_LISTED).map((m) => `- ${m.name} [${itemKey(m)}], ${StructureBook.tiersOf(m).length} tier(s)`)
@@ -107,7 +119,7 @@ export const findStructure: Tool = {
   description:
     'How a multiblock machine is built (what players see as its hologram projection): its tiers, the size and the list of blocks of each tier, the machine\'s own structure notes, and what changes from one tier to another. Give the machine by name or by the id and meta of its controller; "tier" for one tier in full, "from" and "tier" for the difference between two. To compare with a machine that already stands in the world use check_structure.',
   inputSchema: obj({
-    name: str('The machine\'s name or part of it (Chinese), e.g. "大型蒸汽离心机".', { maxLength: 80 }),
+    name: str('The machine\'s name or part of it, Chinese or English, e.g. "大型蒸汽离心机".', { maxLength: 80 }),
     id: str('Instead of "name": the item id of its controller.'),
     meta: int('With "id": the controller\'s meta.', { min: 0 }),
     tier: int('One tier in full; with "from", the tier to change to.', { min: 1 }),
@@ -116,7 +128,7 @@ export const findStructure: Tool = {
   async run(ctx: ToolContext, i: StructureQuery & { tier?: number; from?: number }): Promise<ToolResult | string> {
     const book = ctx.packdata?.structures
     if (!book) return fail(NO_DATA)
-    const machine = resolve(book, i)
+    const machine = resolve(book, i, ctx.packdata?.items)
     if (typeof machine === 'string' || 'content' in machine) return machine
     const tiers = StructureBook.tiersOf(machine)
     const head = `${machine.name} [${itemKey(machine)}]`

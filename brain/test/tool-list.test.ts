@@ -222,7 +222,10 @@ describe('模型拿到的工具清单', () => {
   //   对话线：实际 20,951（28 个工具），不到干活线的一半；上限留约 2%。它每回一句话都带着这份清单，回话快不快就看它。
   //           里面最大的几个是它用来自己回答问题的：run_program 连库函数索引（2,7xx）、find_in_storage、report_problem、find_recipes。
   //           第六批之后实际 22,479（29 个工具），上限从 21,400 调到 22,800（+1,400）：多的是同样的两样，read_guide 和 read_log 的那一行。
-  for (const [line, ceiling] of [['work', 48_700], ['talk', 22_800]] as const) {
+  //   物品的提示文字之后：干活线实际 48,710、上限 48,700 → 49,000；对话线实际 22,769、上限 22,800 → 23,000。多的是 find_item（+290）：
+  //           结果里的物品少时带上它的提示（玩家把鼠标放上去看到的那几行）和指南里的页，新参数 tip（按提示里的字找物品）；
+  //           find_machines、find_structure 的 name 说明里写了中英文都认（各 +十来个字符）。
+  for (const [line, ceiling] of [['work', 49_000], ['talk', 23_000]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

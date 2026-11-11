@@ -9,7 +9,7 @@ import type { RunLogStore } from '../agent/run-log.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
-import type { GuideBook, GuideEntry } from '../packdata/index.ts'
+import type { GuideBook, GuideEntry, ItemTooltip, TooltipTable } from '../packdata/index.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
 import type { ActivityLog, ActivityRun } from '../store/activity-log.ts'
@@ -292,4 +292,27 @@ export function guidePage(guide: GuideBook | undefined, params: URLSearchParams,
     sections: rendered.sections,
     text: rendered.text,
   }
+}
+
+// ── 物品的提示文字（只读） ──
+
+const TOOLTIPS_PER_REQUEST = 200
+
+/**
+ * GET /api/items/tooltips?q=<逗号隔开的 id/meta，最多 200 个>：这些物品的提示文字（玩家把鼠标放上去看到的那几行）。
+ * 只回有提示的那些。tip 是什么键都不按时的；shift、ctrl 是按住那个键时**换成**的另一版，不是接在后面。
+ * 给的是去掉了只是界面提示的那几行以后的（和模型看到的一样，见 packdata/tooltips.ts 的 UI_ONLY_LINES）。没有这份资料时 available 是 false。
+ */
+export function itemTooltips(tooltips: TooltipTable | undefined, params: URLSearchParams): { available: boolean; tooltips: Record<string, ItemTooltip> } {
+  const out: Record<string, ItemTooltip> = {}
+  if (!tooltips) return { available: false, tooltips: out }
+  for (const key of (params.get('q') ?? '').split(',').slice(0, TOOLTIPS_PER_REQUEST)) {
+    const slash = key.lastIndexOf('/')
+    const id = (slash > 0 ? key.slice(0, slash) : key).trim()
+    const meta = slash > 0 ? Number(key.slice(slash + 1)) : 0
+    if (id.length === 0 || id.length > 200 || !Number.isInteger(meta)) continue
+    const found = tooltips.get(id, meta)
+    if (found) out[`${id}/${meta}`] = found
+  }
+  return { available: true, tooltips: out }
 }

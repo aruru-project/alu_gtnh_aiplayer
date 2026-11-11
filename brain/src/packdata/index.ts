@@ -7,6 +7,8 @@
 
 import { CarvingBook } from './carving.ts'
 import { GuideBook } from './guide.ts'
+import { itemLines } from './icons.ts'
+import { TooltipTable } from './tooltips.ts'
 import { FluidTable } from './fluids.ts'
 import { StructureBook } from './structures.ts'
 import fs from 'node:fs'
@@ -30,6 +32,8 @@ export { ItemTable } from './items.ts'
 export { StructureBook, structureCells } from './structures.ts'
 export { CarvingBook } from './carving.ts'
 export { GuideBook } from './guide.ts'
+export { TooltipTable } from './tooltips.ts'
+export type { ItemTooltip } from './tooltips.ts'
 export type { GuideEntry, GuideHit, GuidePage } from './guide.ts'
 export { FLUID_DISPLAY_ID, FluidTable } from './fluids.ts'
 export type { FluidInfo } from './fluids.ts'
@@ -60,6 +64,8 @@ export interface PackData {
   fluids?: FluidTable
   /** 游戏内指南（guide.jsonl）：玩家在游戏里按 G 看到的那本。没有时 read_guide 照实说这份资料没导出。 */
   guide?: GuideBook
+  /** 物品的提示文字（tooltips.jsonl）：玩家把鼠标放到物品上看到的那几行。没有时 find_item 不带提示、也不能按提示里的字找。 */
+  tooltips?: TooltipTable
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -285,6 +291,23 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
     }
   } catch (e) {
     log(`游戏内指南（guide.jsonl）读不了（${reason(e)}），当它没有。`)
+  }
+  try {
+    const loaded = TooltipTable.load(dir)
+    // 文件不在就当没有，不用说
+    if (loaded) {
+      data.tooltips = loaded.table
+      const { shift, ctrl } = loaded.table.counts()
+      // 它是按 id + meta 认的，和物品表不是同一次导出的也照用；对不上只说一声（可能有物品缺提示、有提示对不上物品）
+      const info = isRecord(meta.tooltips) ? meta.tooltips : {}
+      const itemsText = typeof info.itemsSha1 === 'string' && info.itemsSha1.length > 0 ? readText(path.join(dir, 'items.jsonl')) : undefined
+      const other = itemsText !== undefined && itemLines(itemsText).sha1 !== String(info.itemsSha1).toLowerCase()
+      log(
+        `物品的提示文字：${loaded.table.size} 个物品有（按住 Shift 另有一版的 ${shift} 个、按住 Ctrl 的 ${ctrl} 个；文件里 ${loaded.rows} 行，去掉只是界面提示的行以后剩这些${loaded.bad > 0 ? `；${loaded.bad} 行认不出来，跳过了` : ''}）${other ? '；它不是照现在这份物品表取的（itemsSha1 对不上），按 id/meta 照用' : ''}。`,
+      )
+    }
+  } catch (e) {
+    log(`物品的提示文字（tooltips.jsonl）读不了（${reason(e)}），当它没有。`)
   }
   return data
 }

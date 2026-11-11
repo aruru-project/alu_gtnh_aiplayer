@@ -193,7 +193,7 @@ export function buildGuidePackdata(dir: string, opts: { guide?: boolean } = {}):
     if (run.status !== 0) throw new Error(`make-packdata.py guide failed (${run.status}): ${run.stderr || run.stdout}`)
   }
   fs.writeFileSync(path.join(packdata, 'items.jsonl'), GUIDE_ITEMS.map((i) => JSON.stringify(i)).join('\n'))
-  fs.writeFileSync(path.join(packdata, 'handlers.json'), JSON.stringify({ handlers: [{ key: 'gt.recipe.vacuumfreezer', name: '真空冷冻机', mod: 'GregTech', machines: [VF], read: 'gregtech' }] }))
+  fs.writeFileSync(path.join(packdata, 'handlers.json'), JSON.stringify([{ key: 'gt.recipe.vacuumfreezer', name: '急冻', mod: 'GregTech', machines: [VF], read: 'gregtech' }]))
   fs.writeFileSync(path.join(packdata, 'recipes.jsonl'), JSON.stringify({ h: 'gt.recipe.vacuumfreezer', in: [{ id: 'gregtech:gt.metaitem.01', meta: 17305, n: 1 }], out: [{ id: 'gregtech:gt.metaitem.01', meta: 17305, n: 1 }], fin: [{ f: 'liquidoxygen', name: '液氧', mb: 1000 }], eut: 480, ticks: 100 }))
   fs.writeFileSync(path.join(packdata, 'quests.jsonl'), JSON.stringify({ id: '531', name: '冰箱造好了', desc: '', lines: ['hv'], pre: [], tasks: [], rewards: [] }))
   fs.writeFileSync(path.join(packdata, 'questlines.json'), JSON.stringify({ lines: [{ id: 'hv', name: 'HV', desc: '', quests: ['531'] }] }))

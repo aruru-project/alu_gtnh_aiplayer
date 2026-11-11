@@ -31,6 +31,7 @@ const WIDE_STOCK_STEP = 48
 /** 身体不认识的机器是从容器里认出来的，容器一次最多看 32 格。 */
 const OTHER_MACHINES_RADIUS = 32
 export const MACHINES_MAX_LIMIT = 60
+const MACHINES_DEFAULT_LIMIT = 30
 export const PROCESS_MAX_INPUTS = 9
 export const PROCESS_MAX_ROUNDS = 64
 export const PROCESS_WAIT_MIN_SEC = 5
@@ -39,20 +40,20 @@ export const PROCESS_WAIT_MAX_SEC = 3600
 export const findItem: Tool = {
   name: 'find_item',
   description:
-    'Find items, and fluids, by name: words of the Chinese or English name, the id, or an ore-dictionary name (every word must match). Gives the name, id/meta, how many recipes make and use each, its ore names, and its chisel group if it is in one; a fluid with its internal name. Names are the Chinese ones shown in the game, the ones your owner says.',
-  inputSchema: obj(
-    {
-      query: str('Words to look for, e.g. "钢板", "electric motor", "plateSteel".', { maxLength: 80 }),
-      page: int('Page of the matches (default 1).', { min: 1 }),
-      limit: int('Matches per page (default 12).', { min: 1, max: SEARCH_MAX_LIMIT }),
-    },
-    ['query'],
-  ),
-  async run(ctx, i: { query: string; page?: number; limit?: number }) {
+    'Find items, and fluids, by name: words of the Chinese or English name, the id, or an ore-dictionary name (every word must match). Gives the name, id/meta, how many recipes make and use each, its ore names, and its chisel group if it is in one; a fluid with its internal name. Names are the Chinese ones shown in the game, the ones your owner says. ' +
+    'With 5 or fewer items listed, each also has its tooltip (what a player reads hovering over it) and its page in the in-game guide; an id/meta as query is that one item.',
+  inputSchema: obj({
+    query: str('Words to look for, e.g. "钢板", "electric motor", "plateSteel".', { maxLength: 80 }),
+    tip: str('Words that must be in its tooltip, e.g. "覆盖板"; alone or with query.', { maxLength: 80 }),
+    page: int('Page of the matches (default 1).', { min: 1 }),
+    limit: int('Matches per page (default 12).', { min: 1, max: SEARCH_MAX_LIMIT }),
+  }),
+  async run(ctx, i: { query?: string; tip?: string; page?: number; limit?: number }) {
     const items = ctx.packdata?.items
-    if (items) return findItemLocal(items, ctx.packdata?.recipes, i, ctx.packdata?.carving, ctx.packdata?.fluids, ctx.packdata?.guide)
+    if (items) return findItemLocal(items, ctx.packdata?.recipes, i, { carving: ctx.packdata?.carving, fluids: ctx.packdata?.fluids, guide: ctx.packdata?.guide, tooltips: ctx.packdata?.tooltips })
     // 没有本地物品表：问服务器（它只认英文名）
-    const query = i.query.trim()
+    const query = (i.query ?? '').trim()
+    if (query.length === 0) return fail('Give "query": without the local item table only names can be searched, on the game server.')
     const res = await ctx.bridge.itemSearch(query, i.limit)
     return formatItemSearch(query, res.items ?? [])
   },
@@ -238,7 +239,7 @@ export const findMachines: Tool = {
   name: 'find_machines',
   description: `The machines around you or around "at", nearest first. GregTech machines and multiblock controllers: what recipes each runs, its tier, power, whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Then other mods' machines and furnaces, whose state cannot be read.`,
   inputSchema: obj({
-    name: str('Only machines whose name or recipe type contains this (English), e.g. "Lathe".', { maxLength: 60 }),
+    name: str('Only machines whose name or recipe type contains this, Chinese or English, e.g. "车床", "Lathe".', { maxLength: 60 }),
     radius: int('Search radius in blocks (default 32).', { min: 1, max: MACHINES_MAX_RADIUS }),
     limit: int('How many to return (default 30).', { min: 1, max: MACHINES_MAX_LIMIT }),
     at: AT,
@@ -247,20 +248,33 @@ export const findMachines: Tool = {
     const name = i.name?.trim() || undefined
     const radius = i.radius ?? 32
     const from = await lookFrom(ctx, i.at)
-    const res = await ctx.bridge.worldMachines(
-      from.center,
-      { radius, ...(name !== undefined ? { name } : {}), ...(i.limit !== undefined ? { limit: i.limit } : {}) },
-    )
     const book = ctx.packdata?.recipes
     const handlers = book?.handlers
     const wayName = (key: string): string | undefined => handlers?.find((h) => h.key === key)?.name
+    // 身体按名字筛只认它自己的英文名。名字写的是中文（结果里写的就是中文名）：把范围里的都要来，在这边照中文名和配方页的中文名筛
+    const chinese = name !== undefined && /[^\x00-\x7f]/.test(name)
+    const asked = await ctx.bridge.worldMachines(
+      from.center,
+      { radius, ...(name !== undefined && !chinese ? { name } : {}), ...(chinese ? { limit: MACHINES_MAX_LIMIT } : i.limit !== undefined ? { limit: i.limit } : {}) },
+    )
+    let res = asked
+    // 范围里的机器比一次要得来的多时，没要来的那些这边筛不到：照实说
+    let unseen = ''
+    if (chinese) {
+      const word = name!.toLowerCase()
+      const all = asked.machines ?? []
+      const kept = all.filter((m) => `${nameOf(m) ?? ''}\n${typeof m.recipeKey === 'string' ? (wayName(m.recipeKey) ?? '') : ''}`.toLowerCase().includes(word))
+      res = { ...asked, machines: kept.slice(0, i.limit ?? MACHINES_DEFAULT_LIMIT), total: kept.length }
+      const inRange = asked.total ?? all.length
+      if (inRange > all.length) unseen = `\nOnly the nearest ${all.length} of the ${inRange} machines in range were looked at for that Chinese name: a smaller radius, or the English name, covers the others.`
+    }
     // 身体不认识的机器（别的 mod 的、熔炉）：把同一片地方的容器看一遍，照配方册认
     let others: OtherMachineLine[] = []
     if (book) {
       try {
         const seen = await ctx.bridge.worldContainers(from.center, { radius: Math.min(radius, OTHER_MACHINES_RADIUS), limit: 100 })
         const word = name?.toLowerCase()
-        others = otherMachines(seen.containers ?? [], res.machines ?? [], book, ctx.packdata?.items)
+        others = otherMachines(seen.containers ?? [], asked.machines ?? [], book, ctx.packdata?.items)
           .map((o) => ({ ...o, wayNames: o.ways.map((key) => wayName(key) ?? key) }))
           .filter((o) => word === undefined || `${o.name ?? ''}\n${nameOf(o.item) ?? ''}\n${o.wayNames.join('\n')}`.toLowerCase().includes(word))
       } catch (e) {
@@ -277,10 +291,13 @@ export const findMachines: Tool = {
       told.add(note)
       return note
     }
-    // GregTech 的机器在世界里的 meta 不是它作为物品的 meta：拿身体给的英文名到物品表里对
-    const guideLine = guide ? (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => guideOf(m.item ?? itemOfBlock(ctx.packdata?.items, { ...m, tileEntity: true })) : undefined
+    // 身体给机器的 id + meta 就是它作为物品的那一对（和配方页的 machines 一样）；没给全的拿它的英文名到物品表里对
+    const guideLine = guide
+      ? (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) =>
+          guideOf(m.item ?? (typeof m.id === 'string' && typeof m.meta === 'number' ? { id: m.id, meta: m.meta } : itemOfBlock(ctx.packdata?.items, { ...m, tileEntity: true })))
+      : undefined
     // data：身体的原样回答（每台机器的状态、总线和仓、覆盖板、流体罐），加上照配方册认出来的别的机器
-    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}), ...(guideLine ? { guide: guideLine } : {}) }), data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
+    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}), ...(guideLine ? { guide: guideLine } : {}) }) + unseen, data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
   },
 }
 

@@ -372,7 +372,7 @@
     /** 多方块机器：[{ id, meta, name, tiers }]（主机这件物品、它有哪些等级）。 */
     structures: () => [...structureIndex().values()].map((m) => ({ id: m.id, meta: m.meta, name: m.name, tiers: m.tiers })),
     /**
-     * 一台多方块机器各等级的结构。给主机的 id（和 meta），或者它的中文名（要正好是它；好几台重名时报错，列出各自的 id/meta）。没有就是 null。
+     * 一台多方块机器各等级的结构。给主机的 id（和 meta），或者它的名字（中文名，或者物品表里它的英文名；要正好是它；好几台重名时报错，列出各自的 id/meta）。没有就是 null。
      * 返回 { id, meta, name, tiers, info, structureInfo, rows, tier(n) }；rows 的每一项是一种搭法：
      * { tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }，
      * cells[(y * size[2] + z) * size[0] + x] 是 palette 的下标（0 是空），主机正面朝南（+z）。tier(n) 是第 n 级用的那一项。
@@ -382,7 +382,9 @@
       const text = String(idOrName)
       const byId = index.get(`${text}/${meta}`)
       if (byId) return byId
-      const named = [...index.values()].filter((m) => m.name === text)
+      // 中文名（结构数据里的）或者英文名（物品表里这台主机的 en，不分大小写）
+      const english = config.data.includes('items') ? text.toLowerCase() : undefined
+      const named = [...index.values()].filter((m) => m.name === text || (english !== undefined && (data.item(m.id, m.meta)?.en ?? '').toLowerCase() === english))
       if (named.length > 1) throw new Error(`${named.length} machines are named ${text}: use data.structure(id, meta) with one of ${named.map((m) => `${m.id}/${m.meta}`).join(', ')}`)
       return named[0] ?? null
     },

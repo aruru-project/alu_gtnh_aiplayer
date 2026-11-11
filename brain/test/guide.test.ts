@@ -337,6 +337,11 @@ describe('游戏内指南', { skip }, () => {
     const items = await f.call('find_item', { query: '真空冷冻机' })
     assert.ok(items.text.includes(`- 真空冷冻机 [gregtech:gt.blockmachines/1002]: `) && items.text.includes(`; ${note}`), items.text)
     assert.equal((await f.call('find_item', { query: '钢板' })).text.includes('guide'), false)
+    // find_item 找到的物品多（超过五个）时不逐个带，结尾说其中几个在指南里有页、怎么看某一个的
+    const many = await f.call('find_item', { query: 'gregtech' })
+    assert.equal(many.data.total, 7)
+    assert.equal(many.text.includes('in the guide:'), false)
+    assert.ok(many.text.endsWith('\n3 of these have a page in the in-game guide: read_guide {id, meta} lists the pages about one.'), many.text)
     // find_structure
     const structure = await f.call('find_structure', { name: '工业高炉' })
     assert.ok(structure.text.includes(`\nIn the guide: "工业高炉" — read_guide {path: "${EBF_PAGE}"}\n`), structure.text)
@@ -357,9 +362,10 @@ describe('游戏内指南', { skip }, () => {
     // find_machines：同一种机器两台，那一行只在头一台下面
     f.game.handlers['world.machines'] = () => ({
       machines: [
-        { x: 1, y: 64, z: 1, name: 'Vacuum Freezer', id: VF.id, meta: 3, kind: 'multiblock', formed: true, recipes: 'Vacuum Freezer', tier: 'HV', active: false, storedEU: 100 },
-        { x: 9, y: 64, z: 1, name: 'Vacuum Freezer', id: VF.id, meta: 3, kind: 'multiblock', formed: true, recipes: 'Vacuum Freezer', tier: 'HV', active: false, storedEU: 100 },
-        { x: 5, y: 64, z: 5, name: 'Electric Blast Furnace', id: EBF.id, meta: 2, kind: 'multiblock', formed: true, recipes: 'Blast Furnace', tier: 'MV', active: false, storedEU: 100 },
+        // 身体给机器的 id + meta 就是它作为物品的那一对
+        { x: 1, y: 64, z: 1, name: 'Vacuum Freezer', ...VF, kind: 'multiblock', formed: true, recipes: 'Vacuum Freezer', tier: 'HV', active: false, storedEU: 100 },
+        { x: 9, y: 64, z: 1, name: 'Vacuum Freezer', ...VF, kind: 'multiblock', formed: true, recipes: 'Vacuum Freezer', tier: 'HV', active: false, storedEU: 100 },
+        { x: 5, y: 64, z: 5, name: 'Electric Blast Furnace', ...EBF, kind: 'multiblock', formed: true, recipes: 'Blast Furnace', tier: 'MV', active: false, storedEU: 100 },
       ],
       total: 3,
     })
@@ -371,10 +377,57 @@ describe('游戏内指南', { skip }, () => {
   })
 })
 
+describe('按名字找机器：中文名、英文名都认', { skip }, () => {
+  it('find_structure 的 name：结构数据里的中文名和物品表里这台主机的英文名都认，几个词都要在同一个名字里', async (t) => {
+    const f = setup(t)
+    const zh = await f.call('find_structure', { name: '工业高炉' })
+    const en = await f.call('find_structure', { name: 'electric blast furnace' })
+    assert.match(zh.text, /^工业高炉 \[gregtech:gt\.blockmachines\/1000\]: a multiblock machine with 6 tier\(s\)/)
+    assert.equal(en.text, zh.text)
+    // 名字的一部分也行（英文不分大小写）
+    assert.equal((await f.call('find_structure', { name: 'Blast' })).text, zh.text)
+    // 两种名字里都没有
+    assert.equal(
+      (await f.call('find_structure', { name: 'fusion reactor' })).text,
+      'No multiblock machine whose Chinese or English name contains "fusion reactor" is in the structure data. Try a shorter part of the name, or find the controller with find_item and give its id and meta.',
+    )
+  })
+
+  it('find_machines 的 name：结果里写的是中文名，照中文名筛也认（身体只认英文名，所以把范围里的都要来在这边筛）；英文名照旧交给身体筛', async (t) => {
+    const f = setup(t)
+    const machines = [
+      { x: 1, y: 64, z: 1, name: 'Vacuum Freezer', ...VF, kind: 'multiblock', formed: true, recipes: 'Vacuum Freezer', recipeKey: 'gt.recipe.vacuumfreezer', tier: 'HV', active: false, storedEU: 100 },
+      { x: 5, y: 64, z: 5, name: 'Electric Blast Furnace', ...EBF, kind: 'multiblock', formed: true, recipes: 'Blast Furnace', tier: 'MV', active: false, storedEU: 100 },
+    ]
+    // 身体照它自己的英文名筛
+    f.game.handlers['world.machines'] = (p) => {
+      const word = typeof p.name === 'string' ? p.name.toLowerCase() : undefined
+      const kept = machines.filter((m) => word === undefined || m.name.toLowerCase().includes(word))
+      return { machines: kept, total: kept.length }
+    }
+    f.game.handlers['world.containers'] = () => ({ containers: [], total: 0, offset: 0 })
+    const zh = await f.call('find_machines', { name: '高炉' })
+    assert.match(zh.text, /^1 GregTech machine\(s\) whose name or recipe type contains "高炉" within 32 blocks of you, nearest first\./)
+    assert.ok(zh.text.includes('- (5,64,5) "工业高炉"') && !zh.text.includes('真空冷冻机'), zh.text)
+    // 中文名没有交给身体（它认不了），要的是范围里的全部
+    assert.deepEqual(f.game.callsOf('world.machines').at(-1), { bot: 'Alu', radius: 32, limit: 60 })
+    // 配方页的中文名也认：冰箱跑的那一页叫“急冻”，它自己的名字里没有这两个字
+    assert.deepEqual((await f.call('find_machines', { name: '急冻' })).data.machines.map((m: any) => m.name), ['真空冷冻机'])
+    // 英文名：照旧交给身体
+    const en = await f.call('find_machines', { name: 'Blast' })
+    assert.deepEqual(f.game.callsOf('world.machines').at(-1), { bot: 'Alu', radius: 32, name: 'Blast' })
+    assert.ok(en.text.includes('- (5,64,5) "工业高炉"') && !en.text.includes('真空冷冻机'))
+    // 范围里的机器比一次要得来的多：照实说只看了最近的多少台
+    f.game.handlers['world.machines'] = () => ({ machines, total: 75 })
+    assert.ok((await f.call('find_machines', { name: '高炉' })).text.endsWith('\nOnly the nearest 2 of the 75 machines in range were looked at for that Chinese name: a smaller radius, or the English name, covers the others.'))
+  })
+})
+
 describe('游戏内指南：两条线', { skip }, () => {
   function agents(t: { after(fn: () => void | Promise<void>): void }, opts: { guide?: boolean } = {}) {
     const tmp = tmpDir()
     const dir = buildGuidePackdata(tmp.dir, opts)
+    writeStructureFixture(dir)
     const packdata = loadPackData(dir)
     useLocalNames(packdata.items, packdata.fluids)
     const h = makeAgent({ dir: tmp.dir, design: new DesignWorkspace({ dataDir: tmp.dir, packdata }), packdata })
@@ -398,6 +451,9 @@ describe('游戏内指南：两条线', { skip }, () => {
     // 对话线写的程序里调它：拿到的是整页，不受单个结果上限的限制
     const program = await lineCalls(h, 'talk', 'run_program', { code: `const r = await tool('read_guide', { path: '${VF_PAGE}' }); return [r.ok, r.data.text.length, r.data.text.includes('第 40 条')]` }, 'Alu 再看看')
     assert.match(program.content, /\[true,\d{4},true\]/)
+    // 程序里的 data.structure 按名字取机器：中文名、物品表里的英文名（不分大小写）都认
+    const named = await modelCalls(h, 'run_program', { code: `return [data.structure('工业高炉').meta, data.structure('electric blast furnace').name, data.structure('Fusion Reactor')]` }, 'Alu 查结构')
+    assert.match(named.content, /\[1000,"工业高炉",null\]/)
   })
 
   it('读到了指南时，两条线的提示词里各有同一句事实：包里有这本指南、主人看到的是同一份、它是人写的、配方和结构以导出的资料为准；没读到就没有这一节', async (t) => {

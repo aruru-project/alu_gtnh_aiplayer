@@ -57,7 +57,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `data.items()` / `data.item(id, meta?)` | 物品表（`items.jsonl`） |
 | `data.quests()` / `data.questLines()` | 任务书（字段见 `docs/PACKDATA.md`） |
 | `data.structures()` | 全部多方块机器：`[{ id, meta, name, tiers }]`（`structures.jsonl`） |
-| `data.structure(名字)` 或 `data.structure(id, meta)` | 一台多方块机器：`{ id, meta, name, tiers, info, structureInfo, rows, tier(n) }`。`rows` 的每一项是一种搭法 `{ tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }`，`palette[cells[(y * size[2] + z) * size[0] + x]]` 是那一格的方块，主机正面朝南；`tier(n)` 是第 n 级的搭法。没有是 `null`，重名的抛错并列出各自的 id/meta |
+| `data.structure(名字)` 或 `data.structure(id, meta)`（名字是中文名，或者物品表里这台主机的英文名） | 一台多方块机器：`{ id, meta, name, tiers, info, structureInfo, rows, tier(n) }`。`rows` 的每一项是一种搭法 `{ tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }`，`palette[cells[(y * size[2] + z) * size[0] + x]]` 是那一格的方块，主机正面朝南；`tier(n)` 是第 n 级的搭法。没有是 `null`，重名的抛错并列出各自的 id/meta |
 | `log(…)`，`console.log(…)` | 打日志。一共留 4000 字符，多的丢掉并说明丢了几条 |
 | `await tool(名字, 参数)` | 调一个工具或库函数，参数和模型自己调时一样。返回 `{ ok, text, data }`：成没成、模型会看到的那段文字、同一个结果的数据形式（有些工具没有）。工具失败不抛错，只是 `ok` 为 `false` |
 | `return 值` | 显示在结果里。最多和一个工具结果一样长（面板上的“单个工具结果上限”，默认 6000 字符）；更长的只给开头，并写明一共多少、给了多少、剩下的怎么拿 |
@@ -134,7 +134,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `check_blueprint { name, x, y, z, x1?…z2?, only?, skip?, clear? }` | 世界和图纸对比，什么都不动。`data` 是身体 `blueprint.check` 的原样回答：`{ name, origin, box, cells, done, toPlace, byHand, blocked, extra, willRemove, unloaded?, materials: [{ id, meta, name, need, have }], byHandBlocks, blockedBy, extraBlocks, layers }` |
 | `haul_items { from, to, items?, queue? }` | 在两个容器之间来回搬（任务）。只能在例程里调，等任务结束才返回：`data` 是 `{ task, state, result?, error? }` |
 | `read_blocks { x1, y1, z1, x2, y2, z2 }` | 世界里一个盒子的全部方块（每边最多 64）。`data`：`{ x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells, unloaded }`，盒子从 `(x, y, z)` 起，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格（`palette[0]` 是空气） |
-| `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
+| `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭（`name` 认中文名，也认物品表里这台主机的英文名）：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
 | `check_structure { at, tier, id?, meta? }` | 把世界里 `at` 那台主机周围的方块和它 `tier` 级的搭法对一遍（四个水平朝向都试，取对得最上的；机器零件占着机械方块的位置算对）。`data`：`{ machine, tier, facing, looksLike, total, right, changes: [{ x, y, z, from, to }], need: [{ id, meta, name, count, carried, stored, short }] }` |
 | `total_materials { id \| fluid, meta?, count?, recipes?: [#…], chisel?: [{ id, meta?, from: { id, meta? } }] }` | 纯计算（流体也算：一条配方要的流体，如果选的配方里有一条产出它，就按 mB 记到那条头上，那一步的 `makes` 是 `{ fluid, name, count }`，`count` 是 mB；没有就记在 `fluids` 里当作要现成的。目标本身也可以是流体：给 `fluid`，`count` 是 mB）：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`chisel` 是“这样东西用凿子从同组的另一种变来”的一步（不是配方，没有编号）：一换一往下乘，凿子不算消耗，文字里照实说耐久不知道；两样不在同一组就是出错的结果，写明各在哪一组。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed } 或 { chisel: { group, from }, way: 'chisel', rounds, makes, needed }], raw, kept, fluids, unused }`（用了凿子时 `kept` 里多一项 `{ tool: 'chisel', name: '凿子' }`） |
 | `view_area { x1…z2 \| radius, view?, from?, layer? }`（模型不能看图时） | 世界里一个盒子的文字说明：范围、各种方块各多少、一层层各有什么。`data`：`{ x, y, z, sx, sy, sz, unloaded, kinds: [{ id, meta, name?, count }] }` |
@@ -151,6 +151,8 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 **产物是流体的加工**：例程里 `await tool("process_items", …)` 等到任务结束，`data.result` 里除了 `put`、`outputs`（这时是空的）还有 `fluids`：机器的罐（`[{ fluid, name, en?, amount, capacity }]`）或者多方块的输出仓（`[{ x, y, z, kind, capacity, fluid?, fluidName?, fluidEn?, amount? }]`）现在有什么。
 
 **覆盖板**在同一批 `data` 里是 `covers: [{ side, id, meta, name, screen, slots?, usedSlots?, items?, moreKinds? }]`；`find_in_storage` 的存放点带 `kind: "cover"`、`cover`、`side`。
+
+**物品的提示文字**：`find_item`（在工具清单里）的 `data` 是 `{ total, page, pages, items: [{ id, meta, name, en?, ores?, tooltip?: { tip, shift?, ctrl? } }] }`。`tooltip` 是玩家把鼠标放到这件物品上看到的那几行：`tip` 是不按键时的，`shift`、`ctrl` 是按住那个键时换成的另一版；不管这一页有几个物品，程序里拿到的都是全的（文字结果里只在物品不超过 5 个时带）。`find_item` 的 `tip` 参数按提示里的字找物品。见 `docs/PACKDATA.md` 的“物品的提示文字 · 大脑怎么用”。
 
 **游戏内指南**：`read_guide`（在工具清单里，两条线都有）在程序里一样调。读一页（`{ path }`）的 `data` 是 `{ path, book, title, lang, english?, parent?, author?, date?, items?, quests?, children, sections: [{ level, title, offset }], text }`，`text` 是整页读成字以后的正文，不受单个结果上限的限制；目录（`{ book }`）是 `{ book, pages: [{ path, book, title, lang, english?, parent?, items? }] }`；搜索（`{ query }`）是 `{ matched, hits: [{ path, title, …, score, snippet? }] }`；按物品（`{ id, meta? }`）是 `{ pages: […] }`。怎么读成字的见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”。
 

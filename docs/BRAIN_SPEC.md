@@ -402,6 +402,8 @@ interface ProviderConfig {
 
 **8. 物品的中文名** `GET /api/items/names?q=<逗号隔开的 id/meta，最多 200 个>` → `{ names: { "minecraft:dirt/0": "泥土" } }`，只回查得到的。
 
+**8b. 物品的提示文字** `GET /api/items/tooltips?q=<逗号隔开的 id/meta，最多 200 个；meta 不写当 0>` → `{ available, tooltips: { "gregtech:gt.blockmachines/31080": { tip: ["机器类型: 离心机", …], shift?: […], ctrl?: […] } } }`，只回有提示的那些；没有这份资料（`packdata` 的 `tooltips.jsonl`）时是 `{ available: false, tooltips: {} }`。`tip` 是玩家把鼠标放到物品上、什么键都不按时名字下面的那几行；`shift`、`ctrl` 是按住那个键时**换成**的另一版，不是接在后面，没有另一版的没有这个键。行是原样的（行首的空格是缩进，`""` 是一段空白，`"---"` 是一条横线），已经去掉了只是界面提示的那几行（“长按 [G] 打开指南”等，见 `docs/PACKDATA.md` 的“物品的提示文字 · 大脑怎么用”）。这些字是一个新号对着一个刚拿出来的样品看到的：电量、存量、绑定这类行说的是样品，不是玩家手里那一个。页面还没做。
+
 **9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面还没做）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。
 
 - `GET /api/guide` → `{ available, pages, books: [{ book, title, pages, englishOnly }] }`；没有这份资料时是 `{ available: false, books: [] }`。带 `book=<书>` 时多两项：`book`，和 `list`——这本书的全部页，按目录的顺序（上一级在前，同级里有中文的在前、再按书里的次序），每项 `{ path, book, title, lang, english?, parent? }`：`lang` 是给出来的这一版的语言（`zh_cn` / `en_us`），`english: true` 表示同一路径另有英文版，`parent` 是上一级的 `path`（顶上的页没有）。前端拿 `parent` 搭成树。没有这本书是 404。

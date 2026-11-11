@@ -11,7 +11,7 @@ import { LlmError } from '../src/llm/index.ts'
 import { DesignWorkspace, decodePng } from '../src/design/index.ts'
 import { itemLines, parseItemIcons } from '../src/packdata/icons.ts'
 import type { ItemIcons } from '../src/packdata/icons.ts'
-import { ItemTable, StructureBook, loadPackData } from '../src/packdata/index.ts'
+import { ItemTable, StructureBook, TooltipTable, loadPackData } from '../src/packdata/index.ts'
 import type { GuideBook, TextureAtlas } from '../src/packdata/index.ts'
 import { PanelLive } from '../src/panel/live.ts'
 import { PanelServer } from '../src/panel/server.ts'
@@ -37,7 +37,7 @@ const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
  * lines：给了就接上真的两条线（agent-harness 的 makeAgent 造的：真的 Lines、两份历史、假的游戏和假的模型），
  * 不给就是只记下收到什么的桩。
  */
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; guide?: GuideBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; guide?: GuideBook; tooltips?: TooltipTable; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
   const tmp = opts.dir ?? (opts.lines ? { dir: opts.lines.dir, cleanup: opts.lines.cleanup } : tmpDir())
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = opts.lines?.game ?? new FakeGame()
@@ -68,6 +68,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     ...(opts.textures ? { textures: opts.textures } : {}),
     ...(opts.structures ? { structures: opts.structures } : {}),
     ...(opts.guide ? { guide: opts.guide } : {}),
+    ...(opts.tooltips ? { tooltips: opts.tooltips } : {}),
     // 物品图标：测试里不去找这台机器上的 packdata，给了才有
     icons: opts.icons ?? false,
     bridge: new BridgeApi(game),
@@ -973,6 +974,32 @@ describe('面板：对话、AI 玩家、记忆', () => {
     const bare = await setup(t)
     await bare.login()
     assert.deepEqual((await bare.call('GET', '/api/structures')).json, { available: false, total: 0, machines: [] })
+  })
+
+  it('物品的提示文字（只读）：一次问一批物品，回有提示的那些；三个画面各是各的；只是界面提示的行不在；没有这份资料时照实说', async (t) => {
+    const tooltips = new TooltipTable([
+      { id: 'gregtech:gt.blockmachines', meta: 221, tip: ['机器类型: 卷板机', '电压输入：32 (LV)'] },
+      { id: 'gregtech:gt.blockmachines', meta: 31080, tip: ['长按 [G] 打开指南', '机器类型: 离心机'], shift: ['长按 [G] 打开指南', '大小: 5x5x5 (LxWxH)'] },
+      { id: 'Thaumcraft:WandCap', meta: 0, tip: ['按住CTRL以显示神秘时代法杖信息'], ctrl: ['魔力减免：-10%'] },
+      { id: 'Ztones:tile.auroraBlock', meta: 0, tip: ['Alt/Ctrl+Scroll to', 'Cycle Between Blocks'] },
+    ])
+    const s = await setup(t, {}, { tooltips })
+    await s.login()
+    // meta 不写当 0；没有提示的（石头）、去掉界面提示以后什么都不剩的（极光方块）不在回的里面
+    const q = ['gregtech:gt.blockmachines/221', 'gregtech:gt.blockmachines/31080', 'Thaumcraft:WandCap', 'Ztones:tile.auroraBlock/0', 'minecraft:stone/0'].join(',')
+    assert.deepEqual((await s.call('GET', `/api/items/tooltips?q=${encodeURIComponent(q)}`)).json, {
+      available: true,
+      tooltips: {
+        'gregtech:gt.blockmachines/221': { tip: ['机器类型: 卷板机', '电压输入：32 (LV)'] },
+        'gregtech:gt.blockmachines/31080': { tip: ['机器类型: 离心机'], shift: ['大小: 5x5x5 (LxWxH)'] },
+        'Thaumcraft:WandCap/0': { tip: ['按住CTRL以显示神秘时代法杖信息'], ctrl: ['魔力减免：-10%'] },
+      },
+    })
+    assert.deepEqual((await s.call('GET', '/api/items/tooltips')).json, { available: true, tooltips: {} })
+    // 大脑没有这份资料
+    const bare = await setup(t)
+    await bare.login()
+    assert.deepEqual((await bare.call('GET', '/api/items/tooltips?q=minecraft:stone/0')).json, { available: false, tooltips: {} })
   })
 
   it('游戏内指南（只读）：有哪几本书、一本书的页（带上一级，前端搭成树）、按词找、读一页——读出来的是读成字以后的正文；没有这份资料时照实说', { skip: pythonMissing() }, async (t) => {

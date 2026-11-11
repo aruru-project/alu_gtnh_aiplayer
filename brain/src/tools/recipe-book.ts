@@ -10,6 +10,7 @@ import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInf
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
 import type { CarvingBook, FluidInfo, FluidTable, GuideBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
+import type { ItemTooltip, TooltipHit, TooltipTable } from '../packdata/tooltips.ts'
 import { CHISEL_WAY, chiselData, chiselDetail, chiselMatches, chiselSummary, isChiselWay } from './chisel.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
 import { guideNote } from './guide.ts'
@@ -675,35 +676,106 @@ function fluidLines(fluids: FluidTable, recipes: RecipeBook | undefined, found: 
 
 const FLUID_HOW = 'A fluid is not an item: find_recipes (how it is made) and the library function find_uses (what takes it) are asked with "fluid" instead of "id": its name, or the internal name in the brackets.'
 
-export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query: string; page?: number; limit?: number }, carving?: CarvingBook, fluids?: FluidTable, guide?: GuideBook): ToolResult | string {
-  const query = input.query.trim()
-  if (query.length < 1) return fail('Give a word of the name: Chinese, English, an id or an ore-dictionary name.')
+/** find_item 的一页里不超过这么多个物品时，每个带上它的提示文字和“指南里有这一页”；多了就不逐个带，结尾说怎么看某一个的。 */
+export const FEW_ITEMS = 5
+/** 一页里有两个以上物品时，提示的每个画面最多给这么多行（只有一个物品时全给）。 */
+const TIP_LINES_SHOWN = 12
+
+const TIP_SCREENS = [
+  ['tip', 'tooltip'],
+  ['shift', 'tooltip while Shift is held (it replaces the lines above)'],
+  ['ctrl', 'tooltip while Ctrl is held (it replaces the lines above)'],
+] as const
+
+/** 提示是谁看到的：一个事实，带了提示的结果末尾说一次。 */
+export const TOOLTIP_FACT =
+  'A tooltip is what a new player reads hovering over a fresh sample of the item: lines about charge, stored amount, bindings or a tool\'s level are the sample\'s, not those of the one you hold.'
+
+/** 一件物品的提示，写成缩进在它下面的几行：三个画面分开，各标明是哪个；行首的空格原样留着（竖线后面的就是那一行）。 */
+function tooltipLines(tooltip: ItemTooltip, item: { id: string; meta: number }, whole: boolean): string[] {
+  const out: string[] = []
+  for (const [key, label] of TIP_SCREENS) {
+    const lines = tooltip[key]
+    if (lines === undefined || (key === 'tip' && lines.length === 0)) continue
+    const shown = whole ? lines : lines.slice(0, TIP_LINES_SHOWN)
+    out.push(`    ${label}:`, ...shown.map((line) => `      | ${line}`))
+    if (shown.length < lines.length) out.push(`      | … ${lines.length - shown.length} more line(s): find_item {query: "${item.id}/${item.meta}"} gives all of it`)
+  }
+  return out
+}
+
+/** find_item 用的别的资料：凿子的组、流体表、游戏内指南、物品的提示文字。哪样没有，结果里就没有那一样。 */
+export interface ItemExtras {
+  carving?: CarvingBook | undefined
+  fluids?: FluidTable | undefined
+  guide?: GuideBook | undefined
+  tooltips?: TooltipTable | undefined
+}
+
+/**
+ * 找物品。query：名字、id、矿辞名里的词；tip：提示文字里的词（和名字分开找，两样都给就是都要对上）。
+ * query 正好是一个物品的 id/meta 时就是那一个物品（别的地方写物品都是这个写法）。
+ */
+export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined, input: { query?: string; tip?: string; page?: number; limit?: number }, extras: ItemExtras = {}): ToolResult | string {
+  const { carving, fluids, guide, tooltips } = extras
+  const query = (input.query ?? '').trim()
+  const tip = (input.tip ?? '').trim()
+  if (query.length < 1 && tip.length < 1) return fail('Give a word of the name (Chinese, English, an id or an ore-dictionary name) as "query", or words of its tooltip as "tip".')
+  if (tip.length > 0 && !tooltips) return fail('This brain has no tooltips of the items: that data (tooltips.jsonl) was not exported for it. "query" searches names.')
   const limit = input.limit ?? ITEMS_PER_PAGE
   const page = Math.max(1, input.page ?? 1)
-  const { hits, total } = items.search(query, { limit, offset: (page - 1) * limit })
-  // 名字对得上的流体（中文名、英文名、内部名都认）：列在第一页的后面
-  const liquid = fluids ? fluids.search(query) : { exact: [], partial: [] }
+  const offset = (page - 1) * limit
+
+  let hits: PackItemInfo[]
+  let total: number
+  /** 按提示找时：每件物品是哪一行对上的。 */
+  const matched = new Map<string, TooltipHit>()
+  // 物品的 id 里可以有空格、竖线；最后一个斜杠后面是 meta
+  const exact = /^(\S.*:.*\S)\/(\d+)$/.exec(query)
+  const one = exact ? items.get(exact[1]!, Number(exact[2])) : undefined
+  if (tip.length > 0) {
+    for (const hit of tooltips!.search(tip)) matched.set(`${hit.id}/${hit.meta}`, hit)
+    // 名字也给了：两样都要对上，按名字像不像排；只给了提示：按物品表的顺序
+    const named = query.length > 0 ? (one ? [one] : items.search(query, { limit: Number.MAX_SAFE_INTEGER }).hits).filter((i) => matched.has(itemKey(i))) : [...matched.values()].map((h) => items.get(h.id, h.meta) ?? { id: h.id, meta: h.meta, name: itemKey(h) })
+    total = named.length
+    hits = named.slice(offset, offset + limit)
+  } else if (one) {
+    total = 1
+    hits = page === 1 ? [one] : []
+  } else {
+    const found = items.search(query, { limit, offset })
+    hits = found.hits
+    total = found.total
+  }
+
+  // 名字对得上的流体（中文名、英文名、内部名都认）：列在第一页的后面。按提示找时不管流体（流体没有提示）
+  const liquid = fluids && query.length > 0 && tip.length === 0 ? fluids.search(query) : { exact: [], partial: [] }
   const liquids = [...liquid.exact, ...liquid.partial]
   const fluidPart = fluids && liquids.length > 0 && page === 1 ? [`Fluids matching "${query}" (${liquids.length}):`, ...fluidLines(fluids, recipes, liquids), FLUID_HOW] : []
+  const what = tip.length > 0 ? `"${tip}" in ${query.length > 0 ? `its tooltip and "${query}" in its name` : 'its tooltip'}` : `"${query}"`
   if (total === 0) {
     if (fluidPart.length > 0) return { content: [`No item matches "${query}".`, ...fluidPart].join('\n'), keepWhole: true }
+    if (tip.length > 0) return `No item has ${what} (every word must be there; a tooltip is the text a player reads hovering over the item, in Chinese here).${query.length > 0 ? ` ${matched.size} item(s) have "${tip}" in their tooltip under any name.` : ''}`
     // 什么都没对上：名字只差一两个字的（记错、打错一个字）列出来
     const near = [...items.closest(query, 5).map((i) => `${i.name} [${itemKey(i)}]`), ...(fluids?.closest(query, 5) ?? []).map(fluidLabel)]
     return `No item or fluid matches "${query}".${near.length > 0 ? ` Names one or two characters away: ${near.join(', ')}.` : ''} Try fewer or other words: part of the Chinese name, of the English name, of the id, or an ore-dictionary name such as plateSteel.`
   }
-  if (hits.length === 0) return fail(`"${query}" matches ${total} item(s): there is no page ${page} (${Math.ceil(total / limit)} page(s)).`)
+  if (hits.length === 0) return fail(`${what} matches ${total} item(s): there is no page ${page} (${Math.ceil(total / limit)} page(s)).`)
   // 英文名只在帮得上忙时带：这一页里中文名重了，或者是拿英文搜的
   const names = new Map<string, number>()
   for (const h of hits) names.set(h.name, (names.get(h.name) ?? 0) + 1)
   const asked = query.toLowerCase()
   const english = /[a-z]{2}/i.test(query)
-  const lines = hits.map((h) => {
+  // 物品少的时候每个带上提示文字和“指南里有这一页”；多了不逐个带，结尾说有几个有、怎么看某一个的
+  const few = hits.length <= FEW_ITEMS
+  let tipsShown = false
+  const lines = hits.flatMap((h) => {
     const en = h.en && (names.get(h.name)! > 1 || (english && h.en.toLowerCase().includes(asked.split(/\s+/)[0]!))) ? ` (${h.en})` : ''
     // NEI 的“流体展示”物品不是能拿在手里的东西：它是配方画面上代表一种流体的那张图。说它是哪种流体，不说“没有配方”
     const pictured = fluids?.ofDisplayItem(h.id, h.meta)
     if (pictured !== undefined) {
       const which = pictured.length > 0 ? `the fluid ${pictured.map(fluidLabel).join(' or ')}` : 'a fluid no recipe in the book handles'
-      return `- ${h.name} [${itemKey(h)}]${en}: not an item you can hold — NEI's picture of ${which}`
+      return [`- ${h.name} [${itemKey(h)}]${en}: not an item you can hold — NEI's picture of ${which}`]
     }
     const facts: string[] = []
     if (recipes) {
@@ -717,16 +789,40 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
     if (groups.length > 0) facts.push(`chisel group ${groups.join(', ')}`)
     if (h.variants) facts.push(`${h.variants} variants that differ only in their data (same id/meta)`)
     // 游戏内指南里有讲它的页：写出页名和怎么读
-    const page = guideNote(guide, h.id, h.meta)
-    if (page !== undefined) facts.push(page)
-    return `- ${h.name} [${itemKey(h)}]${en}${facts.length > 0 ? `: ${facts.join('; ')}` : ''}`
+    const guidePage = few ? guideNote(guide, h.id, h.meta) : undefined
+    if (guidePage !== undefined) facts.push(guidePage)
+    const tooltip = tooltips?.get(h.id, h.meta)
+    // 物品多、又是按提示找的：只给对上的那一行
+    const hit = matched.get(itemKey(h))
+    if (!few && hit && hit.line.length > 0) facts.push(`tooltip${hit.screen === 'tip' ? '' : ` while ${hit.screen === 'shift' ? 'Shift' : 'Ctrl'} is held`} has: "${hit.line.trim()}"`)
+    const head = `- ${h.name} [${itemKey(h)}]${en}${facts.length > 0 ? `: ${facts.join('; ')}` : ''}`
+    if (!few || !tooltip) return [head]
+    tipsShown = true
+    return [head, ...tooltipLines(tooltip, h, hits.length === 1)]
   })
-  const first = (page - 1) * limit + 1
+  const first = offset + 1
   const head =
     total > hits.length
-      ? `"${query}" matches ${total} items; these are ${first}–${first + hits.length - 1}, most alike first (page ${page} of ${Math.ceil(total / limit)}). Add a word to narrow it, or ask for the next page.`
-      : `"${query}" matches ${total} item(s), most alike first.`
-  return { content: [head, ...lines, ...fluidPart].join('\n'), keepWhole: true }
+      ? `${what} matches ${total} items; these are ${first}–${first + hits.length - 1}${tip.length > 0 && query.length === 0 ? '' : ', most alike first'} (page ${page} of ${Math.ceil(total / limit)}). Add a word to narrow it, or ask for the next page.`
+      : `${what} matches ${total} item(s)${tip.length > 0 && query.length === 0 ? '' : ', most alike first'}.`
+  const tail: string[] = []
+  if (tipsShown) tail.push(TOOLTIP_FACT)
+  if (!few) {
+    const inGuide = guide ? hits.filter((h) => guide.about(h.id, h.meta).length > 0).length : 0
+    if (inGuide > 0) tail.push(`${inGuide} of these have a page in the in-game guide: read_guide {id, meta} lists the pages about one.`)
+    if (tooltips && hits.some((h) => tooltips.get(h.id, h.meta) !== undefined)) tail.push(`Tooltips (what a player reads hovering over an item) are given when ${FEW_ITEMS} or fewer items are listed: find_item {query: "<id/meta>"} is that one item.`)
+  }
+  // data：这一页的物品，带各自的全部提示（三个画面，不截）
+  const data = {
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+    items: hits.map((h) => {
+      const tooltip = tooltips?.get(h.id, h.meta)
+      return { id: h.id, meta: h.meta, name: h.name, ...(h.en !== undefined ? { en: h.en } : {}), ...(h.ores && h.ores.length > 0 ? { ores: h.ores } : {}), ...(tooltip ? { tooltip } : {}) }
+    }),
+  }
+  return { content: [head, ...lines, ...fluidPart, ...tail].join('\n'), data, keepWhole: true }
 }
 
 // ── 查做法、查用途 ──

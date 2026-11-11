@@ -63,6 +63,7 @@ npm run dev:testserver
 | 资料 | 文件 | 谁用 | 没有时 |
 |---|---|---|---|
 | 任务书 | `quests.jsonl` `questlines.json` | `list_quest_lines` / `find_quests` / `get_quest`；只有“谁做完了哪些”问服务器 | 这三个工具改问服务器（英文） |
+| 物品的提示文字（玩家把鼠标放到物品上看到的那几行） | `tooltips.jsonl` | `find_item`：找到的物品不超过 5 个时每个带上它的提示（不按键的、按住 Shift 的、按住 Ctrl 的三个画面分开给）；`tip` 参数按提示里的字找物品 | `find_item` 不带提示，`tip` 照实说这份资料没导出 |
 | 游戏内指南（玩家按 G 看到的那本） | `guide.jsonl` | `read_guide`；`find_item`、`inspect_block`、`find_machines`、`find_structure` 说到指南里有页讲的物品时带一行页名和怎么读；提示词里一句“包里有这本指南” | `read_guide` 照实说这份资料没导出；别处不提指南 |
 | 物品表（中英文名、矿辞名） | `items.jsonl` | `find_item`；服务器回来的东西（背包、箱子、机器、任务结果、主人指着的方块）凡是带 id 的，给模型看时都换成中文名 | `find_item` 改问服务器（只认英文名），名字都是英文 |
 | 配方册（NEI 里的全部配方） | `recipes.jsonl` `handlers.json` | `find_recipes`（NEI 的 R）、`find_uses`（NEI 的 U）、`craft_item` / `process_items` 按配方编号干活 | `find_recipes` 改问服务器（英文、每种机器只给前几条），`find_uses` 用不了，合成用服务器自己知道的配方 |
@@ -289,7 +290,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）；干活线：`build_blueprint` | `check_blueprint`（图纸放在某处时现场差什么）`read_blueprint`（图纸或草稿里有什么：材料表和每一格，不用知道它放在哪） |
 | 写程序 | `run_program`（当场跑完，只能调查询类的；两条线各跑各的，互不挡着）`view_draft`；干活线：`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |
 | 物品（干活线） | `deposit_items` `withdraw_items`（位置，或者身上的一个包；位置带 `side` / `sneak` 是点那个面、蹲着开出来的界面——覆盖板里的东西这样存取）`collect_items` `give_items` `use_item`（右键：拿着身上的一件东西，或者空手；点方块的哪个面、哪一点、连点几下都能定——按钮、拉杆、抽屉的某一格） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
-| 制作 | `find_item`（物品和流体）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines`；干活线：`craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
+| 制作 | `find_item`（物品和流体；物品少时带上它的提示文字——玩家把鼠标放上去看到的那几行——和指南里讲它的页；`tip` 按提示里的字找物品）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines`；干活线：`craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
 | 界面（通用，干活线） | `open_screen` `click_slot` `use_control` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲，结果里连界面上格子以外的控件一起列；`use_control` 按或者设这些控件——开关、选项、页签、流体格、按钮） | |
 | 任务书 | `find_quests` `get_quest` | `list_quest_lines`（各章和进度） |
 | 游戏内指南 | `read_guide`（整合包带的那本、玩家按 G 看到的：看目录、按词找、按物品找讲它的页、读一页；页里的物品、配方框、立体图都读成了字） | |
