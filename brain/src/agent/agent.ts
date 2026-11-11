@@ -161,6 +161,8 @@ export interface AgentDeps {
   links?: LineLinks
   /** 最近的聊天记录：它自己说出去的话记进去；两条线都能用 recent_chat 读。 */
   chatLog?: ChatLog
+  /** 任务书进度、附近机器的短时缓存。两条线共用一份（同一个身体、同一本任务书）；不给就自己建。 */
+  caches?: { questProgress: QuestProgressCache; surroundings: SurroundingsCache }
   settings(): AgentSettings
   /** 当前的模型客户端；没配置时返回 undefined。 */
   llm(): LlmClient | undefined
@@ -393,8 +395,8 @@ export class Agent {
       update: (id, patch, opts) => deps.log.update(id, patch, opts),
     }
     this.timing = { ...DEFAULT_TIMING, ...(deps.timing ?? {}) }
-    this.questProgress = new QuestProgressCache(deps.bridge, () => this.now())
-    this.surroundings = new SurroundingsCache(() => this.now())
+    this.questProgress = deps.caches?.questProgress ?? new QuestProgressCache(deps.bridge, () => this.now())
+    this.surroundings = deps.caches?.surroundings ?? new SurroundingsCache(() => this.now())
     // 例程会动身体：只有干活线有
     this.routine = deps.design && this.line === 'work'
       ? new RoutineRunner({

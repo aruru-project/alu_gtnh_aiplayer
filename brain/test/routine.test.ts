@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { DesignWorkspace } from '../src/design/index.ts'
 import type { RoutineLimits } from '../src/agent/routine.ts'
-import { chat, makeAgent, reply, taskEnded } from './agent-harness.ts'
+import { makeAgent, reply, sentToTalk, taskEnded, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
@@ -33,11 +33,11 @@ function setup(t: { after(fn: () => void): void }, limits: Partial<RoutineLimits
   return h
 }
 
-/** 让模型在一轮里调一个工具，等这一轮跑完，返回那个工具的结果。 */
+/** 让干活线的模型在一轮里调一个工具（事情是对话线交来的），等这一轮跑完，返回那个工具的结果。 */
 async function modelCalls(h: AgentHarness, name: string, input: unknown, said = 'Alu 干活'): Promise<string> {
   const before = h.llm.requests.length
   h.llm.enqueue(reply('', [{ id: `c${before}`, name, input }]), reply(''))
-  h.agent.handleEvent(chat('Steve', said))
+  h.agent.handleEvent(told(said))
   await waitFor(`the model saw the result of ${name}`, () => h.llm.requests.length >= before + 2)
   const messages = h.llm.requests[before + 1]!.messages
   const part = messages[messages.length - 1]!.content.find((p) => p.type === 'tool_result' && p.toolCallId === `c${before}`)
@@ -66,7 +66,7 @@ describe('例程', () => {
   it('程序一步步调工具：查询的直接拿到数据，开任务的等任务做完才往下走；做完把模型叫醒一次，带着每一步和它的日志', async (t) => {
     const h = setup(t)
     const started = await modelCalls(h, 'start_routine', { code: TIDY, name: '整理抽屉' })
-    assert.match(started, /^Routine r1 \("整理抽屉"\) started in the background\. It may run for up to 120 minutes\. End your turn now: you will be woken when it finishes, fails or is stopped/)
+    assert.match(started, /^Routine r1 \("整理抽屉"\) started in the background\. It may run for up to 120 minutes\. It runs on its own: when it finishes, fails or is stopped, its outcome and log come to you by themselves \(waking you if your turn has ended\), so there is nothing to wait or poll for; looking at its progress with routine_status is one model call each time\. stop_routine stops it\.$/)
     await h.agent.whenIdle()
     const turnsBefore = h.llm.requests.length
 
@@ -89,11 +89,11 @@ describe('例程', () => {
     await taskStarted(h, 3)
     assert.deepEqual(h.game.callsOf('task.start')[2]!.task, { type: 'deposit', container: { x: 9, y: 64, z: 9 } })
     assert.equal(h.llm.requests.length, afterStatus, 'the model is not woken for the tasks of the routine')
-    h.llm.enqueue(reply('', [{ name: 'say', input: { message: '搬完了，47 个。' } }]), reply(''))
+    h.llm.enqueue(reply('搬完了，47 个。'))
     h.agent.handleEvent(taskEnded('t3', 'done', { type: 'deposit', result: { moved: 47 } }))
 
-    // 做完：叫醒模型一次，消息里是结局、返回值、每一步和日志
-    await waitFor('the model was woken with the outcome', () => h.game.said.includes('搬完了，47 个。'))
+    // 做完：叫醒干活线一次，消息里是结局、返回值、每一步和日志；它留下的话送给对话线
+    await waitFor('the model was woken with the outcome', () => sentToTalk(h).includes('搬完了，47 个。'))
     const woken = h.llm.lastUserText(afterStatus)
     assert.match(woken, /你启动的例程有结果了/)
     assert.match(woken, /Routine r1 \("整理抽屉"\) finished: the program finished\. 4 tool call\(s\), 3 task\(s\), \d+ s in all\.\nIt returned: 47\n/)
@@ -206,7 +206,7 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
   it('它要的时长超过主人设的最长：给到最长为止，启动的结果里照实说', async (t) => {
     const h = setup(t, { maxWallMs: 90 * 60_000 })
     const WAIT = `await tool('go_to', { x: 5, z: 5 }); return 1`
-    assert.match(await modelCalls(h, 'start_routine', { code: WAIT, minutes: 600 }), /started in the background\. It may run for 90 minutes, the longest your owner allows \(you asked for 600\)\. End your turn now/)
+    assert.match(await modelCalls(h, 'start_routine', { code: WAIT, minutes: 600 }), /started in the background\. It may run for 90 minutes, the longest your owner allows \(you asked for 600\)\. It runs on its own: /)
     await modelCalls(h, 'stop_routine', {}, 'Alu 停')
     assert.match(await modelCalls(h, 'start_routine', { code: WAIT, minutes: 45 }, 'Alu 再来'), /It may run for up to 45 minutes\./)
     await modelCalls(h, 'stop_routine', {}, 'Alu 停')
@@ -263,7 +263,7 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     await modelCalls(h, 'start_routine', { code: WALK, name: '来回走' })
     await taskStarted(h, 1)
     assert.match(await modelCalls(h, 'start_routine', { code: 'return 1' }, 'Alu 再来一个'), /^routine r1 \("来回走"\) is still running: wait for it, or stop it with stop_routine$/)
-    assert.equal(await modelCalls(h, 'stop_routine', {}, 'Alu 停'), 'The routine was stopped. You will be woken with its log.')
+    assert.equal(await modelCalls(h, 'stop_routine', {}, 'Alu 停'), 'The routine was stopped. Where it stopped and its log come to you as an event.')
     assert.deepEqual([h.agent.status().routine!.status, h.agent.status().routine!.ending], ['stopped', 'you stopped it with stop_routine'])
     assert.deepEqual(h.game.callsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
     // 停了以后不会再开第二个任务
@@ -300,12 +300,12 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     }
     await modelCalls(h, 'start_routine', { code: TIDY, name: '整理抽屉' })
     const turns = h.llm.requests.length
-    h.llm.enqueue(reply('', [{ name: 'say', input: { message: '搬完了。' } }]), reply(''))
+    h.llm.enqueue(reply('搬完了。'))
     // 不靠“隔几秒自己去问一次”的兜底：三个任务应当很快就走完
     await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 2500)
     const view = h.agent.status().routine!
     assert.deepEqual([view.value, view.calls, view.actions], ['10', 4, 3])
-    await waitFor('the model was told once', () => h.game.said.includes('搬完了。'))
+    await waitFor('the model was told once', () => sentToTalk(h).includes('搬完了。'))
     await h.agent.whenIdle()
     const seen = h.llm.requests.slice(turns).map((_, n) => h.llm.lastUserText(turns + n)).join('\n')
     assert.match(seen, /你启动的例程有结果了/)

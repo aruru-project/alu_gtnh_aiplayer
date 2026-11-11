@@ -7,7 +7,7 @@ import { describe, it } from 'node:test'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { FEEDBACK_LIMITS, FeedbackStore } from '../src/store/feedback.ts'
 import type { FeedbackContext, FeedbackInput } from '../src/store/feedback.ts'
-import { chat, makeAgent, reply, taskEnded } from './agent-harness.ts'
+import { chat, makeAgent, reply, taskEnded, sentToTalk, told } from './agent-harness.ts'
 import { tmpDir } from './helpers.ts'
 
 const NOW = 1_800_000_000_000
@@ -42,10 +42,9 @@ describe('意见簿：提交', () => {
     h.llm.enqueue(
       reply('', [{ name: 'find_item', input: { query: 'stone bricks' } }]),
       reply('', [{ name: 'report_problem', input: REPORT }]),
-      reply('', [{ name: 'say', input: { message: '石砖不够，查物品的工具还报错了，先停一下' } }]),
-      reply(''),
+      reply('石砖不够，查物品的工具还报错了，先停一下'),
     )
-    h.agent.handleEvent(chat('Steve', 'Alu 接着把墙砌完'))
+    h.agent.handleEvent(told('接着把墙砌完', [chat('Steve', 'Alu 接着把墙砌完')]))
     h.agent.handleEvent(taskEnded('t9', 'failed', { error: { code: 'no_material', message: '15 blocks were left unplaced for want of material' } }))
     await h.agent.whenIdle()
 
@@ -66,20 +65,24 @@ describe('意见簿：提交', () => {
     assert.deepEqual([c.recentTools[0]!.tool, c.recentTools[0]!.input, c.recentTools[0]!.isError], ['find_item', '{"query":"stone bricks"}', true])
     assert.match(c.recentTools[0]!.result, /^internal: NullPointerException in ItemSearch/)
 
-    // 模型得知记下了、没人会回复；它接着把话说了；主人在对话日志里看得到记了一条
+    // 模型得知记下了、没人会回复；它接着把该让人知道的事留给了对话线；主人在对话日志里看得到记了一条
     assert.match(h.llm.lastUserText(2), /^Noted as f1\. Nobody will answer it: carry on with what you were doing/)
-    assert.deepEqual(h.game.said, ['石砖不够，查物品的工具还报错了，先停一下'])
+    assert.deepEqual(sentToTalk(h), ['石砖不够，查物品的工具还报错了，先停一下'])
     assert.ok(h.log.recent(0, 100).some((e) => e.kind === 'info' && e.text === `它在意见簿里记了一条（f1）：${REPORT.title}`))
   })
 
-  it('核心提示词里告诉了它什么时候记、记完接着干', async (t) => {
-    const h = makeAgent()
+  it('两条线的核心提示词里都告诉了它什么时候记；对话线也能记，附的是它那一轮的原话', async (t) => {
+    const s = store(t)
+    const h = makeAgent({ feedback: s.book })
     t.after(h.cleanup)
-    h.llm.enqueue(reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.talk.enqueue(reply('', [{ name: 'report_problem', input: REPORT }]), reply('记下了'))
+    h.agent.handleEvent(chat('Steve', 'Alu 你查不到石砖吗'))
+    h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
-    assert.match(h.llm.requests[0]!.system, /没有合适的工具、工具的结果不对或看不懂、同一件事反复失败、手册和实际对不上、主人让做的事你做不到：遇到这类情况，用 report_problem 记一条/)
-    assert.match(h.llm.requests[0]!.system, /记完照常接着干活/)
+    assert.match(h.llm.requests[0]!.system, /工具不够用、结果不对、同一件事反复失败、手册和实际对不上：report_problem 记一条（留给维护的人看，没人回复），记完照常接着干。/)
+    assert.match(h.talk.requests[0]!.system, /工具不够用、结果不对、手册和实际对不上：report_problem 记一条，留给维护的人看，没人回复。/)
+    const [report] = s.book.list()
+    assert.match(report!.context.instruction, /Steve 说：Alu 你查不到石砖吗/)
   })
 })
 

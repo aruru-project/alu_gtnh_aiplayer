@@ -391,10 +391,10 @@ describe('主人指着说', () => {
   it('模型被叫醒时看到的消息里就有这一行，不用再问他指的是哪个', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.llm.enqueue(reply(''))
+    h.talk.enqueue(reply(''))
     h.agent.handleBridgeEvent({ event: 'chat', seq: 1, time: Date.now(), data: { player: 'Steve', uuid: 'u', message: 'Alu 这个箱子里有什么', isBot: false, speaker: VIEW } })
     await h.agent.whenIdle()
-    assert.match(h.llm.lastUserText(0), /Steve 说：Alu 这个箱子里有什么\n {2}（Steve 站在 \(-513,69,93\) 面朝北，指着 Compressed Chest \(-509,69,90\)［容器］；面前还有：/)
+    assert.match(h.talk.lastUserText(0), /Steve 说：Alu 这个箱子里有什么\n {2}（Steve 站在 \(-513,69,93\) 面朝北，指着 Compressed Chest \(-509,69,90\)［容器］；面前还有：/)
     void chat
   })
 

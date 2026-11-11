@@ -18,7 +18,7 @@ import type { ChatLog } from '../store/chat-log.ts'
 import type { FeedbackStore } from '../store/feedback.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { clip, formatTask } from '../tools/format.ts'
-import { LINE_TOOLS } from '../tools/index.ts'
+import { LINE_TOOLS, QuestProgressCache, SurroundingsCache } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ReminderAccess } from '../tools/index.ts'
 import { Agent, newLineShared } from './agent.ts'
 import type { AgentSettings, AgentState, AgentStatus, AgentTiming, LinePeek, LineShared, PersistedAgentState, TurnAt } from './agent.ts'
@@ -157,6 +157,7 @@ export class Lines {
     this.links = { ...(deps.persist?.links?.load() ?? {}) }
     const common = {
       shared: this.shared,
+      caches: { questProgress: new QuestProgressCache(deps.bridge, () => this.now()), surroundings: new SurroundingsCache(() => this.now()) },
       bridge: deps.bridge,
       memory: deps.memory,
       manuals: deps.manuals,

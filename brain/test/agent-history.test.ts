@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 import { chooseCut, compactHistory, historyTokens, truncateOldToolResults } from '../src/agent/compaction.ts'
 import type { GenerateRequest, LlmClient, Message } from '../src/llm/index.ts'
 import type { Turn } from '../src/store/history.ts'
-import { assertToolPairs, chat, makeAgent, reply, taskEnded } from './agent-harness.ts'
+import { assertToolPairs, makeAgent, reply, sentToTalk, taskEnded, told } from './agent-harness.ts'
 
 /** 一轮：事件 → 模型调两个工具 → 结果 → 模型收尾。resultSize 控制工具结果有多长。 */
 function turn(id: number, resultSize = 100): Turn {
@@ -154,7 +154,7 @@ describe('agent 跑久了以后的历史', () => {
     h.llm.enqueue(...Array.from({ length: 60 }, () => respond))
 
     for (let i = 1; i <= 8; i++) {
-      h.agent.handleEvent(i === 1 ? chat('Steve', 'Alu 把 0,0 到 19,19 平到 64') : taskEnded(`t${i}`, 'done'))
+      h.agent.handleEvent(i === 1 ? told('把 0,0 到 19,19 平到 64') : taskEnded(`t${i}`, 'done'))
       await h.agent.whenIdle()
     }
 
@@ -177,9 +177,9 @@ describe('agent 跑久了以后的历史', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(reply('第一轮'), reply('第二轮'))
-    h.agent.handleEvent(chat('Steve', 'Alu 一'))
+    h.agent.handleEvent(told('Alu 一'))
     await h.agent.whenIdle()
-    h.agent.handleEvent(chat('Steve', 'Alu 二'))
+    h.agent.handleEvent(told('Alu 二'))
     await h.agent.whenIdle()
     assert.equal(h.history.get().turns.length, 2)
 
@@ -187,13 +187,13 @@ describe('agent 跑久了以后的历史', () => {
     h.llm.enqueue(
       new LlmError('context_length', 'prompt is too long', { status: 400 }),
       (req) => (req.tools.length === 0 ? reply('压缩后的摘要') : reply('不该先到这里')),
-      reply('', [{ name: 'say', input: { message: '好的' } }]),
-      reply(''),
+      reply('', [{ name: 'get_status' }]),
+      reply('好的'),
     )
-    h.agent.handleEvent(chat('Steve', 'Alu 三'))
+    h.agent.handleEvent(told('Alu 三'))
     await h.agent.whenIdle()
 
-    assert.deepEqual(h.game.said.at(-1), '好的')
+    assert.deepEqual(sentToTalk(h).at(-1), '好的')
     assert.equal(h.agent.status().outage, undefined)
     assert.match(h.history.get().summary, /压缩后的摘要/)
     // 重试的那次请求比第一次短：旧的轮已经换成了摘要

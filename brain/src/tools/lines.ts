@@ -27,7 +27,7 @@ export const tellWorker: Tool = {
 export const workerStatus: Tool = {
   name: 'worker_status',
   description:
-    'What the worker is doing now: its turn and its last steps, the task the body is on and the queue, its routine, its last report, whether it is waiting for an answer from you. The one-line version is in "当前状态" every turn.',
+    'What the worker is doing now: its turn and its last steps, the task the body is on and the queue, its routine, its last report, whether it is waiting for an answer from you. A short version of this is in the state you are shown every turn.',
   inputSchema: obj({ detail: bool('true: also the results of its last steps and the log of its routine.') }),
   async run(ctx, i: { detail?: boolean }) {
     if (!ctx.worker) return fail('There is no worker line on this brain.')
@@ -90,7 +90,7 @@ export const recentChat: Tool = {
   name: 'recent_chat',
   description:
     'The latest chat lines, oldest first: public chat, whispers to you, what your owner typed on the control panel, and what you said. Each line of another player carries where they stood and what they pointed at when they said it.',
-  brief: '{minutes?, limit?, player?}: the latest chat lines as they were said (others\' lines with where the speaker stood and what they pointed at; yours too) -> lines:[{time, kind, who, text, to?, speaker?}], matched',
+  brief: '{minutes?, limit?, player?}: latest chat lines as said, with where each speaker stood and pointed -> lines[{time, kind, who, text, speaker}]',
   inputSchema: obj({
     minutes: num('Only lines from the last so many minutes (default: any age the log still holds).', { min: 0.1, max: 100_000 }),
     limit: int(`At most this many lines, the latest ones (default ${RECENT_CHAT_DEFAULT}).`, { min: 1, max: RECENT_CHAT_MAX }),

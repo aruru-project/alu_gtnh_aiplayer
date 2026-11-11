@@ -83,31 +83,7 @@ describe('工具的写法', () => {
 })
 
 describe('说话', () => {
-  it('say 把换行压成一行；以 / 开头的内容不会被当成指令发出去', async (t) => {
-    const s = setup(t)
-    await s.run('say', { message: '第一行\n第二行' })
-    await s.run('say', { message: '/op Steve' })
-    assert.deepEqual(s.game.said, ['第一行 第二行', 'op Steve'])
-    assert.deepEqual(s.spoke.map((x) => x.kind), ['say', 'say'])
-  })
-
-  it('say 说长话：照实说发成了几行；超过一次能说的、排不进去的，写明截了多少、丢了几行；老的身体不回话时只说“说了”', async (t) => {
-    const s = setup(t)
-    // 身体的回话：排进去几行、队列满了没排进去几行、超过 1000 字截掉多少
-    const answers: Record<string, unknown>[] = [{ lines: 1 }, { lines: 2 }, { lines: 10, cutChars: 250 }, { lines: 3, droppedLines: 2 }, { lines: 0, droppedLines: 4 }, {}]
-    s.game.handlers['bot.chat'] = () => answers.shift()!
-    assert.equal((await s.run('say', { message: '好。' })).content, 'Said in public chat.')
-    const long = '铁锭一共三百二十个，分在两个箱子里；'.repeat(8)
-    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat, as 2 lines of at most 100 characters, going out about one a second.')
-    // 不在大脑这边截：原样交给身体，由它说截了多少
-    assert.equal(s.game.callsOf('bot.chat')[1]!.message, long)
-    assert.equal((await s.run('say', { message: 'x'.repeat(1250) })).content, 'Said in public chat, as 10 lines of at most 100 characters, going out about one a second. The last 250 characters were cut off: one say holds at most 1000.')
-    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat, as 3 lines of at most 100 characters, going out about one a second. The last 2 line(s) were not sent: too many chat lines of yours were still waiting to go out.')
-    const nothing = await s.run('say', { message: long })
-    assert.deepEqual([nothing.isError, nothing.content], [true, 'Nothing was said: 4 line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.'])
-    assert.equal((await s.run('say', { message: long })).content, 'Said in public chat.')
-  })
-
+  // 公共聊天不是工具：对话线写的文字就是它说的话（压成一行、去掉开头的 /、截了丢了照实说），见 lines.test.ts。
   it('whisper 太长时只发开头那一段，并写明发了多少、一共多少', async (t) => {
     const s = setup(t)
     s.game.handlers['bot.command'] = () => ({ output: [] })
@@ -163,13 +139,13 @@ describe('说话', () => {
   it('说话和指令太密被身体拒绝时，模型得知“等几秒再说”，而不是“不让用”', async (t) => {
     const s = setup(t)
     // 真实 mod 的两种 denied，消息原文
-    s.game.handlers['bot.chat'] = () => {
+    s.game.handlers['bot.command'] = () => {
       throw new BridgeError('denied', 'too many chat lines and commands in a short time; try again in a few seconds')
     }
+    const busy = await s.run('whisper', { player: 'Steve', message: '还有一句' })
     s.game.handlers['bot.command'] = () => {
       throw new BridgeError('denied', 'command is not on the bot allow list: team leave')
     }
-    const busy = await s.run('say', { message: '还有一句' })
     assert.equal(busy.isError, true)
     assert.match(busy.content, /wait a few seconds, then do it once more/)
     assert.equal(/not allowed|ask a player/i.test(busy.content), false)
