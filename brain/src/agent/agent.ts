@@ -11,6 +11,7 @@ import { BridgeError } from '../bridge/protocol.ts'
 import { LlmError, keepLatestImages, textOf } from '../llm/index.ts'
 import type { GenerateRequest, GenerateResult, LlmClient, Message, TextPart, ToolResultPart, UserPart } from '../llm/index.ts'
 import type { ActivityInput, ActivityLog, ActivityModelCall } from '../store/activity-log.ts'
+import type { MethodAccess } from '../tools/methods.ts'
 import type { FeedbackContext, FeedbackStore, FeedbackTask, FeedbackToolCall } from '../store/feedback.ts'
 import type { ChatLog } from '../store/chat-log.ts'
 import type { HistoryStore } from '../store/history.ts'
@@ -42,6 +43,8 @@ export interface AgentSettings {
   persona: string
   /** 这个实例接的是哪个服务器：主人起的名字和他给这里写的规矩。 */
   environment?: { name: string; rules: string }
+  /** 两条线每轮最多各走几步（对话线的提示词里说这两个数）。不给用默认值。 */
+  lineSteps?: { talk: number; work: number }
   wakeMode: 'mention' | 'all'
   conversationWindowSec: number
   maxSteps: number
@@ -227,6 +230,8 @@ export interface AgentDeps {
   runLogs?: RunLogStore
   /** 意见簿：模型用 report_problem 记下的反馈存在这里。 */
   feedback?: FeedbackStore
+  /** “基地的做法”（store/methods.ts）。不给时那两个工具用不了，提示词里也没有那一节。 */
+  methods?: MethodAccess
   /** 大脑和身体（mod）的版本，附在意见簿的每一条上。 */
   versions?(): { brain: string; mod?: string }
   reminders: ReminderAccess & { list(): PendingReminder[] }
@@ -1037,6 +1042,8 @@ export class Agent {
       manuals,
       ...(this.deps.packdata?.guide ? { guide: { pages: this.deps.packdata.guide.size } } : {}),
       ...(settings.environment ? { environment: settings.environment } : {}),
+      ...(this.deps.methods ? { methods: this.deps.methods.list() } : {}),
+      ...(settings.lineSteps ? { steps: settings.lineSteps } : {}),
     })
     // 清单按这条线、这一轮用的模型给：看图的工具只发给能看图的模型；库函数不在清单里，在 run_program 说明后面的索引里
     const toolSpecs = modelToolSpecs(this.deps.tools, { canSee, line: this.line })
@@ -1722,6 +1729,7 @@ export class Agent {
       manuals: this.deps.manuals,
       ...(this.deps.packdata ? { packdata: this.deps.packdata } : {}),
       ...(this.deps.design ? { design: this.deps.design } : {}),
+      ...(this.deps.methods ? { methods: this.deps.methods } : {}),
       ...(feedback
         ? {
             feedback: {

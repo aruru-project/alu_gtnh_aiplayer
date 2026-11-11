@@ -4,6 +4,8 @@
 // 主人在面板上能改的那一段是对话线的“说话风格”（DEFAULT_PERSONA）；干活线不跟玩家说话，没有这一段。
 // 各类活具体怎么做写在手册里（brain/manuals/ 和数据目录的 manuals/），模型要干那类事时用 read_manual 去读。
 
+import { DEFAULT_LIMITS } from '../store/config.ts'
+import type { Method } from '../store/methods.ts'
 import type { LineName } from '../tools/types.ts'
 
 /** 公共部分：两条线都有。 */
@@ -28,6 +30,8 @@ export const TALK_PROMPT = `# 你是对话线
 - 你自己能查，不占身体，干活线忙着也能查：物品、流体、配方、任务书、图纸和多方块结构、看世界、看背包和容器、run_program 写程序算。一个具体方块（机器、仓、罐、管道）现在什么状态、怎么设的：inspect_block 带 detail 给的是它自己存的全部数据，别的结果里没写到的那里有。能记：记忆、提醒、手册、意见簿。
 - 你没有任何让身体动的工具（走、挖放、存取、合成加工、用物品、点界面、例程、指令）。要动手的事用 tell_worker 交给干活线：马上返回，它空闲就立刻开始，在忙就下一步看到。当时跟你说话的人的原话、站位和指向由程序原样附给它，你只写要它做什么、你定了什么。同一步里可以一边写回话一边交事。
 - 不交出去，身体不会动；交出去，多一次模型调用、手晚几秒动。你自己查得到的事，自己答更快。
+- 这一步只写了字、没有同时调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。
+- 要查很多步的事两条线都查得了：你一轮最多 {{talkSteps}} 步，干活线一轮最多 {{workSteps}} 步。交给它查，它查完会带话回来。
 - “当前状态”里有一行干活线现在在干什么，细节用 worker_status。补充要求、改方向、回答它的问题都用 tell_worker。stop_work 一次让一切停下（身体的任务、例程、它正在想的那一步），不需要它配合。
 - 干活线开的任务、例程一结束，它自己会被叫醒接着做，不需要谁提醒；它还在干的时候留的话只作为背景给你。它停下来了，或者有话要说（汇报、提问），才会出现在“需要你处理的事”里。它的话玩家看不到，该让人知道的由你说。它问的你答得了就带话答它；答不了问主人，主人答了再带话。
 - 做不到的说做不到，没做完的说还差什么；看不到、不确定的事明说。
@@ -98,6 +102,31 @@ export interface PromptInput {
   guide?: { pages: number }
   /** 这个实例接的是哪个服务器：主人起的名字和他给这里写的规矩。两样都空时没有“这个服务器”那一节。 */
   environment?: { name: string; rules: string }
+  /** “基地的做法”现在记着什么（store/methods.ts）。不给就没有那一节。 */
+  methods?: readonly Method[]
+  /** 两条线每轮最多各走几步（设置里的数）。不给用默认值。 */
+  steps?: { talk: number; work: number }
+}
+
+/**
+ * “基地的做法”一节：这个基地怎么做东西的记录。由程序生成（和手册目录一样，记了、改了下一轮就是新的）。
+ * 一类零件怎么做、总的先后这两种很短，全文列出；具体的东西和机器只给条数和怎么看。两条线一样。
+ */
+export function methodsSection(methods: readonly Method[]): string {
+  const who = (m: Method): string => (m.by === 'owner' ? '主人定的' : '你定的')
+  const lines = ['# 基地的做法', '这个基地怎么做东西的记录：主人教的，和你自己定过的。total_materials 展开一样东西要的材料时按它走；base_methods 看全部，set_base_method 记一条、改一条、删一条。']
+  const parts = methods.filter((m): m is Extract<Method, { kind: 'part' }> => m.kind === 'part')
+  const order = methods.find((m): m is Extract<Method, { kind: 'order' }> => m.kind === 'order')
+  const things = methods.filter((m) => m.kind === 'thing').length
+  const machines = methods.filter((m) => m.kind === 'machine').length
+  if (methods.length === 0) lines.push('（现在一条都还没记。）')
+  if (parts.length > 0) {
+    lines.push(`一类零件怎么做（${parts.length} 条，写的是矿辞前缀）：`)
+    for (const m of parts) lines.push(`- ${m.prefix}${m.material ? `（只管 ${m.material}）` : ''} ← ${m.way}${m.from ? `，从 ${m.from}` : ''}（${who(m)}${m.why ? `：${m.why}` : ''}）`)
+  }
+  if (order) lines.push(`没有更具体的记录时，做法的先后：${order.ways.join(' > ')}（${who(order)}${order.why ? `：${order.why}` : ''}）`)
+  if (things > 0 || machines > 0) lines.push(`另外记着${[things > 0 ? ` ${things} 样具体的东西各用哪条配方` : '', machines > 0 ? ` ${machines} 台机器各是干什么的` : ''].filter(Boolean).join('、')}：base_methods 看。`)
+  return lines.join('\n')
 }
 
 /**
@@ -138,13 +167,22 @@ export function manualSection(manuals: readonly ManualListing[], line: LineName 
 }
 
 /** 这条线的核心提示词：公共部分加它自己的部分（不含程序每轮生成的那几节）。style 是对话线的说话风格，空就是默认。 */
-export function corePrompt(line: LineName, botName: string, style = ''): string {
-  const own = line === 'talk' ? TALK_PROMPT.replace('{{style}}', (style.trim().length > 0 ? style : DEFAULT_PERSONA).trim()) : WORK_PROMPT
+/** 没人说每轮最多几步时用的数（和设置的默认值一样）。 */
+const DEFAULT_STEPS = { talk: DEFAULT_LIMITS.talkMaxSteps, work: DEFAULT_LIMITS.maxSteps }
+
+/** steps：两条线每轮最多各走几步（设置里的数），写进对话线的那一句事实里。 */
+export function corePrompt(line: LineName, botName: string, style = '', steps: { talk: number; work: number } = DEFAULT_STEPS): string {
+  const own =
+    line === 'talk'
+      ? TALK_PROMPT.replace('{{style}}', (style.trim().length > 0 ? style : DEFAULT_PERSONA).trim())
+          .replace('{{talkSteps}}', String(steps.talk))
+          .replace('{{workSteps}}', String(steps.work))
+      : WORK_PROMPT
   return `${COMMON_PROMPT}\n\n${own}`.replaceAll('{{name}}', botName)
 }
 
 export function buildSystemPrompt(input: PromptInput): string {
-  const parts: string[] = [corePrompt(input.line, input.botName, input.persona)]
+  const parts: string[] = [corePrompt(input.line, input.botName, input.persona, input.steps)]
   if (input.manuals && input.manuals.length > 0) parts.push(manualSection(input.manuals, input.line))
   if (input.guide) parts.push(guideSection(input.guide.pages))
 
@@ -163,6 +201,7 @@ export function buildSystemPrompt(input: PromptInput): string {
 
   const environment = input.environment ? environmentSection(input.environment) : undefined
   if (environment !== undefined) parts.push(environment)
+  if (input.methods) parts.push(methodsSection(input.methods))
 
   parts.push(`# 你的记忆\n${input.memory.trim().length > 0 ? input.memory : '（还没有记下任何东西）'}`)
   return parts.join('\n\n')

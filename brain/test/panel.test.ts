@@ -12,7 +12,7 @@ import { DesignWorkspace, decodePng } from '../src/design/index.ts'
 import { itemLines, parseItemIcons } from '../src/packdata/icons.ts'
 import type { ItemIcons } from '../src/packdata/icons.ts'
 import { ItemTable, StructureBook, TooltipTable, loadPackData } from '../src/packdata/index.ts'
-import type { GuideBook, TextureAtlas } from '../src/packdata/index.ts'
+import type { GuideBook, PackData, TextureAtlas } from '../src/packdata/index.ts'
 import { PanelLive } from '../src/panel/live.ts'
 import { PanelServer } from '../src/panel/server.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
@@ -21,12 +21,14 @@ import { FeedbackStore } from '../src/store/feedback.ts'
 import { HistoryStore } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
+import { MethodStore } from '../src/store/methods.ts'
 import { PictureStore } from '../src/store/pictures.ts'
 import { UsageStore } from '../src/store/usage.ts'
 import { useLocalNames } from '../src/tools/format.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame, chat, makeAgent, relays, reply, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { buildGuidePackdata, pythonMissing } from './fixture-guide.ts'
+import { P, R, writePlanFixture } from './fixture-plan.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
 import { encodePng, tmpDir, waitFor } from './helpers.ts'
 import { readBlueprintAnswer, readSchematic } from './mock-bridge.ts'
@@ -37,7 +39,7 @@ const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
  * lines：给了就接上真的两条线（agent-harness 的 makeAgent 造的：真的 Lines、两份历史、假的游戏和假的模型），
  * 不给就是只记下收到什么的桩。
  */
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; guide?: GuideBook; tooltips?: TooltipTable; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; guide?: GuideBook; tooltips?: TooltipTable; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons; packdata?: PackData } = {}) {
   const tmp = opts.dir ?? (opts.lines ? { dir: opts.lines.dir, cleanup: opts.lines.cleanup } : tmpDir())
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = opts.lines?.game ?? new FakeGame()
@@ -69,6 +71,9 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     ...(opts.structures ? { structures: opts.structures } : {}),
     ...(opts.guide ? { guide: opts.guide } : {}),
     ...(opts.tooltips ? { tooltips: opts.tooltips } : {}),
+    // 基地的做法：存在同一个数据目录里；查对一条记录用的配方册给了才有
+    methods: new MethodStore(tmp.dir),
+    methodsEnv: () => ({ book: opts.packdata?.recipes, items: opts.packdata?.items, fluids: opts.packdata?.fluids }),
     // 物品图标：测试里不去找这台机器上的 packdata，给了才有
     icons: opts.icons ?? false,
     bridge: new BridgeApi(game),
@@ -734,6 +739,48 @@ describe('面板：对话、AI 玩家、记忆', () => {
     away()
     await s.call('POST', '/api/bot/spawn', {})
     assert.deepEqual([s.config.get().bot.wantOnline, s.config.get().bot.awayIdle], [true, false])
+  })
+
+  it('基地的做法：主人在面板上看得到全部条目（每条带给人看的一行），能记一条、改一条、删一条——面板上写的算主人定的；写错的和工具一样记不进去并说明；存在数据目录里', async (t) => {
+    const dir = tmpDir()
+    const book = path.join(dir.dir, 'packdata')
+    writePlanFixture(book)
+    const packdata = loadPackData(book)
+    useLocalNames(packdata.items)
+    t.after(() => {
+      useLocalNames(undefined)
+      packdata.recipes?.close()
+    })
+    const s = await setup(t, {}, { dir, packdata })
+    await s.login()
+    assert.deepEqual((await s.call('GET', '/api/methods')).json, { available: true, total: 0, counts: { part: 0, order: 0, thing: 0, machine: 0 }, entries: [] })
+    // 记四条：一类零件、总的先后、一样具体的东西、一台机器
+    const plate = await s.call('PUT', '/api/methods', { part: 'plate', way: '卷板机', from: 'ingot', why: '一锭一板' })
+    assert.equal(plate.status, 200)
+    assert.deepEqual([plate.json.replaced, plate.json.entry.key, plate.json.entry.by, plate.json.entry.kind], [false, 'part:plate', 'owner', 'part'])
+    assert.match(plate.json.entry.line, /^plate ← 卷板机, from ingot — your owner, \d{4}-\d\d-\d\d: 一锭一板 \[key part:plate\]$/)
+    await s.call('PUT', '/api/methods', { order: ['有序合成', '压模机'] })
+    await s.call('PUT', '/api/methods', { ...P.pin, recipe: R.furnacePin, why: '最省' })
+    await s.call('PUT', '/api/methods', { machine: { x: 16, y: 64, z: -8 }, does: '专门压板', feed: { x: 16, y: 65, z: -8 }, keep: '电路别动' })
+    const listed = (await s.call('GET', '/api/methods')).json
+    assert.deepEqual([listed.total, listed.counts], [4, { part: 1, order: 1, thing: 1, machine: 1 }])
+    assert.deepEqual(listed.entries.map((m: { key: string }) => m.key), ['part:plate', 'order', 'thing:demo:pin/0', 'machine:16,64,-8'])
+    assert.match(listed.entries[2].line, new RegExp(`^钢销 ← #${R.furnacePin} 烧制: 1× 钢锭 → 8× 钢销 — your owner, [\\d-]+: 最省 \\[key thing:demo:pin/0\\]$`))
+    assert.deepEqual([listed.entries[3].does, listed.entries[3].feed, listed.entries[3].keep], ['专门压板', { x: 16, y: 65, z: -8 }, '电路别动'])
+    // 改：同一个键再写一次
+    const changed = await s.call('PUT', '/api/methods', { part: 'plate', way: '有序合成', why: '卷板机坏了' })
+    assert.deepEqual([changed.json.replaced, changed.json.entry.way, (await s.call('GET', '/api/methods')).json.total], [true, '有序合成', 4])
+    // 写错的：和工具同一套查对
+    const wrong = await s.call('PUT', '/api/methods', { part: 'plate', way: '水力压裂' })
+    assert.deepEqual([wrong.status, wrong.json.error.code], [400, 'bad_request'])
+    assert.match(wrong.json.error.message, /^no way of making is named "水力压裂"/)
+    assert.equal((await s.call('PUT', '/api/methods', { ...P.pin, recipe: R.bendSteel })).status, 400)
+    // 删
+    assert.deepEqual((await s.call('DELETE', '/api/methods', { key: 'order' })).json, { removed: true })
+    assert.deepEqual((await s.call('DELETE', '/api/methods', { key: 'order' })).json, { removed: false })
+    // 落在数据目录的 methods.json 里
+    const saved = JSON.parse(fs.readFileSync(path.join(dir.dir, 'methods.json'), 'utf8'))
+    assert.deepEqual(saved.entries.map((m: { key: string; by: string }) => [m.key, m.by]), [['part:plate', 'owner'], ['thing:demo:pin/0', 'owner'], ['machine:16,64,-8', 'owner']])
   })
 
   it('这个服务器叫什么、这里的规矩：在 /api/bot 里能看能改（存进配置），/api/status 里带着；名字最多 40 字、规矩最多 4000 字，多的截掉', async (t) => {

@@ -48,7 +48,9 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
-import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, panelStatus, runList, runRecords } from './data-api.ts'
+import type { MethodsEnv } from './data-api.ts'
+import type { MethodAccess } from '../tools/methods.ts'
+import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords } from './data-api.ts'
 import type { HistorySize } from './data-api.ts'
 
 export interface PanelDeps {
@@ -73,6 +75,9 @@ export interface PanelDeps {
   structures?: StructureBook
   /** 游戏内指南（本地资料里的 guide.jsonl）。没提供时 /api/guide 说没有这份资料。 */
   guide?: GuideBook
+  /** 基地的做法（store/methods.ts），和查对一条记录用的本地资料。 */
+  methods?: MethodAccess
+  methodsEnv?(): MethodsEnv
   /** 物品的提示文字（本地资料里的 tooltips.jsonl）。没提供时 /api/items/tooltips 说没有这份资料。 */
   tooltips?: TooltipTable
   /** 物品图标的图集（本地资料里的 icons/）。false：没有；不给：面板自己到配置的 packdata 目录里找一次。没有时物品栏用替代的画法。 */
@@ -529,6 +534,12 @@ export class PanelServer {
         return guideSearch(this.deps.guide, url.searchParams, panelReject)
       case 'GET /guide/page':
         return guidePage(this.deps.guide, url.searchParams, panelReject)
+      case 'GET /methods':
+        return methodsList(this.deps.methods, this.deps.methodsEnv?.() ?? {})
+      case 'PUT /methods':
+        return methodsPut(this.deps.methods, body, this.deps.methodsEnv?.() ?? {}, this.now(), panelReject)
+      case 'DELETE /methods':
+        return methodsDelete(this.deps.methods, body, panelReject)
       case 'POST /command':
         return this.command(body)
       case 'GET /providers':

@@ -9,7 +9,9 @@ import type { RunLogStore } from '../agent/run-log.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
-import type { GuideBook, GuideEntry, ItemTooltip, TooltipTable } from '../packdata/index.ts'
+import type { FluidTable, GuideBook, GuideEntry, ItemTable, ItemTooltip, RecipeBook, TooltipTable } from '../packdata/index.ts'
+import { buildMethod, methodLine } from '../tools/methods.ts'
+import type { MethodAccess, MethodInput } from '../tools/methods.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
 import type { ActivityLog, ActivityRun } from '../store/activity-log.ts'
@@ -322,4 +324,49 @@ export function itemTooltips(tooltips: TooltipTable | undefined, params: URLSear
     if (found) out[`${id}/${meta}`] = found
   }
   return { available: true, tooltips: out }
+}
+
+// ── 基地的做法 ──
+
+/** 查对一条记录用得着的本地资料（配方册、物品表、流体表）。 */
+export interface MethodsEnv {
+  book?: RecipeBook | undefined
+  items?: ItemTable | undefined
+  fluids?: FluidTable | undefined
+}
+
+/**
+ * GET /api/methods：基地的做法——这个基地怎么做东西的记录（主人教的、它自己定过的）。全部条目，
+ * 每条带 line：给人看的一行（和它用 base_methods 看到的一样，具体东西的配方对回了现在的编号）。没有这份存储时 available 是 false。
+ */
+export function methodsList(methods: MethodAccess | undefined, env: MethodsEnv): unknown {
+  if (!methods) return { available: false, total: 0, counts: { part: 0, order: 0, thing: 0, machine: 0 }, entries: [] }
+  const entries = methods.list()
+  const counts = { part: 0, order: 0, thing: 0, machine: 0 }
+  for (const m of entries) counts[m.kind]++
+  return { available: true, total: entries.length, counts, entries: entries.map((m) => ({ ...m, line: methodLine(m, env) })) }
+}
+
+/**
+ * PUT /api/methods：记一条，或者改一条（同一个键的换掉）。body 和工具 set_base_method 的参数一样：
+ * part + way（+ from、material）、id / fluid + recipe、order、machine + does（+ feed、collect、keep），外加 why。
+ * 面板上写的算主人定的（by 不给就是 owner）。查对和工具用的是同一个：做法的名字认不认得、配方做不做得出那样东西。
+ */
+export function methodsPut(methods: MethodAccess | undefined, body: Record<string, unknown>, env: MethodsEnv, now: number, reject: Reject): unknown {
+  if (!methods) return reject(503, 'unavailable', '这个大脑上没有“基地的做法”这份存储')
+  const built = buildMethod({ ...(body as MethodInput), by: body.by === 'self' ? 'self' : 'owner' }, { ...env, now })
+  if ('error' in built) return reject(400, 'bad_request', built.error)
+  const replaced = methods.get(built.entry.key)
+  try {
+    methods.set(built.entry)
+  } catch (e) {
+    return reject(400, 'bad_request', e instanceof Error ? e.message : String(e))
+  }
+  return { entry: { ...built.entry, line: methodLine(built.entry, env) }, replaced: replaced !== undefined }
+}
+
+/** DELETE /api/methods { key }：删一条。 */
+export function methodsDelete(methods: MethodAccess | undefined, body: Record<string, unknown>, reject: Reject): unknown {
+  if (!methods) return reject(503, 'unavailable', '这个大脑上没有“基地的做法”这份存储')
+  return { removed: typeof body.key === 'string' && methods.remove(body.key) }
 }

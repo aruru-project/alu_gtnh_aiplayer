@@ -1853,6 +1853,8 @@ it('端到端：自动上下线开着 → 服务器上没有真人、它也没�
   assert.deepEqual(saved(), { ...saved(), wantOnline: true, awayIdle: true })
   assert.equal(first.some((x) => x.includes('被弄下线了')), false)
   assert.equal((await call('GET', '/status')).json.agents[1].body.awayIdle, true)
+  // 主人在面板上给“基地的做法”记了一条（一台机器是干什么的）：和它用的是同一份
+  assert.equal((await call('PUT', '/methods', { machine: { x: 1, y: 64, z: 2 }, does: '专门做导线' })).json.entry.key, 'machine:1,64,2')
 
   // 2. 主人在面板上发指令：它先上线，指令照常到了对话线
   await call('POST', '/command', { text: '看一眼仓库还剩多少钢锭' })
@@ -1861,6 +1863,8 @@ it('端到端：自动上下线开着 → 服务器上没有真人、它也没�
   await untilLogged('Alu 自动上线了：主人在面板上发了指令。')
   // 设置里写的“这个服务器”在它这一轮的提示词里
   assert.ok(talk.requests.some((r) => JSON.stringify(r.body).includes('主人叫它「测试服」') && JSON.stringify(r.body).includes('材料随便用。')))
+  // 面板上刚记的那条做法也在：提示词里说有 1 台机器记了用途
+  assert.ok(talk.requests.some((r) => JSON.stringify(r.body).includes('# 基地的做法') && JSON.stringify(r.body).includes('另外记着 1 台机器各是干什么的')))
   // 事办完、还是没人：又下线
   await waitFor('it went offline again', () => !alu().online, 20_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.equal(saved().awayIdle, true)

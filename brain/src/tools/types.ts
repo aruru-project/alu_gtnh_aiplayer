@@ -1,3 +1,4 @@
+import type { MethodAccess } from './methods.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
@@ -161,6 +162,8 @@ export interface ToolContext {
   surroundings?: SurroundingsCache
   /** 自己出设计用的：跑程序的沙箱、图纸草稿、主人传的图片。上层没提供时这类工具用不了。 */
   design?: DesignWorkspace
+  /** “基地的做法”（store/methods.ts）。上层没提供时 base_methods、set_base_method 用不了，别处也不带它的记录。 */
+  methods?: MethodAccess
   /** 意见簿。上层没提供时 report_problem 用不了。 */
   feedback?: FeedbackAccess
   /** 后台例程。上层没提供时 start_routine 这几个工具用不了。 */

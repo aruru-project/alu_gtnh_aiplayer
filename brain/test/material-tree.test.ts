@@ -193,6 +193,32 @@ describe('走完整棵配方树（内核）', () => {
     assert.deepEqual(s.walk(P.pin, 5, s.byTable({ ...pour, 'ore:ingotSteel': M.castIngot })).raw, [`2 钢锭（#${M.castIngot} 要回头用熔融钢）`])
   })
 
+  it('给了库存：现成的先用掉，只把缺的往下算——柄有 5 根就只压 7 根，模头（转轴）有现成的，它下面那一截（玄钢板、玄钢锭、玄钢粉）整个不用做；目标自己不扣；换一份库存可以再算一遍', (t) => {
+    const s = setup(t)
+    const table = s.byTable({
+      'adventurebackpack:backpackComponent/6': R.blades,
+      'IC2:itemRecipePart/12': R.shaft,
+      'miscutils:MU-metaitem.01/32040': R.shaftShape,
+      'ore:plateDarkSteel': R.bendDark,
+      'ore:ingotDarkSteel': R.smeltDark,
+      'ore:dustDarkSteel': R.mixDark,
+    })
+    const tree = new MaterialTree(s.book, s.items, table)
+    tree.walk({ slot: s.slot(P.blades) })
+    // 仓库里：5 根柄、20 个钢锭、1 个模头（转轴）、100 个桨叶（目标自己有多少不管）、2 个钢螺丝
+    const stock: Record<string, number> = { 'IC2:itemRecipePart/12': 5, 'ore:ingotSteel': 20, 'miscutils:MU-metaitem.01/32040': 1, 'adventurebackpack:backpackComponent/6': 100, 'ore:screwSteel': 2 }
+    const res = tree.count(3, (thing) => stock[thing.key] ?? 0)
+    const got = s.show(res)
+    // 12 根柄，现成 5 根，压 7 根：63 个钢锭
+    assert.deepEqual(got.made, [`#${R.shaft} 压模机 × 7 → 7 精炼铁柄（要 12，第 1 层）`, `#${R.blades} 有序合成 × 3 → 3 直升机桨叶（要 3，第 0 层）`])
+    assert.deepEqual(got.raw, ['9 钢螺丝', '3 钢齿轮', '63 钢锭'])
+    assert.deepEqual(res.stocked.map((x) => [x.key, x.needed, x.fromStock]), [['ore:screwSteel', 9, 2], ['IC2:itemRecipePart/12', 12, 5], ['miscutils:MU-metaitem.01/32040', 1, 1], ['ore:ingotSteel', 63, 20]])
+    // 同一棵树，不给库存再算一遍：全部从头做
+    const zero = s.show(tree.count(3))
+    assert.equal(zero.made.length, 6)
+    assert.deepEqual(zero.raw, ['9 钢螺丝', '3 钢齿轮', '108 钢锭', '1 模头（杆）', '2 磁钢粉', '2 煤粉', '2 黑曜石粉'])
+  })
+
   it('表里记的配方做不出那样东西（配方册重新导出、编号对不上了）：那样东西算原料，并带着那条对不上的配方', (t) => {
     const s = setup(t)
     // 柄记成了卷板机压钢板的那条

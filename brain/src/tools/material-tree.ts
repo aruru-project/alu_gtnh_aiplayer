@@ -10,6 +10,7 @@
 //   - 不消耗的（模具、手工工具、配方里数量是 0 的）：整棵树只要一个。做不做它也问选择函数（asked.kept）。
 //   - 数量：沿树乘下去，一轮出几个就按轮数往上取整；流体按 mB。有概率才出的产物不算数。
 //   - 编程电路不算原料。
+//   - 库存（可选，run 的 have）：一样东西现有的先用掉，只把缺的那部分往下算；现成的够了，它下面那一截就不用做。目标自己不扣。
 
 import { ANY_META } from '../packdata/index.ts'
 import type { Recipe, RecipeBook, RecipeFluid, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
@@ -56,6 +57,8 @@ export interface TreeThing<N = unknown> {
   // ── 数量 ──
   /** 一共要多少（物品按个，流体按 mB）。 */
   needed: number
+  /** 其中拿现成的顶掉多少（没给库存时是 0）。要做的东西，轮数只算剩下的；原料，还缺的是剩下的。 */
+  fromStock: number
   rounds: number
   /** 只作为“不消耗的”被要过（数量是 1）。 */
   keptOnly: boolean
@@ -71,6 +74,8 @@ export interface Options {
   feedsOnItself(recipe: Recipe): boolean
   /** 按配方册里的先后，第一条做得出它、又不拿它自己当原料的配方；accept 筛加工方式（哪一页）。 */
   first(accept?: (way: RecipeHandler) => boolean): Recipe | undefined
+  /** 同 first，但给前 limit 条（看它是不是“只有一条、没得选”，或者把几种做法各摆一条出来）。 */
+  recipes(limit: number, accept?: (way: RecipeHandler) => boolean): Recipe[]
   /** 做得出它的各种加工方式各有几条（不读文件）。 */
   ways(): Map<RecipeHandler, number>
 }
@@ -101,9 +106,26 @@ export interface TreeResult<N = unknown> {
   kept: TreeThing<N>[]
   /** 要现成的流体。 */
   fluids: TreeThing<N>[]
+  /** 用了现成的那些（要做的、原料、不消耗的都可能在里面），离目标近的在前。 */
+  stocked: TreeThing<N>[]
   /** 到了上限没走完。 */
   cut: boolean
 }
+
+/**
+ * 配方里的一格是“哪样东西”（TreeThing.key）：登记在材料件矿辞名下的物品按矿辞名算一样（哪个 mod 的都行），
+ * “任何 xxx”按矿辞名，别的按 id/meta。
+ */
+export function thingKeyOfSlot(slot: RecipeSlot, items: ItemTable | undefined): string {
+  if (slot.kind === 'item') {
+    const ore = slot.meta === ANY_META ? undefined : unifiedOre(items?.get(slot.id, slot.meta))
+    if (ore !== undefined) return `ore:${ore}`
+    return slot.meta === ANY_META ? `${slot.id}/*` : `${slot.id}/${slot.meta}`
+  }
+  return slot.kind === 'ore' ? `ore:${slot.ore}` : `any:${slot.any.map((a) => a.join('/')).join(',')}`
+}
+
+export const thingKeyOfFluid = (fluid: string): string => `fluid:${fluid}`
 
 /** 把成品拆回材料的那几页（电弧炉回收、研磨机回收……）。 */
 export const isRecycling = (way: RecipeHandler | undefined): boolean => /recycling/i.test(way?.key ?? '')
@@ -130,7 +152,7 @@ export class MaterialTree<N = unknown> {
   private readonly alias = new Map<TreeThing<N>, TreeThing<N>>()
   /** 见过的东西；值是上一次问它时它是不是“不消耗的”。 */
   private readonly visited = new Map<TreeThing<N>, boolean>()
-  private count = 0
+  private madeCount = 0
   private cut = false
 
   /** book 可以没有（只有凿子那种自造的“配方”时）：那样 Options 里查不到任何配方。 */
@@ -143,12 +165,7 @@ export class MaterialTree<N = unknown> {
   // ── 一样东西 ──
 
   private keyOfSlot(slot: RecipeSlot): string {
-    if (slot.kind === 'item') {
-      const ore = slot.meta === ANY_META ? undefined : unifiedOre(this.items?.get(slot.id, slot.meta))
-      if (ore !== undefined) return `ore:${ore}`
-      return slot.meta === ANY_META ? `${slot.id}/*` : `${slot.id}/${slot.meta}`
-    }
-    return slot.kind === 'ore' ? `ore:${slot.ore}` : `any:${slot.any.map((a) => a.join('/')).join(',')}`
+    return thingKeyOfSlot(slot, this.items)
   }
 
   private thingOfSlot(slot: RecipeSlot): TreeThing<N> {
@@ -163,7 +180,7 @@ export class MaterialTree<N = unknown> {
           : slot.kind === 'ore'
             ? this.membersOf(slot.ore, slot.any)
             : slot.any.slice(0, MEMBERS_MAX).map(([id, meta]) => ({ id, meta: meta === ANY_META ? 0 : meta }))
-      thing = { key, slot, members, level: 0, inputs: [], needed: 0, rounds: 0, keptOnly: false }
+      thing = { key, slot, members, level: 0, inputs: [], needed: 0, fromStock: 0, rounds: 0, keptOnly: false }
       this.things.set(key, thing)
     } else if (thing.slot && thing.slot.kind !== 'item' && slot.kind === 'item') {
       // 同一样东西先被“任何 xxx”要过、现在被点名要：叫名字用点了名的那一种
@@ -173,10 +190,10 @@ export class MaterialTree<N = unknown> {
   }
 
   private thingOfFluid(f: { f: string; name: string }): TreeThing<N> {
-    const key = `fluid:${f.f}`
+    const key = thingKeyOfFluid(f.f)
     let thing = this.things.get(key)
     if (!thing) {
-      thing = { key, fluid: { f: f.f, name: f.name }, members: [], level: 0, inputs: [], needed: 0, rounds: 0, keptOnly: false }
+      thing = { key, fluid: { f: f.f, name: f.name }, members: [], level: 0, inputs: [], needed: 0, fromStock: 0, rounds: 0, keptOnly: false }
       this.things.set(key, thing)
     }
     return thing
@@ -230,6 +247,17 @@ export class MaterialTree<N = unknown> {
   private optionsOf(thing: TreeThing<N>): Options {
     let refs: number[] | undefined
     const all = (): number[] => (refs ??= this.refsOf(thing))
+    const valid = (limit: number, accept?: (way: RecipeHandler) => boolean): Recipe[] => {
+      const out: Recipe[] = []
+      for (const ref of all()) {
+        if (out.length >= limit) break
+        const way = this.book?.handlerOfRecipe(ref)
+        if (!way || (accept && !accept(way))) continue
+        const recipe = this.book?.get(ref)
+        if (recipe && this.yieldOf(thing, recipe).n > 0 && !this.feedsOnItself(thing, recipe)) out.push(recipe)
+      }
+      return out
+    }
     return {
       refs: all,
       yield: (recipe) => {
@@ -237,15 +265,8 @@ export class MaterialTree<N = unknown> {
         return y.product !== undefined ? { n: y.n, product: y.product } : { n: y.n }
       },
       feedsOnItself: (recipe) => this.feedsOnItself(thing, recipe),
-      first: (accept) => {
-        for (const ref of all()) {
-          const way = this.book?.handlerOfRecipe(ref)
-          if (!way || (accept && !accept(way))) continue
-          const recipe = this.book?.get(ref)
-          if (recipe && this.yieldOf(thing, recipe).n > 0 && !this.feedsOnItself(thing, recipe)) return recipe
-        }
-        return undefined
-      },
+      first: (accept) => valid(1, accept)[0],
+      recipes: valid,
       ways: () => {
         const ways = new Map<RecipeHandler, number>()
         for (const ref of all()) {
@@ -264,7 +285,7 @@ export class MaterialTree<N = unknown> {
     // 见过了就不再问；只有一种情况再问一次：上回它只是“不消耗的”、没做，这回被当原料要
     if (before !== undefined && !(before && !asked.kept && thing.recipe === undefined && thing.loop === undefined && !this.alias.has(thing))) return
     this.visited.set(thing, asked.kept)
-    if (this.count >= TREE_MAX_THINGS) {
+    if (this.madeCount >= TREE_MAX_THINGS) {
       this.cut = true
       thing.cut = true
       return
@@ -303,7 +324,7 @@ export class MaterialTree<N = unknown> {
     thing.recipe = recipe
     thing.yield = y.n
     if (y.made) thing.made = y.made
-    this.count++
+    this.madeCount++
     path.push(thing)
     for (const s of slots) {
       const child = this.thingOfSlot(s)
@@ -318,12 +339,37 @@ export class MaterialTree<N = unknown> {
     path.pop()
   }
 
-  /** 走一遍并算数。目标是一个物品（配方里的一格的写法）或者一种流体；count 是个数或 mB。一个对象只走一次。 */
-  run(target: { slot: RecipeSlot } | { fluid: RecipeFluid | { f: string; name: string } }, count: number): TreeResult<N> {
+  /**
+   * 走一遍：每样东西定下用哪条配方（问选择函数），返回目标。数量还没算（count 做这件事）；
+   * 中间可以拿 all() 去查库存。一个对象只走一次。
+   */
+  walk(target: { slot: RecipeSlot } | { fluid: RecipeFluid | { f: string; name: string } }): TreeThing<N> {
     const top = 'slot' in target ? this.thingOfSlot(target.slot) : this.thingOfFluid(target.fluid)
     this.visit(top, [], { target: true, kept: false })
+    this.top = top
+    return top
+  }
 
-    // 先排顺序：用到别人的排在别人前面（目标最前），这样轮到一样东西时，要它多少已经加全了
+  /** 树上的每样东西（走完以后；并到别的东西上的不算），目标在最前。 */
+  all(): TreeThing<N>[] {
+    return this.order()
+  }
+
+  /** 走一遍并算数。目标是一个物品（配方里的一格的写法）或者一种流体；count 是个数或 mB。 */
+  run(target: { slot: RecipeSlot } | { fluid: RecipeFluid | { f: string; name: string } }, count: number, have?: (thing: TreeThing<N>) => number): TreeResult<N> {
+    this.walk(target)
+    return this.count(count, have)
+  }
+
+  private top: TreeThing<N> | undefined
+  private ordered: TreeThing<N>[] | undefined
+
+  /** 用到别人的排在别人前面（目标最前）：照这个先后算数量，轮到一样东西时要它多少已经加全了。 */
+  private order(): TreeThing<N>[] {
+    if (this.ordered) return this.ordered
+    const top = this.top
+    if (!top) return []
+
     const order: TreeThing<N>[] = []
     const seen = new Set<TreeThing<N>>()
     const walk = (t: TreeThing<N>): void => {
@@ -340,17 +386,41 @@ export class MaterialTree<N = unknown> {
     const level = new Map<TreeThing<N>, number>([[top, 0]])
     for (const t of order) for (const input of t.inputs) level.set(input.thing, Math.min(level.get(input.thing) ?? Infinity, (level.get(t) ?? 0) + 1))
     for (const [t, n] of level) t.level = n
+    this.ordered = order
+    return order
+  }
 
+  /**
+   * 算数量（walk 之后）。have：这样东西现有多少（库存）——先用掉现成的，只把缺的往下算；目标自己不扣。可以用不同的 have 再算一遍。
+   */
+  count(count: number, have?: (thing: TreeThing<N>) => number): TreeResult<N> {
+    const top = this.top
+    if (!top) throw new Error('walk() first')
+    const order = this.order()
+    for (const t of order) {
+      t.needed = 0
+      t.fromStock = 0
+      t.rounds = 0
+      t.keptOnly = false
+    }
     top.needed = count
     const keptAsked = new Set<TreeThing<N>>()
     const consumed = new Set<TreeThing<N>>([top])
     const counted = new Set<TreeThing<N>>()
     // 没做的：照被要到的先后（从目标往下、一条配方里照格子的先后）
     const leaves: TreeThing<N>[] = []
+    const stocked: TreeThing<N>[] = []
     for (const t of order) {
       counted.add(t)
+      if (t.needed <= 0) continue
+      if (have && t !== top) {
+        t.fromStock = Math.max(0, Math.min(t.needed, Math.floor(have(t))))
+        if (t.fromStock > 0) stocked.push(t)
+      }
       if (!t.recipe) continue
-      t.rounds = Math.ceil(t.needed / (t.yield ?? 1))
+      t.rounds = Math.ceil((t.needed - t.fromStock) / (t.yield ?? 1))
+      // 现成的够了：它下面那一截不用做
+      if (t.rounds === 0) continue
       for (const input of t.inputs) {
         if (!input.thing.recipe && !leaves.includes(input.thing)) leaves.push(input.thing)
         if (input.kept) {
@@ -369,10 +439,11 @@ export class MaterialTree<N = unknown> {
     if (!top.recipe) leaves.push(top)
     return {
       target: top,
-      made: order.filter((t) => t.recipe !== undefined).reverse(),
+      made: order.filter((t) => t.recipe !== undefined && t.rounds > 0).reverse(),
       raw: leaves.filter((t) => !t.fluid && !t.keptOnly),
       kept: leaves.filter((t) => !t.fluid && t.keptOnly),
       fluids: leaves.filter((t) => t.fluid !== undefined),
+      stocked,
       cut: this.cut,
     }
   }

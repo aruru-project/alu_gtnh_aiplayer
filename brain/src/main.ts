@@ -27,6 +27,7 @@ import { ChatLog } from './store/chat-log.ts'
 import { RunLogStore } from './agent/run-log.ts'
 import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
 import { FeedbackStore } from './store/feedback.ts'
+import { MethodStore } from './store/methods.ts'
 import { PictureStore } from './store/pictures.ts'
 import type { BrainConfig } from './store/config.ts'
 import { ensureDir, isRecord } from './store/files.ts'
@@ -55,6 +56,7 @@ function toAgentSettings(c: BrainConfig, line: LineName): AgentSettings {
     owners: c.bot.owners,
     persona: c.bot.systemPrompt,
     environment: c.bot.environment,
+    lineSteps: { talk: c.bot.limits.talkMaxSteps, work: c.bot.limits.maxSteps },
     wakeMode: c.bot.wake.mode,
     conversationWindowSec: c.bot.wake.conversationWindowSec,
     maxSteps: line === 'talk' ? c.bot.limits.talkMaxSteps : c.bot.limits.maxSteps,
@@ -118,6 +120,8 @@ async function main(): Promise<void> {
   const chatLog = new ChatLog(dataDir)
   const usage = new UsageStore(dataDir)
   const reminderStore = new ReminderStore(dataDir)
+  // 基地的做法：主人教的、它自己定过的，怎么做东西的记录
+  const methods = new MethodStore(dataDir)
   // 意见簿：存之前把这台大脑上真正的密钥从附带的现场里抹掉（正常不会出现在里面，这是兜底）
   const feedback = new FeedbackStore(dataDir, {
     secrets: () => {
@@ -218,6 +222,7 @@ async function main(): Promise<void> {
     packdata,
     design,
     feedback,
+    methods,
     versions: () => {
       const mod = bridgeClient.status().hello?.modVersion
       return { brain: VERSION, ...(mod !== undefined ? { mod } : {}) }
@@ -341,6 +346,8 @@ async function main(): Promise<void> {
     ...(packdata.structures ? { structures: packdata.structures } : {}),
     ...(packdata.guide ? { guide: packdata.guide } : {}),
     ...(packdata.tooltips ? { tooltips: packdata.tooltips } : {}),
+    methods,
+    methodsEnv: () => ({ book: packdata.recipes, items: packdata.items, fluids: packdata.fluids }),
     icons: itemIcons ?? false,
     bridge,
     bridgeStatus: () => bridgeClient.status(),

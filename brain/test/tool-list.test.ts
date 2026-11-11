@@ -87,8 +87,8 @@ const LOOKUPS = [
   'list_designs', 'view_image', 'view_draft',
   'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'read_guide', 'task_status',
 ]
-// 记的：记忆、提醒、手册、意见簿。两条线都有（提醒到点叫醒的是定它的那条线）。
-const NOTES = ['remember', 'forget', 'set_reminder', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
+// 记的：记忆、提醒、基地的做法、手册、意见簿。两条线都有（提醒到点叫醒的是定它的那条线；基地的做法主人在聊天里教的，对话线可以直接记）。
+const NOTES = ['remember', 'forget', 'set_reminder', 'base_methods', 'set_base_method', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
 // 会让身体动、会改游戏里东西的：只有干活线有。
 const ACTING = [
   'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
@@ -161,7 +161,7 @@ describe('模型拿到的工具清单', () => {
     }
   })
 
-  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2200 字符；start_routine 的说明指过去', async (t) => {
+  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2400 字符；start_routine 的说明指过去', async (t) => {
     for (const line of ['work', 'talk'] as const) {
       for (const vision of [true, false]) {
         const tools = await offered(setup(t, { vision }), line)
@@ -170,7 +170,8 @@ describe('模型拿到的工具清单', () => {
         const run = tools.find((tool) => tool.name === 'run_program')!.description
         const index = run.slice(run.indexOf('\nLibrary functions') + 1)
         // 上限从 2000 调到 2200：多了 read_log 的一行（约 200 字符）——历史压缩把较早的轮换成交接记录以后，靠它翻回原始记录
-        assert.ok(index.length <= 2200, `the index is ${index.length} characters`)
+        // 上限从 2200 调到 2400：total_materials 的那一行长了约 120 字符——它现在照基地的做法展开整棵树、扣库存，结果里多了没定的、还缺的、活儿清单
+        assert.ok(index.length <= 2400, `the index is ${index.length} characters`)
         const lines = index.split('\n')
         assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
         // 对话线的索引里只有只查不动的：会开任务的 haul_items 不在
@@ -226,7 +227,10 @@ describe('模型拿到的工具清单', () => {
   //           这个任务从放料占着身体到取完产物、带了就放进去就走，和 leave 这个参数。对话线没变。
   //   干活线也能定提醒之后：干活线实际 49,572、上限 49,400 → 50,000（+600）。多的是 set_reminder 这一个工具（+540）：料放进机器就走以后，
   //           它手上没别的活时这一轮一结束就没有东西叫它回来收，所以它得能给自己定个到点叫醒。对话线实际 22,812，只是说明多了半句。
-  for (const [line, ceiling] of [['work', 50_000], ['talk', 23_000]] as const) {
+  //   “基地的做法”之后：两条线各多两个工具，base_methods（看，约 750）和 set_base_method（记、改、删，约 2,260：四种条目的参数都在这一个里），
+  //           加上库函数索引里 total_materials 那一行长了约 120。干活线实际 52,580、上限 50,000 → 53,000；对话线实际 25,820、上限 23,000 → 26,200。
+  //           主人在聊天里教的做法对话线要能直接记，所以两条线都有；做成库函数的话模型看不到参数，记不对。
+  for (const [line, ceiling] of [['work', 53_000], ['talk', 26_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

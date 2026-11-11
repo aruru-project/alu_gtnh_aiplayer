@@ -16,6 +16,7 @@ import type { PackData } from '../packdata/index.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
 import type { ChatLog } from '../store/chat-log.ts'
 import type { FeedbackStore } from '../store/feedback.ts'
+import type { MethodAccess } from '../tools/methods.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { clip, formatTask } from '../tools/format.ts'
 import { LINE_TOOLS, QuestProgressCache, SurroundingsCache } from '../tools/index.ts'
@@ -59,6 +60,8 @@ export interface LinesDeps {
   routineLimits?: Partial<RoutineLimits>
   runLogs?: RunLogStore
   feedback?: FeedbackStore
+  /** “基地的做法”：两条线用同一份。 */
+  methods?: MethodAccess
   versions?(): { brain: string; mod?: string }
   reminders: ReminderAccess & { list(): PendingReminder[] }
   histories: Record<LineName, HistoryStore>
@@ -184,6 +187,7 @@ export class Lines {
       ...(deps.routineLimits ? { routineLimits: deps.routineLimits } : {}),
       ...(deps.runLogs ? { runLogs: deps.runLogs } : {}),
       ...(deps.feedback ? { feedback: deps.feedback } : {}),
+      ...(deps.methods ? { methods: deps.methods } : {}),
       ...(deps.versions ? { versions: deps.versions } : {}),
       ...(deps.chatLog ? { chatLog: deps.chatLog } : {}),
       ...(deps.timing ? { timing: deps.timing } : {}),

@@ -29,6 +29,7 @@ import { readGuide } from './guide.ts'
 import { readLog } from './log.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
+import { baseMethods, setBaseMethod } from './methods.ts'
 import {
   findBlocks,
   getPlayerPosition,
@@ -134,6 +135,8 @@ export const WORK_TOOLS: readonly Tool[] = [
   remember,
   forget,
   setReminder,
+  baseMethods,
+  setBaseMethod,
   listManuals,
   readManual,
   writeManual,
@@ -172,6 +175,8 @@ export const TALK_TOOLS: readonly Tool[] = [
   remember,
   forget,
   setReminder,
+  baseMethods,
+  setBaseMethod,
   listManuals,
   readManual,
   writeManual,
@@ -244,6 +249,7 @@ export const QUERY_TOOLS: readonly string[] = [
   'get_quest',
   'read_guide',
   'task_status',
+  'base_methods',
   ...LIBRARY_TOOLS.map((t) => t.name).filter((name) => !LIBRARY_TASKS.includes(name)),
   // 旧名字里只查不动的
   'list_blueprints',

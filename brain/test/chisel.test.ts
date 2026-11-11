@@ -178,34 +178,45 @@ describe('凿子的组', () => {
   it('算总料时带着“用凿子从同组另一种变来”的一步：一换一往下乘，凿子不算消耗、耐久照实说不知道；不同组的两样凿不了，说清各在哪一组', async (t) => {
     const h = setup(t)
     // 要 5 个 /3：从 5 个 /0 凿；/0 用 #0 合成，一轮出 2 个，所以 3 轮（多 1 个），要 12 个沙砾
-    const sum = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3, count: 5, recipes: [0], chisel: [{ id: 'chisel:nucrete', meta: 3, from: { id: 'chisel:nucrete', meta: 0 } }] }); return { ok: r.ok, text: r.text.split('\\n'), data: r.data }`)
+    const sum = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3, count: 5, stock: false, recipes: [0], chisel: [{ id: 'chisel:nucrete', meta: 3, from: { id: 'chisel:nucrete', meta: 0 } }] }); return { ok: r.ok, text: r.text.split('\\n'), data: r.data }`)
     assert.deepEqual(sum.text, [
-      'For 5× 结构混凝土 [chisel:nucrete/3], with the 2 step(s) you chose (this only adds up amounts; it checks neither the storage nor the machines):',
-      'To make, things that are needed by later lines first:',
-      '- #0 (有序合成) × 3 round(s) → 6× 结构混凝土 (5 needed, 1 left over)',
-      '- chisel (group "nucrete") × 5 → 5× 结构混凝土 [chisel:nucrete/3], from 5× 结构混凝土 [chisel:nucrete]',
-      'Taken ready-made (you gave no recipe for these): 12× 沙砾 [minecraft:gravel]',
-      `For the chisel steps: a chisel (an item; find_item "凿子"), which is not used up as an ingredient — ${COST}.`,
+      "For 5× 结构混凝土 [chisel:nucrete/3]: 2 thing(s) to make in 2 wave(s) (2 named by you); 0 thing(s) NOT DECIDED. This adds up amounts by the base's methods (0 entries); it chooses no recipe.",
+      'Storage was not looked into (stock: false): everything is counted from nothing.',
+      'Raw materials needed (1):',
+      '- nothing in the recipe book makes it (1): 12× 沙砾 [minecraft:gravel]',
+      'Missing capability:',
+      `- for the chisel steps: a chisel (an item; find_item "凿子"), which is not used up as an ingredient — ${COST}.`,
+      'Jobs, 2, by when they can start and by way:',
+      'Wave 1 — these take only raw materials and what is in storage:',
+      '- 有序合成 (1 job(s)) — CAN CRAFT NOW in your own 2x2 grid (no table needed)',
+      '  - #0 × 3 → 6× 结构混凝土 [chisel:nucrete]; 1 left over [named by you]',
+      'Wave 2 — these take things made in wave 1 (or earlier):',
+      '- chisel:',
+      '  - chisel (group "nucrete") × 5 → 5× 结构混凝土 [chisel:nucrete/3], from 5× 结构混凝土 [chisel:nucrete] [named by you]',
     ])
-    assert.deepEqual(sum.data, {
-      target: { id: 'chisel:nucrete', meta: 3, count: 5 },
-      steps: [
-        { recipe: 0, way: '有序合成', rounds: 3, makes: { id: 'chisel:nucrete', meta: 0, name: '结构混凝土', count: 6 }, needed: 5 },
-        { chisel: { group: 'nucrete', from: { id: 'chisel:nucrete', meta: 0, name: '结构混凝土' } }, way: 'chisel', rounds: 5, makes: { id: 'chisel:nucrete', meta: 3, name: '结构混凝土', count: 5 }, needed: 5 },
-      ],
-      raw: [{ id: 'minecraft:gravel', meta: 0, name: '沙砾', count: 12 }],
-      kept: [{ tool: 'chisel', name: '凿子' }],
-      fluids: [],
-      unused: [],
-    })
+    assert.deepEqual(
+      { target: sum.data.target, steps: sum.data.steps, raw: sum.data.raw, kept: sum.data.kept, fluids: sum.data.fluids, unused: sum.data.unused },
+      {
+        target: { id: 'chisel:nucrete', meta: 3, count: 5 },
+        steps: [
+          { recipe: 0, way: '有序合成', rounds: 3, makes: { id: 'chisel:nucrete', meta: 0, name: '结构混凝土', count: 6 }, needed: 5, rule: 'named', wave: 1, level: 1 },
+          { chisel: { group: 'nucrete', from: { id: 'chisel:nucrete', meta: 0, name: '结构混凝土' } }, way: 'chisel', rounds: 5, makes: { id: 'chisel:nucrete', meta: 3, name: '结构混凝土', count: 5 }, needed: 5, rule: 'named', wave: 2, level: 0 },
+        ],
+        raw: [{ id: 'minecraft:gravel', meta: 0, name: '沙砾', count: 12, why: 'none' }],
+        kept: [{ tool: 'chisel', name: '凿子' }],
+        fluids: [],
+        unused: [],
+      },
+    )
     // 只有凿子这一步、没有配方：原料就是同组的另一种，要现成的
-    const only = await program(h, `const r = await tool('total_materials', { id: 'chisel:cobblestone', meta: 2, count: 64, chisel: [{ id: 'chisel:cobblestone', meta: 2, from: { id: 'demo:mossy' } }] }); return r.data.raw`)
-    assert.deepEqual(only, [{ id: 'demo:mossy', meta: 0, name: '苔圆石块', count: 64 }])
+    const only = await program(h, `const r = await tool('total_materials', { id: 'chisel:cobblestone', meta: 2, count: 64, stock: false, chisel: [{ id: 'chisel:cobblestone', meta: 2, from: { id: 'demo:mossy' } }] }); return r.data.raw`)
+    assert.deepEqual(only, [{ id: 'demo:mossy', meta: 0, name: '苔圆石块', count: 64, why: 'none' }])
     // 不同组的凿不了
     const wrong = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3, chisel: [{ id: 'chisel:nucrete', meta: 3, from: { id: 'minecraft:cobblestone' } }] }); return [r.ok, r.text]`)
     assert.deepEqual(wrong, [false, '结构混凝土 [chisel:nucrete/3] cannot be chiselled from 圆石 [minecraft:cobblestone]: a chisel only turns a block into another block of the same group. 结构混凝土 [chisel:nucrete/3] is in "nucrete"; 圆石 [minecraft:cobblestone] is in "cobblestone".'])
-    const nothing = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3 }); return [r.ok, r.text]`)
-    assert.deepEqual(nothing, [false, 'Give "recipes" (the # numbers of the recipes you chose), "chisel" (blocks chiselled from another block of their group), or both.'])
+    // 什么都不点名、配方册里又没有它的配方（它只凿得出来）：照实说没有配方，不展开
+    const nothing = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3, stock: false }); return r.text.split('\\n').slice(2, 5)`)
+    assert.deepEqual(nothing, ['Nothing is expanded: no recipe is settled for the target itself — nothing in the recipe book makes it.', 'Raw materials needed (1):', '- nothing in the recipe book makes it (1): 1× 结构混凝土 [chisel:nucrete/3]'])
   })
 
   it('没有这份资料（carving.jsonl 不在）时：一切照旧，查做法不提凿子，程序里查组是空的', async (t) => {

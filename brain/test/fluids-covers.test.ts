@@ -387,32 +387,47 @@ describe('流体', () => {
     assert.equal((await modelCalls(h, 'find_recipes', { fluid: LIGHT, circuit: 5 })).content.split('\n')[0], 'No recipe for 含硫轻燃油 [fluid liquid_sufluriclight_fuel] with programmed circuit 5 (3 recipe(s) before the "contains" and "circuit" filter; 3 in all). Try another word: part of an ingredient\'s Chinese or English name, id or ore name.')
   })
 
-  it('算总料时带着流体的一步：做 5 个钢环要 180 mB 熔融钢，流体提取机一轮出 144，所以化 2 个钢板（多 108 mB）；没选出流体的配方时，流体记成要现成的', async (t) => {
+  it('算总料时带着流体的一步：做 5 个钢环要 180 mB 熔融钢，点名了出它的配方就按 mB 往下乘——流体提取机一轮出 144，所以化 2 个钢板（多 108 mB）；没点名的流体记成要供的，写着现在哪个罐里有多少；重名的流体带着注册名分得开', async (t) => {
     const h = setup(t)
-    const sum = await program(h, `const r = await tool('total_materials', { id: '${GT}', meta: 28305, count: 5, recipes: [1, 0] }); return { text: r.text.split('\\n'), data: r.data }`)
+    // 从零算（不看库存）：钢环点名固化器那条、熔融钢点名提取机那条
+    const sum = await program(h, `const r = await tool('total_materials', { id: '${GT}', meta: 28305, count: 5, stock: false, recipes: [1, 0] }); return { text: r.text.split('\\n'), data: r.data }`)
     assert.deepEqual(sum.text, [
-      'For 5× 钢环 [gregtech:gt.metaitem.01/28305], with the 2 recipe(s) you chose (this only adds up amounts; it checks neither the storage nor the machines):',
-      'To make, things that are needed by later lines first:',
-      '- #0 (流体提取机) × 2 round(s) → 288 mB 熔融钢 (180 needed, 108 left over)',
-      '- #1 (流体固化器) × 5 round(s) → 5× 钢环',
-      'Taken ready-made (you gave no recipe for these): 2× 钢板 [gregtech:gt.metaitem.01/17305]',
-      'Needed but not used up, one of each (no recipe given for them): 模具（环） [gregtech:gt.metaitem.01/32322]',
+      "For 5× 钢环 [gregtech:gt.metaitem.01/28305]: 3 thing(s) to make in 3 wave(s) (2 named by you, 1 with only one recipe); 0 thing(s) NOT DECIDED. This adds up amounts by the base's methods (0 entries); it chooses no recipe.",
+      'Storage was not looked into (stock: false): everything is counted from nothing.',
+      'No raw material is needed.',
+      'Missing capability:',
+      // 钢板只有一条配方：拿另一种也叫“熔融钢”的流体（匠魂的）浇——它不是提取机出的那种，所以是要供的
+      "- fluids to supply (a fluid is made only by a recipe you name or one the base's methods record for it): 288 mB 熔融钢 [fluid steel.molten] (no machine tank here holds any that can be read)",
+      '- needed at hand but not used up, one of each: 模具（环） [gregtech:gt.metaitem.01/32322]',
+      'Jobs, 3, by when they can start and by way:',
+      'Wave 1 — these take only raw materials and what is in storage:',
+      '- 流体固化器 (1 job(s)) — CAN RUN NOW on 基础流体固化器 at (-525,70,41) LV',
+      '  - #6 × 2 → 2× 钢板 [gregtech:gt.metaitem.01/17305] [only recipe]',
+      'Wave 2 — these take things made in wave 1 (or earlier):',
+      '- 流体提取机 (1 job(s)) — CAN RUN NOW on 基础流体提取机 at (-527,70,41) LV',
+      '  - #0 × 2 → 288 mB 熔融钢 [fluid molten.steel]; 108 left over [named by you]',
+      'Wave 3 — these take things made in wave 2 (or earlier):',
+      '- 流体固化器 (1 job(s)) — CAN RUN NOW on 基础流体固化器 at (-525,70,41) LV',
+      '  - #1 × 5 → 5× 钢环 [gregtech:gt.metaitem.01/28305] [named by you]',
     ])
     assert.deepEqual(sum.data.steps, [
-      { recipe: 0, way: '流体提取机', rounds: 2, makes: { fluid: 'molten.steel', name: '熔融钢', count: 288 }, needed: 180 },
-      { recipe: 1, way: '流体固化器', rounds: 5, makes: { id: GT, meta: 28305, name: '钢环', count: 5 }, needed: 5 },
+      { recipe: 6, way: '流体固化器', rounds: 2, makes: { id: GT, meta: 17305, name: '钢板', count: 2 }, needed: 2, rule: 'only', wave: 1, level: 2 },
+      { recipe: 0, way: '流体提取机', rounds: 2, makes: { fluid: 'molten.steel', name: '熔融钢', count: 288 }, needed: 180, rule: 'named', wave: 2, level: 1 },
+      { recipe: 1, way: '流体固化器', rounds: 5, makes: { id: GT, meta: 28305, name: '钢环', count: 5 }, needed: 5, rule: 'named', wave: 3, level: 0 },
     ])
-    assert.deepEqual([sum.data.raw, sum.data.fluids], [[{ id: GT, meta: 17305, name: '钢板', count: 2 }], []])
-    // 只选了固化器那条：熔融钢是要现成的流体
-    const only = await program(h, `const r = await tool('total_materials', { id: '${GT}', meta: 28305, count: 5, recipes: [1] }); return [r.text.split('\\n').at(-1), r.data.fluids]`)
-    assert.deepEqual(only, ['Fluids, in all: 180 mB 熔融钢', [{ fluid: 'molten.steel', name: '熔融钢', mb: 180 }]])
+    assert.deepEqual([sum.data.raw, sum.data.fluids], [[], [{ fluid: 'steel.molten', name: '熔融钢', mb: 288 }]])
+    // 只点名固化器那条：熔融钢没人说怎么来，是要供的流体；固化器的罐里现在有 144 mB，照实写
+    const only = await program(h, `const r = await tool('total_materials', { id: '${GT}', meta: 28305, count: 5, stock: false, recipes: [1] }); return [r.text.split('\\n').find((line) => line.startsWith('- fluids')), r.data.fluids]`)
+    assert.deepEqual(only, [
+      "- fluids to supply (a fluid is made only by a recipe you name or one the base's methods record for it): 180 mB 熔融钢 [fluid molten.steel] (tanks here hold 144 mB in 基础流体固化器 at (-525,70,41) LV)",
+      [{ fluid: 'molten.steel', name: '熔融钢', mb: 180 }],
+    ])
     // 目标本身是流体：数量按 mB
-    const liquid = await program(h, `const r = await tool('total_materials', { fluid: 'molten.steel', count: 1000, recipes: [0] }); return [r.text.split('\\n')[0], r.text.split('\\n')[2], r.data.target, r.data.raw]`)
+    const liquid = await program(h, `const r = await tool('total_materials', { fluid: 'molten.steel', count: 1000, stock: false, recipes: [0] }); return [r.text.split('\\n')[0], r.text.split('\\n').at(-1), r.data.target]`)
     assert.deepEqual(liquid, [
-      'For 1000 mB 熔融钢 [fluid molten.steel], with the 1 recipe(s) you chose (this only adds up amounts; it checks neither the storage nor the machines):',
-      '- #0 (流体提取机) × 7 round(s) → 1008 mB 熔融钢 (1000 needed, 8 left over)',
+      "For 1000 mB 熔融钢 [fluid molten.steel]: 2 thing(s) to make in 2 wave(s) (1 named by you, 1 with only one recipe); 0 thing(s) NOT DECIDED. This adds up amounts by the base's methods (0 entries); it chooses no recipe.",
+      '  - #0 × 7 → 1008 mB 熔融钢 [fluid molten.steel]; 8 left over [named by you]',
       { fluid: 'molten.steel', name: '熔融钢', count: 1000 },
-      [{ id: GT, meta: 17305, name: '钢板', count: 7 }],
     ])
   })
 })

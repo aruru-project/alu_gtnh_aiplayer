@@ -27,6 +27,7 @@ import type { FeedbackStore } from '../src/store/feedback.ts'
 import { HistoryStore, TurnIds } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
+import { MethodStore } from '../src/store/methods.ts'
 import type { LineName } from '../src/tools/index.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
@@ -178,6 +179,8 @@ export interface AgentHarness {
   /** 对话线的历史。 */
   talkHistory: HistoryStore
   memory: MemoryStore
+  /** 基地的做法（临时目录的 methods.json）。 */
+  methods: MethodStore
   /** 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里。 */
   manuals: ManualStore
   log: ActivityLog
@@ -247,6 +250,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const history = new HistoryStore(tmp.dir, { ids: turnIds })
   const talkHistory = new HistoryStore(tmp.dir, { file: 'talk-history.json', ids: turnIds })
   const memory = new MemoryStore(tmp.dir, () => 4000)
+  const methods = new MethodStore(tmp.dir)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const log = new ActivityLog()
   const chatLog = new ChatLog(tmp.dir)
@@ -274,6 +278,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     },
     bridge: new BridgeApi(game),
     memory,
+    methods,
     manuals,
     reminders: {
       add: (dueAt, note, line) => {
@@ -309,6 +314,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     history,
     talkHistory,
     memory,
+    methods,
     manuals,
     log,
     chatLog,

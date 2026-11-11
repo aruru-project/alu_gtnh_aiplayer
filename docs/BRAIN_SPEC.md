@@ -159,7 +159,7 @@ interface ProviderConfig {
   - **翻回原始记录**：库函数 `read_log`（两条线都有，只看）读活动日志（`logs/activity-*.jsonl`，面板“对话”页那一份，留最近 14 个有记录的日子）：按第几轮、按时间段、按词、按类别（它说的、别人说的、工具调用和结果、两条线之间的往来……）取，一页放不下写明前后各还有多少；`id` 读一条的全文。日志落盘时每条的详细内容最多留 8,000 字符，截过的照实说。
 - **记忆**：模型通过工具读写的持久笔记（键 → 文本），每轮放进提示词，有总长度上限。地点（home 名字和用途）也记在这里。
 - **限制**：每轮步数上限（两条线各一个）；可选的每日 token 上限（0 为不限，两条线合计）；模型接口连续失败时停止重试，接口恢复后自动继续——对话线的故障由程序在聊天里说一次（限频），干活线的故障由程序告诉对话线一次。
-- **系统提示词**（`agent/prompt.ts`）：公共部分（它是谁、生存模式的规矩、一个玩家两条线）+ 这条线自己的部分 + 程序每轮生成的几节（手册目录、名字、主人、记忆）。只写事实和后果，不立规矩。每条线的核心提示词（公共部分加自己的部分）不超过 2,400 字，有测试卡着。面板里可改、可恢复默认的是对话线的“说话风格”那一段；干活线没有这一段。
+- **系统提示词**（`agent/prompt.ts`）：公共部分（它是谁、生存模式的规矩、一个玩家两条线）+ 这条线自己的部分 + 程序每轮生成的几节（手册目录、游戏内指南、名字、主人、这个服务器、基地的做法、记忆）。对话线自己的部分里有两句事实：这一步只写了字、没同时调工具，这一轮就到此为止；要查很多步的事可以交给干活线（两条线每轮各最多几步，用的是设置里的 `talkMaxSteps`、`maxSteps`）。只写事实和后果，不立规矩。每条线的核心提示词（公共部分加自己的部分）不超过 2,400 字，有测试卡着。面板里可改、可恢复默认的是对话线的“说话风格”那一段；干活线没有这一段。
 
 ## 工具 `tools/`
 
@@ -186,7 +186,7 @@ interface ProviderConfig {
 
 任务类工具都带可选参数 `queue: boolean`（对应 `mode: "append"`）。
 
-上面是第一版的清单，留着当记录。现在两条线各有一份工具清单（对话线：悄悄话、交事和管干活线的三个、所有只查不动的、`run_program`、记忆、提醒、手册、意见簿；干活线：操作身体的全部、查、记忆、手册、意见簿、`report`），另一条线的事按名字调到时不执行、如实说明归谁。工具分三层：发给模型的工具、不发给模型而在它写的程序里调的**库函数**、合并掉的工具的**旧名字**（`set_home` / `list_homes` 现在是通用的 `run_command`，`haul_items` 是库函数……）；看图的工具只发给能看图的模型。现在的清单见 `brain/README.md` 的“工具一览”，三层怎么分、库函数各给什么见 `docs/SCRIPTS.md` 的“库函数”。
+上面是第一版的清单，留着当记录。现在两条线各有一份工具清单（对话线：悄悄话、交事和管干活线的三个、所有只查不动的、`run_program`、记忆、提醒、基地的做法、手册、意见簿；干活线：操作身体的全部、查、记忆、提醒、基地的做法、手册、意见簿、`report`），另一条线的事按名字调到时不执行、如实说明归谁。工具分三层：发给模型的工具、不发给模型而在它写的程序里调的**库函数**、合并掉的工具的**旧名字**（`set_home` / `list_homes` 现在是通用的 `run_command`，`haul_items` 是库函数……）；看图的工具只发给能看图的模型。现在的清单见 `brain/README.md` 的“工具一览”，三层怎么分、库函数各给什么见 `docs/SCRIPTS.md` 的“库函数”。
 
 ## bridge 客户端 `bridge/`
 
@@ -410,6 +410,14 @@ interface ProviderConfig {
 **8. 物品的中文名** `GET /api/items/names?q=<逗号隔开的 id/meta，最多 200 个>` → `{ names: { "minecraft:dirt/0": "泥土" } }`，只回查得到的。
 
 **8b. 物品的提示文字** `GET /api/items/tooltips?q=<逗号隔开的 id/meta，最多 200 个；meta 不写当 0>` → `{ available, tooltips: { "gregtech:gt.blockmachines/31080": { tip: ["机器类型: 离心机", …], shift?: […], ctrl?: […] } } }`，只回有提示的那些；没有这份资料（`packdata` 的 `tooltips.jsonl`）时是 `{ available: false, tooltips: {} }`。`tip` 是玩家把鼠标放到物品上、什么键都不按时名字下面的那几行；`shift`、`ctrl` 是按住那个键时**换成**的另一版，不是接在后面，没有另一版的没有这个键。行是原样的（行首的空格是缩进，`""` 是一段空白，`"---"` 是一条横线），已经去掉了只是界面提示的那几行（“长按 [G] 打开指南”等，见 `docs/PACKDATA.md` 的“物品的提示文字 · 大脑怎么用”）。这些字是一个新号对着一个刚拿出来的样品看到的：电量、存量、绑定这类行说的是样品，不是玩家手里那一个。页面还没做。
+
+**8c. 基地的做法**（这个基地怎么做东西的记录：主人教的、它自己定过的；`store/methods.ts`，存在数据目录的 `methods.json`，实现在 `panel/data-api.ts`）。和模型用的 `set_base_method` 是同一套查对。
+
+- `GET /api/methods` → `{ available, total, counts: { part, order, thing, machine }, entries: [条目 + line] }`。条目照种类排（一类零件、总的先后、具体的东西、机器），每种里先记的在前。`line` 是给人看的一行，和模型用 `base_methods` 看到的一样（具体东西的配方对回了现在的编号，对不回来写着 `NO LONGER IN THE RECIPE BOOK`）。
+  - 公共字段：`key`（`part:plate`、`part:stick:Steel`、`order`、`thing:<东西的键>`、`machine:x,y,z`；写同一个键就是改）、`kind`、`by`（`owner` / `self`）、`at`（epoch ms）、`why`。
+  - `part`：`prefix`、`material?`、`way`（配方页的名字）、`from?`。`order`：`ways`。`thing`：`thing`（`ore:plateSteel`、`id/meta`、`fluid:注册名`）、`name`、`recipe: { ref, way, wayName, in, out, fin, fout, text }`（`ref` 是记下那时的编号）。`machine`：`x y z`、`name?`、`does`、`feed?`、`collect?`、`keep?`。
+- `PUT /api/methods` body 和工具一样：`{ part, way, from?, material?, why? }`、`{ id, meta?, recipe, why? }`（流体给 `fluid`）、`{ order: [做法…], why? }`、`{ machine: {x,y,z}, does, feed?, collect?, keep?, why? }`；`by` 不给是 `owner`（面板上写的算主人定的）。→ `{ entry, replaced }`。写错的（做法名认不出、配方做不出那样东西、没有这条配方……）400 `bad_request`，`message` 是和工具一样的那句英文。
+- `DELETE /api/methods { key }` → `{ removed }`。
 
 **9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面还没做）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。
 

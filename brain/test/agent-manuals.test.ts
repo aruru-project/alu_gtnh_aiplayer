@@ -38,8 +38,25 @@ describe('手册：提示词只列目录，要用时才读', () => {
     assert.equal(talk.includes('先用 read_manual 看完再动手'), false)
     // 核心提示词（公共部分加这条线自己的部分）每条线各自不超过 2,400 字；加上目录、名字、主人、记忆也要明显短
     for (const line of ['talk', 'work'] as const) assert.ok(corePrompt(line, 'Alu').length <= 2400, `the ${line} core prompt is ${corePrompt(line, 'Alu').length} chars`)
-    assert.ok(work.length < 3300, `the work system prompt is ${work.length} chars`)
-    assert.ok(talk.length < 2900, `the talk system prompt is ${talk.length} chars`)
+    // 上限各加了 300：多了“基地的做法”那一节（空的时候三行，约 130 字），对话线另多两句事实（只写字不调工具这一轮就结束；要查很多步可以交给干活线，约 130 字）
+    assert.ok(work.length < 3600, `the work system prompt is ${work.length} chars`)
+    assert.ok(talk.length < 3200, `the talk system prompt is ${talk.length} chars`)
+  })
+
+  it('对话线的提示词里有两句事实：只写了字没调工具这一轮就到此为止；要查很多步的事可以交给干活线，两条线每轮各能走几步用的是设置里的数。干活线的提示词里没有这两句', async (t) => {
+    const h = makeAgent({ settings: { lineSteps: { talk: 12, work: 80 } } })
+    t.after(h.cleanup)
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(told('去仓库'))
+    await h.agent.whenIdle()
+    const talk = h.talk.requests[0]!.system ?? ''
+    const facts =
+      '- 这一步只写了字、没有同时调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。\n' +
+      '- 要查很多步的事两条线都查得了：你一轮最多 12 步，干活线一轮最多 80 步。交给它查，它查完会带话回来。\n'
+    assert.ok(talk.includes(facts), talk.slice(0, 1800))
+    assert.equal((h.llm.requests[0]!.system ?? '').includes('这一轮就到此为止'), false)
+    // 没人说这两个数时用默认的：20 和 60
+    assert.match(corePrompt('talk', 'Alu'), /你一轮最多 20 步，干活线一轮最多 60 步。/)
   })
 
   it('主人在设置里写了这个服务器叫什么、这里的规矩：两条线每一轮的系统提示词里都有这一节，原话照给，并写明这是这个服务器的设置、不是它的记忆；主人改了下一轮就是新的；两样都没写就没有这一节', async (t) => {
@@ -49,7 +66,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
     h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
-    const section = '# 这个服务器\n你现在在的这个服务器，主人叫它「测试服」。这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n主人给这里写的规矩（他的原话）：\n材料随便用，不必逐项问我。\n别动 (100,64,200) 那排箱子。\n\n# 你的记忆\n'
+    const section = '# 这个服务器\n你现在在的这个服务器，主人叫它「测试服」。这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n主人给这里写的规矩（他的原话）：\n材料随便用，不必逐项问我。\n别动 (100,64,200) 那排箱子。\n\n# 基地的做法\n'
     for (const system of [h.llm.requests[0]!.system ?? '', h.talk.requests[0]!.system ?? '']) assert.ok(system.includes(section), system.slice(-600))
 
     // 搬到正式服：主人只写了名字、没写规矩
@@ -57,13 +74,13 @@ describe('手册：提示词只列目录，要用时才读', () => {
     h.agent.handleEvent(told('再去一趟'))
     await h.agent.whenIdle()
     const moved = h.llm.requests.at(-1)!.system ?? ''
-    assert.ok(moved.includes('# 这个服务器\n你现在在的这个服务器，主人叫它「正式服」。这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n\n# 你的记忆\n'), moved.slice(-400))
+    assert.ok(moved.includes('# 这个服务器\n你现在在的这个服务器，主人叫它「正式服」。这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n\n# 基地的做法\n'), moved.slice(-400))
     assert.equal(moved.includes('材料随便用'), false)
     // 只写了规矩、没起名字
     h.settings.environment = { name: '', rules: '挖矿去矿世界。' }
     h.agent.handleEvent(told('再去一趟'))
     await h.agent.whenIdle()
-    assert.ok((h.llm.requests.at(-1)!.system ?? '').includes('# 这个服务器\n这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n主人给这里写的规矩（他的原话）：\n挖矿去矿世界。\n\n# 你的记忆\n'))
+    assert.ok((h.llm.requests.at(-1)!.system ?? '').includes('# 这个服务器\n这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。\n主人给这里写的规矩（他的原话）：\n挖矿去矿世界。\n\n# 基地的做法\n'))
     // 两样都空：没有这一节
     h.settings.environment = { name: ' ', rules: '' }
     h.agent.handleEvent(told('再去一趟'))

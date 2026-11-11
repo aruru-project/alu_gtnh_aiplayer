@@ -19,6 +19,7 @@ import {
   tanksText,
 } from './format.ts'
 import { guideNote, itemOfBlock } from './guide.ts'
+import { methodNoteForMachine } from './methods.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -260,7 +261,9 @@ export const inspectBlock: Tool = {
     // 游戏内指南里有讲这种方块的页：带一行页名和怎么读
     const item = itemOfBlock(ctx.packdata?.items, block)
     const page = item ? guideNote(ctx.packdata?.guide, item.id, item.meta) : undefined
-    const head = `${describeBlock(at, block)}${page !== undefined ? `\nI${page.slice(1)}` : ''}`
+    // 基地的做法里给这台机器记了用途的：带上那一条
+    const method = methodNoteForMachine(ctx.methods, at)
+    const head = `${describeBlock(at, block)}${page !== undefined ? `\nI${page.slice(1)}` : ''}${method !== undefined ? `\nI${method.slice(1)}` : ''}`
     // data：身体的原样回答（tanks、covers 在里面；要了 detail 时还有 says 和 saved，一个键不少）
     const data = { ...at, ...block }
     if (!deep || block.loaded === false || typeof block.id !== 'string') return { content: head, data }

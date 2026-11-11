@@ -73,40 +73,7 @@ describe('plan_item 不再给模型用', () => {
   })
 })
 
-describe('total_materials：路线由它自己选，这里只做乘法', () => {
-  it('给了目标和它选定的每一层的配方：数量沿树相乘，一轮出几个按轮数取整，模头和工具只算一个；没给配方的算成要现成的；它不替人选任何一步', async (t) => {
-    const s = setup(t)
-    // 桨叶 ← 4 柄（压模机，9 锭一根，模头（转轴）不消耗）← 模头（转轴）（4 玄钢板 + 模头（杆），要锤）← 玄钢板（卷板机）← 玄钢锭（高炉）← 玄钢粉（搅拌机一轮出 3 个）
-    const res = await s.lib('total_materials', { ...P.blades, recipes: [R.blades, R.shaft, R.shaftShape, R.bendDark, R.smeltDark, R.mixDark] })
-    assert.equal(res.isError, undefined, res.content)
-    assert.deepEqual(res.content.split('\n'), [
-      'For 1× 直升机桨叶 [adventurebackpack:backpackComponent/6], with the 6 recipe(s) you chose (this only adds up amounts; it checks neither the storage nor the machines):',
-      'To make, things that are needed by later lines first:',
-      // 4 个玄钢粉要搅拌机 2 轮（一轮 3 个），多出 2 个
-      `- #${R.mixDark} (搅拌机) × 2 round(s) → 6× 玄钢粉 (4 needed, 2 left over)`,
-      `- #${R.smeltDark} (工业高炉) × 4 round(s) → 4× 玄钢锭`,
-      `- #${R.bendDark} (卷板机) × 4 round(s) → 4× 玄钢板`,
-      // 模头（转轴）只是留在压模机里：做 4 根柄也只要 1 个
-      `- #${R.shaftShape} (有序合成) × 1 round(s) → 1× 模头（转轴）`,
-      `- #${R.shaft} (压模机) × 4 round(s) → 4× 精炼铁柄`,
-      `- #${R.blades} (有序合成) × 1 round(s) → 1× 直升机桨叶`,
-      'Taken ready-made (you gave no recipe for these): 3× 钢螺丝 [gregtech:gt.metaitem.01/27305], 1× 钢齿轮 [gregtech:gt.metaitem.02/31305], 36× 钢锭 [gregtech:gt.metaitem.01/11305], 1× 模头（杆） [gregtech:gt.metaitem.01/32351], 2× 磁钢粉 [gregtech:gt.metaitem.01/2365], 2× 煤粉 [gregtech:gt.metaitem.01/2535], 2× 黑曜石粉 [gregtech:gt.metaitem.01/2804]',
-      'Needed but not used up, one of each (no recipe given for them): any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22]), any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12])',
-    ])
-    // 换一条路（玄钢粉手工搅，一轮出 2 个）、要 3 个桨叶：照它给的算，12 根柄、12 块板、6 轮手工
-    const hand = await s.lib('total_materials', { ...P.blades, count: 3, recipes: [R.blades, R.shaft, R.shaftShape, R.bendDark, R.smeltDark, R.handMixDark] })
-    assert.match(hand.content, new RegExp(`\\n- #${R.handMixDark} \\(无序合成\\) × 2 round\\(s\\) → 4× 玄钢粉\\n`))
-    assert.match(hand.content, new RegExp(`\\n- #${R.shaft} \\(压模机\\) × 12 round\\(s\\) → 12× 精炼铁柄\\n`))
-    assert.match(hand.content, /108× 钢锭 /)
-    // 要流体的配方：流体合计写出来（有没有它不管）
-    assert.match((await s.lib('total_materials', { ...P.darkIngot, count: 2, recipes: [R.smeltDarkOxygen] })).content, /\nFluids, in all: 2000 mB 氧$/)
-    // 没给目标自己的配方、给了绕圈子的配方：说清楚，不猜
-    assert.match((await s.lib('total_materials', { ...P.blades, recipes: [R.shaft] })).content, /^None of the recipes you gave makes 直升机桨叶 /)
-    assert.match((await s.lib('total_materials', { ...P.steelIngot, recipes: [R.smeltSteel, R.grindIngot] })).content, /^These recipes feed each other in a circle/)
-    // 只在程序里调得到，不是给模型的工具
-    assert.equal(ALL_TOOLS.some((tool) => tool.name === 'total_materials'), false)
-  })
-})
+// total_materials（照基地的做法展开整棵树、扣库存）的测试在 total-materials.test.ts；走树和算数的内核在 material-tree.test.ts。
 
 describe('plan_item：把整条做法排出来', () => {
   it('直升机桨叶：桨叶 ← 4 根柄（压模机，9 钢锭一根，模头不消耗）← 模头（转轴）← 4 玄钢板（卷板机）← 玄钢锭（高炉）← 玄钢粉（搅拌机一轮出 3 个），数量沿树算对，先取料再一步步做', async (t) => {

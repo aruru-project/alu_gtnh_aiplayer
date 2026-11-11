@@ -12,12 +12,14 @@ import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
 import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, spread, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
 import { guideNote, itemOfBlock } from './guide.ts'
+import { thingKeyOfFluid, thingKeyOfSlot } from './material-tree.ts'
+import { methodNoteForMachine, methodNoteForThing } from './methods.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At } from './where.ts'
-import type { Tool, ToolContext } from './types.ts'
+import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 // 协议里的上限
 export const SEARCH_MAX_LIMIT = 40
@@ -69,13 +71,39 @@ const recipeQuery = {
   page: int('Page of the recipes (10 per page).', { min: 1 }),
 }
 
+/**
+ * 查一样东西的做法时：基地的做法里定过它（这一样，或者它这一类零件）的话，在结果的第一行后面说一句。
+ * 只陈述记录里写了什么；列出来的做法照旧是全的、照配方册的先后。
+ */
+function withMethodNote(ctx: ToolContext, i: { id?: string; meta?: number; fluid?: string }, res: ToolResult | string): ToolResult | string {
+  const methods = ctx.methods
+  if (!methods || (typeof res !== 'string' && res.isError)) return res
+  const env = { book: ctx.packdata?.recipes, items: ctx.packdata?.items }
+  let thing: { key: string; members: { id: string; meta: number }[] } | undefined
+  if (typeof i.id === 'string' && i.id.trim().length > 0) {
+    const item = { id: i.id.trim(), meta: i.meta ?? 0 }
+    thing = { key: thingKeyOfSlot({ kind: 'item', ...item, n: 1 }, env.items), members: [item] }
+  } else if (typeof i.fluid === 'string') {
+    const table = ctx.packdata?.fluids
+    const wanted = i.fluid.trim()
+    const found = table?.get(wanted) ? [table.get(wanted)!] : (table?.search(wanted).exact ?? [])
+    if (found.length === 1) thing = { key: thingKeyOfFluid(found[0]!.fluid), members: [] }
+  }
+  const note = thing ? methodNoteForThing(methods, env, thing) : undefined
+  if (note === undefined) return res
+  const content = typeof res === 'string' ? res : res.content
+  const cut = content.indexOf('\n')
+  const noted = cut === -1 ? `${content}\n${note}` : `${content.slice(0, cut)}\n${note}${content.slice(cut)}`
+  return typeof res === 'string' ? noted : { ...res, content: noted }
+}
+
 export const findRecipes: Tool = {
   name: 'find_recipes',
   description:
     'How an item or a fluid is made (NEI\'s "R"). With only id/meta or "fluid": every way to make it (a way is one kind of machine, or hand crafting), what each costs, the power tier, and whether a machine or crafting table near you can do it now. With "way", "contains", "circuit" or "page": the exact recipes with everything they take and give, and how many of each ingredient you carry. Every recipe has a # number for craft_item / process_items. How to choose: crafting manual.',
   inputSchema: obj(recipeQuery),
   async run(ctx, i: { id?: string; meta?: number; fluid?: string; way?: string; contains?: string; circuit?: number; page?: number }) {
-    if (ctx.packdata?.recipes) return findRecipesLocal(ctx, i)
+    if (ctx.packdata?.recipes) return withMethodNote(ctx, i, await findRecipesLocal(ctx, i))
     // 没有本地配方册：问服务器（英文，每种机器只给前几条；只能按物品问）
     if (i.id === undefined) return fail('There is no recipe book on this brain: only an item ("id") can be asked about, from the game server.')
     const id = i.id
@@ -296,8 +324,18 @@ export const findMachines: Tool = {
       ? (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) =>
           guideOf(m.item ?? (typeof m.id === 'string' && typeof m.meta === 'number' ? { id: m.id, meta: m.meta } : itemOfBlock(ctx.packdata?.items, { ...m, tileEntity: true })))
       : undefined
+    // 基地的做法里给这台机器记了用途的：也带在它下面
+    const methods = ctx.methods
+    const noteLine =
+      guideLine || methods
+        ? (m: { x?: number; y?: number; z?: number; id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => {
+            const method = typeof m.x === 'number' && typeof m.y === 'number' && typeof m.z === 'number' ? methodNoteForMachine(methods, { x: m.x, y: m.y, z: m.z }) : undefined
+            const lines = [guideLine?.(m), method].filter((x): x is string => x !== undefined)
+            return lines.length > 0 ? lines.join('\n    ') : undefined
+          }
+        : undefined
     // data：身体的原样回答（每台机器的状态、总线和仓、覆盖板、流体罐），加上照配方册认出来的别的机器
-    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}), ...(guideLine ? { guide: guideLine } : {}) }) + unseen, data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
+    return { content: formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}), ...(noteLine ? { guide: noteLine } : {}) }) + unseen, data: { machines: res.machines ?? [], total: res.total ?? res.machines?.length ?? 0, others } }
   },
 }
 

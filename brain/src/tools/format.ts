@@ -1270,8 +1270,8 @@ export interface OtherMachineLine {
   attached?: readonly AttachedBlock[]
 }
 
-/** 一台机器在游戏内指南里有没有讲它的页：有就是那一行字（find_machines 传进来，每一页只说一次）。 */
-type GuideLine = (m: { id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => string | undefined
+/** 一台机器下面另带的一行：游戏内指南里讲它的页（每一页只说一次）、基地的做法里给它记的用途。find_machines 传进来。 */
+type GuideLine = (m: { x?: number; y?: number; z?: number; id?: string; meta?: number; name?: string; item?: { id: string; meta: number } }) => string | undefined
 
 function otherMachineLines(others: readonly OtherMachineLine[], radius: number, guide?: GuideLine): string[] {
   if (others.length === 0) return []
