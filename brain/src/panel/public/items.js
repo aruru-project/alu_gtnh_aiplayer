@@ -242,6 +242,63 @@ export function screenTitle(name) {
   return kind ? `${kind[1]}（${name}）` : name
 }
 
+const compactNumber = (n) => (typeof n === 'number' ? n.toLocaleString('zh-CN') : '?')
+
+/** 界面上格子以外的一样东西：开关的开和关、页签开没开、流体格里是什么多少、选项选的哪个……只看，不能点。 */
+function controlRow(c) {
+  const name = h('span', { class: 'ctl-name', title: c.key, text: c.name })
+  const lock = c.readOnly ? h('span', { class: 'ctl-note', title: '只显示，玩家改不了', text: '只读' }) : null
+  if (c.kind === 'switch') {
+    const on = c.value === true
+    return h('div', { class: `ctl switch${on ? ' on' : ''}` }, h('span', { class: 'ctl-light', role: 'img', 'aria-label': on ? '开着' : '关着' }), name, h('span', { class: 'ctl-value', text: on ? '开' : '关' }), lock)
+  }
+  if (c.kind === 'panel') {
+    return h('div', { class: `ctl tab${c.open ? ' on' : ''}` }, h('span', { class: 'ctl-kind', text: '页签' }), name, h('span', { class: 'ctl-value', text: c.open ? '开着' : '没开' }))
+  }
+  if (c.kind === 'fluid') {
+    const f = c.fluid ?? { amount: 0 }
+    const has = f.id !== undefined && f.amount > 0
+    const ratio = has && f.capacity > 0 ? Math.min(1, f.amount / f.capacity) : 0
+    const bar = h('span', { class: 'ctl-tank', role: 'img', 'aria-label': has ? `装了 ${Math.round(ratio * 100)}%` : '空的' }, h('span'))
+    bar.firstChild.style.width = `${Math.round(ratio * 100)}%`
+    const ways = [f.fills ? '能倒进' : '', f.drains ? '能取出' : ''].filter(Boolean).join('、')
+    return h(
+      'div',
+      { class: 'ctl fluid', title: `${c.key}${f.id ? `\n${f.id}` : ''}` },
+      h('span', { class: 'ctl-kind', text: '流体格' }),
+      h('span', { class: 'ctl-fluid', text: has ? f.name ?? f.id : '空的' }),
+      bar,
+      h('span', { class: 'ctl-value', text: has ? `${compactNumber(f.amount)}${f.capacity ? ` / ${compactNumber(f.capacity)}` : ''} mB` : f.capacity ? `能装 ${compactNumber(f.capacity)} mB` : '' }),
+      ways ? h('span', { class: 'ctl-note', text: ways }) : null,
+    )
+  }
+  if (c.kind === 'choice') {
+    return h('div', { class: 'ctl' }, h('span', { class: 'ctl-kind', text: '选项' }), name, h('span', { class: 'ctl-value', title: (c.options ?? []).length > 0 ? `能选：${c.options.join('、')}` : '', text: String(c.value ?? '—') }), lock)
+  }
+  if (c.kind === 'button') return h('div', { class: 'ctl' }, h('span', { class: 'ctl-kind', text: '按钮' }), name)
+  const kinds = { number: '数字', text: '文字', value: '显示' }
+  return h('div', { class: 'ctl' }, h('span', { class: 'ctl-kind', text: kinds[c.kind] ?? c.kind }), name, c.value !== undefined ? h('span', { class: 'ctl-value', text: String(c.value) }) : null, lock)
+}
+
+/** 控件按它们所在的面板分组；只有一块面板时不写面板名。 */
+function controlsBlock(screen) {
+  const controls = screen.controls ?? []
+  if (controls.length === 0) return null
+  const panels = new Map()
+  for (const c of controls) {
+    const key = c.panel ?? ''
+    if (!panels.has(key)) panels.set(key, [])
+    panels.get(key).push(c)
+  }
+  const total = screen.controlsTotal ?? controls.length
+  return h(
+    'div',
+    { class: 'ctls', role: 'group', 'aria-label': '界面上的控件' },
+    h('div', { class: 'mc-title' }, h('span', { text: '格子以外的' }), h('span', { class: 'mc-note', text: `${total} 样${total > controls.length ? `，这里列了 ${controls.length} 样` : ''}，只看不能点` })),
+    [...panels.entries()].map(([panel, list]) => [panels.size > 1 && panel ? h('div', { class: 'ctl-panel', text: panel }) : null, list.map(controlRow)]),
+  )
+}
+
 /** 开着的界面（箱子、机器）：只画界面自己的格子；它背包的那些格子上面已经有了，不重复画。 */
 export function screenPanel(screen, looks, onPick) {
   const theirs = (screen.slots ?? []).filter((s) => !s.own)
@@ -260,6 +317,7 @@ export function screenPanel(screen, looks, onPick) {
           theirs.map((s) => slotEl(s, looks, onPick)),
         ),
     screen.cursor ? h('p', { class: 'mc-note', text: `鼠标上拿着：${screen.cursor.name} ×${screen.cursor.count}` }) : null,
+    controlsBlock(screen),
   )
 }
 

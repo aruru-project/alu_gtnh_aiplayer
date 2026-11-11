@@ -485,8 +485,16 @@ function mapBlock() {
   return el
 }
 
+/** 俯视图那张卡在不在视口里（不在就不去问身体）。 */
+let mapVisible = false
+let mapSeen
+let lastMapAt = 0
+/** 俯视图多久重取一次。 */
+const MAP_EVERY_MS = 10_000
+
 async function pollMap() {
-  if (!root || root.hidden || document.hidden) return
+  if (!root || root.hidden || document.hidden || !mapVisible) return
+  lastMapAt = Date.now()
   try {
     mapData = await api('GET', '/minimap')
   } catch (e) {
@@ -518,7 +526,17 @@ function renderLive(el) {
     picked = slot.slot !== undefined ? { where, slot: slot.slot } : null
     put(detail, slotDetail(slot))
   }
-  const map = el.querySelector('.card.map') ?? mapBlock()
+  let map = el.querySelector('.card.map')
+  if (!map) {
+    map = mapBlock()
+    // 滚到看得见它的时候才去取（world.scan 一次要看两千多列），看不见就停
+    mapSeen?.disconnect()
+    mapSeen = new IntersectionObserver((entries) => {
+      mapVisible = entries.some((e) => e.isIntersecting)
+      if (mapVisible && Date.now() - lastMapAt > MAP_EVERY_MS) pollMap()
+    })
+    mapSeen.observe(map)
+  }
   put(el, 
     h('div', { class: 'card game' }, hud(live)),
     h('div', { class: 'mc-wrap' }, inventoryPanel(live, pick('inv')), live.screen ? screenPanel(live.screen, live.looks, pick('screen')) : null, detail),
@@ -588,9 +606,9 @@ export function enter(el) {
     }),
   ]
   watchLiveClosely(true)
-  pollMap()
+  if (Date.now() - lastMapAt > MAP_EVERY_MS) pollMap()
   clearInterval(mapTimer)
-  mapTimer = setInterval(pollMap, 6000)
+  mapTimer = setInterval(pollMap, MAP_EVERY_MS)
 }
 
 export function leave() {

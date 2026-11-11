@@ -18,7 +18,8 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { MockBridge } from './mock-bridge.ts'
-import { MockLlm, demoResponder } from './mock-llm.ts'
+import { MockLlm } from './mock-llm.ts'
+import type { MockReply, RecordedLlmRequest } from './mock-llm.ts'
 
 type Json = Record<string, any>
 
@@ -182,6 +183,17 @@ function setScreen(on: boolean): void {
           { slot: 60, item: { id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' } },
           { slot: 61, ghost: true, item: { id: 'gregtech:gt.integrated_circuit', meta: 1, count: 1, name: 'Programmed Circuit 1' } },
           ...bot.inventory.map((i) => ({ slot: 62 + i.slot, own: true, item: { id: i.id, meta: i.meta, count: i.count, name: i.name } })),
+        ],
+        // 界面上格子以外的东西（形状照 docs/PROTOCOL.md 的“界面上的控件”；内容是随手摆的，为了看面板怎么画）
+        controls: [
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'powerSwitch:0', kind: 'switch', value: true },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'fluidAutoOutput:0', kind: 'switch', value: false },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'powerfail:0', kind: 'switch', value: false, readOnly: true },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'cover_panel_west', kind: 'panel', open: false },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'auto_sync:tank:3', kind: 'fluid', fluid: 'molten.steel', name: 'Molten Steel', amount: 288, capacity: 32000, fills: false, drains: true },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'auto_sync:tank:4', kind: 'fluid', capacity: 16000, fills: true, drains: false },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'outputSide', kind: 'choice', value: 'WEST', options: ['NORTH', 'SOUTH', 'WEST', 'EAST'] },
+          { panel: 'basicmachine.fluidextractor.tier.02', key: 'progress:0', kind: 'value', value: '37 / 80' },
         ],
       }
     : null
@@ -616,6 +628,71 @@ function playTwoLines(): void {
   end('talk', 49, 1)
 }
 
+// ── 模拟模型：两条线各按几条固定的规矩回应（只为了看面板，不是模型）──
+
+/**
+ * 认这几个词（都是主人对它说的话里的）：
+ *   平 / 搬 / 存     对话线应一声并交给干活线；干活线开一个身体的任务，做完留一句话
+ *   问              干活线不动手，先问一个问题（然后等回答）；主人再说什么，对话线带话过去，它就照着干
+ *   例程            干活线开一个后台例程（一连串查询）
+ *   慢              干活线想得久一点（每步 6 秒），好看“正在想”
+ *   停              对话线叫停（stop_work）
+ *   查 / 怎么做      对话线自己查一下再回答，不惊动干活线
+ * 别的话对话线只回一句。
+ */
+function twoLineResponder(req: RecordedLlmRequest): MockReply {
+  const messages: any[] = Array.isArray(req.body?.messages) ? req.body.messages : []
+  const last = messages[messages.length - 1]
+  const text = typeof last?.content === 'string' ? last.content : Array.isArray(last?.content) ? last.content.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n') : ''
+  const afterTool = last?.role === 'tool'
+  const tools: string[] = Array.isArray(req.body?.tools) ? req.body.tools.map((t: any) => t?.function?.name ?? t?.name) : []
+  // 测试连接、压缩历史这类不带工具的调用
+  if (tools.length === 0) return { text: 'pong' }
+  const talk = tools.includes('tell_worker')
+  const todo = text.split('[最近发生的事')[0]?.split('[当前状态]')[0] ?? ''
+  const usage = { input: talk ? 6200 : 48000, output: 90, cacheRead: talk ? 5400 : 45000 }
+
+  if (talk) {
+    if (afterTool) return { text: '', usage }
+    const fromWorker = /干活线(.*?)[:：]\s*([\s\S]*)/.exec(todo)
+    if (fromWorker) {
+      const body = fromWorker[2]!.split('\n')[0]!.slice(0, 120)
+      if (/提问|问你/.test(fromWorker[1]!)) return { text: `它问：${body} 你定一下？`, usage }
+      if (/状况/.test(fromWorker[1]!)) return { text: `出了点状况：${body}`, usage }
+      return { text: `弄好了：${body}`, usage }
+    }
+    const said = /(?:说|对你说)[:：]\s*([\s\S]*)/.exec(todo)?.[1]?.split('\n')[0]?.trim() ?? todo.trim().slice(0, 80)
+    if (/停/.test(said)) return { text: '好，都停下。', toolCalls: [{ name: 'stop_work', input: { reason: '主人说停' } }], usage }
+    if (/查|怎么做/.test(said)) return { toolCalls: [{ name: 'find_item', input: { query: '钢锭' } }], usage }
+    if (/平|搬|存|问|例程|慢|做|拿|凿/.test(said)) return { text: '好，我去办。', toolCalls: [{ name: 'tell_worker', input: { text: said } }], usage }
+    return { text: '我在。（我是模拟的模型，只认得“平”“搬”“问”“例程”“慢”“停”“查”这几个词。）', usage }
+  }
+
+  // 干活线
+  // 这一轮是不是“慢”的：看这一轮开头给它的那一条（以前说过的不算）
+  const opening = [...messages].reverse().find((m) => m.role === 'user')
+  const openingText = typeof opening?.content === 'string' ? opening.content : ''
+  const slow = /慢/.test(openingText.split('[最近发生的事')[0] ?? '') ? { delayMs: 6000 } : {}
+  if (afterTool) {
+    const result = typeof last.content === 'string' ? last.content : ''
+    // 开了任务或者例程：这一轮到此为止，等它结束再被叫醒
+    if (/started|runs in the background|waiting for an answer|Sent to/i.test(result)) return { text: '', usage, ...slow }
+    if (/You are at|Within \d+ blocks/.test(result)) return { text: '看过了，周围没有要紧的东西。', usage, ...slow }
+    return { text: '', usage, ...slow }
+  }
+  if (/完成了/.test(todo)) return { text: '做好了，没有出错。', usage, ...slow }
+  if (/失败了/.test(todo)) return { toolCalls: [{ name: 'report', input: { text: '刚才那个任务没干成，要不要换个办法？', question: true } }], usage, ...slow }
+  if (/例程.*(有结果|跑完|停)/.test(todo)) return { text: '例程跑完了：看了 6 次周围，没有出错。', usage, ...slow }
+  if (/被叫停|stopped/i.test(todo)) return { text: '', usage }
+  if (/例程/.test(todo)) {
+    return { toolCalls: [{ name: 'start_routine', input: { name: '转一圈看看', code: "for (let n = 0; n < 6; n++) {\n  const r = await tool('look_around', {})\n  log('第 ' + (n + 1) + ' 眼：' + r.text.slice(0, 30))\n  await tool('get_status', {})\n}\nreturn '看了 6 次'" } }], usage, ...slow }
+  }
+  if (/问/.test(todo) && !/回答|平到|就/.test(todo)) return { toolCalls: [{ name: 'report', input: { text: '要平到哪一层？脚下是 y=69，旁边的路是 y=68。', question: true } }], usage, ...slow }
+  if (/搬|存/.test(todo)) return { toolCalls: [{ name: 'look_around', input: {} }, { name: 'deposit_items', input: { container: { x: 12, y: 64, z: -4 }, items: [{ id: 'minecraft:dirt', count: 64 }] } }], usage, ...slow }
+  if (/平|y=\d+/.test(todo)) return { toolCalls: [{ name: 'flatten_area', input: { x1: -526, z1: 39, x2: -519, z2: 46, y: 69 } }], usage, ...slow }
+  return { text: '不知道要我干什么。', usage, ...slow }
+}
+
 // ── 代理 ──
 
 function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -888,7 +965,7 @@ async function main(): Promise<void> {
   await seedData().catch((e) => console.log(`[dev] 没能往数据目录里放样本：${e instanceof Error ? e.message : String(e)}`))
   await bridge.start()
   const llm = new MockLlm()
-  llm.fallback = demoResponder
+  llm.fallback = twoLineResponder
   await llm.start(LLM_PORT)
 
   // 假数据的时间线不用大脑自己的日志；--shape real 时大脑读的就是数据目录里那份样本

@@ -23,7 +23,7 @@ import type { TextureAtlas } from '../packdata/index.ts'
 import { BlockLooks, stableColor } from '../render/index.ts'
 import type { RGB } from '../render/index.ts'
 import type { ConfigStore } from '../store/config.ts'
-import { nameOf } from '../tools/format.ts'
+import { fluidName, nameOf } from '../tools/format.ts'
 
 export type ItemLook = { icon: number } | { tex: number; tint?: RGB } | { color: RGB; known: boolean }
 
@@ -51,6 +51,32 @@ export interface SlotView {
   ghost?: boolean
 }
 
+/**
+ * 开着的界面上格子以外的一样东西（docs/PROTOCOL.md 的“界面上的控件”）：开关、选项、数字、能再打开的面板（页签）、流体格、按钮。
+ * 名字是界面自己起的（fluidAutoOutput、cover_panel_west……），面板只照着显示，不操作。
+ */
+export interface ControlView {
+  /** 它在哪块面板上（界面自己起的名字）。 */
+  panel?: string
+  key: string
+  /** key 里冒号前面的那一段：给人看的名字。 */
+  name: string
+  /** switch | choice | number | text | panel | fluid | button | value | other */
+  kind: string
+  value?: string | number | boolean
+  /** 只显示、不收玩家的改动。 */
+  readOnly?: boolean
+  /** kind 是 panel：这块面板现在开着没有。 */
+  open?: boolean
+  /** kind 是 choice：能选哪几样。 */
+  options?: string[]
+  /** kind 是 fluid：格里是什么流体（name 是中文名，查不到是身体给的）、多少 mB、能装多少；空的没有 id。 */
+  fluid?: { id?: string; name?: string; amount: number; capacity?: number; fills?: boolean; drains?: boolean }
+}
+
+/** 一个界面最多给面板这么多个控件（再多的不列，带上一共多少个）。 */
+const CONTROLS_MAX = 80
+
 export interface LiveDeps {
   config: ConfigStore
   bridge: BridgeApi
@@ -74,6 +100,31 @@ const NAMES_PER_REQUEST = 200
 
 function finite(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
+}
+
+/** 身体给的一个控件 → 面板显示的。认不出来（没有 key）的不要。 */
+function controlView(raw: unknown): ControlView | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  if (typeof r.key !== 'string' || r.key.length === 0) return undefined
+  const view: ControlView = { key: r.key, name: r.key.split(':')[0] || r.key, kind: typeof r.kind === 'string' ? r.kind : 'other' }
+  if (typeof r.panel === 'string' && r.panel.length > 0) view.panel = r.panel
+  if (typeof r.value === 'string' || typeof r.value === 'number' || typeof r.value === 'boolean') view.value = typeof r.value === 'string' ? r.value.slice(0, 200) : r.value
+  if (r.readOnly === true) view.readOnly = true
+  if (typeof r.open === 'boolean') view.open = r.open
+  if (Array.isArray(r.options)) view.options = r.options.filter((o): o is string => typeof o === 'string').slice(0, 40)
+  if (view.kind === 'fluid') {
+    const id = typeof r.fluid === 'string' && r.fluid.length > 0 ? r.fluid : undefined
+    view.fluid = { amount: finite(r.amount) ? r.amount : 0 }
+    if (id !== undefined) {
+      view.fluid.id = id
+      view.fluid.name = fluidName(id, typeof r.name === 'string' ? r.name : undefined)
+    }
+    if (finite(r.capacity)) view.fluid.capacity = r.capacity
+    if (typeof r.fills === 'boolean') view.fluid.fills = r.fills
+    if (typeof r.drains === 'boolean') view.fluid.drains = r.drains
+  }
+  return view
 }
 
 export class PanelLive {
@@ -275,7 +326,16 @@ export class PanelLive {
       if (s.ghost) view.ghost = true
       slots.push(view)
     }
-    return { name: screen.screen ?? '', slotCount: screen.slotCount ?? slots.length, slots, cursor: this.itemView(screen.cursor) ?? null }
+    const all = (screen as { controls?: unknown }).controls
+    const controls = Array.isArray(all) ? all.slice(0, CONTROLS_MAX).map((c) => controlView(c)).filter((c): c is ControlView => c !== undefined) : []
+    return {
+      name: screen.screen ?? '',
+      slotCount: screen.slotCount ?? slots.length,
+      slots,
+      cursor: this.itemView(screen.cursor) ?? null,
+      controls,
+      ...(Array.isArray(all) && all.length > controls.length ? { controlsTotal: all.length } : {}),
+    }
   }
 
   /** 别的玩家：和它同一个维度的按远近排在前面，带距离和方位；别的维度的排后面。 */

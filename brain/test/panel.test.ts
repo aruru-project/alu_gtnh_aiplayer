@@ -1384,12 +1384,31 @@ describe('面板：“现在”页的数据（游戏里的它）', () => {
       { slot: 0, item: { id: 'minecraft:cobblestone', meta: 0, count: 64, name: 'Cobblestone' } },
       { slot: 1, takesNothing: true },
       { slot: 27, own: true, item: { id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' } },
-    ], cursor: { id: 'minecraft:torch', meta: 0, count: 3, name: 'Torch' } })
+    ], cursor: { id: 'minecraft:torch', meta: 0, count: 3, name: 'Torch' },
+    // 界面上格子以外的东西（docs/PROTOCOL.md 的“界面上的控件”）
+    controls: [
+      { panel: 'machine', key: 'fluidAutoOutput:0', kind: 'switch', value: false },
+      { panel: 'machine', key: 'powerfail:0', kind: 'switch', value: true, readOnly: true },
+      { panel: 'machine', key: 'cover_panel_west', kind: 'panel', open: false },
+      { panel: 'machine', key: 'tank:3', kind: 'fluid', fluid: 'molten.steel', name: 'Molten Steel', amount: 288, capacity: 32000, fills: false, drains: true },
+      { panel: 'machine', key: 'tank:4', kind: 'fluid', capacity: 16000 },
+      { panel: 'machine', key: 'side', kind: 'choice', value: 'X', options: ['X', 'Y'] },
+      { kind: 'switch', value: true },
+    ] })
     const live = (await s.call('GET', '/api/live')).json
     assert.deepEqual(live.players.map((p: { name: string; dist: number | null }) => [p.name, p.dist]), [['Near', 5], ['Far', 100], ['Nether', null]])
     assert.deepEqual([live.screen.name, live.screen.slotCount, live.screen.cursor.name, live.screen.cursor.count], ['ContainerChest', 63, 'Torch', 3])
     assert.deepEqual(live.screen.slots.map((x: { slot: number; own?: boolean; takesNothing?: boolean; item?: { name: string } }) => [x.slot, x.own ?? false, x.takesNothing ?? false, x.item?.name ?? null]), [[0, false, false, 'Cobblestone'], [1, false, true, null], [27, true, false, 'Dirt']])
     assert.deepEqual(live.world, { dayTime: 3000, isDay: true, raining: false, tps: 20 })
+    // 控件：开关的开和关、只读的、页签开没开、流体格里是什么多少（空的没有流体）、选项和能选的；没有名字的那个不要
+    assert.deepEqual(live.screen.controls, [
+      { key: 'fluidAutoOutput:0', name: 'fluidAutoOutput', kind: 'switch', panel: 'machine', value: false },
+      { key: 'powerfail:0', name: 'powerfail', kind: 'switch', panel: 'machine', value: true, readOnly: true },
+      { key: 'cover_panel_west', name: 'cover_panel_west', kind: 'panel', panel: 'machine', open: false },
+      { key: 'tank:3', name: 'tank', kind: 'fluid', panel: 'machine', fluid: { amount: 288, id: 'molten.steel', name: 'Molten Steel', capacity: 32000, fills: false, drains: true } },
+      { key: 'tank:4', name: 'tank', kind: 'fluid', panel: 'machine', fluid: { amount: 0, capacity: 16000 } },
+      { key: 'side', name: 'side', kind: 'choice', panel: 'machine', value: 'X', options: ['X', 'Y'] },
+    ])
 
     // 身体说现在看不了（有任务在跑）：没有界面，别的照给
     const busy = await setup(t)

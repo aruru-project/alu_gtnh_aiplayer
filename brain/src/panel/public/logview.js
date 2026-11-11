@@ -171,7 +171,7 @@ function renderRelay(item, compact = false) {
     'div',
     { class: `rband k-${item.kind}${item.isError ? ' is-error' : ''} ${toWork ? 'to-work' : 'to-talk'}${compact ? ' compact' : ''}`, title: compact ? item.text : '' },
     h('div', { class: 'relay-route', title: toWork ? `${left}交给干活线的` : '干活线送给对话线的' }, h('span', { class: 'tag talk', text: left }), h('span', { class: 'relay-arrow', 'aria-label': toWork ? '交给' : '送回', text: item.kind === 'stop' ? '■→' : toWork ? '──→' : '←──' }), h('span', { class: 'tag work', text: '干活线' })),
-    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 && !compact ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
+    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), item.background ? h('span', { class: 'chip', title: '两条线来回了太多轮没有外面的新消息：这一条只放进对方的背景里，没有叫醒它', text: '只作背景，没叫醒它' }) : null, h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 && !compact ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
     time(item.time),
   )
   // “只看对话”那一档里它只占一行，不抢人话的位置；全文在另外两档里看
@@ -189,7 +189,8 @@ function stepHead(step, live) {
       if (typeof call.ms === 'number') parts.push(h('span', { text: duration(call.ms) }))
       const tokens = tokensText(call.inputTokens, call.outputTokens, call.cacheReadTokens)
       if (tokens) parts.push(h('span', { text: tokens }))
-      if (call.state === 'failed') parts.push(h('span', { class: 'bad', text: `失败${call.errorKind ? `（${call.errorKind}）` : ''}：${call.error ?? ''}` }))
+      if (call.state === 'failed' && call.errorKind === 'aborted') parts.push(h('span', { class: 'warn', title: call.error ?? '', text: '想到一半被打断了' }))
+      else if (call.state === 'failed') parts.push(h('span', { class: 'bad', text: `失败${call.errorKind ? `（${call.errorKind}）` : ''}：${call.error ?? ''}` }))
       else if (call.stop && call.stop !== 'tool_calls') parts.push(h('span', { class: call.stop === 'truncated' ? 'warn' : '', text: STOP_REASONS[call.stop] ?? call.stop }))
     }
   }
@@ -238,13 +239,24 @@ function lastText(turn) {
   return ''
 }
 
-function statsText(turn) {
+/** 一轮的账：几步、几次工具、多久、多少 token。brief：只要步数和时长（对话线那边收着的时候）。 */
+function statsText(turn, brief = false) {
   const bits = []
   if (turn.calls !== undefined) bits.push(`${turn.calls} 步`)
-  if (turn.tools > 0) bits.push(`${turn.tools} 次工具`)
+  if (turn.tools > 0 && !brief) bits.push(`${turn.tools} 次工具`)
   if (turn.startedAt !== undefined && turn.endedAt !== undefined) bits.push(duration(turn.endedAt - turn.startedAt))
-  if (turn.hasTokens) bits.push(tokensText(turn.inputTokens, turn.outputTokens, turn.cacheReadTokens))
+  if (turn.hasTokens && !brief) bits.push(tokensText(turn.inputTokens, turn.outputTokens, turn.cacheReadTokens))
   return bits.join(' · ')
+}
+
+/**
+ * 一轮没人动过它的时候开着还是收着：干活那一道最新的一轮开着（看得到它一步步在干什么）；
+ * 对话那一道的只在它正在跑的时候开着（它的结果就是下面那句话，不用摊开）。
+ */
+function defaultOpen(item, ctx) {
+  const turn = item.turn
+  if (item.lane === 'talk') return ctx.liveTurns.has(turn.id) && turn.open
+  return ctx.latestTurns.has(turn.key)
 }
 
 function turnFlags(turn, live) {
@@ -263,8 +275,8 @@ const chipEls = (chips) => chips.map((c) => h('span', { class: `tchip${c.bad ? '
 function renderWork(item, ctx) {
   const turn = item.turn
   const live = ctx.liveTurns.has(turn.id) && turn.open
-  const open = isOpen(`turn:${turn.key}`, ctx.latestTurns.has(turn.key))
   const quiet = item.lane === 'talk'
+  const open = isOpen(`turn:${turn.key}`, defaultOpen(item, ctx))
   const el = h('div', { class: `turn${open ? ' open' : ''}${live ? ' live' : ''}${quiet ? ' quiet' : ''}${turn.errors > 0 ? ' has-error' : ''}` })
   if (item.index === 0) {
     const chips = toolChips(turn)
@@ -274,7 +286,7 @@ function renderWork(item, ctx) {
       { type: 'button', class: 'turn-head', 'aria-expanded': String(open), title: open ? '收起这一轮' : '展开看每一步' },
       h('span', { class: 'caret', 'aria-hidden': 'true' }),
       h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: state.status?.agents?.length > 1 ? agentLabel(state.status.agents.find((a) => a.agent === item.agent) ?? item.agent ?? 'main') : '模型' }),
-      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', text: statsText(turn) }) : trigger),
+      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', title: statsText(turn), text: statsText(turn, !open) }) : trigger),
       time(turn.startedAt ?? turn.firstTime),
       h('span', { class: 'turn-meta' }, quiet ? (open ? [] : chipEls(chips)) : h('span', { class: 'stats', text: statsText(turn) }), turnFlags(turn, live)),
     )
@@ -539,7 +551,7 @@ function renderItem(item, prev, ctx) {
 function itemRev(item, ctx) {
   if (item.type === 'work') {
     const key = item.turn.key
-    return `${item.rev}:${isOpen(`turn:${key}`, ctx.latestTurns.has(key)) ? 1 : 0}:${ctx.liveTurns.has(item.turn.id) ? 1 : 0}:${namesVersion}`
+    return `${item.rev}:${isOpen(`turn:${key}`, defaultOpen(item, ctx)) ? 1 : 0}:${ctx.liveTurns.has(item.turn.id) ? 1 : 0}:${namesVersion}`
   }
   if (item.type === 'run') return `${item.rev}:${ctx.runningRoutine}:${namesVersion}`
   return String(item.rev)

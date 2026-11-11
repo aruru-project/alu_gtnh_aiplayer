@@ -302,6 +302,8 @@ export function buildTimeline(entries) {
         to: relay.to ?? (entry.agent === 'work' ? 'talk' : 'work'),
         quotes: relay.quotes ?? 0,
         text: text.replace(RELAY_PREFIX, ''),
+        // 两条线空转时这一条只作背景，没有叫醒对方（后端写在正文开头的括号里）
+        background: /只作背景/.test(RELAY_PREFIX.exec(text)?.[0] ?? ''),
         detail: entry.detail,
         isError: entry.isError === true,
         turn: entry.turn,
@@ -558,7 +560,8 @@ export function buildTimeline(entries) {
           turn.cacheReadTokens += call.cacheReadTokens ?? 0
         }
         if (typeof call.ms === 'number') turn.modelMs += call.ms
-        if (call.state === 'failed') turn.errors++
+        // 被叫停打断的那一步（errorKind 是 aborted）不是模型出了错，不算进“几处出错”
+        if (call.state === 'failed' && call.errorKind !== 'aborted') turn.errors++
       }
     }
     if (calls > 0) turn.calls = Math.max(turn.calls ?? 0, calls)
