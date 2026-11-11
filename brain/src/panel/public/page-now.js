@@ -333,7 +333,7 @@ function renderTodo(el) {
 
 // ── 左边：最近几步、最近说的话 ──
 
-const FEED_TAGS = { say: ['它说', 'say'], heard: ['', 'heard'], step: ['模型', 'model'], tool: ['', 'model'], run: ['', 'routine'], relay: ['', 'relay'], error: ['出错', 'bad'] }
+const FEED_TAGS = { say: ['', 'say'], heard: ['', 'heard'], step: ['模型', 'model'], tool: ['', 'model'], run: ['', 'routine'], relay: ['', 'relay'], error: ['出错', 'bad'] }
 
 function renderFeed(el) {
   const { items } = getTimeline()
@@ -352,7 +352,7 @@ function renderFeed(el) {
               'li',
               { class: `feed-row k-${r.kind}${r.isError ? ' is-error' : ''}${r.pending && (r.kind !== 'tool' || live.has(r.turn)) ? ' pending' : ''}` },
               h('time', { class: 'time', text: clock(r.time) }),
-              r.kind === 'tool' ? h('span', { class: 'feed-tool', text: r.label }) : h('span', { class: `tag ${tone}`, text: label || r.label }),
+              r.kind === 'tool' ? h('span', { class: 'feed-tool', text: r.label }) : h('span', { class: `tag ${tone}${r.channel ? ` at-${r.channel}` : ''}`, title: r.program ? '程序替它说的，不是模型写的' : '', text: `${label || r.label}${r.program ? '·代说' : ''}` }),
               h('span', { class: 'feed-text' }, r.kind === 'tool' && r.args ? h('span', { class: 'feed-args', text: `${describeArgs(r.argsFull ?? r.args, itemName) ?? r.args.slice(0, 48)} ` }) : null, r.kind !== 'tool' ? r.text : r.pending ? (live.has(r.turn) ? '（还没回来）' : '（没有结果的记录）') : `→ ${r.text}`),
             )
           }),

@@ -126,7 +126,7 @@ function build(el) {
     lanes,
     h('div', { class: 'log-wrap' }, scroller, button('回到最新', { class: 'jump', hidden: true }, toBottom)),
     form,
-    h('p', { class: 'hint composer-hint', text: '这里发的话只有它看得到，不会出现在游戏聊天里。它在游戏里说的话会出现在上面。' }),
+    h('p', { class: 'hint composer-hint', text: '这里发的话只有它看得到，不会出现在游戏聊天里。它的话在上面，每句标着在哪里说的：公屏（游戏里所有人看得到）、私聊 → 某人、只在面板（只有你看得到）。' }),
   )
   el.classList.toggle('talk-only', level === LEVEL.talk)
   view = createLogView(timelineEl, {
