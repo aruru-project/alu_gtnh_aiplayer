@@ -20,7 +20,13 @@ import alu.aiplayer.util.J;
 public final class DigTask extends AreaTask {
 
     private final List<int[]> targets = new ArrayList<>();
+    private final Set<Long> named = new HashSet<>();
     private int[] current;
+
+    @Override
+    protected boolean named(int x, int y, int z) {
+        return named.contains(key(x, y, z));
+    }
 
     public DigTask(JsonObject params) {
         super("dig", params);
@@ -32,6 +38,7 @@ public final class DigTask extends AreaTask {
             int[] p = Params.pos(e.getAsJsonObject());
             targets.add(p);
             listed.add(key(p[0], p[1], p[2]));
+            named.add(key(p[0], p[1], p[2]));
         }
         progressTotal = targets.size();
         rule = new NavWorld.BreakRule() {

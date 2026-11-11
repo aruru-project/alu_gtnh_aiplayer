@@ -168,6 +168,7 @@ abstract class AreaTask extends Task {
             if (block.isAir(w, x, y, z)) return Act.OK;
             // The work list may be minutes old: someone could have put a chest here since.
             String why = untouchable(w, x, y, z, block);
+            if ("has contents".equals(why) && named(x, y, z)) why = null;
             if (why == null && nextToLava(w, x, y, z)) why = "next to lava";
             if (why != null) {
                 skip(x, y, z, why);
@@ -612,6 +613,15 @@ abstract class AreaTask extends Task {
     }
 
     // ---- helpers for subclasses -----------------------------------------------------------------------------
+
+    /**
+     * Whether this block was asked for by its position (not merely lies inside an area). Such a block is dug
+     * like a player digs it, contents and all: what was inside drops. Area work leaves blocks with contents
+     * standing, so that clearing a box does not empty somebody's chests on the way.
+     */
+    protected boolean named(int x, int y, int z) {
+        return false;
+    }
 
     /** Why a block must be left alone, or null if it may be dug out. */
     protected static String untouchable(World w, int x, int y, int z, Block b) {

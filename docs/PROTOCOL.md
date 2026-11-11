@@ -475,7 +475,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 | `goto_player` | `{player, range?=2}` | 走到某玩家身边；5 分钟追不上以 `stuck` 失败 |
 | `follow` | `{player, distance?=3}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等 |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
-| `dig` | `{blocks:[{x,y,z}]}`，≤256 | 逐个挖掉，由近到远 |
+| `dig` | `{blocks:[{x,y,z}]}`，≤256 | 逐个挖掉，由近到远。点名的方块里装着东西（箱子、抽屉、机器）也照样挖，像玩家挖一样，里面的东西掉出来；区域类任务（`clear` `flatten` 和图纸的清障）碰到装着东西的方块是跳过的（`has contents`） |
 | `place` | `{blocks:[{x,y,z,item,meta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿 |
 | `clear` | `{x1,y1,z1,x2,y2,z2, dropoff?, overflow?}`，体积 ≤ 32768 | 把盒子里所有方块挖掉，一层一层从上往下 |
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周 |
