@@ -38,7 +38,8 @@ export interface ItemIcons {
   loadedMtimeMs?: number
   /**
    * 一样东西的图标是第几个；没有就是 undefined。
-   * 按 id/meta 找不到时，退到同一个 id 不限 meta 的那一行，再退到同一个 id 的头一行。
+   * 按 id/meta 找不到时（docs/PACKDATA.md 的“物品图标”）：用这个 id 的 meta 0 那一行（有耐久的工具和护甲，meta 是磨损掉的耐久），
+   * 再没有用不限 meta（32767）的那一行，再没有用这个 id 的头一行。
    * 只靠附加数据区分的物品（匠魂工具、GregTech 工具）拿到的是这个 id 在物品表里那一种的样子，材质不同时颜色会不对。
    */
   indexOf(id: string, meta?: number): number | undefined
@@ -126,7 +127,8 @@ export function parseItemIcons(raw: unknown, dir: string, lines: ItemLines): Ite
     indexOf(id, meta) {
       const exact = drawn(lines.byKey.get(`${id}/${meta === undefined ? 0 : meta}`))
       if (exact !== undefined) return exact
-      return drawn(lines.byKey.get(`${id}/${ANY_META}`)) ?? drawn(lines.first.get(id))
+      // 有耐久的工具和护甲，meta 是磨损掉的耐久，表里只有 meta 0 的那一行
+      return drawn(lines.byKey.get(`${id}/0`)) ?? drawn(lines.byKey.get(`${id}/${ANY_META}`)) ?? drawn(lines.first.get(id))
     },
   }
 }

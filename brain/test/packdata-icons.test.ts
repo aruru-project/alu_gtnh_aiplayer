@@ -43,12 +43,14 @@ describe('物品图标：哪样东西是第几个', () => {
     assert.match(p.logs.join('\n'), /物品图标：6 个/)
   })
 
-  it('按 id/meta 找不到时：退到这个 id 不限 meta 的那一行，再退到这个 id 的头一行；表里压根没有的没有图标', (t) => {
+  it('按 id/meta 找不到时：用这个 id 的 meta 0 那一行（磨损了的工具），再没有用不限 meta 的那一行，再没有用它的头一行；表里压根没有的没有图标', (t) => {
     const icons = loadItemIcons(pack(t).dir)!
+    // 用掉了 37 点耐久的石头工具：表里只有 meta 0 的那一行
+    assert.equal(icons.indexOf('minecraft:stone', 37), 0)
     // 背包里的工具带着具体的 meta，物品表里只有“任何 meta”的那一行
     assert.equal(icons.indexOf('mod:tool', 3), 4)
-    // 泥土没有 meta 9 这一行：用它的头一行
-    assert.equal(icons.indexOf('minecraft:dirt', 9), 1)
+    // 宝石只有 meta 7 这一行：别的 meta 用它
+    assert.equal(icons.indexOf('mod:gem', 2), 5)
     assert.equal(icons.indexOf('othermod:thing', 0), undefined)
   })
 
