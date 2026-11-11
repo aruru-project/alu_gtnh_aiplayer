@@ -1,6 +1,8 @@
 // 做法规划用的小配方册和一个假基地：够得着规划要紧的情形——
 // 一条四五层深的链（直升机桨叶）、同一样东西机器和手工两种做法耗料不同、一轮出多个、不消耗的模头和工具、
-// 每种材质一条的工具配方、同一种东西两个 id、粉和锭互相变（循环）、回收配方、要流体和炉温的高炉配方、一条很长的链（上限）。
+// 每种材质一条的工具配方、同一种东西两个 id、粉和锭互相变（循环）、回收配方、要流体和炉温的高炉配方、一条很长的链（上限）；
+// 一个矿辞名下既有普通工具又有电动的、“拿普通的升级”的（剪线钳）；同一样东西手工、压模机（要模头）、流体固化器（要流体）三种做法（钢销）；
+// 用基地里没有的材质也能做的东西（钛板浇出来再做模头）。
 // 配方的编号就是它在 RECIPES 里的下标。
 
 import fs from 'node:fs'
@@ -30,6 +32,17 @@ export const P = {
   hammer: { id: 'gregtech:gt.metatool.01', meta: 12 },
   screwdriver: { id: 'gregtech:gt.metatool.01', meta: 22 },
   stick: { id: 'minecraft:stick', meta: 0 },
+  steelRod: { id: GT, meta: 23305 },
+  plateShape: { id: GT, meta: 32350 },
+  sheet: { id: 'demo:sheet', meta: 0 },
+  pin: { id: 'demo:pin', meta: 0 },
+  wire: { id: 'demo:wire', meta: 0 },
+  wireCutter: { id: 'gregtech:gt.metatool.01', meta: 26 },
+  multitool: { id: 'gregtech:gt.metatool.01', meta: 192 },
+  snips: { id: 'miscutils:gt.plusplus.metatool.01', meta: 7934 },
+  motor: { id: GT, meta: 32600 },
+  battery: { id: GT, meta: 32518 },
+  titanPlate: { id: GT, meta: 17028 },
   /** 每种材质一把锤子用的锭：demo:ingot/0…11。 */
   demoIngot: (n: number) => ({ id: 'demo:ingot', meta: n }),
   /** 一条长链上的第 n 节。 */
@@ -59,12 +72,24 @@ export const ITEMS = [
   { ...P.hammer, name: '锤', en: 'Hammer', ores: ['craftingToolHardHammer'], variants: 12 },
   { ...P.screwdriver, name: '螺丝刀', en: 'Screwdriver', ores: ['craftingToolScrewdriver'] },
   { ...P.stick, name: '木棍', en: 'Stick', ores: ['stickWood'] },
+  { ...P.steelRod, name: '钢杆', en: 'Steel Rod', ores: ['stickSteel'] },
+  { ...P.plateShape, name: '模头（板）', en: 'Extruder Shape (Plate)' },
+  { ...P.sheet, name: '钢片', en: 'Steel Sheet' },
+  { ...P.pin, name: '钢销', en: 'Steel Pin' },
+  { ...P.wire, name: '细钢丝', en: 'Fine Steel Wire' },
+  { ...P.wireCutter, name: '剪线钳', en: 'Wire Cutter', ores: ['craftingToolWireCutter'] },
+  { ...P.multitool, name: '万能工具（剪线钳）', en: 'Pocket Multitool (Wire Cutter)', ores: ['craftingToolWireCutter'] },
+  { ...P.snips, name: '自动剪线钳', en: 'Automatic Snips', ores: ['craftingToolWireCutter'] },
+  { ...P.motor, name: '电动马达（LV）', en: 'Electric Motor (LV)' },
+  { ...P.battery, name: '小型锂电池', en: 'Small Lithium Battery', ores: ['batteryLV'] },
+  { ...P.titanPlate, name: '钛板', en: 'Titanium Plate', ores: ['plateTitanium'] },
   { id: 'gregtech:gt.integrated_circuit', meta: 1, name: '编程电路 1', en: 'Programmed Circuit' },
   { id: MACHINE, meta: 221, name: '基础卷板机', en: 'Basic Bending Machine' },
   { id: MACHINE, meta: 282, name: '进阶压模机', en: 'Advanced Extruder' },
   { id: MACHINE, meta: 581, name: '基础搅拌机', en: 'Basic Mixer' },
   { id: MACHINE, meta: 1000, name: '工业高炉', en: 'Electric Blast Furnace' },
   { id: MACHINE, meta: 301, name: '基础研磨机', en: 'Basic Macerator' },
+  { id: MACHINE, meta: 521, name: '基础流体固化器', en: 'Basic Fluid Solidifier' },
   { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
   { id: 'minecraft:hopper', meta: 0, name: '漏斗', en: 'Hopper' },
   { id: 'avaritiaddons:CompressedChest', meta: 0, name: '压缩箱子', en: 'Compressed Chest' },
@@ -80,6 +105,7 @@ export const HANDLERS = [
   { key: 'gt.recipe.mixer', name: '搅拌机', mod: 'GregTech', machines: [{ id: MACHINE, meta: 581 }], read: 'gregtech' },
   { key: 'gt.recipe.blastfurnace', name: '工业高炉', mod: 'GregTech', machines: [{ id: MACHINE, meta: 1000 }], read: 'gregtech' },
   { key: 'gt.recipe.macerator', name: '研磨机', mod: 'GregTech', machines: [{ id: MACHINE, meta: 301 }], read: 'gregtech' },
+  { key: 'gt.recipe.fluidsolidifier', name: '流体固化器', mod: 'GregTech', machines: [{ id: MACHINE, meta: 521 }], read: 'gregtech' },
   { key: 'gt.recipe.category.arc_furnace_recycling', name: '电弧炉回收', mod: 'GregTech', machines: [{ id: MACHINE, meta: 301 }], read: 'gregtech' },
   { key: SHAPED, name: '有序合成', mod: 'Minecraft', grid: true, machines: [{ id: 'minecraft:crafting_table', meta: 0 }], read: 'all' },
   { key: SHAPELESS, name: '无序合成', mod: 'Minecraft', grid: true, machines: [], read: 'all' },
@@ -112,6 +138,18 @@ export const R = {
   /** 26…37：链节 n 用链节 n+1 加一根木棍做。 */
   link: (n: number) => 26 + n,
   furnaceSteel: 38,
+  rodExtrude: 39,
+  rodHand: 40,
+  cutter: 41,
+  multitool: 42,
+  snips: 43,
+  wire: 44,
+  sheetExtrude: 45,
+  pinExtrude: 46,
+  pinHand: 47,
+  pinCast: 48,
+  shaftShapeTitan: 49,
+  castTitanPlate: 50,
 }
 
 export const RECIPES: Record<string, unknown>[] = [
@@ -147,6 +185,25 @@ export const RECIPES: Record<string, unknown>[] = [
   ...Array.from({ length: LINKS - 1 }, (_, n) => ({ h: SHAPED, in: [item(P.link(n + 1), 1, 0), ore('stickWood', [P.stick], 3)], out: [item(P.link(n), 1)] })),
   // 38：熔炉也能把钢粉烧成锭（它操作不了的那类）
   { h: 'codechicken.nei.recipe.FurnaceRecipeHandler', in: [item(P.steelDust, 1)], out: [item(P.steelIngot, 1)] },
+  // 39、40：钢杆。压模机 1 锭 2 根，模头（杆）不消耗；手工锤 1 锭 1 根
+  { h: 'gt.recipe.extruder', in: [item(P.steelIngot, 1), item(P.rodShape, 0)], out: [item(P.steelRod, 2)], eut: 64, ticks: 100 },
+  { h: SHAPED, in: [HAMMER, ore('ingotSteel', [P.steelIngot], 3)], out: [item(P.steelRod, 1)] },
+  // 41–43：剪线钳（矿辞名 craftingToolWireCutter 下有三种）。普通的 = 3 钢板 + 2 钢杆 + 1 钢螺丝 + 锤；
+  // 万能工具是拿一把普通剪线钳加一个钢螺丝“升级”的；自动剪线钳是电动的（马达 + 电池 + 钢锭）
+  { h: SHAPED, in: [HAMMER, item(P.steelPlate, 1, 1), item(P.steelPlate, 1, 3), item(P.steelPlate, 1, 4), item(P.steelScrew, 1, 5), item(P.steelRod, 1, 6), item(P.steelRod, 1, 7)], out: [item(P.wireCutter, 1)] },
+  { h: SHAPELESS, in: [item(P.wireCutter, 1, 0), item(P.steelScrew, 1, 1)], out: [item(P.multitool, 1)] },
+  { h: SHAPELESS, in: [item(P.motor, 1, 0), item(P.battery, 1, 1), item(P.steelIngot, 1, 3)], out: [item(P.snips, 1)] },
+  // 44：细钢丝 = 1 钢板，用剪线钳剪（不消耗）
+  { h: SHAPELESS, in: [ore('craftingToolWireCutter', [P.wireCutter, P.multitool, P.snips], 0), item(P.steelPlate, 1, 1)], out: [item(P.wire, 1)] },
+  // 45：钢片 = 压模机，1 钢锭，模头（板）不消耗
+  { h: 'gt.recipe.extruder', in: [item(P.steelIngot, 1), item(P.plateShape, 0)], out: [item(P.sheet, 1)], eut: 64, ticks: 100 },
+  // 46–48：钢销。压模机 1 锭 4 个（模头（转轴）不消耗）；手工锤 1 锭 1 个；流体固化器 36 mB 熔融钢 1 个
+  { h: 'gt.recipe.extruder', in: [item(P.steelIngot, 1), item(P.shaftShape, 0)], out: [item(P.pin, 4)], eut: 64, ticks: 100 },
+  { h: SHAPED, in: [HAMMER, ore('ingotSteel', [P.steelIngot], 4)], out: [item(P.pin, 1)] },
+  { h: 'gt.recipe.fluidsolidifier', in: [], out: [item(P.pin, 1)], fin: [{ f: 'molten.steel', name: '熔融钢', mb: 36 }], eut: 8, ticks: 40 },
+  // 49、50：模头（转轴）也可以用 4 钛板做；钛板只有流体固化器浇得出来（144 mB 熔融钛）——基地里没有钛
+  { h: SHAPED, in: [HAMMER, item(P.titanPlate, 1, 1), item(P.titanPlate, 1, 3), item(P.rodShape, 1, 4), item(P.titanPlate, 1, 5), item(P.titanPlate, 1, 7)], out: [item(P.shaftShape, 1)] },
+  { h: 'gt.recipe.fluidsolidifier', in: [], out: [item(P.titanPlate, 1)], fin: [{ f: 'molten.titanium', name: '熔融钛', mb: 144 }], eut: 30, ticks: 40 },
 ]
 
 export function writePlanFixture(dir: string): void {
@@ -174,11 +231,15 @@ export const CHEST = { x: 12, y: 64, z: -4 }
 export const chest = (items: Box['items'], extra: Partial<Box> = {}): Box => ({ ...CHEST, id: 'avaritiaddons:CompressedChest', name: 'Compressed Chest', items, ...extra })
 export const stack = (p: { id: string; meta: number }, count: number) => ({ ...p, count })
 
-const single = (x: number, name: string, meta: number, recipes: string, recipeKey: string, tier: string, volts: number) => ({ x, y: 64, z: -8, name, id: MACHINE, meta, recipes, recipeKey, tier, inputSlots: 2, active: false, storedEU: 5000, inputVoltage: volts })
+const single = (x: number, name: string, meta: number, recipes: string, recipeKey: string, tier: string, volts: number, inputSlots = 2) => ({ x, y: 64, z: -8, name, id: MACHINE, meta, recipes, recipeKey, tier, inputSlots, active: false, storedEU: 5000, inputVoltage: volts })
 export const BENDER = single(16, 'Basic Bending Machine', 221, 'Bending Machine', 'gt.recipe.metalbender', 'LV', 32)
 export const EXTRUDER = single(18, 'Advanced Extruder', 282, 'Extruder', 'gt.recipe.extruder', 'MV', 128)
-export const MIXER = single(20, 'Basic Mixer', 581, 'Mixer', 'gt.recipe.mixer', 'LV', 32)
+export const MIXER = single(20, 'Basic Mixer', 581, 'Mixer', 'gt.recipe.mixer', 'LV', 32, 6)
 export const MACERATOR = single(22, 'Basic Macerator', 301, 'Macerator', 'gt.recipe.macerator', 'LV', 32)
+/** 流体固化器：单方块，罐子里有什么它看不到。默认的基地里没有，要的测试自己加。 */
+export const SOLIDIFIER = single(24, 'Basic Fluid Solidifier', 521, 'Fluid Solidifier', 'gt.recipe.fluidsolidifier', 'LV', 32)
+/** 一台机器的格子里放着的东西（world.containers 里，机器也是一个容器，kind 是 machine）。 */
+export const inside = (m: { x: number; y: number; z: number; name: string }, items: Box['items'], extra: Partial<Box> = {}): Box => ({ x: m.x, y: m.y, z: m.z, id: MACHINE, name: m.name, kind: 'machine', items, ...extra })
 /** 工业高炉：炉温、输入总线接没接漏斗、输入仓里有多少氧，都可以调。 */
 export function furnace(opts: { heat?: number; fed?: boolean; oxygen?: number; more?: Record<string, unknown> } = {}) {
   return {
@@ -244,13 +305,14 @@ const TIER_VOLTS: [string, number][] = [['ULV', 8], ['LV', 32], ['MV', 128], ['H
  * 把模拟身体布置成上面那个基地：一个装着 items 的压缩箱子、四台单方块机器和一座工业高炉，
  * 身体自己的配方书换成和这本小配方册同一套（它拿来判断“摆成这样出什么”“这些原料机器开不开工”）。
  */
-export function installMockBase(bridge: MockBridge, items: Box['items'], furnaceOpts: Parameters<typeof furnace>[0] = {}): void {
+export function installMockBase(bridge: MockBridge, items: Box['items'], furnaceOpts: Parameters<typeof furnace>[0] = {}, extruderHolds: Box['items'] = []): void {
   const info = new Map(ITEMS.map((i) => [`${i.id}/${i.meta}`, i as { id: string; meta: number; name: string; en: string; ores?: string[] }]))
   const en = (id: string, meta: number): string => info.get(`${id}/${meta}`)?.en ?? id
   bridge.containers = [{ ...CHEST, id: 'avaritiaddons:CompressedChest', name: 'Compressed Chest', slots: 243, items: items.map((i) => ({ ...i, name: en(i.id, i.meta) })) }]
   const { x, y, z, name, id, meta, recipes, recipeKey, tier, inputVoltage, ...multiblock } = furnace(furnaceOpts)
   bridge.machines = [
-    ...[BENDER, EXTRUDER, MIXER, MACERATOR].map((m): MockMachine => ({ ...m })),
+    // 压模机的原料格里可以放着主人留下的模头
+    ...[BENDER, EXTRUDER, MIXER, MACERATOR].map((m): MockMachine => ({ ...m, ...(m === EXTRUDER && extruderHolds.length > 0 ? { inputs: extruderHolds.map((i) => ({ ...i, name: en(i.id, i.meta) })) } : {}) })),
     { x, y, z, name, id, meta, recipes, recipeKey, tier, inputVoltage, inputSlots: 4, storedEU: 100_000, more: multiblock },
   ]
   // 配方书：每个物品一项（带矿辞名），做它的手工配方和机器配方照 RECIPES 转过来

@@ -543,6 +543,20 @@ describe('任务类工具', () => {
     assert.equal(s.game.callsOf('task.start').length, 2)
   })
 
+  it('从机器的原料格里取（主人留在里面的模具、模头）：withdraw_items 给 fromInputs，原样交给身体；不给时不带这一项；对随身的包没有这回事', async (t) => {
+    const s = setup(t)
+    const shape = { id: 'gregtech:gt.metaitem.01', meta: 32351, count: 1 }
+    await s.run('withdraw_items', { container: { x: -525, y: 69, z: 38 }, items: [shape], fromInputs: true })
+    await s.run('withdraw_items', { container: { x: -525, y: 69, z: 38 }, items: [shape] })
+    assert.deepEqual(s.game.callsOf('task.start').map((c) => c.task), [
+      { type: 'withdraw', container: { x: -525, y: 69, z: 38 }, items: [shape], fromInputs: true },
+      { type: 'withdraw', container: { x: -525, y: 69, z: 38 }, items: [shape] },
+    ])
+    const bag = await s.run('withdraw_items', { bag: { id: 'Backpack:backpack' }, items: [shape], fromInputs: true })
+    assert.deepEqual([bag.isError, bag.content], [true, '"fromInputs" is for a GregTech machine: give its position as "container", not a bag.'])
+    assert.equal(s.game.callsOf('task.start').length, 2)
+  })
+
   it('use_item 把身上的一件东西拿到手里右键用：对空中、对某个方块、蹲着用；做完以后模型看到的是背包里多了少了什么、血量和饱食度、是否打开了界面', async (t) => {
     const s = setup(t)
     await s.run('use_item', { id: 'minecraft:bread' })

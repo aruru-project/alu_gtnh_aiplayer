@@ -1473,7 +1473,7 @@ it('端到端：主人说“做一个直升机桨叶” → 它先让 plan_item 
   await waitFor('it asked the owner', () => bridge.commandLog.some((c) => c.command.includes('开工前要先问你')), 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.equal(bridge.requestsOf('task.start').length, 0, 'nothing is started before the owner answers')
   assert.equal(plans[0]!.split('\n')[0], "Plan for 1× 直升机桨叶 [adventurebackpack:backpackComponent/6]: everything needed is here. 7 step(s): 1 to fetch, 6 to make. 1 thing(s) need your owner's word before you start.")
-  assert.match(plans[0]!, /\nASK YOUR OWNER FIRST:\n- step 3: the 工业高炉 at \(-5,64,9\): its input bus is AUTOMATED \(漏斗 at \(-4,64,10\) feeds it\), so it is part of your owner's automation\.\n/)
+  assert.match(plans[0]!, /\nASK YOUR OWNER FIRST:\n- step 3 PUTS your inputs INTO the input bus of the 工业高炉 at \(-5,64,9\), which 漏斗 at \(-4,64,10\) feeds automatically \(your owner's automation\)\. They can get mixed with what it brings in: [^\n]*\.\n/)
   // 问主人的话里用的是工具给的中文名
   assert.match(bridge.commandLog.at(-1)!.command, /工业高炉.*漏斗/)
 
@@ -1512,6 +1512,97 @@ it('端到端：主人说“做一个直升机桨叶” → 它先让 plan_item 
   // 第二份计划和第一份是同一套步骤（主人同意以后重新排的）
   assert.equal(plans.length, 2)
   assert.deepEqual(plans[1]!.match(/^\d+\. \w+/gm), ['1. withdraw_items', '2. process_items', '3. process_items', '4. process_items', '5. craft_item', '6. process_items', '7. craft_item'])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：做直升机桨叶，仓库里没有模头（杆），压模机的原料格里放着一个、还放着一个模头（板） → 计划是借机器里的那个（会被用掉，照实说）并把占位的模头（板）挪开 → 先问主人 → 主人说可以 → 从原料格取、合成、压柄、做成桨叶，最后把模头（板）放回压模机', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'], autoFinishMs: 30 })
+  const llm = new MockLlm()
+  // 压模机只有两个原料格，都被主人留下的模头占着
+  installMockBase(
+    bridge,
+    [stack(P.steelIngot, 40), stack(P.steelScrew, 3), stack(P.steelGear, 1), stack(P.magneticDust, 5), stack(P.coalDust, 5), stack(P.obsidianDust, 5), stack(P.screwdriver, 1), stack(P.hammer, 1)],
+    {},
+    [stack(P.rodShape, 1), stack(P.plateShape, 1)],
+  )
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const packdata = path.join(tmp.dir, 'packdata')
+  writePlanFixture(packdata)
+  const brain = startBrain(tmp.dir, bridge, { packdata })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 和上一场同一个“照着做”的模型：先要计划；有要问的就把那几条原样问主人；主人同意了就从第 1 步起照抄计划里的工具调用，一步一个任务
+  const lastText = (req: { body: any }): string => {
+    const last = req.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+  const plans: string[] = []
+  let steps: { tool: string; input: unknown }[] = []
+  let next = 0
+  let allowed = false
+  const say = (message: string) => ({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message } }] })
+  const doNext = () => (next < steps.length ? { toolCalls: [{ name: steps[next]!.tool, input: steps[next++]!.input }] } : say('直升机桨叶做好了，模头（板）放回压模机了。'))
+  llm.fallback = (req) => {
+    const text = lastText(req)
+    if (text.startsWith('Plan for')) {
+      plans.push(text)
+      steps = [...text.matchAll(/^\d+\. (\w+) (\{.*\}) — /gm)].map((m) => ({ tool: m[1]!, input: JSON.parse(m[2]!) }))
+      next = 0
+      const asks = /^ASK YOUR OWNER FIRST:\n((?:- .*\n)+)/m.exec(text)
+      if (asks && !allowed) return say(`开工前要先问你：${asks[1]!.trim().slice(0, 180)}`)
+      return doNext()
+    }
+    if (/Steve 私聊你：做一个直升机桨叶/.test(text)) return { toolCalls: [{ name: 'plan_item', input: P.blades }] }
+    if (/Steve 私聊你：可以/.test(text)) {
+      allowed = true
+      return { toolCalls: [{ name: 'plan_item', input: P.blades }] }
+    }
+    if (/任务 \w+（\w+）完成了/.test(text)) return doNext()
+    if (/任务 \w+（\w+）失败了/.test(text)) return say('做到一半失败了。')
+    return { text: '' }
+  }
+
+  // 1. 计划里有两件要问的：借压模机里的模头（杆）（会被用掉），和把占位的模头（板）挪出来。问之前一个任务都没开
+  bridge.whisper('Alu', 'Steve', '做一个直升机桨叶')
+  await waitFor('it asked the owner', () => bridge.commandLog.some((c) => c.command.includes('开工前要先问你')), 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.equal(bridge.requestsOf('task.start').length, 0, 'nothing is started before the owner answers')
+  assert.equal(plans[0]!.split('\n')[0], "Plan for 1× 直升机桨叶 [adventurebackpack:backpackComponent/6]: everything needed is here. 10 step(s): 3 to fetch, 6 to make, 1 to put back what was taken out of machines (do these too, even though the 直升机桨叶 is made by then). 2 thing(s) need your owner's word before you start.")
+  assert.match(plans[0]!, /\n- step 5 TAKES 1× 模头（杆） OUT OF the input slots of the 进阶压模机 at \(18,64,-8\), and this plan USES IT UP \(it goes into the 模头（转轴）\): it does not come back/)
+  assert.match(plans[0]!, /\n- step 7 TAKES 1× 模头（板） OUT OF the input slots of the 进阶压模机 at \(18,64,-8\) to make room: it has 2 input slot\(s\), 1 taken, and step 8 puts 2 more kind\(s\) of thing in\. It is your owner's, kept there for that machine; step 10 puts it back\.\n/)
+
+  // 2. 主人同意：一步一个任务做完，包括最后“放回去”那一步
+  bridge.whisper('Alu', 'Steve', '可以，用吧')
+  await waitFor('it reported the blades done', () => bridge.commandLog.some((c) => c.command.includes('直升机桨叶做好了')), 30_000).catch((e) => assert.fail(`${e.message}\n${plans.at(-1)}${diag()}`))
+  const EXTRUDER_AT = (() => {
+    const m = bridge.machines.find((x) => x.name === 'Advanced Extruder')!
+    return { x: m.x, y: m.y, z: m.z }
+  })()
+  const started = bridge.requestsOf('task.start').map((p) => p.task as { type: string; container?: unknown; items?: unknown; fromInputs?: boolean; machine?: unknown; inputs?: unknown })
+  assert.deepEqual(started.map((task) => task.type), ['withdraw', 'process', 'process', 'process', 'withdraw', 'craft', 'withdraw', 'process', 'craft', 'deposit'])
+  // 从压模机的原料格里取：先是要用掉的模头（杆），压柄之前再把占位的模头（板）挪出来
+  assert.deepEqual(started[4], { type: 'withdraw', container: EXTRUDER_AT, items: [stack(P.rodShape, 1)], fromInputs: true })
+  assert.deepEqual(started[6], { type: 'withdraw', container: EXTRUDER_AT, items: [stack(P.plateShape, 1)], fromInputs: true })
+  assert.deepEqual([started[7]!.machine, started[7]!.inputs], [EXTRUDER_AT, [stack(P.steelIngot, 36), stack(P.shaftShape, 1)]])
+  assert.deepEqual(started[9], { type: 'deposit', container: EXTRUDER_AT, items: [stack(P.plateShape, 1)] })
+  // 每个任务都做成了：模拟的身体会检查原料格放不放得下——不先把模头（板）挪开，压柄那一步是放不进去的
+  assert.deepEqual([...bridge.bots.get('Alu')!.recent].reverse().map((task) => task.state), Array.from({ length: 10 }, () => 'done'))
+  const inventory = bridge.bots.get('Alu')!.inventory
+  const has = (p: { id: string; meta: number }) => inventory.filter((i) => i.id === p.id && i.meta === p.meta).reduce((n, i) => n + i.count, 0)
+  assert.deepEqual([has(P.blades), has(P.shaftShape), has(P.plateShape), has(P.rodShape)], [1, 1, 0, 0])
+  // 压模机里：模头（板）回去了；模头（杆）被合成进了模头（转轴），不在了
+  assert.deepEqual(bridge.machines.find((x) => x.name === 'Advanced Extruder')!.inputs!.map((i) => [i.id, i.meta, i.count]), [[P.plateShape.id, P.plateShape.meta, 1]])
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

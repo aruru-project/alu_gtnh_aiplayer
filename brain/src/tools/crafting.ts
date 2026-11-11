@@ -10,7 +10,7 @@ import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey }
 import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
 import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, isHandCraft, processPlan, quantity, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
-import { arr, int, obj, str } from './schema.ts'
+import { arr, bool, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
 import { AT, lookFrom } from './where.ts'
@@ -92,10 +92,11 @@ export const planItem: Tool = {
       meta: int('Item meta (default 0).', { min: 0 }),
       count: int('How many you want (default 1).', { min: 1, max: PLAN_MAX_COUNT }),
       page: int('Page of the steps (default 1).', { min: 1 }),
+      borrow: bool('false: do not take molds or shapes out of machines (your owner said no); have them made instead.'),
     },
     ['id'],
   ),
-  run: (ctx, i: { id: string; meta?: number; count?: number; page?: number }) => planItemLocal(ctx, i),
+  run: (ctx, i: { id: string; meta?: number; count?: number; page?: number; borrow?: boolean }) => planItemLocal(ctx, i),
 }
 
 export const findUses: Tool = {
@@ -245,6 +246,7 @@ interface ProcessInput {
   recipe?: number
   rounds?: number
   inputs?: unknown[]
+  moldInside?: boolean
   circuit?: number
   fluids?: unknown[]
   expect?: unknown[]
@@ -263,6 +265,7 @@ export const processItems: Tool = {
       recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
       rounds: int('How many times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
       inputs: stackList('Instead of "recipe": exactly what to put in (things not used up, like a mold, with count 1).', PROCESS_MAX_INPUTS),
+      moldInside: bool('true: the mold or shape this recipe needs already sits in the machine, so none is carried or put in.'),
       circuit: int('Programmed circuit number to set (0 clears it). Taken from the recipe when you give one.', { min: 0, max: 24 }),
       fluids: stackList('Multiblock only: cells full of fluid that you carry, to pour into its input hatch. Not needed when the fluid is piped in.', 6),
       expect: stackList('Multiblock only: the products to fetch from the chest its output bus pushes into. Taken from the recipe when you give one.', 9),
@@ -285,7 +288,7 @@ export const processItems: Tool = {
       if (!recipe.handler.gregtech) {
         return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a GregTech machine recipe${recipe.handler.grid ? ': make it with craft_item' : ', and you cannot run it'}.`)
       }
-      const plan = processPlan(recipe, i.rounds ?? 1, await carriedOrNone(ctx), ctx.packdata?.items)
+      const plan = processPlan(recipe, i.rounds ?? 1, await carriedOrNone(ctx), ctx.packdata?.items, i.moldInside === true)
       inputs ??= plan.inputs
       circuit ??= plan.circuit
       expect ??= plan.expect.length > 0 ? plan.expect : undefined

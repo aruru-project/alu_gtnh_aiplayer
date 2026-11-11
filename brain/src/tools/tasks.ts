@@ -350,11 +350,21 @@ export const withdrawItems: Tool = {
   name: 'withdraw_items',
   description:
     'Walk to a container (a chest or similar, or Storage Drawers) and take items out (task); counts are exact. It ends as done even when there was not enough: check "missing" in the result. With "bag" instead of "container" they come out of a bag you carry.',
-  inputSchema: obj({ container: pos('Position of the chest or drawers.'), bag, items: arr('What to take.', itemFilter, { min: 1, max: 36 }), queue }, ['items']),
-  async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items: unknown[]; queue?: boolean }) {
+  inputSchema: obj(
+    {
+      container: pos('Position of the chest or drawers.'),
+      bag,
+      items: arr('What to take.', itemFilter, { min: 1, max: 36 }),
+      fromInputs: bool('The container is a GregTech machine: true takes from its INPUT slots (a mold or shape kept there, unused inputs) instead of its products. They are your owner\'s: ask first, and put them back.'),
+      queue,
+    },
+    ['items'],
+  ),
+  async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items: unknown[]; fromInputs?: boolean; queue?: boolean }) {
     const where = containerOrBag(i)
     if ('error' in where) return fail(where.error)
-    return startTask(ctx, { type: 'withdraw', container: where.container, items: i.items }, i.queue)
+    if (i.fromInputs === true && i.bag) return fail('"fromInputs" is for a GregTech machine: give its position as "container", not a bag.')
+    return startTask(ctx, { type: 'withdraw', container: where.container, items: i.items, ...(i.fromInputs === true ? { fromInputs: true } : {}) }, i.queue)
   },
 }
 

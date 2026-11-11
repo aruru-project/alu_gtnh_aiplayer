@@ -116,6 +116,11 @@ export interface MockMachine {
   /** 被人关掉了。 */
   switchedOff?: boolean
   /**
+   * 原料格里现在放着的东西（主人留在里面的模具、模头）。给了它，这台机器就会像真的那样出现在 world.containers 里（kind:"machine"），
+   * withdraw 带 fromInputs 能把它们取出来，deposit 能放回去；占着的格子连同这次要放的超过 inputSlots 时，process 一样都放不进去。
+   */
+  inputs?: { id: string; meta: number; count: number; name: string }[]
+  /**
    * world.machines 里这台机器另外带的字段，原样给出去。多方块机器的主机靠它：
    * kind:"multiblock"、formed、heat、idleReason、inputBuses / outputBuses / inputHatches（总线和仓，可以带 attached）。
    */
@@ -844,8 +849,11 @@ export class MockBridge {
             ...(box.kind === 'drawers' && controller ? { controller: { x: controller.x, y: controller.y, z: controller.z } } : {}),
             ...(box.attached ? { attached: box.attached } : {}),
           }))
+        // 原料格里放着东西的机器也是容器（原料格、产物格不分，合在一起列）
+        const machines = this.machines.filter((m) => m.inputs !== undefined).map((m) => ({ x: m.x, y: m.y, z: m.z, id: m.id ?? 'gregtech:gt.blockmachines', name: m.name, kind: 'machine', slots: m.inputSlots + 1, usedSlots: m.inputs!.length, items: m.inputs! }))
+        const all = [...containers, ...machines]
         // total 是范围里的总数，containers 只是从 offset 起的一页
-        return { containers: containers.slice(offset, offset + limit), total: containers.length, offset }
+        return { containers: all.slice(offset, offset + limit), total: all.length, offset }
       }
       case 'world.drawers': {
         // 一个抽屉管理器管着的全部抽屉，逐格列出；给的位置是普通抽屉时只有它自己
@@ -1413,6 +1421,9 @@ export class MockBridge {
         box = { items: inside }
       } else {
         box = this.containers.find((c) => c.x === at.x && c.y === at.y && c.z === at.z)
+        // GregTech 机器：放是放进原料格；取默认只从产物格取（这里的机器做完就被 process 取空了，所以什么都没有），fromInputs 才从原料格取
+        const machine = box ? undefined : this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
+        if (machine) box = task.type === 'deposit' || p.fromInputs === true ? { items: (machine.inputs ??= []), kind: 'machine', slots: machine.inputSlots } : { items: [] }
       }
       if (!box) {
         this.endTask(bot, task, 'failed', { error: { code: 'invalid', message: 'there is no container at that position' } })
@@ -1433,7 +1444,7 @@ export class MockBridge {
           for (const got of takeItems(bot.inventory, fits, typeof want.count === 'number' ? want.count : have)) {
             const stack = box.items.find((i) => i.id === got.id && i.meta === got.meta)
             // 抽屉：只收已经装着的那几种，或者放进还没指定物品的空格
-            if (!stack && box.kind === 'drawers' && box.items.length >= (box.slots ?? 0)) {
+            if (!stack && (box.kind === 'drawers' || box.kind === 'machine') && box.items.length >= (box.slots ?? 0)) {
               putInInventory(bot, got, got.count)
               full = true
               continue
@@ -1783,7 +1794,10 @@ export class MockBridge {
       const have = bot.inventory.filter((i) => i.id === want.id && (meta === undefined || i.meta === meta)).reduce((n, i) => n + i.count, 0)
       return { id: String(want.id), meta, count: Math.min(Number(want.count), have) }
     })
-    const put = given.reduce((n, g) => n + g.count, 0)
+    // 原料格被别的东西（主人留在里面的模具）占着，这次要放的几样放不下：一样都放不进去
+    const inside = machine.inputs ?? []
+    const fresh = given.filter((g) => g.count > 0 && !inside.some((i) => i.id === g.id && (g.meta === undefined || i.meta === g.meta))).length
+    const put = inside.length + fresh > machine.inputSlots ? 0 : given.reduce((n, g) => n + g.count, 0)
     if (put <= 0) {
       return {
         error: { code: 'invalid', message: 'the machine took none of the inputs: they are not in the inventory, or its input slots are occupied', detail: describeMachine(machine) },
@@ -1795,7 +1809,9 @@ export class MockBridge {
     const has = (need: Json): number =>
       need.id === 'gregtech:gt.integrated_circuit' && circuit !== undefined && need.meta === circuit
         ? 1
-        : given.filter((g) => g.id === need.id && (g.meta === undefined || g.meta === need.meta)).reduce((n, g) => n + g.count, 0)
+        : given.filter((g) => g.id === need.id && (g.meta === undefined || g.meta === need.meta)).reduce((n, g) => n + g.count, 0) +
+          // 模具已经在机器里的，不用再放
+          (need.notConsumed === true ? inside.filter((i) => i.id === need.id && i.meta === need.meta).reduce((n, i) => n + i.count, 0) : 0)
     const recipe = this.recipeBook
       .flatMap((e) => e.machines ?? [])
       .find(

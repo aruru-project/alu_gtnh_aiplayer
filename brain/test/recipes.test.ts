@@ -367,6 +367,9 @@ describe('process_items：照配方册里的配方用机器加工', () => {
       { id: 'gregtech:gt.metaitem.01', meta: 32301, count: 1 },
     ])
     assert.equal(s.lastTask().circuit, undefined)
+    // 模具已经在那台机器里（moldInside）：不带、不放，只放要消耗的
+    await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 4, rounds: 5, moldInside: true })
+    assert.deepEqual(s.lastTask().inputs, [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 10 }])
     // 有概率才出的副产物不算进“一定要取回来的”
     await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 27 })
     assert.deepEqual(s.lastTask().expect, [{ id: 'gregtech:gt.metaitem.01', meta: 2305, count: 1 }])

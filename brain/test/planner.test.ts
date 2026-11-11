@@ -13,7 +13,7 @@ import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
 import type { PlanData } from '../src/tools/planner.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
-import { ALL_MACHINES, BENDER, CHEST, EXTRUDER, MACERATOR, MIXER, P, R, chest, furnace, installBase, stack, writePlanFixture } from './fixture-plan.ts'
+import { ALL_MACHINES, BENDER, CHEST, EXTRUDER, MACERATOR, MIXER, P, R, SOLIDIFIER, chest, furnace, inside, installBase, stack, writePlanFixture } from './fixture-plan.ts'
 import type { Box } from './fixture-plan.ts'
 import { tmpDir } from './helpers.ts'
 
@@ -109,7 +109,7 @@ describe('plan_item：把整条做法排出来', () => {
     ])
     assert.equal(byHand.plan.feasible, true)
     assert.deepEqual(byHand.plan.decisions, [
-      `step 2: 钢板 will be made by hand #${R.hammerSteel} at 2 钢锭 each, keeps 锤; 卷板机 #${R.bendSteel} would take 1 钢锭 each, but the 基础卷板机 at (16,64,-8) cannot run it now: NO POWER. Ask your owner which they want`,
+      `step 2 makes the 钢板 by hand #${R.hammerSteel} at 2 钢锭 each, keeps 锤; 卷板机 #${R.bendSteel} would take 1 钢锭 each, but the 基础卷板机 at (16,64,-8) cannot run it now: NO POWER. Ask your owner which they want`,
     ])
     assert.equal(byHand.plan.steps[1]!.ask, true)
     assert.match(byHand.lines[0]!, /everything needed is here\. 2 step\(s\): 1 to fetch, 1 to make\. 1 thing\(s\) need your owner's word before you start\.$/)
@@ -154,6 +154,11 @@ describe('plan_item：把整条做法排出来', () => {
     assert.match(none.lines[2]!, /^- 1× any craftingToolHardHammer \(e\.g\. 锤 \[gregtech:gt\.metatool\.01\/12\]\): not in storage here, and there is nothing at hand to make one from/)
     // 做转轴模头的那一步在等这把锤
     assert.deepEqual(none.plan.steps.at(-1)!.waitsFor, ['锤'])
+
+    // 两种材质的锭都够做一把：用库存多的那种（镍锭一大堆，钢质锭刚好 6 个），不是配方册里排在前面的那种
+    s.world.boxes = [chest([stack(P.darkPlate, 4), stack(P.rodShape, 1), stack(P.demoIngot(3), 6), stack(P.demoIngot(7), 60), stack(P.stick, 2)])]
+    const plenty = await s.plan(P.shaftShape)
+    assert.deepEqual(s.calls(plenty.plan)[1], ['craft_item', { recipe: R.hammer(7), count: 1 }])
   })
 })
 
@@ -238,19 +243,26 @@ describe('plan_item：缺什么', () => {
 })
 
 describe('plan_item：要主人先点头的事', () => {
-  it('高炉的输入总线接着漏斗（主人的自动化）：那一步标成先问，原因写明；别的步骤照排', async (t) => {
+  it('高炉的输入总线接着漏斗（主人的自动化）：那一步标成先问，写明这是“往里放”、放进去会怎样；别的步骤照排', async (t) => {
     const s = setup(t, { boxes: [chest(FULL)], machines: [BENDER, EXTRUDER, MIXER, MACERATOR, furnace({ fed: true })] })
     const res = await s.plan(P.blades)
-    assert.deepEqual(res.plan.decisions, ["step 3: the 工业高炉 at (-5,64,9): its input bus is AUTOMATED (漏斗 at (-4,64,10) feeds it), so it is part of your owner's automation"])
+    // 往自动喂料的口子里放东西：放进去的会和漏斗送来的混在一起
+    assert.deepEqual(res.plan.decisions, [`step 3 PUTS your inputs INTO the input bus of the 工业高炉 at (-5,64,9), which 漏斗 at (-4,64,10) feeds automatically (your owner's automation). They can get mixed with what it brings in: the machine may use your items up on your owner's recipe, or the bus may be full`])
     assert.deepEqual(res.plan.steps.map((x) => x.ask === true), [false, false, true, false, false, false, false])
     // 东西都有，只是要先问
     assert.equal(res.plan.feasible, true)
     assert.equal(res.lines[0], "Plan for 1× 直升机桨叶 [adventurebackpack:backpackComponent/6]: everything needed is here. 7 step(s): 1 to fetch, 6 to make. 1 thing(s) need your owner's word before you start.")
-    assert.deepEqual(res.lines.slice(1, 3), ['ASK YOUR OWNER FIRST:', "- step 3: the 工业高炉 at (-5,64,9): its input bus is AUTOMATED (漏斗 at (-4,64,10) feeds it), so it is part of your owner's automation."])
+    assert.deepEqual(res.lines.slice(1, 3), ['ASK YOUR OWNER FIRST:', `- step 3 PUTS your inputs INTO the input bus of the 工业高炉 at (-5,64,9), which 漏斗 at (-4,64,10) feeds automatically (your owner's automation). They can get mixed with what it brings in: the machine may use your items up on your owner's recipe, or the bus may be full.`])
     assert.match(res.lines.find((l) => l.startsWith('3. '))!, / \[ASK FIRST\]$/)
+
+    // 单方块机器旁边接着管道：同样是“往里放”，后果是原料被混、产物被抽走
+    s.world.machines = ALL_MACHINES
+    s.world.boxes = [chest(FULL), inside(BENDER, [], { attached: [{ x: 16, y: 65, z: -8, name: 'Hopper', kind: 'hopper' }] })]
+    const piped = await s.plan(P.steelPlate, { count: 2 })
+    assert.deepEqual(piped.plan.decisions, ["step 2 PUTS your inputs INTO the 基础卷板机 at (16,64,-8), which 漏斗 at (16,65,-8) is attached to (your owner's automation). The pipe may bring in other things that get mixed with yours, or carry what you make away before you take it"])
   })
 
-  it('料在接着管道的箱子里：没接管道的箱子里有就从那边取；只有接着管道的箱子里有时，取之前先问', async (t) => {
+  it('料在接着管道的箱子里：没接管道的箱子里有就从那边取；只有接着管道的箱子里有时，取之前先问，写明这是“往外取”、取走通常没事', async (t) => {
     const fed: Box = { x: 30, y: 64, z: 0, name: 'Chest', id: 'minecraft:chest', attached: [{ x: 30, y: 65, z: 0, name: 'Hopper', kind: 'hopper' }], items: [stack(P.steelIngot, 64)] }
     const s = setup(t, { boxes: [chest([stack(P.steelIngot, 2)]), fed] })
     const plain = await s.plan(P.steelPlate, { count: 2 })
@@ -262,7 +274,7 @@ describe('plan_item：要主人先点头的事', () => {
       ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 2)] }],
       ['withdraw_items', { container: { x: 30, y: 64, z: 0 }, items: [stack(P.steelIngot, 3)] }],
     ])
-    assert.deepEqual(more.plan.decisions, ['step 2 takes 3× 钢锭 out of the 箱子 at (30,64,0), which is AUTOMATED (漏斗 at (30,65,0) feeds or drains it)'])
+    assert.deepEqual(more.plan.decisions, ["step 2 TAKES 3× 钢锭 OUT OF the 箱子 at (30,64,0), which 漏斗 at (30,65,0) is attached to (your owner's automation). Taking things out is usually harmless: at worst the automation that draws on it runs short of them"])
     assert.equal(more.plan.steps[1]!.ask, true)
     // 好几个要取货的容器都接着管道（主人的抽屉常常整排这样）：并成一条来问，不是一步问一次
     const pipe = [{ x: 0, y: 70, z: 0, name: 'Hopper', kind: 'hopper' }]
@@ -272,7 +284,179 @@ describe('plan_item：要主人先点头的事', () => {
       { x: 32, y: 64, z: 0, attached: pipe, items: [stack(P.obsidianDust, 4)] },
     ]
     const drawers = await s.plan(P.darkDust, { count: 3 })
-    assert.deepEqual(drawers.plan.decisions, ["steps 1, 2, 3 take things out of containers that are AUTOMATED (a pipe or hopper feeds or drains each, so they are part of your owner's automation): the 箱子 at (30,64,0) (step 1), the 箱子 at (31,64,0) (step 2), the 箱子 at (32,64,0) (step 3)"])
+    assert.deepEqual(drawers.plan.decisions, ["steps 1, 2, 3 TAKE things OUT OF containers that pipes or hoppers are attached to (your owner's automation): the 箱子 at (30,64,0) (step 1), the 箱子 at (31,64,0) (step 2), the 箱子 at (32,64,0) (step 3). Taking things out is usually harmless: at worst the automation that draws on it runs short of them"])
+  })
+})
+
+describe('plan_item：工具只做一把、做最简单的那种', () => {
+  it('要一把剪线钳、仓库里没有：做一把普通的就够了——不做电动的（哪怕马达和电池就在仓库里），也不先做一把普通的再拿它“升级”', async (t) => {
+    // 细钢丝 = 1 钢板，用剪线钳剪。剪线钳这个矿辞名下有三种：普通的、万能工具（普通的 + 钢螺丝）、自动剪线钳（马达 + 电池 + 钢锭）。
+    // 仓库里马达、电池、钢锭都现成：单看“料齐不齐”，电动的那把最省事
+    const s = setup(t, { boxes: [chest([stack(P.steelIngot, 20), stack(P.steelScrew, 4), stack(P.hammer, 1), stack(P.motor, 1), stack(P.battery, 1)])] })
+    const res = await s.plan(P.wire)
+    assert.equal(res.plan.feasible, true, res.content)
+    assert.deepEqual(s.calls(res.plan), [
+      // 钢锭：4 块钢板（剪线钳 3 + 细钢丝 1）+ 2 根钢杆（没有模头，手工锤 1 锭 1 根）；钢螺丝 1 个；马达和电池不动
+      ['withdraw_items', { container: CHEST, items: [stack(P.hammer, 1), stack(P.steelIngot, 6), stack(P.steelScrew, 1)] }],
+      ['process_items', { machine: at(BENDER), recipe: R.bendSteel, rounds: 4 }],
+      ['craft_item', { recipe: R.rodHand, count: 2 }],
+      ['craft_item', { recipe: R.cutter, count: 1 }],
+      ['craft_item', { recipe: R.wire, count: 1 }],
+    ])
+    assert.deepEqual(res.plan.decisions, [])
+    // 仓库里有一把（哪一种都行）：直接用，不做
+    s.world.boxes = [chest([stack(P.steelIngot, 20), stack(P.snips, 1)])]
+    const have = await s.plan(P.wire)
+    assert.deepEqual(s.calls(have.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.snips, 1), stack(P.steelIngot, 1)] }],
+      ['process_items', { machine: at(BENDER), recipe: R.bendSteel, rounds: 1 }],
+      ['craft_item', { recipe: R.wire, count: 1 }],
+    ])
+    // 点名要电动的那把（不是“要一把工具”）：照样排得出来
+    const electric = await s.plan(P.snips)
+    assert.equal(electric.plan.steps.at(-1)!.input.recipe, R.snips)
+  })
+})
+
+describe('plan_item：机器里现成的模具、模头', () => {
+  const EXTRUDER_AT = at(EXTRUDER)
+
+  it('模头就在要用的那台压模机里：原地用，不取、不问，也不带一个去', async (t) => {
+    const s = setup(t, { boxes: [chest([stack(P.steelIngot, 10)]), inside(EXTRUDER, [stack(P.rodShape, 1)])] })
+    const res = await s.plan(P.steelRod, { count: 4 })
+    assert.deepEqual(s.calls(res.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 2)] }],
+      // 压模机 1 锭 2 根；模头（杆）已经在机器里
+      ['process_items', { machine: EXTRUDER_AT, recipe: R.rodExtrude, rounds: 2, moldInside: true }],
+    ])
+    assert.deepEqual([res.plan.feasible, res.plan.decisions], [true, []])
+    assert.match(res.lines.find((l) => l.startsWith('2. '))!, / — make 4× 钢杆 on the 进阶压模机; the 模头（杆） already in that machine is used where it is$/)
+  })
+
+  it('模头在另一台机器里（那台没电）：借出来用，用完放回去——取之前先问主人，放回去是计划里的一步；主人不同意就自己做（borrow:false）', async (t) => {
+    const OFF = { ...EXTRUDER, storedEU: 0 }
+    const ON = { ...EXTRUDER, x: 26 }
+    const s = setup(t, {
+      boxes: [chest([stack(P.steelIngot, 40), stack(P.darkPlate, 4), stack(P.rodShape, 1), stack(P.hammer, 1)]), inside(OFF, [stack(P.shaftShape, 1)])],
+      machines: [BENDER, OFF, ON, MIXER, MACERATOR, furnace()],
+    })
+    const res = await s.plan(P.shaft, { count: 4 })
+    assert.deepEqual(s.calls(res.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 36)] }],
+      ['withdraw_items', { container: EXTRUDER_AT, items: [stack(P.shaftShape, 1)], fromInputs: true }],
+      ['process_items', { machine: at(ON), recipe: R.shaft, rounds: 4, wait: 338 }],
+      ['deposit_items', { container: EXTRUDER_AT, items: [stack(P.shaftShape, 1)] }],
+    ])
+    assert.deepEqual(res.plan.steps.map((x) => x.ask === true), [false, true, false, false])
+    assert.deepEqual(res.plan.decisions, [
+      `step 2 BORROWS 1× 模头（转轴） from the input slots of the 进阶压模机 at (18,64,-8): it is your owner's, kept there for that machine. Step 4 puts it back. If your owner says no, call plan_item again with "borrow": false (it would then be made by hand #${R.shaftShape}, 4 玄钢板 + 1 模头（杆） each, keeps 锤)`,
+    ])
+    assert.equal(res.lines[0], "Plan for 4× 精炼铁柄 [IC2:itemRecipePart/12]: everything needed is here. 4 step(s): 2 to fetch, 1 to make, 1 to put back what was taken out of machines (do these too, even though the 精炼铁柄 is made by then). 1 thing(s) need your owner's word before you start.")
+    assert.equal(res.lines.at(-1), '4. deposit_items {"container":{"x":18,"y":64,"z":-8},"items":[{"id":"miscutils:MU-metaitem.01","meta":32040,"count":1}]} — put 1× 模头（转轴） back into the 进阶压模机 (taken out at step 2)')
+
+    // 主人说不行：不碰那台机器里的模头，自己做一个
+    const own = await s.plan(P.shaft, { count: 4, borrow: false })
+    assert.deepEqual(s.calls(own.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 36), stack(P.hammer, 1), stack(P.darkPlate, 4), stack(P.rodShape, 1)] }],
+      ['craft_item', { recipe: R.shaftShape, count: 1 }],
+      ['process_items', { machine: at(ON), recipe: R.shaft, rounds: 4, wait: 338 }],
+    ])
+    assert.deepEqual(own.plan.decisions, [])
+  })
+
+  it('借来的东西会被这份计划用掉（模头（杆）要合成进模头（转轴））：照实说“用掉、放不回去”，让主人拿主意；没有放回去那一步', async (t) => {
+    // 仓库里别的都有，就是没有模头（杆）；压模机的原料格里放着一个
+    const s = setup(t, { boxes: [chest(without(P.rodShape)), inside(EXTRUDER, [stack(P.rodShape, 1)])] })
+    const res = await s.plan(P.blades)
+    assert.deepEqual(s.calls(res.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 36), stack(P.hammer, 1), stack(P.magneticDust, 2), stack(P.coalDust, 2), stack(P.obsidianDust, 2), stack(P.steelScrew, 3), stack(P.steelGear, 1), stack(P.screwdriver, 1)] }],
+      ['process_items', { machine: at(MIXER), recipe: R.mixDark, rounds: 2 }],
+      ['process_items', { machine: FURNACE, recipe: R.smeltDark, rounds: 4, wait: 510 }],
+      ['process_items', { machine: at(BENDER), recipe: R.bendDark, rounds: 4 }],
+      // 到要用的那一步之前才取
+      ['withdraw_items', { container: EXTRUDER_AT, items: [stack(P.rodShape, 1)], fromInputs: true }],
+      ['craft_item', { recipe: R.shaftShape, count: 1 }],
+      // 模头（杆）已经取走了，压模机的两个原料格放得下钢锭和模头（转轴）
+      ['process_items', { machine: EXTRUDER_AT, recipe: R.shaft, rounds: 4, wait: 338 }],
+      ['craft_item', { recipe: R.blades, count: 1 }],
+    ])
+    assert.deepEqual(res.plan.decisions, [
+      'step 5 TAKES 1× 模头（杆） OUT OF the input slots of the 进阶压模机 at (18,64,-8), and this plan USES IT UP (it goes into the 模头（转轴）): it does not come back, so that machine is left without it. If your owner says no, call plan_item again with "borrow": false (there is no other way to get one here: nothing in the recipe book makes it (a raw material: it has to be mined, bought or found))',
+    ])
+    assert.equal(res.plan.feasible, true)
+    // 不借：缺的就是模头（杆）
+    const own = await s.plan(P.blades, { borrow: false })
+    assert.deepEqual(own.plan.missing.map((m) => [m.id, m.meta, m.count]), [[P.rodShape.id, P.rodShape.meta, 1]])
+  })
+
+  it('要用的压模机只有两个原料格，一个被别的模头占着，这次要放钢锭和模头（转轴）：先把占位的取出来（先问主人），做完放回去；格子够时不动它', async (t) => {
+    const s = setup(t, { boxes: [chest([stack(P.steelIngot, 40), stack(P.shaftShape, 1)]), inside(EXTRUDER, [stack(P.plateShape, 1)])] })
+    const res = await s.plan(P.shaft, { count: 4 })
+    assert.deepEqual(s.calls(res.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 36), stack(P.shaftShape, 1)] }],
+      ['withdraw_items', { container: EXTRUDER_AT, items: [stack(P.plateShape, 1)], fromInputs: true }],
+      ['process_items', { machine: EXTRUDER_AT, recipe: R.shaft, rounds: 4, wait: 338 }],
+      ['deposit_items', { container: EXTRUDER_AT, items: [stack(P.plateShape, 1)] }],
+    ])
+    assert.deepEqual(res.plan.decisions, [
+      "step 2 TAKES 1× 模头（板） OUT OF the input slots of the 进阶压模机 at (18,64,-8) to make room: it has 2 input slot(s), 1 taken, and step 3 puts 2 more kind(s) of thing in. It is your owner's, kept there for that machine; step 4 puts it back",
+    ])
+    assert.deepEqual(res.plan.steps.map((x) => x.ask === true), [false, true, false, false])
+    // 不借模具（borrow:false）时照样要挪：这是腾地方，不是借
+    assert.deepEqual(s.calls((await s.plan(P.shaft, { count: 4, borrow: false })).plan), s.calls(res.plan))
+
+    // 四个原料格的压模机：放得下，不碰里面的模头
+    s.world.machines = [BENDER, { ...EXTRUDER, inputSlots: 4 }, MIXER, MACERATOR, furnace()]
+    const roomy = await s.plan(P.shaft, { count: 4 })
+    assert.deepEqual(s.calls(roomy.plan).map(([tool]) => tool), ['withdraw_items', 'process_items'])
+    assert.deepEqual(roomy.plan.decisions, [])
+  })
+})
+
+describe('plan_item：还不能直接用的机器做法排在后面', () => {
+  it('压模机省料，可它要的模头手头没有（得先另做一个）：手边的办法做得了就用手边的；要得多、省得多时才提出来问主人；模头现成时用压模机', async (t) => {
+    // 钢销：压模机 1 锭 4 个（模头（转轴）不消耗），手工锤 1 锭 1 个。仓库里没有模头（转轴），但做它的料都有
+    const makings = [stack(P.steelIngot, 64), stack(P.hammer, 1), stack(P.darkPlate, 4), stack(P.rodShape, 1)]
+    const s = setup(t, { boxes: [chest(makings)] })
+    const few = await s.plan(P.pin, { count: 2 })
+    assert.deepEqual(s.calls(few.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.hammer, 1), stack(P.steelIngot, 2)] }],
+      ['craft_item', { recipe: R.pinHand, count: 2 }],
+    ])
+    // 只多耗一个半钢锭：不值得为它问主人
+    assert.deepEqual(few.plan.decisions, [])
+    assert.equal(few.lines.at(-1), `   why: by hand #${R.pinHand}, 1 钢锭 each, keeps 锤. other ways: 压模机 #${R.pinExtrude}, 0.25 钢锭 each, keeps 模头（转轴）`)
+    // 要 40 个：手工 40 锭，压模机 10 锭——差得多了，提出来
+    const many = await s.plan(P.pin, { count: 40 })
+    assert.deepEqual(many.plan.decisions, [`step 2 makes the 钢销 by hand #${R.pinHand} at 1 钢锭 each, keeps 锤, with what is at hand; 压模机 #${R.pinExtrude} would take 0.25 钢锭 each, keeps 模头（转轴）, but more has to be made for it first. Ask your owner which they want`])
+
+    s.world.boxes = [chest([...makings, stack(P.shaftShape, 1)])]
+    const withShape = await s.plan(P.pin, { count: 2 })
+    assert.deepEqual(s.calls(withShape.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelIngot, 1), stack(P.shaftShape, 1)] }],
+      ['process_items', { machine: at(EXTRUDER), recipe: R.pinExtrude, rounds: 1 }],
+    ])
+  })
+
+  it('单方块机器要流体的配方（罐子里有没有它看不到）：别的办法做得了就不用它；只剩它时才用，并让主人确认流体；要的熔融金属基地里连这种材料都没有的，不当成做得出来', async (t) => {
+    const machines = [...ALL_MACHINES, SOLIDIFIER]
+    const s = setup(t, { boxes: [chest([stack(P.steelIngot, 8), stack(P.hammer, 1)])], machines })
+    // 钢销：流体固化器 36 mB 熔融钢 1 个，什么都不用带；手工锤 1 锭 1 个
+    const byHand = await s.plan(P.pin, { count: 2 })
+    assert.deepEqual(s.calls(byHand.plan).at(-1), ['craft_item', { recipe: R.pinHand, count: 2 }])
+    assert.deepEqual(byHand.plan.decisions, [])
+    // 没有锤、也没有料做锤：只剩流体固化器这一条路（仓库里有钢，罐子里可能接着熔融钢）
+    s.world.boxes = [chest([stack(P.steelIngot, 4)])]
+    const cast = await s.plan(P.pin, { count: 2 })
+    assert.deepEqual(s.calls(cast.plan), [['process_items', { machine: at(SOLIDIFIER), recipe: R.pinCast, rounds: 2 }]])
+    assert.deepEqual(cast.plan.decisions, ["step 1 needs 72 mB 熔融钢 inside the 基础流体固化器 at (24,64,-8): you cannot see or fill a single-block machine's tank, so ask your owner whether it is piped in"])
+
+    // 模头（转轴）也能用 4 钛板做，钛板只有流体固化器浇得出来；基地里没有任何钛。
+    // 缺黑曜石粉时该报的是“缺黑曜石粉”，不是排一份“用熔融钛浇板”的计划
+    s.world.boxes = [chest(without(P.obsidianDust))]
+    const res = await s.plan(P.shaftShape)
+    assert.deepEqual(res.plan.missing.map((m) => [m.ore, m.count]), [['dustObsidian', 2]])
+    assert.equal(res.plan.steps.some((x) => x.input.recipe === R.castTitanPlate || x.input.recipe === R.shaftShapeTitan), false, res.content)
   })
 })
 

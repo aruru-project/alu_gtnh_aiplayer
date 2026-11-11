@@ -765,7 +765,8 @@ export interface ProcessPlan {
   fluids: { name: string; mb: number }[]
 }
 
-export function processPlan(recipe: Recipe, rounds: number, have?: Carried, items?: ItemTable): ProcessPlan {
+/** moldInside：配方要的模具、模头（不消耗的那格）已经在机器里了，不用带、不用放。 */
+export function processPlan(recipe: Recipe, rounds: number, have?: Carried, items?: ItemTable, moldInside = false): ProcessPlan {
   const plan: ProcessPlan = { inputs: [], expect: [], fluids: recipe.fin.map((f) => ({ name: f.name, mb: f.mb * rounds })) }
   for (const slot of mergedSlots(recipe.in)) {
     const circuit = circuitOf(slot)
@@ -773,6 +774,7 @@ export function processPlan(recipe: Recipe, rounds: number, have?: Carried, item
       plan.circuit = circuit
       continue
     }
+    if (slot.n === 0 && moldInside) continue
     // 模具、模头这类不消耗的放 1 个；消耗的乘上轮数
     const count = slot.n === 0 ? 1 : slot.n * rounds
     if (slot.kind === 'item') {

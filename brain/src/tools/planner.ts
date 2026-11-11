@@ -7,6 +7,8 @@
 //   - 数量沿树算：一轮出几个按轮数取整；模具、模头、工具这类不消耗的只要 1 个；编程电路不是原料；
 //   - 做不了的叶子（没有这种机器、电压炉温不够、库存没有又没有配方）单独列出来，那才是该报给主人的“缺什么”；
 //   - 要主人先点头的事（接着管道的箱子和总线、有维护问题的机器、省料的做法做不了只能用费料的）单独列出来。
+//   - 机器原料格里现成的模具、模头：库存里没有时先借（从那台机器取出来，用完放回去；就在要用的那台机器里的原地用），
+//     不从头做一个；那是主人机器里的东西，取之前要问。要用的机器原料格被别的模具占着放不下时，先挪出来、做完放回去。
 //
 // 同一样东西在树上出现几次时合成一个节点，需求加在一起，所以库存不会被重复算，也不会同一样中间件分两次做。
 // 库存分两种看法：先把附近的容器扫一遍得到一张粗表（挑材质、判断“这条路走不走得通”用，不精确没关系），
@@ -14,7 +16,7 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, ContainerInfo, InventoryItem, MachineHatch, MachineInfo, StockQuery } from '../bridge/protocol.ts'
-import { ANY_META } from '../packdata/index.ts'
+import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
 import type { Recipe, RecipeBook, RecipeFluid, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable } from '../packdata/items.ts'
 import { formatPos, itemKey, nameOf } from './format.ts'
@@ -50,6 +52,7 @@ export const PLAN_MAX_DEPTH = 10
 export const PLAN_MAX_COUNT = 2304
 /** 一样东西最多看这么多条做法（工具每种材质一条，几百条）。 */
 const CANDIDATES_MAX = 3000
+const CANDIDATES_CHUNK = 250
 /** “这条路走不走得通”往下看几层；展开一样东西时最多看多少条配方、整份计划一共最多看多少条；一样东西的做法里最多细看多少条。 */
 const LOOKAHEAD_DEPTH = 5
 const LOOKAHEAD_BUDGET = 8000
@@ -70,6 +73,8 @@ const SCAN_MAX_CONTAINERS = 1200
 export const STORAGE_REACH = SCAN_QUERY_STEP + SCAN_QUERY_RADIUS
 /** 能做的做法比做不了的那种费料到这个倍数，就算“差别很大”，要问主人。 */
 const MUCH_MORE = 1.5
+/** 省料的做法现在就用不上（要先另做模具）时，这一步总共多耗的料不到这么多个，就不为它问主人。 */
+const WORTH_ASKING = 4
 /** 机器的一格、任务的一次：一步里一样原料最多放这么多，最多做这么多轮。 */
 const STACK = 64
 const ROUNDS_PER_STEP = 64
@@ -114,6 +119,8 @@ interface Holding {
   at?: Pos
   container?: string
   automated?: AttachedBlock[]
+  /** 不是库存：放在一台单方块机器原料格里的模具、模头（at 是那台机器）。借来用，取之前要问主人。 */
+  lent?: boolean
 }
 
 interface Take {
@@ -123,6 +130,15 @@ interface Take {
   at?: Pos
   container?: string
   automated?: AttachedBlock[]
+  lent?: boolean
+}
+
+/** 一台单方块机器原料格里放着的一样东西：shape 是模具、模头（这台机器的配方拿它当不消耗的原料），material 是没用完的原料。 */
+interface Inside {
+  id: string
+  meta: number
+  count: number
+  role: 'shape' | 'material'
 }
 
 type Usable =
@@ -133,6 +149,8 @@ type Usable =
 interface Candidate {
   recipe: Recipe
   kind: 'machine' | 'craft' | 'other'
+  /** 要电池的（电动工具）。 */
+  powered: boolean
   /** 一轮出几个要的那样东西。 */
   yield: number
   /** 合并过的原料格（不含编程电路）。 */
@@ -146,6 +164,8 @@ interface Candidate {
   shortSlots: RecipeSlot[]
   blocked: number
   oddBlocked: number
+  /** 缺的原料里，只有靠流体没着落的配方才弄得到的有几格。 */
+  unsure: number
   /** 既没有也做不出来的那几格。 */
   stuck: RecipeSlot[]
   /** 料凑不齐、也不值得顺着它往下找的：它的料一样现成的都没有（往下几层也没有）。 */
@@ -176,7 +196,7 @@ interface PlanNode {
 
 export interface PlanStep {
   n: number
-  tool: 'withdraw_items' | 'craft_item' | 'process_items'
+  tool: 'withdraw_items' | 'craft_item' | 'process_items' | 'deposit_items'
   input: Record<string, unknown>
   /** 这一步是干什么的（英文，带中文物品名）。 */
   text: string
@@ -258,6 +278,10 @@ class Stock {
   private broadByOre: Map<string, number> | undefined
   /** 每个容器是不是机器、接没接管道。 */
   readonly flags = new Map<string, Flag>()
+  /** 机器的格子里放着什么（world.containers 看到的，原料格、产物格不分）。不算库存。 */
+  readonly inMachines = new Map<string, { id: string; meta: number; count: number }[]>()
+  /** 机器原料格里可以借的模具、模头（规划时定的，见 Planner.lookInsideMachines）。 */
+  lendable: Holding[] = []
   scanned = 0
   scanCut = false
   private readonly exact = new Map<string, Holding[]>()
@@ -297,6 +321,7 @@ class Stock {
           const flag: Flag = { ...(c.kind ? { kind: c.kind } : {}), ...(c.attached && c.attached.length > 0 ? { attached: c.attached } : {}) }
           // 机器的主机和总线上面已经记过：留着那边记的 attached
           this.flags.set(posKey(c), { ...this.flags.get(posKey(c)), ...flag })
+          if (c.kind === 'machine') this.inMachines.set(posKey(c), (c.items ?? []).filter((it) => it && typeof it.id === 'string').map((it) => ({ id: it.id, meta: it.meta ?? 0, count: typeof it.count === 'number' ? it.count : 1 })))
           if (c.kind === 'machine' || c.kind === 'drawer_controller') continue
           for (const it of c.items ?? []) if (it && typeof it.id === 'string') this.addBroad(it.id, it.meta ?? 0, typeof it.count === 'number' ? it.count : 1)
         }
@@ -316,21 +341,41 @@ class Stock {
   }
 
   /** 库存里以任何形态存在的材料（有钢锭就算有“Steel”）：挑材质时先看这些。 */
-  private stocked: Set<string> | undefined
+  private stocked: Map<string, number> | undefined
   readonly materials: Materials
   hasMaterial(material: string): boolean {
-    if (!this.stocked) {
-      this.stocked = new Set()
-      for (const key of this.broad.keys()) {
-        const cut = key.lastIndexOf('/')
-        for (const material of this.materials.of(this.items?.get(key.slice(0, cut), Number(key.slice(cut + 1)))?.ores)) this.stocked.add(material)
-      }
-    }
-    return this.stocked.has(material)
+    return this.stockedMaterials().has(material)
   }
 
-  /** 粗表里这样东西大概有多少。 */
+  private stockedMaterials(): Map<string, number> {
+    if (!this.stocked) {
+      this.stocked = new Map()
+      for (const [key, count] of this.broad) {
+        const cut = key.lastIndexOf('/')
+        for (const material of this.materials.of(this.items?.get(key.slice(0, cut), Number(key.slice(cut + 1)))?.ores)) this.stocked.set(material, (this.stocked.get(material) ?? 0) + count)
+      }
+    }
+    return this.stocked
+  }
+
+  /** 这种材料库存里一共有多少件（各种形态加在一起）：几种材质都做得了时，用多的那种。 */
+  materialCount(material: string): number {
+    return this.stockedMaterials().get(material) ?? 0
+  }
+
+  /** 流体注册名里的材料（molten.darksteel 的 darksteel）库存里有没有。 */
+  private stockedLower: Set<string> | undefined
+  hasMaterialNamed(lower: string): boolean {
+    this.stockedLower ??= new Set([...this.stockedMaterials().keys()].map((m) => m.toLowerCase()))
+    return this.stockedLower.has(lower)
+  }
+
+  /** 粗表里这样东西大概有多少（机器里可以借的模具也算）。 */
   broadCount(need: Need): number {
+    return this.stored(need) + this.lendable.reduce((n, h) => (this.fits(need, h.id, h.meta) ? n + h.count : n), 0)
+  }
+
+  private stored(need: Need): number {
     const slot = need.slot
     if (need.ore !== undefined) {
       if (!this.broadByOre) {
@@ -387,17 +432,19 @@ class Stock {
     else list.push(h)
   }
 
+  /** 这个物品合不合这样东西的要求。 */
+  fits(need: Need, id: string, meta: number): boolean {
+    const slot = need.slot
+    if (need.ore !== undefined) return this.items?.get(id, meta)?.ores?.includes(need.ore) === true || need.products.some((p) => p.id === id && p.meta === meta)
+    if (slot.kind === 'item') return slot.id === id && (slot.meta === ANY_META || slot.meta === meta)
+    return need.products.some((p) => p.id === id && (p.meta === ANY_META || p.meta === meta))
+  }
+
   /** 身上的东西里合这样东西要求的。 */
   private carried(need: Need): Holding[] {
     const out: Holding[] = []
-    const fits = (id: string, meta: number): boolean => {
-      const slot = need.slot
-      if (need.ore !== undefined) return this.items?.get(id, meta)?.ores?.includes(need.ore) === true || need.products.some((p) => p.id === id && p.meta === meta)
-      if (slot.kind === 'item') return slot.id === id && (slot.meta === ANY_META || slot.meta === meta)
-      return need.products.some((p) => p.id === id && (p.meta === ANY_META || p.meta === meta))
-    }
     for (const it of this.inventory) {
-      if (!it || typeof it.id !== 'string' || !fits(it.id, it.meta ?? 0)) continue
+      if (!it || typeof it.id !== 'string' || !this.fits(need, it.id, it.meta ?? 0)) continue
       const seen = out.find((h) => h.id === it.id && h.meta === (it.meta ?? 0))
       const count = typeof it.count === 'number' ? it.count : 1
       if (seen) seen.count += count
@@ -406,10 +453,10 @@ class Stock {
     return out
   }
 
-  /** 这样东西现有的存货：身上的在前，然后是没接管道的容器，多的在前。 */
+  /** 这样东西现有的存货：身上的在前，然后是没接管道的容器，多的在前；最后才是机器里可以借的。 */
   holdings(need: Need): Holding[] {
     const stored = [...(this.exact.get(need.key) ?? [])].sort((a, b) => Number(a.automated !== undefined) - Number(b.automated !== undefined) || b.count - a.count)
-    return [...this.carried(need), ...stored]
+    return [...this.carried(need), ...stored, ...this.lendable.filter((h) => this.fits(need, h.id, h.meta))]
   }
 
   private slotOf(h: Holding): string {
@@ -443,20 +490,62 @@ class Planner {
   private readonly needMemo = new Map<string, Need>()
   private readonly progressMemo = new Map<string, boolean>()
   /** 做一样东西的全部做法（读过、去过重的），按东西记着：往下看的时候同一样东西会被问很多次。 */
-  private readonly recipesMemo = new Map<string, Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'stuck' | 'hopeless'>[]>()
-  private readonly canGetMemo = new Map<string, boolean>()
+  private readonly recipesMemo = new Map<string, Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'unsure' | 'stuck' | 'hopeless'>[]>()
+  private readonly canGetMemo = new Map<string, 0 | 1 | 2>()
   private readonly book: RecipeBook
   private readonly items: ItemTable | undefined
   private readonly nm: Namer
   private readonly around: Surroundings
   private readonly stock: Stock
+  /** 每台单方块机器的原料格里现在放着什么（模具、模头、没用完的原料）。 */
+  private readonly inside = new Map<string, Inside[]>()
 
-  constructor(book: RecipeBook, items: ItemTable | undefined, around: Surroundings, stock: Stock) {
+  constructor(book: RecipeBook, items: ItemTable | undefined, around: Surroundings, stock: Stock, opts: { borrow?: boolean } = {}) {
     this.book = book
     this.items = items
     this.nm = namer(items)
     this.around = around
     this.stock = stock
+    this.lookInsideMachines(opts.borrow !== false)
+  }
+
+  // 机器里现成的东西
+
+  /**
+   * 看每台单方块机器的格子里放着什么：模具、模头可以借（borrow 为 false 时不借），它们和没用完的原料都占着原料格。
+   * world.containers 不分原料格和产物格，所以照配方册认：这台机器的配方拿它当原料的，是在原料格里；它自己做得出来的当成产物，不管。
+   */
+  private lookInsideMachines(borrow: boolean): void {
+    const lendable: Holding[] = []
+    for (const m of this.around.machines) {
+      if (m.kind === 'multiblock') continue
+      const list: Inside[] = []
+      for (const it of this.stock.inMachines.get(posKey(m)) ?? []) {
+        const role = this.roleIn(m, it.id, it.meta)
+        if (!role) continue
+        list.push({ ...it, role })
+        if (role === 'shape' && borrow) lendable.push({ id: it.id, meta: it.meta, count: it.count, at: { x: m.x, y: m.y, z: m.z }, ...(m.name ? { container: m.name } : {}), lent: true })
+      }
+      if (list.length > 0) this.inside.set(posKey(m), list)
+    }
+    this.stock.lendable = lendable
+  }
+
+  private roleIn(m: MachineInfo, id: string, meta: number): Inside['role'] | undefined {
+    if (id === CIRCUIT_ID) return undefined
+    const onThisMachine = (ref: number): boolean => {
+      const handler = this.book.handlerOfRecipe(ref)
+      return handler !== undefined && runsWay(m, handler)
+    }
+    if (this.book.makesOf(id, meta).some(onThisMachine)) return undefined
+    const uses = this.book.usesOf(id, meta, this.items?.get(id, meta)?.ores ?? []).filter(onThisMachine)
+    if (uses.length === 0) return undefined
+    // 读几条看看：它在这台机器的配方里是不消耗的（模具、模头），还是要消耗的原料
+    for (const ref of uses.slice(0, 6)) {
+      const recipe = this.book.get(ref)
+      if (recipe?.in.some((slot) => slot.n === 0 && slot.kind === 'item' && slot.id === id && (slot.meta === meta || slot.meta === ANY_META))) return 'shape'
+    }
+    return 'material'
   }
 
   // 一样东西
@@ -589,7 +678,8 @@ class Planner {
       const buses: MachineHatch[] = m.inputBuses ?? []
       const own = buses.filter((b) => (b.attached ?? []).length === 0)
       if (buses.length > 0 && own.length === 0) {
-        asks.push(`${where}: its input bus is AUTOMATED (${pipes(buses.flatMap((b) => b.attached ?? []))} feeds it), so it is part of your owner's automation`)
+        // 往里“放”和从箱子里“取”不是一回事：放进去的东西会和管道送来的混在一起
+        asks.push(`PUTS your inputs INTO the input bus of ${where}, which ${pipes(buses.flatMap((b) => b.attached ?? []))} feeds automatically (your owner's automation). They can get mixed with what it brings in: the machine may use your items up on your owner's recipe, or the bus may be full`)
       } else if (own.length < buses.length || own.length > 1) {
         // 有接着管道的总线时点名用没接的那个（身体自己挑的是空格最多的，可能正好挑中自动喂料的）
         const pick = [...own].sort((a, b) => (b.slots ?? 0) - (b.usedSlots ?? 0) - ((a.slots ?? 0) - (a.usedSlots ?? 0)))[0]!
@@ -597,11 +687,11 @@ class Planner {
       }
       const outs: MachineHatch[] = m.outputBuses ?? []
       const drained = outs.filter((b) => (b.attached ?? []).length > 0 && (b.passesTo ?? []).length === 0)
-      if (outs.length > 0 && drained.length === outs.length) asks.push(`${where}: its output bus is drained by ${pipes(drained.flatMap((b) => b.attached ?? []))}, so the products may be carried away before you can take them`)
-      if (/maintenance problem/i.test(m.idleReason ?? '')) asks.push(`${where} reports "${m.idleReason}": it needs repairing by your owner`)
+      if (outs.length > 0 && drained.length === outs.length) asks.push(`uses ${where}, whose output bus is drained by ${pipes(drained.flatMap((b) => b.attached ?? []))}: what you make may be carried away before you can take it`)
+      if (/maintenance problem/i.test(m.idleReason ?? '')) asks.push(`uses ${where}, which reports "${m.idleReason}": it needs repairing by your owner`)
     } else {
       const attached = this.stock.flags.get(posKey(m))?.attached
-      if (attached && attached.length > 0) asks.push(`${where} is AUTOMATED (${pipes(attached)} feeds or drains it), so it is part of your owner's automation`)
+      if (attached && attached.length > 0) asks.push(`PUTS your inputs INTO ${where}, which ${pipes(attached)} is attached to (your owner's automation). The pipe may bring in other things that get mixed with yours, or carry what you make away before you take it`)
     }
     return { asks, ...(bus ? { bus } : {}) }
   }
@@ -617,17 +707,18 @@ class Planner {
   }
 
   /** 做这样东西的每条做法（读一遍配方册，去掉回收的、重复的、有概率才出的）。 */
-  private recipesFor(need: Need): Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'stuck' | 'hopeless'>[] {
+  private recipesFor(need: Need): Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'unsure' | 'stuck' | 'hopeless'>[] {
     const known = this.recipesMemo.get(need.key)
     if (known) return known
+    // 几种物品都算数时（一个矿辞名下的各种工具）轮流各取一段：电动工具每种有几百条配方，别让它们把普通的那种挤出去
     const refs = new Set<number>()
-    for (const p of need.products) {
-      for (const ref of this.book.makesOf(p.id, p.meta)) {
-        if (refs.size >= CANDIDATES_MAX) break
-        refs.add(ref)
+    const lists = need.products.map((p) => this.book.makesOf(p.id, p.meta))
+    for (let from = 0; refs.size < CANDIDATES_MAX && lists.some((list) => list.length > from); from += CANDIDATES_CHUNK) {
+      for (const list of lists) {
+        for (let n = from; n < Math.min(list.length, from + CANDIDATES_CHUNK) && refs.size < CANDIDATES_MAX; n++) refs.add(list[n]!)
       }
     }
-    const out: Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'stuck' | 'hopeless'>[] = []
+    const out: Omit<Candidate, 'usable' | 'shortSlots' | 'blocked' | 'oddBlocked' | 'unsure' | 'stuck' | 'hopeless'>[] = []
     const seen = new Set<string>()
     const wanted = new Set(need.products.map(refKey))
     for (const ref of [...refs].sort((a, b) => a - b)) {
@@ -646,19 +737,32 @@ class Planner {
       const slots = merged.filter((s) => circuitOf(s) === undefined)
       const kind = wayKind(recipe.handler)
       const consumed = slots.filter((s) => s.n > 0 && !isTool(s))
-      out.push({ recipe, kind, yield: made, slots, ...(circuit !== undefined ? { circuit } : {}), handTool: kind === 'craft' && slots.some(isTool), cost: consumed.reduce((n, s) => n + s.n, 0) / made })
+      out.push({ recipe, kind, powered: consumed.some((s) => this.isBattery(s)), yield: made, slots, ...(circuit !== undefined ? { circuit } : {}), handTool: kind === 'craft' && slots.some(isTool), cost: consumed.reduce((n, s) => n + s.n, 0) / made })
     }
     this.recipesMemo.set(need.key, out)
     return out
   }
 
+  private isBattery(slot: RecipeSlot): boolean {
+    const battery = (ores: readonly string[] | undefined): boolean => ores?.some((o) => /^battery[A-Z]/.test(o)) === true
+    if (slot.kind === 'ore') return battery([slot.ore])
+    if (slot.kind === 'item') return battery(this.items?.get(slot.id, slot.meta)?.ores)
+    return slot.any.some(([id, meta]) => battery(this.items?.get(id, meta)?.ores))
+  }
+
   /** 做这样东西的每条做法，各自现在做不做得了。ancestors：它上面的东西（用它们当原料的做法是绕圈子：锭磨成粉、粉再炼回锭）。 */
   private candidates(need: Need, ancestors: ReadonlySet<string>): Candidate[] {
     const out: Candidate[] = []
+    // 已经算是“有了它”的那几种物品
+    const own = new Set(need.products.map(refKey))
     for (const base of this.recipesFor(need)) {
       const machine = base.kind === 'machine'
+      // 要一把工具时不做电动的（要电池的）：做最简单的那种就够用
+      if (need.tool && base.powered) continue
+      // 原料里就有“已经算是它”的东西（剪线钳（LV）是拿一把普通剪线钳加马达、电池做的）：那是升级，不是做法
+      if (base.slots.some((s) => s.kind === 'item' && own.has(`${s.id}/${s.meta}`))) continue
       if (base.slots.some((s) => ancestors.has(this.needOf(s, machine).material))) continue
-      out.push({ ...base, usable: this.usable(base.recipe), shortSlots: [], blocked: 0, oddBlocked: 0, stuck: [], hopeless: false })
+      out.push({ ...base, usable: this.usable(base.recipe), shortSlots: [], blocked: 0, oddBlocked: 0, unsure: 0, stuck: [], hopeless: false })
     }
     return out
   }
@@ -721,23 +825,75 @@ class Planner {
     return this.stock.broadCount(need) - (node ? node.consumed + (node.keep ? 1 : 0) : 0)
   }
 
+  /** 配方的这一格手头不够（粗表）：消耗的看够不够这几轮用；模具、工具这类不消耗的有一个就行，计划里别处也在用它不碍事。 */
+  private lacks(slot: RecipeSlot, machine: boolean, rounds: number): boolean {
+    const need = this.needOf(slot, machine)
+    if (slot.n === 0 || isTool(slot)) return this.stock.broadCount(need) - (this.nodes.get(need.key)?.consumed ?? 0) < 1
+    return this.spare(need) < slot.n * rounds
+  }
+
+  /** 这格原料是什么材料的。 */
+  private materialsOf(slot: RecipeSlot, machine: boolean): string[] {
+    const need = this.needOf(slot, machine)
+    const ores = need.ore !== undefined ? [need.ore] : slot.kind === 'item' ? this.items?.get(slot.id, slot.meta)?.ores : need.products.flatMap((p) => this.items?.get(p.id, p.meta)?.ores ?? [])
+    return this.stock.materials.of(ores)
+  }
+
   /** 这格原料的材料库存里有没有（任何形态）：有的排在前面细看。工具一般做得出来，也算。 */
   private familiar(slot: RecipeSlot, machine: boolean): boolean {
     if (isTool(slot)) return true
-    const need = this.needOf(slot, machine)
-    const ores = need.ore !== undefined ? [need.ore] : slot.kind === 'item' ? this.items?.get(slot.id, slot.meta)?.ores : need.products.flatMap((p) => this.items?.get(p.id, p.meta)?.ores ?? [])
-    return this.stock.materials.of(ores).some((material) => this.stock.hasMaterial(material))
+    return this.materialsOf(slot, machine).some((material) => this.stock.hasMaterial(material))
   }
 
-  /** 这样东西弄不弄得到：粗表里有，或者有一条现在做得了、原料也都弄得到的做法。只用来在几条做法之间挑，不精确。 */
-  private canGet(need: Need, depth: number, above: ReadonlySet<string>): boolean {
-    if (this.spare(need) > 0) return true
+  /** 这条做法主要用的那种材料（耗得最多的那格），库存里有多少件：别的都一样时用料多的那种材质（钢锭一大箱、黄铜十几个，锤子就用钢做）。 */
+  private plenty(c: Candidate): number {
+    let least = 1e9
+    const most = Math.max(0, ...c.slots.filter((slot) => slot.n > 0 && !isTool(slot)).map((slot) => slot.n))
+    for (const slot of c.slots) {
+      if (slot.n < most || slot.n === 0 || isTool(slot)) continue
+      const materials = this.materialsOf(slot, c.kind === 'machine')
+      if (materials.length > 0) least = Math.min(least, Math.max(...materials.map((m) => this.stock.materialCount(m))))
+    }
+    return least
+  }
+
+  /** 多方块机器的配方要的流体，输入仓里现在不够（看得见的缺口：会报成缺的）。 */
+  private fluidShort(c: Candidate, rounds: number): boolean {
+    if (c.recipe.fin.length === 0 || c.usable.state !== 'now' || c.usable.machine?.kind !== 'multiblock') return false
+    return !this.fluidsIn(c.usable.machine, c.recipe.fin, rounds).every((f) => f.have !== undefined && f.have >= f.need)
+  }
+
+  /** 单方块机器的流体配方：罐子里有什么它看不到，也灌不了，只能问主人接没接好。 */
+  private blind(c: Candidate): boolean {
+    return c.kind === 'machine' && c.recipe.fin.length > 0 && c.usable.state === 'now' && c.usable.machine?.kind !== 'multiblock'
+  }
+
+  /**
+   * 看不到的那罐流体有没有可能是对的：熔融金属（molten.xxx）看基地里有没有这种材料（任何形态）。
+   * 连这种材料都没有的，就别指望罐子里正好有它——流体固化器什么材质都浇得出来，不这样分就会排出“用熔融钨钢浇一块板”这种计划。
+   */
+  private plausible(c: Candidate): boolean {
+    return c.recipe.fin.every((f) => {
+      const molten = /^molten\.(.+)$/.exec(f.f) ?? /^(.+)\.molten$/.exec(f.f)
+      return !molten || this.stock.hasMaterialNamed(molten[1]!.toLowerCase())
+    })
+  }
+
+  /**
+   * 这样东西弄不弄得到。只用来在几条做法之间挑，不精确。
+   *   2：粗表里有，或者有一条现在做得了、原料也都弄得到的做法；
+   *   1：弄得到，但要靠单方块机器的流体配方（罐子里有没有那种流体看不到，要主人确认）；
+   *   0：弄不到（包括：要的熔融金属，基地里连这种材料都没有）。
+   * 分出 1 来是因为：有了流体固化器以后，每种材质的每样零件都“做得出来”，不分的话会挑中基地里根本没有的材质。
+   */
+  private canGet(need: Need, depth: number, above: ReadonlySet<string>): 0 | 1 | 2 {
+    if (this.spare(need) > 0) return 2
     const memo = this.canGetMemo.get(need.key)
     if (memo !== undefined) return memo
     // 看得太深、这一次看得太多：当它弄不到（这种“没看完”的结论不记，见下）
     if (depth >= LOOKAHEAD_DEPTH || this.lookahead > LOOKAHEAD_BUDGET || this.lookaheadTotal > LOOKAHEAD_TOTAL) {
       this.cutShort++
-      return false
+      return 0
     }
     const cutBefore = this.cutShort
     const path = new Set([...above, need.material])
@@ -745,16 +901,30 @@ class Planner {
     this.lookahead += list.length
     this.lookaheadTotal += list.length
     const machine = (c: Candidate): boolean => c.kind === 'machine'
+    const own = (c: Candidate): 0 | 1 | 2 => (!this.blind(c) ? 2 : this.plausible(c) ? 1 : 0)
+    let best: 0 | 1 | 2 = 0
     // 先看有没有原料全在粗表里的（几百条每种材质一条的工具配方靠这一步）
-    let ok = list.some((c) => c.slots.every((s) => this.spare(this.needOf(s, machine(c))) > 0))
-    if (!ok) {
+    for (const c of list) {
+      if (own(c) <= best || !c.slots.every((s) => this.spare(this.needOf(s, machine(c))) > 0)) continue
+      best = own(c)
+      if (best === 2) break
+    }
+    if (best < 2) {
       // 再往下看一层：材料库存里有的那些先看
       const order = [...list].sort((a, b) => Number(b.slots.every((s) => this.familiar(s, machine(b)))) - Number(a.slots.every((s) => this.familiar(s, machine(a)))))
-      ok = order.slice(0, 30).some((c) => c.slots.every((s) => this.canGet(this.needOf(s, machine(c)), depth + 1, path)))
+      for (const c of order.slice(0, 30)) {
+        let level = own(c)
+        for (const s of c.slots) {
+          if (level <= best) break
+          level = Math.min(level, this.canGet(this.needOf(s, machine(c)), depth + 1, path)) as 0 | 1 | 2
+        }
+        if (level > best) best = level
+        if (best === 2) break
+      }
     }
-    // 底下有没看完的（太深、太多）而得出的“弄不到”不记：从浅一点的地方再看可能就看得到
-    if (ok || this.cutShort === cutBefore) this.canGetMemo.set(need.key, ok)
-    return ok
+    // 底下有没看完的（太深、太多）而得出的“弄不到”“没着落”不记：从浅一点的地方再看可能就看得到
+    if (best === 2 || this.cutShort === cutBefore) this.canGetMemo.set(need.key, best)
+    return best
   }
 
   /** 按规矩排好：排在最前面的现在做得了的那条就是要用的。 */
@@ -764,28 +934,41 @@ class Planner {
     for (const c of now) {
       const rounds = Math.ceil(count / c.yield)
       const machine = c.kind === 'machine'
-      c.shortSlots = c.slots.filter((s) => this.spare(this.needOf(s, machine)) < (s.n === 0 || isTool(s) ? 1 : s.n * rounds))
+      c.shortSlots = c.slots.filter((s) => this.lacks(s, machine, rounds))
       // 先当作缺的都弄不到；下面细看过的再改
       c.stuck = c.shortSlots
+      c.unsure = 0
       c.blocked = c.shortSlots.length
       c.oddBlocked = c.shortSlots.filter((s) => !this.basic(this.needOf(s, machine))).length
     }
     // 缺的原料弄不弄得到：缺得少的、材料库存里有的先看，看够数就停（工具每种材质一条，有几百上千条）
     const familiar = (c: Candidate): number => (c.shortSlots.every((s) => this.familiar(s, c.kind === 'machine')) ? 0 : 1)
     const worth = now.filter((c) => c.shortSlots.length > 0).sort((a, b) => familiar(a) - familiar(b) || a.shortSlots.length - b.shortSlots.length || a.cost - b.cost)
+    // 同一样原料（几条做法都要的那个模头）在这一次比较里只判一次：往下看有深度和数量的上限，分开判可能一条说弄得到、一条说弄不到
+    const judged = new Map<string, 0 | 1 | 2>()
+    const reachOf = (need: Need): 0 | 1 | 2 => {
+      let level = judged.get(need.key)
+      if (level === undefined) judged.set(need.key, (level = this.canGet(need, 1, path)))
+      return level
+    }
     for (const c of worth.slice(0, LOOKAHEAD_CANDIDATES)) {
-      c.stuck = c.shortSlots.filter((s) => !this.canGet(this.needOf(s, c.kind === 'machine'), 1, path))
+      const reach = c.shortSlots.map((s) => reachOf(this.needOf(s, c.kind === 'machine')))
+      c.stuck = c.shortSlots.filter((_, n) => reach[n] === 0)
+      c.unsure = reach.filter((r) => r === 1).length
       c.blocked = c.stuck.length
       c.oddBlocked = c.stuck.filter((s) => !this.basic(this.needOf(s, c.kind === 'machine'))).length
     }
     // 料凑不齐的做法，料里有现成的（路是对的，只差其中几样）才值得顺着往下找到底缺哪样
     for (const c of now) c.hopeless = c.blocked > 0 && !this.progress(c, 1, path)
-    // 手工工具配方只在没有机器做得了时用：机器那条路走得通（原料有，或者做得出来）才算“机器做得了”
-    const machineWorks = now.some((c) => c.kind === 'machine' && c.blocked === 0)
-    const fluidUnsure = (c: Candidate): number => {
-      if (c.recipe.fin.length === 0 || c.usable.state !== 'now') return 0
-      return this.fluidsIn(c.usable.machine, c.recipe.fin, Math.ceil(count / c.yield)).every((f) => f.have !== undefined && f.have >= f.need) ? 0 : 1
-    }
+    // 还不能直接用的做法，排在不用另作准备的后面：
+    //   - 机器要的模具、模头手头没有（得先另做一个）：差一个模具时，玩家会先用手边的办法，而不是为它去做一整套模具；
+    //   - 单方块机器要流体的配方（罐子里有没有看不到，得主人确认）；或者缺的原料只有靠这种配方才弄得到。
+    const setup = new Map(now.map((c) => [c, c.unsure > 0 || this.blind(c) || (c.kind === 'machine' && c.slots.some((s) => s.n === 0 && this.lacks(s, true, 1))) ? 1 : 0]))
+    // 要的熔融金属，基地里连这种材料都没有：排在最后（只有它这一条路时才用，照样要问主人）
+    const implausible = (c: Candidate): number => (this.blind(c) && !this.plausible(c) ? 1 : 0)
+    const fluidShort = (c: Candidate): number => (this.fluidShort(c, Math.ceil(count / c.yield)) ? 1 : 0)
+    // 手工工具配方只在没有机器做得了时用：机器那条路走得通（原料有，或者做得出来）、又不用另作准备，才算“机器做得了”
+    const machineWorks = now.some((c) => c.kind === 'machine' && c.blocked === 0 && setup.get(c) === 0)
     // 目标只是一堆产物里的一样（电解、离心拆出来的）：不当正经做法
     const byproduct = (c: Candidate): number => (c.recipe.out.filter((o) => o.chance === undefined).length > 1 && !need.products.some((p) => p.id === c.recipe.out[0]!.id && p.meta === c.recipe.out[0]!.meta) ? 1 : 0)
     const asks = (c: Candidate): number => (c.usable.state === 'now' ? c.usable.asks.length : 0)
@@ -793,19 +976,22 @@ class Planner {
     const repack = (c: Candidate): number => (c.kind === 'craft' && c.slots.length === 1 ? 1 : 0)
     const key = (c: Candidate): number[] => [
       c.usable.state === 'now' ? 0 : 1,
+      implausible(c),
       // 料凑得齐的在前；都凑不齐时，缺的是基础材料和工具的在前（报给主人的该是“缺 36 个钢锭”，不是“缺 8 个钢台阶”）
       c.blocked > 0 ? 1 : 0,
       c.handTool && machineWorks ? 1 : 0,
+      setup.get(c) ?? 0,
       c.hopeless ? 1 : 0,
       c.blocked > 0 ? repack(c) : 0,
       c.oddBlocked,
       c.blocked,
       c.shortSlots.length,
-      fluidUnsure(c),
+      fluidShort(c),
       byproduct(c),
       c.cost,
       c.kind === 'machine' ? 0 : 1,
       asks(c),
+      -this.plenty(c),
       c.recipe.eut ?? 0,
       c.recipe.ticks ?? 0,
       c.recipe.ref,
@@ -896,7 +1082,7 @@ class Planner {
     node.choice = pick
     const others = ranked.slice(1)
     // 真能用的别的做法：现在做得了、原料也弄得到的。每种方式提一条，最多两条
-    const real = others.filter((c) => c.usable.state === 'now' && c.blocked === 0)
+    const real = others.filter((c) => c.usable.state === 'now' && c.blocked === 0 && c.unsure === 0)
     const notUsable = others.filter((c) => c.usable.state === 'absent' || c.usable.state === 'blocked')
     node.why = `${this.wayText(pick)}, ${this.costText(pick)}`
     node.others = []
@@ -913,12 +1099,13 @@ class Planner {
     else if (sameWay.length > 3) node.others.push(`${sameWay.length} more ${pick.kind === 'craft' ? 'hand' : pick.recipe.handler.name} recipes from other materials`)
     // 要主人拿主意的：机器接着管道、有维护问题；省料得多的做法现在用不上
     node.asks = [...pick.usable.asks]
-    const cheaperHere = real.find((c) => this.sameStuff(c, pick) && pick.cost >= c.cost * MUCH_MORE)
+    // 省料的做法要先另做东西（模具）才用得上：省下的料总共没几个时不值得为它去问主人
+    const cheaperHere = real.find((c) => this.sameStuff(c, pick) && pick.cost >= c.cost * MUCH_MORE && (pick.cost - c.cost) * count >= WORTH_ASKING)
     const cheaperElsewhere = notUsable.find((c) => this.sameStuff(c, pick) && pick.cost >= c.cost * MUCH_MORE)
     if (cheaperElsewhere && cheaperElsewhere.usable.state !== 'now' && cheaperElsewhere.usable.state !== 'cannot') {
-      node.asks.push(`${node.need.short} will be made ${this.wayText(pick)} at ${this.costText(pick)}; ${this.wayText(cheaperElsewhere)} would take ${this.costText(cheaperElsewhere)}, but ${cheaperElsewhere.usable.why}. Ask your owner which they want`)
+      node.asks.push(`makes the ${node.need.short} ${this.wayText(pick)} at ${this.costText(pick)}; ${this.wayText(cheaperElsewhere)} would take ${this.costText(cheaperElsewhere)}, but ${cheaperElsewhere.usable.why}. Ask your owner which they want`)
     } else if (cheaperHere) {
-      node.asks.push(`${node.need.short} will be made ${this.wayText(pick)} at ${this.costText(pick)}, with what is at hand; ${this.wayText(cheaperHere)} would take ${this.costText(cheaperHere)}, but more has to be made for it first. Ask your owner which they want`)
+      node.asks.push(`makes the ${node.need.short} ${this.wayText(pick)} at ${this.costText(pick)}, with what is at hand; ${this.wayText(cheaperHere)} would take ${this.costText(cheaperHere)}, but more has to be made for it first. Ask your owner which they want`)
     }
     const machine = pick.kind === 'machine'
     for (const slot of pick.slots) {
@@ -952,6 +1139,16 @@ class Planner {
     return `it is only made by ${ways.join(', ')}, which you cannot run yourself`
   }
 
+  /** 不从机器里借这样东西的话，它怎么来（给主人拿主意用的一句话）。 */
+  private withoutBorrowing(node: PlanNode): string {
+    const ancestors = this.ancestorsOf(node)
+    this.lookahead = 0
+    const ranked = this.rank(node.need, 1, this.candidates(node.need, ancestors), ancestors)
+    const pick = ranked[0]
+    if (pick && pick.usable.state === 'now') return `it would then be made ${this.wayText(pick)}, ${this.costText(pick)}`
+    return `there is no other way to get one here: ${this.leafReason(node.need, ranked)}`
+  }
+
   // 数量
 
   /** 从目标往下，把每样东西要多少、取多少、做几轮算一遍。返回还没展开、又不够的东西。 */
@@ -975,7 +1172,7 @@ class Planner {
           const take = Math.min(left, this.stock.free(h))
           if (take <= 0) continue
           this.stock.reserve(h, take)
-          node.takes.push({ id: h.id, meta: h.meta, count: take, ...(h.at ? { at: h.at } : {}), ...(h.container ? { container: h.container } : {}), ...(h.automated ? { automated: h.automated } : {}) })
+          node.takes.push({ id: h.id, meta: h.meta, count: take, ...(h.at ? { at: h.at } : {}), ...(h.container ? { container: h.container } : {}), ...(h.automated ? { automated: h.automated } : {}), ...(h.lent ? { lent: true } : {}) })
           left -= take
         }
       }
@@ -1065,12 +1262,13 @@ class Planner {
     }
     walk(root)
 
-    // 取货：一个容器一步
+    // 取货：一个容器一步。机器里借的模具不在这里取：到要用的那一步之前再取（见下）
     const places = new Map<string, { at: Pos; container?: string; automated?: AttachedBlock[]; items: Map<string, { id: string; meta: number; count: number }> }>()
     let stacks = 0
     const fed: { n: number; what: string; where: string; by: string }[] = []
     for (const node of sequence) {
       for (const take of node.takes) {
+        if (take.lent) continue
         if (!take.at) {
           carried.push(`${take.count}× ${nm.name(take.id, take.meta)}`)
           continue
@@ -1083,6 +1281,7 @@ class Planner {
         else place.items.set(key, { id: take.id, meta: take.meta, count: take.count })
       }
     }
+    const pipes = (list: readonly AttachedBlock[]): string => list.map((a) => `${nameOf(a, { block: true }) ?? a.kind ?? 'pipe'} at ${formatPos(a)}`).join(', ')
     for (const place of places.values()) {
       const items = [...place.items.values()]
       stacks += items.reduce((n, i) => n + Math.ceil(i.count / STACK), 0)
@@ -1092,15 +1291,38 @@ class Planner {
       const step: PlanStep = { n, tool: 'withdraw_items', input: { container: place.at, items }, text: `fetch ${what} from the ${box}` }
       if (place.automated) {
         step.ask = true
-        fed.push({ n, what, where: `the ${box} at ${formatPos(place.at)}`, by: place.automated.map((a) => `${nameOf(a, { block: true }) ?? a.kind ?? 'pipe'} at ${formatPos(a)}`).join(', ') })
+        fed.push({ n, what, where: `the ${box} at ${formatPos(place.at)}`, by: pipes(place.automated) })
       }
       steps.push(step)
     }
-    // 从接着管道的容器里取货：一处就说清是哪一步、取什么；好几处的并成一条（主人的抽屉常常整排接着管道）
-    if (fed.length === 1) decisions.push(`step ${fed[0]!.n} takes ${fed[0]!.what} out of ${fed[0]!.where}, which is AUTOMATED (${fed[0]!.by} feeds or drains it)`)
+    // 从接着管道的容器里“取”：一处就说清是哪一步、取什么；好几处的并成一条（主人的抽屉常常整排接着管道）。
+    // 取和放不是一回事：取走一些通常没事，顶多是靠这个容器供料的自动化少了这些料
+    const TAKING = 'Taking things out is usually harmless: at worst the automation that draws on it runs short of them'
+    if (fed.length === 1) decisions.push(`step ${fed[0]!.n} TAKES ${fed[0]!.what} OUT OF ${fed[0]!.where}, which ${fed[0]!.by} is attached to (your owner's automation). ${TAKING}`)
     else if (fed.length > 1) {
       const listed = fed.slice(0, 4).map((f) => `${f.where} (step ${f.n})`)
-      decisions.push(`steps ${fed.map((f) => f.n).join(', ')} take things out of containers that are AUTOMATED (a pipe or hopper feeds or drains each, so they are part of your owner's automation): ${listed.join(', ')}${fed.length > 4 ? `, and ${fed.length - 4} more` : ''}`)
+      decisions.push(`steps ${fed.map((f) => f.n).join(', ')} TAKE things OUT OF containers that pipes or hoppers are attached to (your owner's automation): ${listed.join(', ')}${fed.length > 4 ? `, and ${fed.length - 4} more` : ''}. ${TAKING}`)
+    }
+
+    // 机器原料格里的东西，一步步排下来会变：借出来的、挪开的就不在里面了
+    const insideNow = new Map([...this.inside].map(([key, list]) => [key, list.map((x) => ({ ...x }))]))
+    /** 从机器里取出来、最后要放回去的（被计划用掉的不在这里）。 */
+    const toReturn: { at: Pos; machine: string; id: string; meta: number; count: number; step: number; waitsFor: string[] }[] = []
+    const fetchedLent = new Set<string>()
+    const BACK = (at: Pos): string => `\u0000back:${posKey(at)}\u0000`
+    /** 排一步“从这台机器的原料格里取出来”，并记下机器里少了它。 */
+    const takeOut = (m: MachineInfo, items: { id: string; meta: number; count: number }[], waitsFor: string[]): number => {
+      const n = steps.length + 1
+      const what = items.map((i) => `${i.count}× ${nm.name(i.id, i.meta)}`).join(', ')
+      steps.push({ n, tool: 'withdraw_items', input: { container: { x: m.x, y: m.y, z: m.z }, items, fromInputs: true }, text: `take ${what} out of the input slots of the ${this.machineName(m)}`, ask: true, ...(waitsFor.length > 0 ? { waitsFor } : {}) })
+      const left = (insideNow.get(posKey(m)) ?? []).map((x) => ({ ...x, count: x.count - (items.find((i) => i.id === x.id && i.meta === x.meta)?.count ?? 0) })).filter((x) => x.count > 0)
+      insideNow.set(posKey(m), left)
+      return n
+    }
+    /** 主人还该知道的：这台机器正在转、或者接着管道。 */
+    const machineState = (m: MachineInfo): string => {
+      const attached = this.stock.flags.get(posKey(m))?.attached
+      return `${m.active === true ? '. The machine is running right now' : ''}${attached && attached.length > 0 ? `. ${pipes(attached)} feeds or drains that machine: its automation cannot use it while it is out` : ''}`
     }
 
     // 做：原料在前。顺带记下每样东西“等着哪些缺的”，缺的叶子进 missing
@@ -1124,6 +1346,55 @@ class Planner {
       const product = c.recipe.out.find((o) => node.need.products.some((p) => p.id === o.id && p.meta === o.meta)) ?? node.need.products[0]!
       const made = nm.name(product.id, product.meta)
       const why = [`why: ${node.why}`, ...(node.others && node.others.length > 0 ? [`other ways: ${node.others.join('; ')}`] : [])].join('. ')
+      const m = c.kind === 'machine' ? c.usable.machine! : undefined
+      const single = m && m.kind !== 'multiblock' ? m : undefined
+
+      // 这一步要用、却还在别的机器原料格里的模具：现在取出来。就在这台机器里的不用取，原地用
+      const inPlace = new Set<string>()
+      for (const child of node.children) {
+        const part = this.nodes.get(child.key)!
+        const lent = part.takes.filter((t) => t.lent && t.at)
+        if (lent.length === 0 || fetchedLent.has(child.key)) continue
+        if (single && child.keep && lent.every((t) => posKey(t.at!) === posKey(single))) {
+          inPlace.add(child.key)
+          continue
+        }
+        fetchedLent.add(child.key)
+        // 借来的那个用完还在不在：这样东西在计划里只当模具用（不消耗）的那一个放得回去，被消耗掉的放不回去
+        let comesBack = part.keep && !this.keptThenUsedUp(part) ? 1 : 0
+        for (const take of lent) {
+          const from = this.around.machines.find((x) => posKey(x) === posKey(take.at!))
+          if (!from) continue
+          const n = takeOut(from, [{ id: take.id, meta: take.meta, count: take.count }], waitsFor)
+          const back = Math.min(take.count, comesBack)
+          comesBack -= back
+          const what = `${take.count}× ${nm.name(take.id, take.meta)}`
+          const where = `the input slots of the ${this.machineName(from)} at ${formatPos(from)}`
+          const otherwise = `If your owner says no, call plan_item again with "borrow": false (${this.withoutBorrowing(part)})`
+          if (back > 0) toReturn.push({ at: take.at!, machine: this.machineName(from), id: take.id, meta: take.meta, count: back, step: n, waitsFor })
+          if (back === take.count) decisions.push(`step ${n} BORROWS ${what} from ${where}: it is your owner's, kept there for that machine. Step ${BACK(take.at!)} puts it back${machineState(from)}. ${otherwise}`)
+          else decisions.push(`step ${n} TAKES ${what} OUT OF ${where}, and this plan USES IT UP (it goes into the ${node.need.short}): it does not come back, so that machine is left without it${machineState(from)}. ${otherwise}`)
+        }
+      }
+      // 这台机器的原料格放不放得下这一步的原料：被别的模具、没用完的料占着时，先把占位的取出来，最后放回去
+      if (single && typeof single.inputSlots === 'number') {
+        const here = insideNow.get(posKey(single)) ?? []
+        const accepts = (slot: RecipeSlot, x: Inside): boolean => this.stock.fits(this.needOf(slot, true), x.id, x.meta)
+        const putting = c.slots.filter((slot) => !inPlace.has(this.needOf(slot, true).key))
+        // 和里面已有的是同一种东西的，叠在同一格里，不另占一格
+        const fresh = putting.filter((slot) => !here.some((x) => accepts(slot, x))).length
+        const over = here.length + fresh - single.inputSlots
+        const movable = here.filter((x) => !c.slots.some((slot) => accepts(slot, x))).sort((a, b) => Number(a.role !== 'shape') - Number(b.role !== 'shape'))
+        if (over > 0 && movable.length >= over) {
+          const moving = movable.slice(0, over).map((x) => ({ id: x.id, meta: x.meta, count: x.count }))
+          const n = takeOut(single, moving, waitsFor)
+          for (const x of moving) toReturn.push({ at: { x: single.x, y: single.y, z: single.z }, machine: this.machineName(single), ...x, step: n, waitsFor })
+          decisions.push(
+            `step ${n} TAKES ${moving.map((x) => `${x.count}× ${nm.name(x.id, x.meta)}`).join(', ')} OUT OF the input slots of the ${this.machineName(single)} at ${formatPos(single)} to make room: it has ${single.inputSlots} input slot(s), ${here.length} taken, and step ${n + 1} puts ${fresh} more kind(s) of thing in. It is your owner's, kept there for that machine; step ${BACK(single)} puts it back${machineState(single)}`,
+          )
+        }
+      }
+
       const first = steps.length + 1
       if (c.kind === 'craft') {
         const perRound = c.recipe.out[0]?.n ?? 1
@@ -1136,15 +1407,19 @@ class Planner {
         const m = c.usable.machine!
         const most = Math.max(1, ...c.slots.filter((s) => s.n > 0).map((s) => s.n))
         const perStep = Math.max(1, Math.min(ROUNDS_PER_STEP, Math.floor(STACK / most)))
+        const usedInPlace = c.slots.filter((slot) => inPlace.has(this.needOf(slot, true).key)).map((slot) => this.needOf(slot, true).short)
         for (let left = node.rounds; left > 0; left -= perStep) {
           const rounds = Math.min(left, perStep)
           const seconds = c.recipe.ticks !== undefined ? (c.recipe.ticks * rounds) / 20 : 0
           const input: Record<string, unknown> = { machine: { x: m.x, y: m.y, z: m.z }, recipe: c.recipe.ref, rounds }
           if (c.usable.bus) input.bus = c.usable.bus
+          // 模具就在这台机器里：不用带、不用放
+          if (usedInPlace.length > 0) input.moldInside = true
           // 估出来比默认等的时间长：把 wait 写上（机器等级高会更快，这是上限）
           if (seconds > DEFAULT_WAIT_SEC - 30) input.wait = Math.min(3600, Math.ceil(seconds * 1.2) + 30)
           const circuit = c.circuit !== undefined ? `; programmed circuit ${c.circuit} is set for you` : ''
-          steps.push({ n: steps.length + 1, tool: 'process_items', input, text: `make ${rounds * c.yield}× ${made} on the ${this.machineName(m)}${circuit}`, ...(waitsFor.length > 0 ? { waitsFor } : {}) })
+          const mold = usedInPlace.length > 0 ? `; the ${usedInPlace.join(', ')} already in that machine is used where it is` : ''
+          steps.push({ n: steps.length + 1, tool: 'process_items', input, text: `make ${rounds * c.yield}× ${made} on the ${this.machineName(m)}${circuit}${mold}`, ...(waitsFor.length > 0 ? { waitsFor } : {}) })
         }
         // 配方要的流体：多方块看输入仓里够不够，单方块看不了
         for (const f of this.fluidsIn(m, c.recipe.fin, node.rounds)) {
@@ -1162,10 +1437,37 @@ class Planner {
       }
       steps[first - 1]!.why = why
       for (const ask of node.asks ?? []) {
-        decisions.push(`step ${first}: ${ask}`)
+        decisions.push(`step ${first} ${ask}`)
         steps[first - 1]!.ask = true
       }
     }
+
+    // 从机器里取出来的，最后放回原处：一台机器一步
+    const backStep = new Map<string, number>()
+    for (const r of toReturn) {
+      const key = posKey(r.at)
+      if (backStep.has(key)) continue
+      const mine = toReturn.filter((x) => posKey(x.at) === key)
+      const merged = new Map<string, { id: string; meta: number; count: number }>()
+      for (const x of mine) {
+        const seen = merged.get(`${x.id}/${x.meta}`)
+        if (seen) seen.count += x.count
+        else merged.set(`${x.id}/${x.meta}`, { id: x.id, meta: x.meta, count: x.count })
+      }
+      const items = [...merged.values()]
+      const n = steps.length + 1
+      const waitsFor = [...new Set(mine.flatMap((x) => x.waitsFor))]
+      backStep.set(key, n)
+      steps.push({
+        n,
+        tool: 'deposit_items',
+        input: { container: r.at, items },
+        text: `put ${items.map((i) => `${i.count}× ${nm.name(i.id, i.meta)}`).join(', ')} back into the ${r.machine} (taken out at step ${[...new Set(mine.map((x) => x.step))].join(', ')})`,
+        ...(waitsFor.length > 0 ? { waitsFor } : {}),
+      })
+    }
+    // eslint-disable-next-line no-control-regex
+    for (let n = 0; n < decisions.length; n++) decisions[n] = decisions[n]!.replace(/\u0000back:([^\u0000]*)\u0000/g, (_, key: string) => String(backStep.get(key) ?? '?'))
 
     // 多做出来的、身上已经有的、背包装不装得下
     const rootChoice = root.choice
@@ -1188,6 +1490,8 @@ export interface PlanInput {
   meta?: number
   count?: number
   page?: number
+  /** false：不从机器里借模具、模头，自己做。 */
+  borrow?: boolean
 }
 
 function stepLine(s: PlanStep): string {
@@ -1229,7 +1533,7 @@ export async function planItemLocal(ctx: ToolContext, input: PlanInput): Promise
     throw e
   }
 
-  const planner = new Planner(book, items, around, stock)
+  const planner = new Planner(book, items, around, stock, { borrow: input.borrow !== false })
   // 目标：点名的那个物品；同一个材料件矿辞名下别的 id 的配方做出来的也算（高炉出的玄钢锭是另一个 id）
   const twins = nm.interchangeable(id, meta)?.others ?? []
   const target: Need = {
@@ -1259,6 +1563,7 @@ export async function planItemLocal(ctx: ToolContext, input: PlanInput): Promise
 
   const lines: string[] = []
   const fetch = data.steps.filter((s) => s.tool === 'withdraw_items').length
+  const putBack = data.steps.filter((s) => s.tool === 'deposit_items').length
   const pages = Math.max(1, Math.ceil(data.steps.length / PLAN_STEPS_PER_PAGE))
   const page = input.page ?? 1
   if (page > pages) return fail(`There is no page ${page}: the plan for ${count}× ${label} has ${data.steps.length} step(s), ${pages} page(s).`)
@@ -1272,7 +1577,7 @@ export async function planItemLocal(ctx: ToolContext, input: PlanInput): Promise
   }
   if (page === 1) {
     const verdict = data.feasible
-      ? `everything needed is here. ${data.steps.length} step(s): ${fetch} to fetch, ${data.steps.length - fetch} to make.`
+      ? `everything needed is here. ${data.steps.length} step(s): ${fetch} to fetch, ${data.steps.length - fetch - putBack} to make${putBack > 0 ? `, ${putBack} to put back what was taken out of machines (do these too, even though the ${nm.name(id, meta)} is made by then)` : ''}.`
       : `it CANNOT be finished yet: ${data.missing.length} thing(s) are missing${data.cutOff ? ', and the plan was cut off at its size limit' : ''}.`
     lines.push(`Plan for ${count}× ${label}: ${verdict}${data.decisions.length > 0 ? ` ${data.decisions.length} thing(s) need your owner's word before you start.` : ''}`)
     if (data.missing.length > 0) {

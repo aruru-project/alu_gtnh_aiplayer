@@ -5,6 +5,7 @@
 - 抽屉你是像玩家那样用的：身体会走到抽屉正面，左键取、右键存，数量精确。这些动作由任务替你做，你只要把抽屉的坐标当成容器坐标交给工具。
 - deposit_items（存）、withdraw_items（取）、haul_items（在两个容器之间来回搬）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
 - 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。
+- GregTech 机器也能当容器：deposit_items 是放进它的原料格；withdraw_items 默认只从产物格取，给 fromInputs:true 才从原料格取（主人留在里面的模具、模头）。那是主人摆好的，取之前先问，用完放回去。
 
 # 看仓库
 - **主人说的是某个地方的东西，就以那个地方为中心看，不要以自己为中心。**下面这几个工具（还有 look_around、find_blocks、find_machines）默认看的是你身边；给 at（一个坐标）就改成看那个地方的周围。“我这边的箱子”：先 get_player_position 找到主人，at 给他的位置。“抽屉管理器旁边那个箱子”：at 给抽屉管理器的坐标。你站在几十格外时，以自己为中心什么也看不到，这不等于没有。
