@@ -523,14 +523,6 @@ export function buildTimeline(entries) {
         stamp(turn, part, entry)
         continue
       }
-      // 一模一样的话连着来（“和游戏服务器的连接断了，正在重连”）：并成一条，记次数和最近一次的时刻
-      const before = items[items.length - 1]
-      if (before && before.type === 'note' && before.tone === kind && before.text === entry.text && before.detail === entry.detail && before.agent === entry.agent) {
-        before.times = (before.times ?? 1) + 1
-        before.lastTime = entry.time
-        before.rev = seqOf(entry)
-        continue
-      }
       push({ type: 'note', level: kind === 'error' ? LEVEL.work : LEVEL.all, key: `n${entry.id}`, id: entry.id, time: entry.time, agent: entry.agent, tone: kind, label: kind === 'error' ? '出错' : '说明', text: entry.text, detail: entry.detail, rev: seqOf(entry) })
       continue
     }
@@ -602,7 +594,15 @@ export function layoutRows(items, maxLevel = LEVEL.all) {
       row = { key: item.key, left: [], right: [] }
       rows.push(row)
     }
-    ;(left ? row.left : row.right).push(item)
+    const cell = left ? row.left : row.right
+    // 一模一样的说明、报错在这一档里连着出现（“和游戏服务器的连接断了，正在重连”）：并成一条，记次数和最近一次的时刻
+    const before = cell[cell.length - 1]
+    if (item.type === 'note' && before && before.type === 'note' && before.tone === item.tone && before.text === item.text && before.detail === item.detail) {
+      const times = (before.times ?? 1) + 1
+      cell[cell.length - 1] = { ...before, times, lastTime: item.time, rev: `${item.rev}×${times}` }
+      continue
+    }
+    cell.push(item)
   }
   return rows
 }

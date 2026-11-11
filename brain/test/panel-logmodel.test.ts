@@ -234,6 +234,22 @@ describe('对话页的时间线：排成左右两道', () => {
     assert.deepEqual(model.layoutRows(items, 2).flatMap((r) => [...r.left, ...r.right, ...(r.both ? [r.both] : [])].map((i) => i.type)), ['msg', 'work', 'msg', 'relay'])
   })
 
+  it('一模一样的报错连着来（中间隔着的只是这一档里不显示的说明）：并成一条，写着几次和最近一次的时刻', () => {
+    const items = model.buildTimeline([
+      e('error', '和游戏服务器的连接断了，正在重连。'),
+      e('info', '已连上游戏服务器。'),
+      e('error', '和游戏服务器的连接断了，正在重连。'),
+      e('info', '已连上游戏服务器。'),
+      e('error', '和游戏服务器的连接断了，正在重连。'),
+      e('error', '模型调用失败：超时'),
+    ]).items
+    const shown = model.layoutRows(items, 2).flatMap((r) => r.right)
+    assert.deepEqual(shown.map((i) => [i.text, i.times ?? 1]), [['和游戏服务器的连接断了，正在重连。', 3], ['模型调用失败：超时', 1]])
+    assert.equal(shown[0]!.lastTime, items[4]!.time)
+    // “全部”那一档里中间的说明看得见，所以不并
+    assert.equal(model.layoutRows(items, 3).flatMap((r) => r.right).length, 6)
+  })
+
   it('“现在”页的最近几步：一行一件事，按时间排；它说的话只出现一次（不再把 say 这次工具调用另列一行）', () => {
     const rows = model.recentActivity(
       model.buildTimeline([
