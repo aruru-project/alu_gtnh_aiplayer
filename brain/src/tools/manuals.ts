@@ -22,7 +22,7 @@ export const listManuals: Tool = {
 export const readManual: Tool = {
   name: 'read_manual',
   description:
-    'Read one manual in full. Before you start a kind of work, read its manual unless its text is still in this conversation; your current status says which ones are.',
+    'One manual in full: how a kind of work is done here, which the tool descriptions leave out. Your current status says which manuals are still in this conversation word for word; the others were cut when older history was summarised.',
   inputSchema: obj({ name: str('Name of the manual, as listed.', { maxLength: 60 }) }, ['name']),
   async run(ctx, i: { name: string }) {
     const manual = ctx.manuals.get(i.name)

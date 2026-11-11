@@ -3,6 +3,8 @@
 # 能存取的容器
 - 两类：有界面的储物方块（箱子、铁箱子、各种 mod 的箱子），和抽屉（Storage Drawers）。多方块机器的总线和仓也可以当容器存取。
 - 抽屉你是像玩家那样用的：身体会走到抽屉正面，左键取、右键存，数量精确。这些动作由任务替你做，你只要把抽屉的坐标当成容器坐标交给工具。
+- deposit_items 往抽屉放某一种东西的全部（items 里那一项不给 count）时，身体对那一格双击一次就全进去了（10 组 640 个约 1 秒）；给了 count 的照样精确到个（只放其中 100 个，就是 100 个）。
+- 抽屉每一格在正面的哪里，list_drawers 的 data.slots 里写着：front 是正面朝哪，hit 是点这一格时点的位置。想自己对某一格点（比如拿着东西连点两下全放进去），把这两个原样交给 use_item 的 side 和 hit，例子在 inventory 手册。
 - deposit_items（存）、withdraw_items（取）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
 - 在两个容器之间来回搬（要跑几趟就跑几趟，你背包里原有的东西不动）：库函数 haul_items。它不在工具清单里，会开任务，所以写在例程里：start_routine 的程序里 `await tool("haul_items", { from: { x, y, z }, to: { x, y, z }, items: [{ id, meta, count }] })`（不给 items 就是全搬）。只搬一两样时，自己先 withdraw_items 再 deposit_items 也一样。
 - 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。

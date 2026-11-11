@@ -33,8 +33,8 @@ export function int(description?: string, range: { min?: number; max?: number } 
   return s
 }
 
-export function num(description: string, range: { min?: number; max?: number } = {}): Schema {
-  const s: Schema = { type: 'number', description }
+export function num(description?: string, range: { min?: number; max?: number } = {}): Schema {
+  const s: Schema = description ? { type: 'number', description } : { type: 'number' }
   if (range.min !== undefined) s.minimum = range.min
   if (range.max !== undefined) s.maximum = range.max
   return s

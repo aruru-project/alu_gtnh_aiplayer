@@ -4,6 +4,7 @@ import type {
   BlockInfo,
   BlockPos,
   BlueprintCheck,
+  BlueprintContent,
   BlueprintEntry,
   BlueprintPlacement,
   BotListEntry,
@@ -145,6 +146,13 @@ export class BridgeApi {
   blueprintCheck(p: BlueprintPlacement & { bot?: string; dim?: number; layers?: boolean }): Promise<BlueprintCheck> {
     return this.call('blueprint.check', p)
   }
+  /**
+   * 图纸本身的内容（材料表、每一格），和世界无关。from / to 是图纸内部的两个角（从最低角的 0 数起，两头都含），不给就是整张；
+   * 一次最多 262144 格，超了 too_large。cells:false 只要材料表。
+   */
+  blueprintRead(p: { name: string; from?: BlockPos; to?: BlockPos; cells?: boolean }): Promise<BlueprintContent> {
+    return this.call('blueprint.read', p)
+  }
   /** data 是 .schematic 文件内容的 base64（文件最大 2 MiB）。同名覆盖。 */
   blueprintPut(name: string, data: string): Promise<BlueprintEntry> {
     return this.call('blueprint.put', { name, data })
@@ -173,7 +181,11 @@ export class BridgeApi {
   botConfigure(bot: string, settings: Record<string, unknown>): Promise<{ settings?: Record<string, unknown> }> {
     return this.call('bot.configure', { bot, settings })
   }
-  botChat(bot: string, message: string): Promise<Record<string, never>> {
+  /**
+   * 公共聊天里说话。超过 100 字身体自己分行（尽量断在标点后），约每秒一行；一次最多 1000 字，排队最多 20 行。
+   * 返回排进去了几行、队列满了没排进去的行数、超长被截掉的字数（老的身体什么都不返回）。
+   */
+  botChat(bot: string, message: string): Promise<{ lines?: number; droppedLines?: number; cutChars?: number }> {
     return this.call('bot.chat', { bot, message })
   }
   botCommand(bot: string, command: string): Promise<{ output?: string[] }> {

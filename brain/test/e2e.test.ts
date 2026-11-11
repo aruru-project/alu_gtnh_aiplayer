@@ -10,7 +10,7 @@ import path from 'node:path'
 import { it } from 'node:test'
 import { buildFixturePackdata, pythonMissing } from './fixture-pack.ts'
 import { P, R, installMockBase, stack, writePlanFixture } from './fixture-plan.ts'
-import { encodePng, makeSchematic, tmpDir, waitFor } from './helpers.ts'
+import { encodePng, makeSchematic, sleep, tmpDir, waitFor } from './helpers.ts'
 import { MockBridge } from './mock-bridge.ts'
 import { MockLlm, imagesInRequest } from './mock-llm.ts'
 
@@ -421,16 +421,20 @@ it('端到端：主人只给目标（做一个 Copter Blades）→ 它查物品�
     ],
   )
 
-  // 2. 取料任务一做完就轮到合成（3x3 的配方，它旁边有工作台）；取料结束把它叫醒了一次，它什么都不用做
-  await waitFor('woken by the withdraw', () => llm.requests.length === 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.match(seen(5), /任务 t1（withdraw）完成了。 结果：\{\\"moved\\":8\}/)
+  // 2. 取料任务一做完就轮到合成（3x3 的配方，它旁边有工作台）。取料是在它这一步还没走完时结束的：
+  //    这个消息接在这一步的工具结果后面，它这一轮里就看到了，不为它另开一轮
+  assert.match(seen(4), /需要你处理的事（你做上一步的时候新到的）[^"]*任务 t1（withdraw）完成了。 结果：\{\\"moved\\":8\}/)
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft')
 
   // 3. 合成做完：被叫醒，看到做出了什么，告诉主人
   llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '桨叶做好了。' } }] }, { text: '' })
   bridge.completeTask('Alu')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.match(seen(6), /任务 t2（craft）完成了。 结果：crafted 1× adventurebackpack:backpackComponent\/6 \\"Copter Blades\\", freeSlots \d+/)
+  assert.match(seen(5), /任务 t2（craft）完成了。 结果：crafted 1× adventurebackpack:backpackComponent\/6 \\"Copter Blades\\", freeSlots \d+/)
+  // 取料那次结束没有再叫醒它一次：一共就是“目标那一轮 5 次 + 合成做完那一轮 2 次”
+  await waitFor('the last turn finished', () => llm.requests.length >= 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await sleep(150)
+  assert.equal(llm.requests.length, 7)
   // 背包里：成品在，轴和螺丝用掉了，螺丝刀还在
   const carried = (id: string, meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === id && i.meta === meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual(
@@ -521,10 +525,10 @@ it('端到端：大脑带着本地配方册启动，主人指着箱子说“做�
   const W = { ore: 'screwSteel' }
   assert.deepEqual(craft, { type: 'craft', grid: [S, W, S, W, null, W, S, { ore: 'craftingToolScrewdriver' }, S], gives: { id: 'adventurebackpack:backpackComponent', meta: 6 }, rounds: 1 })
 
-  // 2. 取料一做完就轮到合成（模拟的身体里取料是立刻做完的）；取料结束把它叫醒了一次，它什么都不用做
+  // 2. 取料一做完就轮到合成（模拟的身体里取料是立刻做完的）：取料结束的消息接在这一步的工具结果后面，这一轮里就看到了
   assert.equal(bridge.requestsOf('task.start').length, 2)
-  await waitFor('woken by the withdraw', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.match(seen(4), /任务 t1（withdraw）完成了。 结果：\{"moved":8\}/)
+  await waitFor('the goal turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.match(seen(3), /需要你处理的事（你做上一步的时候新到的）[\s\S]*任务 t1（withdraw）完成了。 结果：\{"moved":8\}/)
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft', `the craft task is running after the withdraw${diag()}`)
 
   // 3. 合成做完：它被叫醒，结果里的东西叫的是中文名
@@ -1116,22 +1120,27 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
     ],
   )
 
-  // 2. 取料做完就轮到加工；车床做完，它被叫醒，看到取回了什么
-  await waitFor('woken by the withdraw', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 2. 取料做完就轮到加工（取料结束的消息它这一轮里就看到了）；车床做完，它被叫醒，看到取回了什么
+  await waitFor('the goal turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'process')
   llm.enqueue(
-    // 再拿这两根钢杆去没电的组装机试一下：开不了工
+    // 再拿这两根钢杆去没电的组装机试一下：开不了工。任务当场失败，这个消息接在这一步后面，它紧接着就告诉主人
     { toolCalls: [{ name: 'process_items', input: { machine: { x: assembler.x, y: assembler.y, z: assembler.z }, inputs: [{ id: GT, meta: 23305, count: 2 }] } }] },
+    { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '钢杆车好了两根；组装机没电，开不了。' } }] },
     { text: '' },
   )
   bridge.completeTask('Alu')
   await waitFor('second process task ended', () => bridge.bots.get('Alu')?.recent.some((x) => x.id === 't3'), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.match(seen(5), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
+  assert.match(seen(4), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
 
   // 3. 没电的机器：任务以 invalid 失败，它看到机器状态，告诉主人
-  llm.enqueue({ toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '钢杆车好了两根；组装机没电，开不了。' } }] }, { text: '' })
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  const failed = seen(7)
+  await waitFor('the turn finished', () => llm.requests.length >= 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 失败的消息接在它某一步的工具结果后面（任务是当场失败的，赶上哪一步算哪一步），只出现一次
+  const withFailure = llm.requests.map((_, n) => seen(n)).filter((text) => /任务 t3（process）失败了/.test(text))
+  assert.equal(withFailure.length, 1)
+  const failed = withFailure[0]!
+  assert.match(failed, /需要你处理的事（你做上一步的时候新到的）/)
   assert.match(failed, /任务 t3（process）失败了：invalid — the machine did not start/)
   assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, NO POWER \(0 EU stored\), idle\. It has no power/)
   // 原料拿回来了：两根钢杆还在身上，钢锭用掉了
@@ -1213,7 +1222,7 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
     '- (15,64,-6) slot 0: 40× Coal [minecraft:coal], room for 2008 more',
     '- (16,64,-6) slot 0: 7× Steel Ingot [gregtech:gt.metaitem.01/11305], room for 2041 more',
   ])
-  assert.match(seen(3), /^Routine r1 \("整理抽屉"\) started in the background\. End your turn now/)
+  assert.match(seen(3), /^Routine r1 \("整理抽屉"\) started in the background\. It may run for up to 120 minutes\. End your turn now/)
 
   // 例程自己一步步做：取一样放一样。四个任务一个都没有单独把模型叫醒，模型一共只被叫了两轮
   assert.deepEqual(
@@ -1369,16 +1378,15 @@ it('端到端：主人说“做一个小背包，做好后把圆石放进去” 
     { text: '' },
   )
   bridge.whisper('Alu', 'Steve', '做一个小背包，做好后把圆石放进去')
-  await waitFor('woken by the withdraw', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('the goal turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.match(seen(1), /\n {3}#0: 5× 鞣制皮革 \[Backpack:tannedLeather\] \+ 3× 织棉 \[harvestcraft:wovencottonItem\] \+ 1× 钢环 \[gregtech:gt\.metaitem\.01\/28305\] → 1× 小背包 — needs a crafting table \(3x3\)/)
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft', `the craft task is running${diag()}`)
 
-  // 2. 合成做完 → 右键用一下这个包（看它是什么）→ 知道它能打开 → 把圆石放进包里 → 告诉主人
+  // 2. 合成做完 → 右键用一下这个包（看它是什么）→ 知道它能打开 → 把圆石放进包里 → 告诉主人。
+  //    模拟的身体里这两个任务都是立刻做完的：结果接在那一步的工具结果后面，它一轮里接着往下做
   llm.enqueue(
     { toolCalls: [{ name: 'use_item', input: BAG }] },
-    { text: '' },
     { toolCalls: [{ name: 'deposit_items', input: { bag: BAG, items: [{ id: 'minecraft:cobblestone', count: 64 }] } }] },
-    { text: '' },
     { toolCalls: [{ name: 'whisper', input: { player: 'Steve', message: '小背包做好了，圆石放进去了。' } }] },
     { text: '' },
   )
@@ -1662,6 +1670,170 @@ it('端到端：主人让它用旁边的熔炉（身体不认识的机器）烧�
   // 做成了：钢锭在身上，钢粉和木炭用掉了
   const has = (p: { id: string; meta: number }) => alu.inventory.filter((i) => i.id === p.id && i.meta === p.meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual([has(P.steelIngot), has(P.steelDust), has(CHARCOAL)], [2, 0, 0])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：面板拿到的数据——模型还在想时状态里看得出是第几轮第几步；每次模型调用在日志里一条（用时、token、缓存命中、怎么结束的），它直接调的工具标着是哪一步的；例程是一条跟着更新的汇总加出错的那一步，每一步的明细翻得到；状态里模型、例程、身体分开', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  await bridge.start()
+  await llm.start()
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({ panel: { password: 'preset-password-for-e2e' }, providers: [{ id: 'mock', label: '主力', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }),
+    { mode: 0o600 },
+  )
+  const brain = startBrain(tmp.dir, bridge)
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const origin = await waitFor('panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => undefined)) as any, headers: res.headers }
+  }
+  cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
+  const main = async () => (await call('GET', '/status')).json.agents[0]
+  /** 一直问状态，直到看到要的样子。 */
+  const until = async (what: string, ok: (agent: any) => boolean) => {
+    let agent: any
+    for (let n = 0; n < 100; n++) {
+      agent = await main()
+      if (ok(agent)) return agent
+      await sleep(30)
+    }
+    return assert.fail(`the status never showed ${what}: ${JSON.stringify(agent)}${diag()}`)
+  }
+
+  // 没事的时候：模型空闲，没有例程，身体闲着
+  const idle = await main()
+  assert.deepEqual([idle.agent, idle.name, idle.model.state, idle.model.provider, idle.model.model, idle.turn, idle.routine, idle.lastRoutine], ['main', 'Alu', 'idle', '主力', 'claude-e2e', null, null, null])
+  assert.deepEqual(idle.body, { online: true, task: null, queue: [] })
+
+  // 例程：看一眼自己 → 一步参数不对（出错）→ 走一段路（模拟的身体里要等人喊完成，所以会停在这一步）
+  const code = `await tool('get_status')\nlog('看过了')\nawait tool('withdraw_items', { container: { x: 1 } })\nawait tool('go_to', { x: 40, z: 40 })\nreturn '到了'`
+  llm.enqueue(
+    // 第 1 步想得久一点：这期间状态里看得到“正在想”
+    { toolCalls: [{ name: 'get_status', input: {} }], usage: { input: 200, output: 20, cacheRead: 800 }, delayMs: 700 },
+    { toolCalls: [{ name: 'start_routine', input: { code, name: '走一趟' } }], usage: { input: 300, output: 30 } },
+    { text: '', usage: { input: 310, output: 5 } },
+  )
+  bridge.whisper('Alu', 'Steve', '去那边转一圈')
+
+  // 1. 模型正在想：第几轮、第几步、从什么时候开始
+  const thinking = await until('the model thinking', (a) => a.model.state === 'thinking')
+  assert.deepEqual([thinking.model.step, thinking.model.purpose, thinking.turn.steps, thinking.turn.maxSteps], [1, 'turn', 0, 60])
+  assert.equal(thinking.model.turn, thinking.turn.id)
+  assert.ok(Math.abs(Date.now() - thinking.model.since) < 5000, JSON.stringify(thinking.model))
+
+  // 2. 例程跑到走路那一步：状态里三样分开——模型闲了，例程在跑（实时的次数、正等着哪一步），身体在走
+  await waitFor('the routine is walking', () => bridge.bots.get('Alu')?.task?.type === 'goto', 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const walking = await until('the routine waiting for its task', (a) => a.model.state === 'idle' && a.routine?.waitingTask === 't1' && a.body.task?.id === 't1')
+  assert.deepEqual(
+    { id: walking.routine.id, name: walking.routine.name, status: walking.routine.status, calls: walking.routine.calls, tasks: walking.routine.tasks, errors: walking.routine.errors, limitMs: walking.routine.limitMs },
+    { id: 'r1', name: '走一趟', status: 'running', calls: 3, tasks: 1, errors: 1, limitMs: 120 * 60_000 },
+  )
+  assert.match(walking.routine.waiting, /^go_to \{"x":40,"z":40\}$/)
+  assert.deepEqual([walking.body.online, walking.body.task.type, walking.body.task.state, walking.body.queue], [true, 'goto', 'running', []])
+  assert.deepEqual([walking.turn, walking.model.lastCall.ok, walking.model.lastCall.inputTokens], [null, true, 310])
+
+  // 3. 日志：这一轮三次模型调用各一条，带着用时、token、缓存命中、怎么结束的；它直接调的工具标着是第几步的
+  const log = (await call('GET', '/log')).json.entries as any[]
+  const turn = thinking.turn.id
+  const calls = log.filter((e) => e.kind === 'model_call')
+  assert.deepEqual(
+    calls.map((e) => [e.turn, e.step, e.call.state, e.call.purpose, e.call.stop, e.call.toolCalls, e.call.inputTokens, e.call.outputTokens, e.call.cacheReadTokens ?? null, e.call.model]),
+    [
+      // 输入的 1000 里有 800 是缓存命中的
+      [turn, 1, 'done', 'turn', 'tool_calls', 1, 1000, 20, 800, 'claude-e2e'],
+      [turn, 2, 'done', 'turn', 'tool_calls', 1, 300, 30, null, 'claude-e2e'],
+      [turn, 3, 'done', 'turn', 'end', 0, 310, 5, null, 'claude-e2e'],
+    ],
+  )
+  assert.ok(calls[0].call.ms >= 700 && calls[0].call.ms < 10_000, `the first call took ${calls[0].call.ms} ms`)
+  assert.match(calls[0].text, /^第 1 步：\d+\.\d 秒，输入 1000（缓存命中 800） \/ 输出 20 token，要调 1 个工具$/)
+  assert.match(calls[2].text, /^第 3 步：\d+\.\d 秒，输入 310 \/ 输出 5 token，说完了$/)
+  assert.deepEqual(
+    log.filter((e) => e.source === 'model').map((e) => [e.kind, e.who, e.turn, e.step]),
+    [
+      ['tool_call', 'get_status', turn, 1],
+      ['tool_result', 'get_status', turn, 1],
+      ['tool_call', 'start_routine', turn, 2],
+      ['tool_result', 'start_routine', turn, 2],
+    ],
+  )
+  // 一条 model_call 排在它那一步的工具前面
+  const at = (pick: (e: any) => boolean) => log.findIndex(pick)
+  assert.ok(at((e) => e.kind === 'model_call' && e.step === 2) < at((e) => e.kind === 'tool_call' && e.who === 'start_routine'))
+
+  // 例程的三次调用没有各记两条：一条跟着更新的汇总（在跑），加上出错的那一步；开始那条带着结构化的样子
+  const ofRun = log.filter((e) => e.runId === 'r1')
+  assert.deepEqual(ofRun.map((e) => [e.kind, e.source, e.who ?? null, e.isError === true]), [
+    ['info', 'routine', null, false],
+    ['run', 'routine', null, false],
+    ['tool_result', 'routine', 'withdraw_items', true],
+  ])
+  assert.deepEqual([ofRun[0].text, ofRun[0].detail, ofRun[0].run.status, ofRun[0].run.calls], ['例程 r1（走一趟）开始在后台跑。', code, 'running', 0])
+  assert.equal(ofRun[2].text, '[例程 r1 #2] Invalid arguments for withdraw_items: items is required; container.y is required; container.z is required')
+  const summaryId = ofRun[1].id
+  assert.deepEqual([ofRun[1].run.id, ofRun[1].run.kind, ofRun[1].run.name, ofRun[1].run.status], ['r1', 'routine', '走一趟', 'running'])
+
+  // 4. 走到了：例程跑完。那条汇总原地改成定稿（还是那个 id），另有一条结束的
+  llm.enqueue({ text: '', usage: { input: 400, output: 3 } })
+  bridge.completeTask('Alu')
+  const done = await until('the routine finished', (a) => a.lastRoutine?.status === 'done' && a.model.state === 'idle' && a.turn === null && a.model.lastCall?.inputTokens === 400)
+  assert.deepEqual([done.routine, done.lastRoutine.calls, done.lastRoutine.tasks, done.lastRoutine.errors, done.lastRoutine.ending, done.body.task], [null, 3, 1, 1, 'the program finished', null])
+  const later = (await call('GET', '/log')).json.entries as any[]
+  const summary = later.filter((e) => e.kind === 'run')
+  assert.deepEqual(summary.map((e) => [e.id, e.run.status, e.run.calls, e.run.tasks, e.run.errors, typeof e.run.endedAt]), [[summaryId, 'done', 3, 1, 1, 'number']])
+  assert.match(summary[0].text, /^例程 r1（走一趟）：跑完了，调了 3 次工具，开了 1 个任务，1 次出错，\d+ 秒$/)
+  const ended = later.filter((e) => e.runId === 'r1').at(-1)
+  assert.deepEqual([ended.kind, ended.source, ended.text, ended.run.status, ended.run.calls], ['info', 'routine', '例程 r1（走一趟）跑完了：the program finished', 'done', 3])
+
+  // 5. 每一步的明细：按运行翻页读得到（参数、结果全文、用时、开的任务）
+  const runs = (await call('GET', '/runs')).json.runs as any[]
+  assert.deepEqual(runs.map((r) => [r.id, r.kind, r.name, r.status, r.calls, r.tasks, r.errors]), [['r1', 'routine', '走一趟', 'done', 3, 1, 1]])
+  assert.equal(runs[0].file, summary[0].run.file)
+  const first = (await call('GET', `/runs/records?file=${encodeURIComponent(runs[0].file)}&limit=3`)).json
+  assert.deepEqual([first.file, first.total, first.next], [runs[0].file, 6, 3])
+  assert.deepEqual(first.records.map((r: any) => [r.t, r.tool ?? r.text ?? r.name]), [['start', '走一趟'], ['call', 'get_status'], ['log', '看过了']])
+  assert.equal(first.records[0].code, code)
+  assert.match(first.records[1].text, /^Alu: online in overworld \(dim 0\) at block \(10,64,-4\), health 20\/20, food 20\nHolding: /)
+  // 接着读下一页；也可以按编号找（这个编号最近的一次）
+  const rest = (await call('GET', `/runs/records?id=r1&after=${first.next}`)).json
+  assert.deepEqual([rest.total, rest.next], [6, 6])
+  assert.deepEqual(
+    rest.records.map((r: any) => (r.t === 'call' ? [r.n, r.tool, r.ok, r.input, r.task ?? null] : r.t === 'end' ? [r.status, r.calls, r.tasks, r.errors, r.value] : r.t)),
+    [
+      [2, 'withdraw_items', false, { container: { x: 1 } }, null],
+      [3, 'go_to', true, { x: 40, z: 40 }, 't1'],
+      ['done', 3, 1, 1, '到了'],
+    ],
+  )
+  assert.equal((await call('GET', '/runs/records?id=r9')).status, 404)
+
+  // 6. 往回翻日志：紧挨在某一条之前的几条，顺序不变；翻到头 more 是 false
+  const ids = later.map((e) => e.id)
+  const page = (await call('GET', `/log?before=${ids[5]}&limit=3`)).json
+  assert.deepEqual([page.entries.map((e: any) => e.id), page.more], [ids.slice(2, 5), true])
+  assert.deepEqual((await call('GET', `/log?before=${ids[2]}&limit=50`)).json, { entries: later.slice(0, 2), more: false })
+  // 往后追：只给新的；一次给不完时 more 是 true
+  const tail = (await call('GET', `/log?after=${ids[ids.length - 3]}`)).json
+  assert.deepEqual([tail.entries.map((e: any) => e.id), tail.more], [ids.slice(-2), false])
+  assert.deepEqual([(await call('GET', '/log?after=0&limit=2')).json.entries.map((e: any) => e.id), (await call('GET', '/log?after=0&limit=2')).json.more], [ids.slice(-2), true])
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

@@ -94,6 +94,7 @@ export class DesignWorkspace {
       files.questLines = path.join(dir, 'questlines.json')
     }
     if (this.packdata?.structures) files.structures = path.join(dir, 'structures.jsonl')
+    if (this.packdata?.carving) files.carving = path.join(dir, 'carving.jsonl')
     return files
   }
 

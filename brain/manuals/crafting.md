@@ -8,7 +8,7 @@
 3. 挑一条你觉得合适的（怎么挑见下一节），看它要哪些原料。
 4. find_in_storage 一次把这几样原料都查了（“any xxx”的用矿辞名查）。它看的是整个基地。
 5. 库存里没有的原料，回到第 2 步查它怎么做。这样一层层往下，直到每样东西要么库存里有，要么你知道怎么做。
-6. 路线定了、想知道一共要多少底料：写一行程序 `return (await tool('total_materials', { id, meta, count, recipes: [你选的那几条配方的 # 编号] })).text`。它只做乘法（一轮出几个按轮数取整，模具和工具只算一个），不替你选任何一步。
+6. 路线定了、想知道一共要多少底料：写一行程序 `return (await tool('total_materials', { id, meta, count, recipes: [你选的那几条配方的 # 编号] })).text`。它只做乘法（一轮出几个按轮数取整，模具和工具只算一个），不替你选任何一步。用凿子变出来的那一步不是配方、没有编号，写在 chisel 里（见下面“凿子的花纹”）。
 7. 动手：取料（withdraw_items）→ 从最底下那一层做起（craft_item、process_items），一步一个任务。
 
 走一遍的样子（做 1 个直升机桨叶）：
@@ -29,6 +29,14 @@
 - **没见过的机器。** find_recipes 写 CAN TRY 的（别的 mod 的机器、熔炉）身体读不到状态，只能放进去试；配方没列的东西（熔炉的燃料）要自己带上。见 screens 手册。
 - **要一把工具而仓库里没有。** 做一把最简单的就够用（不用做电动的）；用哪种材质看仓库里什么多。
 - 一种方式下配方很多（工具每种材质一条，几百条）时，用 way 加 contains 缩小：find_recipes 给 way "有序合成"、contains "钢"。结果一页 10 条，要看完就翻页。想知道一样东西能拿来做什么：库函数 find_uses（不在工具清单里，run_program 写一行 `return (await tool('find_uses', { id, meta })).text`；再给 way、contains 看具体的配方）。
+
+# 凿子的花纹（Chisel）
+- 很多建筑方块是“同一种东西的不同花纹”：结构混凝土有 16 种（chisel:nucrete/0 到 /15），圆石、荧石、各种石砖也是。图纸要的常常是其中某一个具体的 meta。
+- 这些花纹之间不是配方：配方册里通常只有其中一种有做法，别的 find_recipes 查不到配方。它们属于凿子的同一个“组”，组里的任何一种都能用凿子变成另一种，一个换一个，不耗别的材料。
+- find_recipes 查到这样的方块时，会把“凿子”当作又一种做法列出来：它在哪一组、同组还有哪些。全部变体：find_recipes 给 way "凿子"；程序里是那个结果的 data.chisel，或者 data.chiselGroupsOf(id, meta)（返回 [{ group, ore?, member, variants: [{ id, meta, name }] }]）。库函数 find_uses 反过来回答“这块东西能凿成什么”。
+- 有的组还认一个矿辞名：带这个矿辞名的东西自己不在组里，也能凿成这一组。
+- 凿子是拿在手里的工具（find_item "凿子" 找得到几种），不是机器。怎么用见 screens 手册的“凿子”。它用一次掉多少耐久，资料里没有。
+- 算总料时带上凿子的一步：`await tool('total_materials', { id: 'chisel:nucrete', meta: 7, count: 4392, recipes: [做 /0 的那条配方的编号], chisel: [{ id: 'chisel:nucrete', meta: 7, from: { id: 'chisel:nucrete', meta: 0 } }] })`。它把这一步当成一个换一个往下乘；两样东西不在同一组时会说明各在哪一组。
 
 # 卡住了、缺东西时
 - 查到某一层不知道怎么继续（没有配方、要的机器没有、流体看不到、几条路你分不出好坏）：把已经查到的链、卡在哪一样、试过什么告诉主人，问他。不要硬编一条路，也不要只说“做不了”。
@@ -70,7 +78,7 @@
 
 # 还做不了的
 - 单方块机器的流体格：你灌不了、也看不到，要它已经接好流体来源（先问主人）。
-- 要点按钮才开工的机器：按钮你点不了。格子能点的用 open_screen / click_slot 自己点（screens 手册），还不行就告诉主人。
+- 要点界面里的按钮才开工的机器：界面里的按钮（不是格子的那些）你点不了。格子能点的用 open_screen / click_slot 自己点（screens 手册），还不行就告诉主人。机器外面的按钮、拉杆是方块，空手 use_item 能按。
 - find_recipes 里写着 you cannot run this yourself 的方式：那不是机器也不是合成（信息页、在世界里发生的事），得主人来，或者换一种方式。
 
 # 别忘了

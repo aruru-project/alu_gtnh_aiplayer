@@ -12,6 +12,12 @@ import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
 const SLOTS_SHOWN = 80
+/**
+ * 打开以后界面常常晚一拍才出现（用物品打开的界面尤其是）：没出现就隔一会儿再看一眼，最多看这么多次。
+ * 这样一次 open_screen 就把界面带回来，不用模型为“再看一次”多调一回。
+ */
+export const SCREEN_SETTLE_TRIES = 8
+export const SCREEN_SETTLE_MS = 200
 
 function stack(item: Item): string {
   const name = nameOf(item)
@@ -44,9 +50,7 @@ function slotLines(slots: readonly ScreenSlot[], note: (s: ScreenSlot) => string
 
 /** 界面现在的样子：它自己的格子（原料格、产物格、只显示的）和你背包里的格子分开列，物品用中文名。 */
 export function formatScreen(state: ScreenState): string {
-  if (state.open !== true) {
-    return 'No screen is open right now. A screen can take a moment to appear after opening: look again with open_screen without arguments; if it stays closed, that block (or item) opens no screen.'
-  }
+  if (state.open !== true) return 'No screen is open right now.'
   const slots = [...(state.slots ?? [])].sort((a, b) => a.slot - b.slot)
   const theirs = slots.filter((s) => s.own !== true)
   const mine = slots.filter((s) => s.own === true)
@@ -73,9 +77,20 @@ function refusal(e: unknown): ToolResult | undefined {
   return undefined
 }
 
-async function act(run: () => Promise<ScreenState>): Promise<ToolResult | string> {
+async function act(run: () => Promise<ScreenState>, opened?: { look(): Promise<ScreenState>; wait?: number }): Promise<ToolResult | string> {
   try {
-    const state = await run()
+    let state = await run()
+    if (opened) {
+      // 刚发出“打开”：界面还没出现就等一等再看，出现了就是它
+      const pause = opened.wait ?? SCREEN_SETTLE_MS
+      for (let n = 0; n < SCREEN_SETTLE_TRIES && state.open !== true; n++) {
+        await new Promise((resolve) => setTimeout(resolve, pause))
+        state = await opened.look()
+      }
+      if (state.open !== true) {
+        return { content: `No screen opened: after asking for it, it was looked for ${SCREEN_SETTLE_TRIES} more times over ${(SCREEN_SETTLE_TRIES * pause) / 1000} s and none appeared. That block (or item) opens no screen this way.`, data: state }
+      }
+    }
     return { content: formatScreen(state), data: state, keepWhole: true }
   } catch (e) {
     const told = refusal(e)
@@ -96,7 +111,7 @@ export const openScreen: Tool = {
     if (i.at !== undefined && i.item !== undefined) return fail('Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.')
     // 什么都不给：看一眼已经开着的界面（界面点开后过一小会儿才出现的、机器做了一会儿之后）
     if (i.at === undefined && i.item === undefined) return act(() => ctx.bridge.screenLook(ctx.botName))
-    return act(() => ctx.bridge.screenOpen(ctx.botName, i.at ?? { item: i.item!.meta === undefined ? { id: i.item!.id } : { id: i.item!.id, meta: i.item!.meta } }))
+    return act(() => ctx.bridge.screenOpen(ctx.botName, i.at ?? { item: i.item!.meta === undefined ? { id: i.item!.id } : { id: i.item!.id, meta: i.item!.meta } }), { look: () => ctx.bridge.screenLook(ctx.botName) })
   },
 }
 
@@ -118,7 +133,7 @@ export const clickSlot: Tool = {
 
 export const closeScreen: Tool = {
   name: 'close_screen',
-  description: 'Close the screen you have open. Whatever is still on your cursor goes back to your inventory. Always close a screen when you are done with it.',
+  description: 'Close the screen you have open. Whatever is still on your cursor goes back to your inventory (dropped at your feet if it does not fit). A screen stays open until it is closed.',
   inputSchema: obj({}),
   async run(ctx: ToolContext) {
     try {

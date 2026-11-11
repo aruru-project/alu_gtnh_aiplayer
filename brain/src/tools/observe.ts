@@ -219,7 +219,7 @@ export const findBlocks: Tool = {
 export const getPlayerPosition: Tool = {
   name: 'get_player_position',
   description:
-    'Where an online player stands, which way they face, what block their crosshair is on, and the containers in front of them. Use it when your owner says "this", "that chest", "in front of me" and the message did not already say what they were pointing at.',
+    'Where an online player stands right now, which way they face, what block their crosshair is on, and the containers in front of them: what "this", "that chest", "in front of me" point at. A chat message already carries the same for the moment it was sent.',
   inputSchema: obj({ player: str('Player name.') }, ['player']),
   async run(ctx, input: { player: string }): Promise<ToolResult | string> {
     try {

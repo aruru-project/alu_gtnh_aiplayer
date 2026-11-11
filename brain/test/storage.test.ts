@@ -281,6 +281,16 @@ describe('中文名：服务器回来的东西按本地物品表叫名字', () =
     assert.equal(boxes[3], '- (3,64,3) Wooden Crate [othermod:crate] 0/9 slots used: empty')
     assert.match((await s.run('list_stock')).content, /\n- 64× 钢锭 \[gregtech:gt\.metaitem\.01\/11305\]: \(1,64,1\) 64$/)
 
+    // 程序拿到的 data 里也是游戏里的中文名（英文原名留在 en 里）：统计完不用自己翻译
+    const data = (await s.run('list_containers')).data as { containers: { name: string; en?: string; items: { name: string; en?: string; id: string }[] }[] }
+    assert.deepEqual(data.containers.map((c) => [c.name, c.en]), [['压缩箱子', 'Compressed Chest'], ['箱子', 'Chest'], ['Wooden Crate', undefined]])
+    assert.deepEqual(data.containers[0]!.items, [{ ...STEEL, name: '钢锭', en: 'Steel Ingot', count: 64 }])
+    const stock = (await s.run('list_stock')).data as { items: { name: string; en?: string }[] }
+    assert.deepEqual([stock.items[0]!.name, stock.items[0]!.en], ['钢锭', 'Steel Ingot'])
+    const mine2 = (await s.run('get_status')).data as { inventory: { slot: number; name: string; en?: string }[] }
+    // 物品表里没有的保持原样；同一个 id/meta 下的另一种变体不拿表里那一种的名字顶替
+    assert.deepEqual(mine2.inventory.map((i) => [i.name, i.en]), [['钢锭', 'Steel Ingot'], ['钢板', undefined], ['Mystery Thing', undefined], ['Steel Hammer', undefined]])
+
     s.game.handlers['world.machines'] = () => ({ machines: [{ x: 16, y: 64, z: -4, name: 'Basic Bending Machine', id: 'gregtech:gt.blockmachines', meta: 221, recipes: 'Bending Machine', recipeKey: 'gt.recipe.metalbender', tier: 'LV', active: false, storedEU: 5000, dist: 6 }], total: 1 })
     assert.match((await s.run('find_machines')).content, /\n- \(16,64,-4\) "基础卷板机": runs Bending Machine recipes, tier LV, has power \(5000 EU stored\), idle, 6 blocks away$/)
   })
@@ -478,10 +488,21 @@ describe('通用的界面动作：打开、看格子、点、关', () => {
     }
     assert.equal((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, 'That block is out of reach (the block at 1,64,1 is 9.2 blocks away). Walk next to it first (go_to), then open it.')
     // 有的界面点开后过一小会儿才出现；一直不出现的就是没有界面
+    // 界面晚一拍才出现（用物品打开的常常这样）：open_screen 自己再看几眼，一次调用就把界面带回来
+    const late = [{ open: false }, { open: false }, { open: true, screen: 'Chisel', slotCount: 1, slots: [{ slot: 0, item: { id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' } }] }]
+    s.game.handlers['screen.open'] = () => late.shift()!
+    s.game.handlers['screen.look'] = () => late.shift() ?? { open: true, screen: 'Chisel', slotCount: 0, slots: [] }
+    const calls = s.game.calls.length
+    assert.match((await s.run('open_screen', { item: { id: 'chisel:chisel' } })).content, /^Screen "Chisel" is open \(1 slots in all\)\.\nIts slots \(1\):\n- slot 0: 64× /)
+    assert.deepEqual(s.game.calls.slice(calls).map((c) => c.method), ['screen.open', 'screen.look', 'screen.look'])
+    // 一直没出现：照实说等了多久，不让它再白看一次
     s.game.handlers['screen.open'] = () => ({ open: false })
-    assert.match((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, /^No screen is open right now\. A screen can take a moment to appear after opening: look again with open_screen without arguments/)
+    s.game.handlers['screen.look'] = () => ({ open: false })
+    assert.equal((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, 'No screen opened: after asking for it, it was looked for 8 more times over 1.6 s and none appeared. That block (or item) opens no screen this way.')
+    assert.equal((await s.run('open_screen')).content, 'No screen is open right now.')
     assert.deepEqual(await s.run('open_screen', { at: { x: 1, y: 64, z: 1 }, item: { id: 'Backpack:backpack' } }), { content: 'Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.', isError: true })
-    assert.equal(s.game.callsOf('screen.open').length, 3)
+    // 方块和物品都给的那一次没有去开
+    assert.equal(s.game.callsOf('screen.open').length, 4)
     // 例程里可以调这三个（同样的点法要重复很多遍时）；只算不动手的 run_program 不行
     for (const name of ['open_screen', 'click_slot', 'close_screen']) assert.deepEqual([ROUTINE_BLOCKED_TOOLS.includes(name), QUERY_TOOLS.includes(name)], [false, false], name)
   })

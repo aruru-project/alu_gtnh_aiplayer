@@ -5,7 +5,7 @@ import type { Tool } from './types.ts'
 export const remember: Tool = {
   name: 'remember',
   description:
-    'Save or overwrite a persistent note under a key. All notes are shown to you at the start of every turn, so keep them short. Use it for things you must not forget: places and what they are for, standing instructions from your owner, what you were in the middle of.',
+    'Save or overwrite a persistent note under a key. All notes are in your prompt on every turn and share one size limit (a note that would exceed it is refused); they outlast restarts and the summarising of old history. Typical notes: places and what they are for, standing instructions from your owner, what you were in the middle of.',
   inputSchema: obj(
     {
       key: str('Short name of the note, e.g. "home:base" or "job".', { maxLength: 64 }),
@@ -35,7 +35,7 @@ export const forget: Tool = {
 export const setReminder: Tool = {
   name: 'set_reminder',
   description:
-    'Wake yourself up after some minutes with a note. Use it to check on something later (a long task, crops, a promise to a player). It survives restarts.',
+    'After the given minutes you are woken with the note, as an event of its own; it survives restarts. For looking at something again later: a long task, crops, a promise to a player.',
   inputSchema: obj(
     {
       minutes: num('How many minutes from now (real time).', { min: 0.1, max: 10080 }),

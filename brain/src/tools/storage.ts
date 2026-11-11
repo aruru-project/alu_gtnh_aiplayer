@@ -80,7 +80,7 @@ function drawerSlotLine(s: DrawerSlot): string {
 
 export const listDrawers: Tool = {
   name: 'list_drawers',
-  brief: '{x, y, z, below?, page?}: slots of a drawer controller -> slots[{x, y, z, id, meta, count}], total',
+  brief: '{x, y, z, below?, page?}: slots of a drawer controller -> slots[{x, y, z, id, meta, count, front, hit}], total',
   description:
     'Every drawer slot a Storage Drawers controller manages, with the real count in each (or the slots of one drawer block). "below" lists only slots holding fewer than that many. Each line gives the drawer block to withdraw from.',
   inputSchema: obj(

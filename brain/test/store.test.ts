@@ -67,7 +67,7 @@ describe('数据目录', () => {
     assert.equal(c.panel.password, 'keep-me')
     assert.equal(c.bot.name, 'Alu')
     assert.deepEqual(c.bot.aliases, [])
-    assert.equal(c.bot.limits.maxSteps, 64)
+    assert.equal(c.bot.limits.maxSteps, 500)
     assert.equal(c.bot.wake.mode, 'mention')
     assert.deepEqual(c.providers.map((p) => p.id), ['ok'])
     assert.equal(c.activeProviderId, 'ok')
@@ -169,12 +169,12 @@ describe('数据目录', () => {
     assert.equal(new ConfigStore(existing.dir).get().bot.wake.conversationWindowSec, 60)
   })
 
-  it('每轮最多调模型的次数默认 30（查配方、找材料的目标要走很多步）；配置文件里已经存着的值不动', (t) => {
+  it('每轮最多调模型的次数默认 60（查配方、找材料的目标要走很多步，干活时新到的话也接在这一轮里）；配置文件里已经存着的值不动', (t) => {
     const fresh = tmpDir()
     const existing = tmpDir()
     t.after(fresh.cleanup)
     t.after(existing.cleanup)
-    assert.equal(new ConfigStore(fresh.dir).get().bot.limits.maxSteps, 30)
+    assert.equal(new ConfigStore(fresh.dir).get().bot.limits.maxSteps, 60)
     fs.writeFileSync(path.join(existing.dir, 'config.json'), JSON.stringify({ bot: { limits: { maxSteps: 16 } } }))
     assert.equal(new ConfigStore(existing.dir).get().bot.limits.maxSteps, 16)
   })

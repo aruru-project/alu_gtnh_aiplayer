@@ -38,7 +38,7 @@ export const PROCESS_WAIT_MAX_SEC = 3600
 export const findItem: Tool = {
   name: 'find_item',
   description:
-    'Find items by name: words of the Chinese or English name, the id, or an ore-dictionary name (every word must match). Gives the name, id/meta, how many recipes make and use each, and its ore names. Item names are Chinese: search with the words your owner used.',
+    'Find items by name: words of the Chinese or English name, the id, or an ore-dictionary name (every word must match). Gives the name, id/meta, how many recipes make and use each, its ore names, and its chisel group if it is in one. Item names are the Chinese names shown in the game, the ones your owner says.',
   inputSchema: obj(
     {
       query: str('Words to look for, e.g. "钢板", "electric motor", "plateSteel".', { maxLength: 80 }),
@@ -49,7 +49,7 @@ export const findItem: Tool = {
   ),
   async run(ctx, i: { query: string; page?: number; limit?: number }) {
     const items = ctx.packdata?.items
-    if (items) return findItemLocal(items, ctx.packdata?.recipes, i)
+    if (items) return findItemLocal(items, ctx.packdata?.recipes, i, ctx.packdata?.carving)
     // 没有本地物品表：问服务器（它只认英文名）
     const query = i.query.trim()
     const res = await ctx.bridge.itemSearch(query, i.limit)

@@ -5,6 +5,7 @@
 // 这一层只读文件、建索引、回答查询，不碰 bridge。启动时读一次；目录或某个文件不在、读不了时，对应的那一项是 undefined，
 // 用它的工具自己退回去问服务器。
 
+import { CarvingBook } from './carving.ts'
 import { StructureBook } from './structures.ts'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -25,6 +26,8 @@ export { ANY_META, CIRCUIT_ID, RecipeBook } from './recipes.ts'
 export type { Recipe, RecipeFluid, RecipeHandler, RecipeSlot, RecipeStack } from './recipes.ts'
 export { ItemTable } from './items.ts'
 export { StructureBook, structureCells } from './structures.ts'
+export { CarvingBook } from './carving.ts'
+export type { CarvingGroup, CarvingMatch, CarvingVariant } from './carving.ts'
 export type { Structure, StructurePart, StructureRow } from './structures.ts'
 export type { PackItemInfo } from './items.ts'
 export { QuestBook, isQuestId, logicHolds, normalizeQuestId } from './quests.ts'
@@ -45,6 +48,8 @@ export interface PackData {
   recipes?: RecipeBook
   /** 多方块机器怎么搭（structures.jsonl）。没有时查不了结构。 */
   structures?: StructureBook
+  /** 凿子的组（carving.jsonl）：哪些方块能用凿子互相变。没有时查做法、查用途里不提凿子。 */
+  carving?: CarvingBook
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -238,6 +243,16 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
     }
   } catch (e) {
     log(`多方块结构（structures.jsonl）读不了（${reason(e)}），当它没有。`)
+  }
+  try {
+    const loaded = CarvingBook.load(dir)
+    // 文件不在就当没有，不用说
+    if (loaded) {
+      data.carving = loaded.book
+      log(`凿子的组：${loaded.book.groups.length} 组、${loaded.book.variants} 种方块${loaded.bad > 0 ? `（${loaded.bad} 行认不出来，跳过了）` : ''}。`)
+    }
+  } catch (e) {
+    log(`凿子的组（carving.jsonl）读不了（${reason(e)}），当它没有。`)
   }
   return data
 }

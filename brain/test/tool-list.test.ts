@@ -18,6 +18,8 @@ import { DEFAULT_MANUALS_DIR, chat, makeAgent, modelCalls, reply, taskEnded } fr
 import type { AgentHarness } from './agent-harness.ts'
 import { writeRecipeFixture } from './fixture-recipes.ts'
 import { encodePng, tmpDir, waitFor, worldBlocksAnswer } from './helpers.ts'
+import { readBlueprintAnswer } from './mock-bridge.ts'
+import type { MockBlueprint } from './mock-bridge.ts'
 
 const PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17305 }
 const CHEST = { x: 5, y: 64, z: 5 }
@@ -91,7 +93,7 @@ const TOOLS_WITH_VISION = [
   'list_manuals', 'read_manual', 'write_manual',
   'report_problem',
 ]
-const LIBRARY = ['list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
+const LIBRARY = ['list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
@@ -150,6 +152,9 @@ describe('模型拿到的工具清单', () => {
   // 每个工具的说明和参数 schema 每一轮都发给模型。加一个工具之前先想：通用能力（走、挖放、用物品、开界面点格子、
   // 存取、写程序）加上模型自己的脑子做得到的事，不做成专用工具；“查一查、算一算”的做成库函数（索引里只占一行）。
   // 确实要加，再有意识地把这个上限调高。上限是 2026-11 瘦身两步做完时的实际值（42,576）往上留约 5%。
+  // 第三批之后实际是 44,135，上限没动。多出来的 1,559：use_item 的 side / hit / times / every 和空手（+868，身体的新能力）、
+  // run_program 后面的库函数索引（+196：read_blueprint 一行，list_drawers 的 front / hit，total_materials 的 chisel）、
+  // start_routine（+145：不限调用次数、时长由主人定）、say / whisper 照实写怎么分行和上限（+97）、几个说明改成陈述（+253）。
   // 量的是发给模型的那份（modelToolSpecs）：说明加上瘦过的参数 schema。
   it('防回涨：不能看图的模型每一轮收到的工具清单不超过 44,700 字符', () => {
     const CEILING = 44_700
@@ -248,7 +253,7 @@ describe('库函数：不在清单里，在程序里调', () => {
 
   it('调了一个不存在的名字：报错里分两组列出能调的——它的工具，和库函数；看图的两个按它能不能看图归组', async (t) => {
     const blind = (await modelCalls(setup(t, { vision: false }), 'fly_to_the_moon')).content
-    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
+    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image/)
     assert.ok(blind.length < 1100, `${blind.length} characters`)
     for (const old of OLD_NAMES) assert.equal(blind.includes(old), false, old)
@@ -290,12 +295,13 @@ describe('合并后的工具', () => {
     assert.deepEqual(all, [
       '1 blueprint(s) on the server. Sizes are x × y (height) × z, counted from the lowest corner:',
       '- cabin: 4×3×4, 41 blocks',
+      'What is in one (its materials, its cells): the library function read_blueprint.',
       '1 draft(s), newest first:',
       '- step: 2×1×1 (x east-west × y up × z north-south), 2 block(s) of 1 kind(s), saved 0 min ago',
       '1 image(s) (name: width×height in pixels):',
       '- flag: 2×1',
     ])
-    assert.equal((await modelCalls(h, 'list_designs', { kind: 'images' })).content, all.slice(4).join('\n'))
+    assert.equal((await modelCalls(h, 'list_designs', { kind: 'images' })).content, all.slice(5).join('\n'))
 
     const got = await program(h, `
       const all = await tool('list_designs', {})
@@ -303,7 +309,7 @@ describe('合并后的工具', () => {
       for (const name of ['list_blueprints', 'list_drafts', 'list_images']) old[name] = (await tool(name, {})).text
       return { data: [all.data.blueprints.map((b) => b.name), all.data.drafts.map((d) => [d.name, d.blocks]), all.data.images], old }`)
     assert.deepEqual(got.data, [['cabin'], [['step', 2]], [{ name: 'flag', width: 2, height: 1 }]])
-    assert.deepEqual(got.old, { list_blueprints: all.slice(0, 2).join('\n'), list_drafts: all.slice(2, 4).join('\n'), list_images: all.slice(4).join('\n') })
+    assert.deepEqual(got.old, { list_blueprints: all.slice(0, 3).join('\n'), list_drafts: all.slice(3, 5).join('\n'), list_images: all.slice(5).join('\n') })
 
     // 没连上游戏时图纸列不出来：照实说，草稿和图片照列
     h.game.handlers['blueprint.list'] = () => {
@@ -324,6 +330,93 @@ describe('合并后的工具', () => {
     assert.equal(h.agent.status().routine!.value, `[true,true,"Ran /team join steves_base. The server replied: You joined team 'steves_base'"]`)
     assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['home list', 'sethome mine', 'team join steves_base'])
     assert.equal(h.memory.get('home:mine')?.text, '(10,64,-4) dim 0 — 矿洞口')
+  })
+})
+
+describe('图纸里有什么（read_blueprint）', () => {
+  /** 4×3×4 的石砖小屋（地板加两层墙），屋里一个箱子：和主人上传的图纸一个样。 */
+  const CABIN = blueprintOf('cabin', { x: 4, y: 3, z: 4 }, (x, y, z) => (x === 1 && y === 1 && z === 1 ? 2 : y === 0 || x === 0 || x === 3 || z === 0 || z === 3 ? 1 : 0))
+  /** 一张大的：128×40×128，一次读不完。 */
+  const HALL = blueprintOf('hall', { x: 128, y: 40, z: 128 }, (_x, y) => (y === 0 ? 1 : 0))
+  function blueprintOf(name: string, size: { x: number; y: number; z: number }, at: (x: number, y: number, z: number) => number): MockBlueprint {
+    const cells = new Uint16Array(size.x * size.y * size.z)
+    for (let y = 0; y < size.y; y++) for (let z = 0; z < size.z; z++) for (let x = 0; x < size.x; x++) cells[x + (y * size.z + z) * size.x] = at(x, y, z)
+    return { name, size, kinds: [{ id: 'minecraft:air', meta: 0, name: 'Air' }, { id: 'minecraft:stonebrick', meta: 0, name: 'Stone Bricks' }, { id: 'minecraft:chest', meta: 3, name: 'Chest', byHand: 'it holds contents or settings' }], cells }
+  }
+  function withBlueprints(t: { after(fn: () => void): void }) {
+    const h = setup(t)
+    h.game.handlers['blueprint.read'] = (p) => readBlueprintAnswer(p.name === 'hall' ? HALL : CABIN, p)
+    return h
+  }
+  /** run_program 跑一段返回文字的程序（手册里的例子），返回它 return 的那段文字。 */
+  async function returned(h: AgentHarness, code: string): Promise<string> {
+    const res = await modelCalls(h, 'run_program', { code })
+    assert.equal(res.isError, false, res.content)
+    return /^Returned: ([\s\S]*)$/m.exec(res.content)![1]!
+  }
+  const example = (title: string): string => {
+    const manual = fs.readFileSync(path.join(DEFAULT_MANUALS_DIR, 'blueprint.md'), 'utf8')
+    const code = new RegExp(`## 例子：${title}[^\\n]*\\n(?:[^\\n]*\\n)*?\`\`\`js\\n([\\s\\S]*?)\`\`\``).exec(manual)?.[1]
+    assert.ok(code, `the blueprint manual has the example "${title}"`)
+    return code
+  }
+
+  it('主人问“这张图纸要哪些材料”：不用知道它放在哪，就拿到整张的材料表（哪些得由人放）；程序拿到每一格；自己的草稿也一样读', async (t) => {
+    const h = withBlueprints(t)
+    const text = (await modelCalls(h, 'read_blueprint', { name: 'cabin.schematic' })).content.split('\n')
+    assert.deepEqual(text, [
+      'Blueprint "cabin" (on the server): 4×3×4 (x × y × z), 41 block(s) of 2 kind(s), 1 of them for a player to place by hand.',
+      'Materials, for the whole of it:',
+      '- 40× Stone Bricks [minecraft:stonebrick]',
+      '- 1× Chest [minecraft:chest/3] — a player has to place it: it holds contents or settings',
+      'Its cells are in the result data, for a program (data.palette, data.cells).',
+    ])
+    // 程序里：(1,1,1) 那一格是箱子，地板全是石砖
+    const got = await program(h, `
+      const bp = (await tool('read_blueprint', { name: 'cabin' })).data
+      const at = (x, y, z) => bp.palette[bp.cells[(y * bp.sz + z) * bp.sx + x]].id
+      return [bp.source, bp.size, bp.materials.map((m) => [m.id, m.count, m.byHand ?? null]), at(1, 1, 1), at(2, 0, 2), at(1, 2, 1)]`)
+    assert.deepEqual(got, ['server', { x: 4, y: 3, z: 4 }, [['minecraft:stonebrick', 40, null], ['minecraft:chest', 1, 'it holds contents or settings']], 'minecraft:chest', 'minecraft:stonebrick', 'minecraft:air'])
+
+    // 它自己的草稿：同一个函数，同一种 data
+    await modelCalls(h, 'run_program', { code: `blueprint(2, 1, 1).fill(0, 0, 0, 1, 0, 0, 'minecraft:planks').save('step')` })
+    const draft = await program(h, `const d = (await tool('read_blueprint', { name: 'step', draft: true })).data; return [d.source, d.size, d.materials, d.palette.map((p) => p.id), d.cells]`)
+    assert.deepEqual(draft, ['draft', { x: 2, y: 1, z: 1 }, [{ id: 'minecraft:planks', meta: 0, count: 2 }], ['minecraft:air', 'minecraft:planks'], [1, 1]])
+    assert.equal((await modelCalls(h, 'read_blueprint', { name: 'nope', draft: true })).content, 'There is no draft named "nope". list_designs shows the ones there are.')
+  })
+
+  it('大图纸一次读不完格子：材料表照给，写明怎么一块块读；给了 from、to 就读那一块', async (t) => {
+    const h = withBlueprints(t)
+    const whole = (await modelCalls(h, 'read_blueprint', { name: 'hall' })).content.split('\n')
+    assert.deepEqual(whole, [
+      'Blueprint "hall" (on the server): 128×40×128 (x × y × z), 16384 block(s) of 1 kind(s).',
+      'Materials, for the whole of it:',
+      '- 16384× Stone Bricks [minecraft:stonebrick]',
+      'It has 655360 cells, more than one read gives (262144), so no cells came with this: give "from" and "to" (corners inside the blueprint, counted from 0) to read them a part at a time, for instance a few layers.',
+    ])
+    const floor = await program(h, `const d = (await tool('read_blueprint', { name: 'hall', from: { x: 0, y: 0, z: 0 }, to: { x: 127, y: 1, z: 127 } })).data; return [d.sx, d.sy, d.sz, d.cells.length, d.cells[0], d.cells[128 * 128]]`)
+    assert.deepEqual(floor, [128, 2, 128, 32768, 1, 0])
+  })
+
+  it('手册里的例子“算一张图纸的材料，对一遍身上和仓库”照抄着能跑：每种要多少、身上和仓库各有多少、还差多少，得由人放的单列', async (t) => {
+    const h = withBlueprints(t)
+    const status = h.game.handlers['bot.status']!
+    h.game.handlers['bot.status'] = (p) => ({ ...(status(p) as object), inventory: [{ slot: 0, id: 'minecraft:stonebrick', meta: 0, count: 10, name: 'Stone Bricks' }] })
+    h.game.handlers['world.stock'] = (p) => ({ containersLookedInto: 1, items: (p.items as { id: string }[]).map((q) => (q.id === 'minecraft:stonebrick' ? { ...q, total: 25, places: [{ x: 12, y: 64, z: -4, container: 'Chest', count: 25 }] } : { ...q, total: 0, places: [] })) })
+    assert.deepEqual((await returned(h, example('算一张图纸的材料'))).split('\n'), ['40× Stone Bricks：身上 10，仓库 25，还差 5', '1× Chest：得主人自己放（it holds contents or settings）'])
+  })
+
+  it('手册里的例子“不知道原点时，拿图纸和现场比”照抄着能跑：小屋盖在 (30,65,30)，只知道大概在哪也找得到它的最低角', async (t) => {
+    const h = withBlueprints(t)
+    const blocks: Record<string, string> = {}
+    for (let y = 0; y < 3; y++) for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++) {
+      const kind = CABIN.kinds[CABIN.cells[x + (y * 4 + z) * 4]!]!
+      if (kind.id !== 'minecraft:air') blocks[`${30 + x},${65 + y},${30 + z}`] = `${kind.id}/${kind.meta}`
+    }
+    h.game.handlers['world.blocks'] = (p) => worldBlocksAnswer(p, blocks)
+    // 只知道大概在哪：离真正的原点十来格
+    const code = example('不知道原点时').replace(/const near = \{[^}]*\}/, 'const near = { x: 41, y: 70, z: 22 }')
+    assert.equal(await returned(h, code), '对得最上的位置：最低角在 (30, 65, 30)，样本 41 格里对上 41 格')
   })
 })
 

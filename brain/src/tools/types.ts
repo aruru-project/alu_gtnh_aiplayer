@@ -100,6 +100,9 @@ export interface ToolHooks {
   /** 马上要以 bot 身份执行一条指令。期间收到的系统消息是这条指令的回显（工具结果里已经有了）。 */
   commandStart?(): void
   commandEnd?(): void
+  /** run_program 开始跑一个程序 / 跑完了：上层把这个程序调的工具归到一起记日志。 */
+  programStarted?(code: string): void
+  programEnded?(how: { ok: boolean; note: string }): void
 }
 
 export interface ToolContext {

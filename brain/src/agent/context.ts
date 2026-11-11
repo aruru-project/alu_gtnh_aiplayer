@@ -92,6 +92,14 @@ export function composeTurnMessage(
 }
 
 /**
+ * 一轮进行到一半时新到的事（有人说话、任务结束、例程有结果……本来会另开一轮的那些）：接在刚凑齐的工具结果后面，
+ * 这一轮就让模型看到。格式和开头的“需要你处理的事”一样（说话的带着他站在哪、指着什么）。
+ */
+export function composeArrivals(events: readonly AgentEvent[], now: number): string {
+  return `[需要你处理的事（你做上一步的时候新到的）]\n${events.map((e) => eventLine(e, now)).join('\n')}`
+}
+
+/**
  * 哪几本手册的原文现在还完整地留在这段对话里。
  * 只认 read_manual 的工具结果里完整的那种：被历史压缩截短了的不算，主人后来改过的（版本对不上）也不算——
  * 这两种情况模型手里都没有能用的原文，要用时得重新读。

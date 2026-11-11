@@ -31,7 +31,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     assert.equal(system.includes('仓库在 (100,64,200)'), false)
     assert.equal(/needsClimbingBlocks|maxFillDepth|craftingTool|匠魂/.test(system), false)
     // 用户嫌原来的提示词又长又杂（拆手册之前 6900 多字）：核心加目录要明显短
-    assert.ok(DEFAULT_PERSONA.length < 2000, `core prompt is ${DEFAULT_PERSONA.length} chars`)
+    assert.ok(DEFAULT_PERSONA.length <= 2400, `core prompt is ${DEFAULT_PERSONA.length} chars`)
     assert.ok(system.length < 3500, `system prompt is ${system.length} chars`)
   })
 

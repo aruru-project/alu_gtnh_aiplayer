@@ -10,9 +10,9 @@ import { chat, makeAgent, reply, taskEnded } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
-function setup(t: { after(fn: () => void): void }, limits: Partial<RoutineLimits> = {}) {
+function setup(t: { after(fn: () => void): void }, limits: Partial<RoutineLimits> = {}, opts: { runLogFullTextBytes?: number } = {}) {
   const tmp = tmpDir()
-  const h = makeAgent({ dir: tmp.dir, design: new DesignWorkspace({ dataDir: tmp.dir }), routineLimits: limits })
+  const h = makeAgent({ dir: tmp.dir, design: new DesignWorkspace({ dataDir: tmp.dir }), routineLimits: limits, ...opts })
   t.after(async () => {
     await h.agent.stop()
     tmp.cleanup()
@@ -66,7 +66,7 @@ describe('例程', () => {
   it('程序一步步调工具：查询的直接拿到数据，开任务的等任务做完才往下走；做完把模型叫醒一次，带着每一步和它的日志', async (t) => {
     const h = setup(t)
     const started = await modelCalls(h, 'start_routine', { code: TIDY, name: '整理抽屉' })
-    assert.match(started, /^Routine r1 \("整理抽屉"\) started in the background\. End your turn now: you will be woken when it finishes, fails or is stopped/)
+    assert.match(started, /^Routine r1 \("整理抽屉"\) started in the background\. It may run for up to 120 minutes\. End your turn now: you will be woken when it finishes, fails or is stopped/)
     await h.agent.whenIdle()
     const turnsBefore = h.llm.requests.length
 
@@ -102,12 +102,115 @@ describe('例程', () => {
     assert.match(woken, /Its log \(last 2 line\(s\)\):\n {2}slots below 128: 2\n {2}deposited true/)
     assert.equal(turnsBefore > 0, true)
 
-    // 面板的对话日志里看得到例程的每一步
+    // 面板的对话日志里：例程开始、一条汇总（不是每次调用两条）、例程结束
     const log = h.log.recent(0, 200)
     assert.ok(log.some((e) => e.kind === 'info' && e.text === '例程 r1（整理抽屉）开始在后台跑。' && e.detail === TIDY))
-    assert.deepEqual(log.filter((e) => e.kind === 'tool_call' && e.text.startsWith('[例程 r1]')).map((e) => e.who), ['list_drawers', 'withdraw_items', 'withdraw_items', 'deposit_items'])
-    assert.ok(log.some((e) => e.kind === 'tool_result' && e.who === 'deposit_items' && /^\[例程 r1\] t3 deposit \[done\]/.test(e.text)))
+    assert.equal(log.filter((e) => (e.kind === 'tool_call' || e.kind === 'tool_result') && e.text.includes('例程 r1')).length, 0)
+    const summary = log.filter((e) => e.kind === 'run')
+    assert.equal(summary.length, 1)
+    assert.match(summary[0]!.text, /^例程 r1（整理抽屉）：跑完了，调了 4 次工具，开了 3 个任务，0 次出错，\d+ 秒$/)
+    assert.deepEqual([summary[0]!.run!.status, summary[0]!.run!.calls, summary[0]!.run!.tasks, summary[0]!.run!.errors], ['done', 4, 3, 0])
     assert.ok(log.some((e) => e.kind === 'info' && e.text.startsWith('例程 r1（整理抽屉）跑完了')))
+    // 每一步的全量（参数、结果全文、开的任务）在这次运行自己的记录里：主人事后查得到它每一步干了什么
+    const { records, total } = h.runLogs.read(summary[0]!.run!.file!)
+    assert.equal(total, 8)
+    assert.deepEqual(records.map((r) => (r.t === 'call' ? [r.n, r.tool, r.ok, r.task ?? null] : r.t === 'log' ? r.text : r.t)), [
+      'start',
+      [1, 'list_drawers', true, null],
+      'slots below 128: 2',
+      [2, 'withdraw_items', true, 't1'],
+      [3, 'withdraw_items', true, 't2'],
+      [4, 'deposit_items', true, 't3'],
+      'deposited true',
+      'end',
+    ])
+    const first = records[1]!
+    assert.deepEqual(first.t === 'call' ? [first.input, first.text.split('\n').length] : [], [{ x: 1, y: 64, z: 1, below: 128 }, 3])
+    const end = records[7]!
+    assert.deepEqual(end.t === 'end' ? [end.status, end.value, end.calls, end.tasks] : [], ['done', '47', 4, 3])
+  })
+
+  it('程序对抽屉的某一格连点两下（玩家的“双击全放”）：list_drawers 给的每一格的正面和点的位置，原样交给 use_item，身体收到的就是点那一格的正面两下', async (t) => {
+    const h = setup(t)
+    h.game.handlers['world.drawers'] = () => ({
+      controller: { x: 1, y: 64, z: 1 },
+      drawers: 1,
+      slotsTotal: 4,
+      slotsUsed: 1,
+      // 一个 2×2 的抽屉朝南放着，泥土在左上那一格
+      slots: [{ x: 2, y: 64, z: 1, slot: 0, id: 'minecraft:dirt', meta: 0, name: 'Dirt', count: 40, room: 2008, front: 'south', hit: { x: 0.25, y: 0.75, z: 1 } }],
+      total: 1,
+      offset: 0,
+    })
+    await modelCalls(h, 'start_routine', {
+      code: `const s = (await tool('list_drawers', { x: 1, y: 64, z: 1 })).data.slots[0]
+const put = await tool('use_item', { id: s.id, on: { x: s.x, y: s.y, z: s.z }, side: s.front, hit: s.hit, times: 2 })
+return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
+    })
+    await taskStarted(h, 1)
+    assert.deepEqual(h.game.callsOf('task.start')[0]!.task, { type: 'use', item: { id: 'minecraft:dirt' }, on: { x: 2, y: 64, z: 1 }, side: 'south', hit: { x: 0.25, y: 0.75, z: 1 }, times: 2 })
+    // 身体点完了：两下，身上三组 192 个泥土都进去了
+    h.agent.handleEvent(taskEnded('t1', 'done', { type: 'use', result: { used: 'Dirt', gained: [], lost: [{ id: 'minecraft:dirt', meta: 0, name: 'Dirt', count: 192 }], clicks: 2, side: 'south', health: 20, food: 20, freeSlots: 33 } }))
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done')
+    assert.equal(h.agent.status().routine!.value, '[true,2,192]')
+  })
+
+  it('调多少次工具、开多少个任务不设上限：六百次调用一口气跑完；对话日志里只有一条汇总，没有被刷屏', async (t) => {
+    const h = setup(t, { callsPerSecond: 100_000 })
+    await modelCalls(h, 'start_routine', { code: `let n = 0\nfor (let i = 0; i < 600; i++) if ((await tool('get_status')).ok) n++\nreturn n`, name: '数六百下' })
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 20_000)
+    assert.deepEqual([h.agent.status().routine!.value, h.agent.status().routine!.calls], ['600', 600])
+    const log = h.log.recent(0, 500)
+    assert.equal(log.filter((e) => e.kind === 'tool_call' || e.kind === 'tool_result').filter((e) => e.who === 'get_status').length, 0)
+    const summary = log.filter((e) => e.kind === 'run')
+    assert.deepEqual(summary.map((e) => [e.run!.calls, e.run!.errors, e.run!.status]), [[600, 0, 'done']])
+    assert.equal(h.runLogs.read(summary[0]!.run!.file!, 0, 1).total, 602)
+  })
+
+  it('跑得很久的例程：这次运行的记录写到很大以后，后面每一步的结果只留开头并写明原来多长（参数、成没成照记），出错的那一步照样留全', async (t) => {
+    // 记录写到 1500 个字符以后就只留开头
+    const h = setup(t, { callsPerSecond: 100_000 }, { runLogFullTextBytes: 1500 })
+    h.game.handlers['world.drawers'] = () => ({ controller: { x: 1, y: 64, z: 1 }, drawers: 30, slotsTotal: 30, slotsUsed: 30, slots: Array.from({ length: 30 }, (_, n) => ({ x: 2 + n, y: 64, z: 1, slot: 0, id: 'minecraft:coal', meta: 0, name: 'Coal', count: 40 + n, room: 2000 })), total: 30, offset: 0 })
+    await modelCalls(h, 'start_routine', { code: `for (let i = 0; i < 4; i++) await tool('list_drawers', { x: 1, y: 64, z: 1 })\nawait tool('withdraw_items', { container: { x: 1 } })\nreturn 1` })
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 10_000)
+    const file = h.log.recent(0, 100).find((e) => e.kind === 'run')!.run!.file!
+    const calls = h.runLogs.read(file).records.filter((r) => r.t === 'call')
+    const whole = calls[0]!.t === 'call' ? calls[0]!.text.length : 0
+    assert.ok(whole > 1500, `one result is ${whole} characters`)
+    assert.deepEqual(
+      calls.map((r) => (r.t === 'call' ? [r.n, r.tool, r.ok, r.text.length, r.textLength ?? null] : [])),
+      [
+        [1, 'list_drawers', true, whole, null],
+        // 第 1 次写完记录就超过 1500 了：这以后只留开头的 400 个字符（加一个省略号），写明原来多长
+        [2, 'list_drawers', true, 401, whole],
+        [3, 'list_drawers', true, 401, whole],
+        [4, 'list_drawers', true, 401, whole],
+        [5, 'withdraw_items', false, 'Invalid arguments for withdraw_items: items is required; container.y is required; container.z is required'.length, null],
+      ],
+    )
+  })
+
+  it('限速：每秒最多调这么多次工具，多的自动等一下，不是报错；出错的那一步在对话日志里单独有一条', async (t) => {
+    const h = setup(t, { callsPerSecond: 5 })
+    const started = Date.now()
+    await modelCalls(h, 'start_routine', { code: `let ok = 0\nfor (let i = 0; i < 11; i++) if ((await tool('get_status')).ok) ok++\nconst bad = await tool('withdraw_items', { container: { x: 1 } })\nreturn [ok, bad.ok]` })
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 10_000)
+    // 12 次调用、每秒 5 次：第 11、12 次要等到第 3 秒
+    assert.ok(Date.now() - started >= 1900, `took ${Date.now() - started} ms`)
+    assert.equal(h.agent.status().routine!.value, '[11,false]')
+    const errors = h.log.recent(0, 200).filter((e) => e.kind === 'tool_result' && e.isError)
+    assert.deepEqual(errors.map((e) => [e.who, e.text]), [['withdraw_items', '[例程 r1 #12] Invalid arguments for withdraw_items: items is required; container.y is required; container.z is required']])
+    assert.match(errors[0]!.detail!, /^参数：\{"container":\{"x":1\}\}\n\nInvalid arguments for withdraw_items: /)
+  })
+
+  it('它要的时长超过主人设的最长：给到最长为止，启动的结果里照实说', async (t) => {
+    const h = setup(t, { maxWallMs: 90 * 60_000 })
+    const WAIT = `await tool('go_to', { x: 5, z: 5 }); return 1`
+    assert.match(await modelCalls(h, 'start_routine', { code: WAIT, minutes: 600 }), /started in the background\. It may run for 90 minutes, the longest your owner allows \(you asked for 600\)\. End your turn now/)
+    await modelCalls(h, 'stop_routine', {}, 'Alu 停')
+    assert.match(await modelCalls(h, 'start_routine', { code: WAIT, minutes: 45 }, 'Alu 再来'), /It may run for up to 45 minutes\./)
+    await modelCalls(h, 'stop_routine', {}, 'Alu 停')
+    assert.match(await modelCalls(h, 'start_routine', { code: WAIT }, 'Alu 第三次'), /It may run for up to 120 minutes\./)
   })
 
   it('例程里的工具和模型自己调是同一条路：参数不对一样被拒，程序拿到的是失败的结果；例程里不能再开例程、再跑程序', async (t) => {
@@ -133,7 +236,7 @@ describe('例程', () => {
     assert.equal(h.game.callsOf('task.start').length, 0)
   })
 
-  it('上限：总时长到了、调用次数到了、程序自己算个没完，都会停下并叫醒模型，说清是哪个上限', async (t) => {
+  it('上限：总时长到了、程序自己算个没完，都会停下并叫醒模型，说清是哪个上限', async (t) => {
     // 总时长：给它 1 分钟的话太久，这里把上限调成 300 毫秒；它卡在等任务上
     const slow = setup(t, { wallMs: 300 })
     await modelCalls(slow, 'start_routine', { code: `await tool('go_to', { x: 5, z: 5 }); return 'done'` })
@@ -142,11 +245,6 @@ describe('例程', () => {
     // 它正等着的任务被取消了
     assert.deepEqual(slow.game.callsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
     await waitFor('the model was woken', () => /was STOPPED at a limit: it ran for/.test(slow.llm.lastUserText(slow.llm.requests.length - 1)))
-
-    const chatty = setup(t, { calls: 3 })
-    await modelCalls(chatty, 'start_routine', { code: `for (let i = 0; i < 10; i++) await tool('get_status'); return 'never'` })
-    await waitFor('stopped at the call limit', () => chatty.agent.status().routine?.status === 'limit')
-    assert.deepEqual([chatty.agent.status().routine!.ending, chatty.agent.status().routine!.calls], ['it made 3 tool calls, the most a routine may make', 3])
 
     const busy = setup(t, { computeMs: 300 })
     await modelCalls(busy, 'start_routine', { code: `await tool('get_status'); for (;;) {}` })
@@ -274,6 +372,9 @@ describe('例程', () => {
     assert.match(result, /^The program finished in [\d.]+ s\.\nReturned: 40\+7 \/ false \/ go_to cannot be called from run_program: a program there can$/)
     assert.equal(h.game.callsOf('task.start').length, 0)
     assert.equal(h.agent.status().routine, undefined)
-    assert.ok(h.log.recent(0, 100).some((e) => e.kind === 'tool_call' && e.who === 'list_drawers' && e.text.startsWith('[程序] ')))
+    // 程序调的工具归到一条汇总里；被拒的那一次算出错，单独有一条
+    const log = h.log.recent(0, 100)
+    assert.deepEqual(log.filter((e) => e.kind === 'run').map((e) => [e.run!.kind, e.run!.id, e.run!.calls, e.run!.errors, e.run!.status]), [['program', 'p1', 2, 1, 'done']])
+    assert.ok(log.some((e) => e.kind === 'tool_result' && e.isError && e.who === 'go_to' && e.text.startsWith('[程序 p1 #2] go_to cannot be called from run_program')))
   })
 })

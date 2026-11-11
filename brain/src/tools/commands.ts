@@ -51,8 +51,10 @@ export const COMMAND_REPLY_WAIT_MS = 600
  */
 export const WHISPER_MAX_CHARS = 220
 
-/** 公共聊天一次最多说多少字（身体每 100 字分一行，每行都算一条）。 */
-export const SAY_MAX_CHARS = 300
+/** 公共聊天一次最多说多少字：身体的上限（它每 100 字分一行，约每秒发一行；超过的它截掉并在回话里说截了多少）。 */
+export const SAY_MAX_CHARS = 1000
+/** 公共聊天一行最多多少字（身体分行用的数，写进 say 的说明和结果里）。 */
+export const SAY_LINE_CHARS = 100
 
 /** home 名字只允许这些字符，免得拼进指令后变成别的意思。 */
 export const HOME_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
