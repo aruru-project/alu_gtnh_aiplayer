@@ -102,7 +102,10 @@ def main():
         write_lines(os.path.join(WORK, name), rows)
 
     os.makedirs(out, exist_ok=True)
-    for name in ("items.jsonl", "blocks.jsonl", "recipes.jsonl", "handlers.json"):
+    names = ["items.jsonl", "blocks.jsonl", "recipes.jsonl", "handlers.json"]
+    if os.path.exists(os.path.join(WORK, "structures.jsonl")):
+        names.append("structures.jsonl")
+    for name in names:
         shutil.copy2(os.path.join(WORK, name), os.path.join(out, name + ".part"))
         os.replace(os.path.join(out, name + ".part"), os.path.join(out, name))
     meta_path = os.path.join(out, "meta.json")

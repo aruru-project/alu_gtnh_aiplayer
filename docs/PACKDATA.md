@@ -25,7 +25,7 @@
 | `items.jsonl` | 物品表，见“物品” | `tools/export-packdata` |
 | `blocks.jsonl` | 方块颜色表，见“方块颜色” | `tools/export-packdata` |
 | `textures/atlas.png` `textures/atlas.json` | 方块贴图的图集，见“方块贴图” | `make-packdata.py textures` |
-| `recipes.jsonl` `handlers.json` | 配方册，见“配方” | `tools/export-packdata` |
+| `recipes.jsonl` `handlers.json` `structures.jsonl` | 配方册和多方块结构，见“配方” | `tools/export-packdata` |
 
 `meta.json` 是一个对象，键是子命令的名字。子命令重新生成时只替换自己那一节，别的键原样保留：
 
@@ -368,6 +368,29 @@ tools/make-packdata.py textures \
 - `process_items` 把配方变成 `process` 任务的参数：消耗的原料乘上轮数，`n:0` 的模具模头各 1 个，编程电路不当物品放、写成 `circuit`，不带概率的产物写成 `expect`。配方要的流体不替它准备：要么机器已经接好，要么模型用 `fluids` 给装满的单元。
 
 没有 `recipes.jsonl` 时这几个工具退回去问服务器的 `recipe.find`（英文、每种机器只给前几条），`find_uses` 用不了。
+
+### structures.jsonl：多方块机器怎么搭
+
+一行是一台多方块机器在某个等级下的结构，也就是 NEI 里那个结构预览（玩家说的“投影”）。同一台机器等级不同、结构也不同时有多行；几个等级结构一样的并成一行。
+
+```jsonc
+{
+  "id":"gregtech:gt.blockmachines","meta":31080,"name":"大型蒸汽离心机",   // 主机这件物品
+  "tiers":[2], "maxTier":2,           // 这一行是哪几个等级的结构；等级就是全息投影仪叠几个
+  "size":[5,5,5],                     // x、y、z 各几格
+  "controller":[2,1,4], "facing":"south",   // 主机在这个盒子里的位置（从 0 数），和它正面朝哪
+  "blocks":[ {"id":"…","meta":…,"name":"脱氧钢机械方块","n":69}, {"id":"…","meta":…,"name":"钢齿轮箱机械方块","n":8}, … ],   // 材料清单
+  "palette":[{"id":"minecraft:air","meta":0}, {"id":"…","meta":…,"name":"脱氧钢机械方块"}, …],
+  "runs":[0,3, 1,5, …],               // 和身体 world.blocks 同一种写法：下标 = (y*sz + z)*sx + x
+  "info":[ "机器类型: 离心机", "并行：8", … ],                        // 主机的说明文字（只在这台机器的第一行带）
+  "structureInfo":[ "大小: 5x5x5 (LxWxH)", "控制器: 第二层，正面中央", "1+ 蒸汽输入总线: 任意机械方块", … ]   // 按住 Shift 看到的结构说明
+}
+```
+
+- 结构是照预览的样子搭出来的：总线、仓这些“可以换成别的方块”的位置，预览里放的是机械方块（个别是默认的仓）。哪些位置能放什么仓，看 `structureInfo` 的文字。
+- `palette` 里机器零件的 `meta` 是它作为物品时的 meta（各种仓、主机都是同一个方块，靠这个区分）。
+- 有的机器除了等级还有别的可调项（线圈、玻璃等级），这里只导了默认的那一档；高炉这类“等级就是线圈”的，每种线圈一行。
+- 这份数据是让游戏在一个临时世界里把结构真的搭一遍再读出来的（和 NEI 预览同一段代码），不是抄的说明文字。
 
 ### 怎么导出
 
