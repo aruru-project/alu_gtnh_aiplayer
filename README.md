@@ -93,7 +93,7 @@ AIPLAYER_CLIENT_PACK=/path/to/GTNH-2.9.0-client.zip          # tools/client setu
 
 ## 部署到正式服
 
-见 [docs/DEPLOY.md](docs/DEPLOY.md)。需要重启一次游戏服务器。
+见 [docs/DEPLOY.md](docs/DEPLOY.md)。装身体（mod）需要重启一次游戏服务器；大脑用 `tools/live deploy` 一条命令发布，随时可以更新和回滚，不用停游戏。
 
 ## 在 GTNH 里要知道的几件事
 

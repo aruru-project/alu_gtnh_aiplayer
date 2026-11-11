@@ -59,27 +59,40 @@ journalctl --user -u gtnh.service -f | grep -m1 'Bridge listening'
 
 ## 二、装大脑
 
-```bash
-mkdir -p ~/.config/systemd/user
-cp brain/aiplayer-brain.service ~/.config/systemd/user/      # 在仓库目录里执行
-```
+大脑在仓库外面有自己的目录，照 Capistrano / Mina 的路子：一条命令从已提交的代码做出一个新的发布目录，把 `current` 指过去，重启服务。
 
-编辑 `~/.config/systemd/user/aiplayer-brain.service`，把口令文件指向正式服：
-
-```ini
-Environment=AIPLAYER_BRIDGE_PORT=25590
-Environment=AIPLAYER_BRIDGE_TOKEN_FILE=/path/to/your/server/config/aiplayer/bridge-token.txt
-```
-
-模型接口需要走代理的话，把模板里代理那两行也打开。
+先在 `tools/local.env`（不入库）里写清这台机器上东西在哪：
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now aiplayer-brain
-journalctl --user -u aiplayer-brain | grep 口令      # 首次启动打印的面板口令
+AIPLAYER_LIVE_ROOT=/srv/aiplayer                    # 大脑的目录，setup 会建
+AIPLAYER_LIVE_SERVER=/path/to/your/server           # 装了 mod 的那台游戏服务器（bridge 口令在它的 config/aiplayer/ 里）
+AIPLAYER_LIVE_BRIDGE_PORT=25590
+AIPLAYER_LIVE_PANEL_PORT=28766                      # 面板端口；和测试实例的别撞
 ```
 
-面板在 `http://这台机器的地址:28765/`（服务模板里 `AIPLAYER_PANEL_HOST=0.0.0.0`，局域网可访问，要口令）。只想本机访问就把它改成 `127.0.0.1`，再用 SSH 转发：`ssh -L 28765:127.0.0.1:28765 这台机器`。
+```bash
+tools/live setup        # 只做一次：建目录、装 systemd 用户服务（aiplayer-brain）
+tools/live deploy       # 把 main 上已提交的代码发出去：先跑测试，过了才切换、重启
+tools/live enable       # 随机器启动（没人登录时也要跑的话：loginctl enable-linger $USER）
+tools/live log | grep 口令      # 首次启动打印的面板口令
+```
+
+以后每次更新就是一句 `tools/live deploy`（可以给一个提交或标签：`tools/live deploy v0.2.0`）。出了问题 `tools/live rollback` 回到上一个。大脑的更新不用停游戏。
+
+目录里有什么：
+
+| | |
+|---|---|
+| `releases/<时间>-<提交>/` | 每次发布的代码，只来自已提交的内容；留最近 5 个 |
+| `current` | 指向正在跑的那个发布 |
+| `data/` | 所有发布共用：配置（含 API key）、记忆、历史、手册、日志。**正式服和测试服不共用** |
+| `packdata/` | 所有发布共用：本地资料。发布时发现仓库里的那份变了就整份换过去 |
+| `mod/` | `tools/live mod` 编出来的身体（和正在跑的大脑同一个提交），并告诉你游戏服务器里装的是不是这一个 |
+| `service.env` | 可选：只有这台机器需要的环境变量，比如模型接口要走代理时的 `NODE_USE_ENV_PROXY=1`、`HTTPS_PROXY=…` |
+
+面板在 `http://这台机器的地址:28766/`（局域网可访问，要口令）。只想本机访问就在 `tools/local.env` 里加 `AIPLAYER_LIVE_PANEL_HOST=127.0.0.1` 再 `tools/live setup`，然后用 SSH 转发。
+
+不用这个脚本、想自己写服务文件的话，`brain/aiplayer-brain.service` 是一份带注释的模板。
 
 ## 三、第一次上线
 
