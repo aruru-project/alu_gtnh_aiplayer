@@ -127,6 +127,23 @@ export interface MockMachine {
   more?: Json
 }
 
+/**
+ * 身体不认识的机器：一个带界面的方块（原版熔炉、别的 mod 的机器）。身体只知道它界面里有哪些格子、哪些格子放不进东西（产物格）。
+ * 它自己会做什么写在 recipes 里：能放东西的格子里凑齐 inputs（要 fuel 的还得有燃料）就把它们变成 outputs，放进产物格。
+ */
+export interface MockDevice {
+  x: number
+  y: number
+  z: number
+  id: string
+  name: string
+  /** 界面里它自己的格子，编号就是下标：in 能放东西，out 只出产物（takesNothing），ghost 只显示。 */
+  slots: { kind: 'in' | 'out' | 'ghost'; item?: { id: string; meta: number; count: number; name: string } }[]
+  recipes: { inputs: { id: string; meta: number; count: number }[]; fuel?: { id: string; meta: number }; outputs: { id: string; meta: number; count: number; name: string }[] }[]
+  /** 烧着的那份燃料还够做几轮（一份燃料烧 8 轮）。 */
+  burning?: number
+}
+
 /** 假任务书里的一个任务。tasks / rewards 的形状就是协议里 quest.get 的（不带 complete，那是按玩家算的）。 */
 export interface MockQuest {
   /** 任务书自己的编号：老任务是一小段十六进制数，新任务是完整的 UUID。 */
@@ -270,6 +287,10 @@ export class MockBridge {
     },
   ]
   /** GregTech 单方块机器：一台有电的 MV 车床，一台没电的 LV 组装机。 */
+  /** 身体不认识的机器（熔炉、别的 mod 的机器）：world.machines 里没有它们，world.containers 里有；process、存取、界面动作都能对着它们用。 */
+  devices: MockDevice[] = []
+  /** 每个 bot 现在开着的界面（screen.open 打开的）。 */
+  private readonly screens = new Map<string, { title: string; slots: MockDevice['slots']; device?: MockDevice; cursor?: { id: string; meta: number; count: number; name: string } }>()
   machines: MockMachine[] = [
     { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 1, storedEU: 51200, inputVoltage: 128 },
     { x: 18, y: 64, z: -4, name: 'Basic Assembling Machine', recipes: 'Assembler', tier: 'LV', inputSlots: 6, storedEU: 0, inputVoltage: 0 },
@@ -492,6 +513,7 @@ export class MockBridge {
     const bot = this.bot(botName)
     if (task.type === 'blueprint') return this.finishTask(botName, this.buildBlueprint(bot, task))
     if (task.type === 'craft') return this.finishTask(botName, this.craft(bot, task))
+    if (task.type === 'process' && this.deviceAt(task.params.machine)) return this.finishTask(botName, this.processOnDevice(bot, task, this.deviceAt(task.params.machine)!, true))
     if (task.type === 'process') return this.finishTask(botName, this.process(bot, task))
     return this.finishTask(botName, { result: sampleResult(task) })
   }
@@ -851,7 +873,9 @@ export class MockBridge {
           }))
         // 原料格里放着东西的机器也是容器（原料格、产物格不分，合在一起列）
         const machines = this.machines.filter((m) => m.inputs !== undefined).map((m) => ({ x: m.x, y: m.y, z: m.z, id: m.id ?? 'gregtech:gt.blockmachines', name: m.name, kind: 'machine', slots: m.inputSlots + 1, usedSlots: m.inputs!.length, items: m.inputs! }))
-        const all = [...containers, ...machines]
+        const merge = (slots: MockDevice['slots']): { id: string; meta: number; count: number; name: string }[] => slots.filter((x) => x.item && x.kind !== 'ghost').map((x) => ({ ...x.item! }))
+        const devices = this.devices.map((d) => ({ x: d.x, y: d.y, z: d.z, id: d.id, name: d.name, slots: d.slots.length, usedSlots: merge(d.slots).length, items: merge(d.slots) }))
+        const all = [...containers, ...machines, ...devices]
         // total 是范围里的总数，containers 只是从 offset 起的一页
         return { containers: all.slice(offset, offset + limit), total: all.length, offset }
       }
@@ -1158,6 +1182,20 @@ export class MockBridge {
         this.bots.delete(bot.name)
         return {}
       }
+      case 'screen.open':
+        return this.screenOpen(this.onlineBot(p.bot), p)
+      case 'screen.look':
+        return this.screenLook(this.onlineBot(p.bot))
+      case 'screen.click':
+        return this.screenClick(this.onlineBot(p.bot), p)
+      case 'screen.close': {
+        const bot = this.onlineBot(p.bot)
+        const open = this.screens.get(bot.name)
+        // 鼠标上还拿着的东西放回背包
+        if (open?.cursor) putInInventory(bot, open.cursor, open.cursor.count)
+        this.screens.delete(bot.name)
+        return {}
+      }
       case 'bot.status':
         return this.statusOf(this.bot(p.bot))
       case 'bot.configure': {
@@ -1424,6 +1462,12 @@ export class MockBridge {
         // GregTech 机器：放是放进原料格；取默认只从产物格取（这里的机器做完就被 process 取空了，所以什么都没有），fromInputs 才从原料格取
         const machine = box ? undefined : this.machines.find((m) => m.x === at.x && m.y === at.y && m.z === at.z)
         if (machine) box = task.type === 'deposit' || p.fromInputs === true ? { items: (machine.inputs ??= []), kind: 'machine', slots: machine.inputSlots } : { items: [] }
+        // 身体不认识的机器：界面里有“放不进东西的格子”的就是机器——取默认只取这些产物格，fromInputs 取其余的；放是放进能放的格子
+        const device = box ? undefined : this.devices.find((d) => d.x === at.x && d.y === at.y && d.z === at.z)
+        if (device) {
+          this.endTask(bot, task, 'done', { result: task.type === 'deposit' ? this.deviceDeposit(bot, device, (Array.isArray(p.items) ? p.items : []) as Json[]) : this.deviceWithdraw(bot, device, (Array.isArray(p.items) ? p.items : []) as Json[], p.fromInputs === true) })
+          return
+        }
       }
       if (!box) {
         this.endTask(bot, task, 'failed', { error: { code: 'invalid', message: 'there is no container at that position' } })
@@ -1509,7 +1553,14 @@ export class MockBridge {
         return
       }
     }
-    if (task.type === 'process') {
+    if (task.type === 'process' && this.deviceAt(p.machine)) {
+      // 身体不认识的机器：照玩家的办法试——开工不了的（10 秒里面什么都没变）当场失败，原料还在身上
+      const tried = this.processOnDevice(bot, task, this.deviceAt(p.machine)!, false)
+      if (tried.error) {
+        this.endTask(bot, task, 'failed', tried)
+        return
+      }
+    } else if (task.type === 'process') {
       // 不是机器、原料没带、机器没开工（真实 mod 等 3 秒看它开不开工，这里立刻知道）
       const plan = this.processPlan(bot, task)
       if ('error' in plan) {
@@ -1768,6 +1819,223 @@ export class MockBridge {
     const crafted = plan.recipe.gives * plan.rounds
     putInInventory(bot, plan.entry, crafted)
     return { result: { crafted, item: { id: plan.entry.id, meta: plan.entry.meta, name: plan.entry.name }, freeSlots: 36 - bot.inventory.length } }
+  }
+
+  // ── 身体不认识的机器、通用的界面 ──
+
+  private deviceAt(at: unknown): MockDevice | undefined {
+    const pos = (at ?? {}) as Json
+    return this.devices.find((d) => d.x === pos.x && d.y === pos.y && d.z === pos.z)
+  }
+
+  /** 机器自己干活：能放东西的格子里凑齐一条配方的原料（要燃料的还得有燃料），就做到做不动为止。返回做了几轮。 */
+  private runDevice(d: MockDevice): number {
+    const ins = d.slots.filter((x) => x.kind === 'in')
+    const have = (want: { id: string; meta: number }): number => ins.reduce((n, x) => (x.item && x.item.id === want.id && x.item.meta === want.meta ? n + x.item.count : n), 0)
+    const take = (want: { id: string; meta: number }, count: number): void => {
+      for (const x of ins) {
+        if (count <= 0) break
+        if (!x.item || x.item.id !== want.id || x.item.meta !== want.meta) continue
+        const n = Math.min(count, x.item.count)
+        x.item.count -= n
+        count -= n
+        if (x.item.count <= 0) delete x.item
+      }
+    }
+    let rounds = 0
+    for (;;) {
+      const recipe = d.recipes.find((r) => r.inputs.every((i) => have(i) >= i.count) && (!r.fuel || (d.burning ?? 0) > 0 || have(r.fuel) >= 1))
+      if (!recipe || rounds >= 256) return rounds
+      // 一份燃料烧 8 轮
+      if (recipe.fuel) {
+        if ((d.burning ?? 0) <= 0) {
+          take(recipe.fuel, 1)
+          d.burning = 8
+        }
+        d.burning = (d.burning ?? 0) - 1
+      }
+      for (const i of recipe.inputs) take(i, i.count)
+      for (const o of recipe.outputs) {
+        const out = d.slots.find((x) => x.kind === 'out' && (!x.item || (x.item.id === o.id && x.item.meta === o.meta)))
+        if (!out) return rounds
+        if (out.item) out.item.count += o.count
+        else out.item = { ...o }
+      }
+      rounds++
+    }
+  }
+
+  /** 把一组东西放进机器能放东西的格子：同种的叠上去，否则占一个空格；没地方就放不进去。返回放进去几个。 */
+  private putIntoDevice(d: MockDevice, item: { id: string; meta: number; name: string }, count: number): number {
+    const same = d.slots.find((x) => x.kind === 'in' && x.item && x.item.id === item.id && x.item.meta === item.meta)
+    const free = same ?? d.slots.find((x) => x.kind === 'in' && !x.item)
+    if (!free || count <= 0) return 0
+    if (free.item) free.item.count += count
+    else free.item = { id: item.id, meta: item.meta, name: item.name, count }
+    return count
+  }
+
+  private deviceDeposit(bot: MockBot, d: MockDevice, wanted: Json[]): Json {
+    let moved = 0
+    for (const want of wanted) {
+      const fits = (i: MockItem): boolean => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta)
+      const have = bot.inventory.filter(fits).reduce((n, i) => n + i.count, 0)
+      for (const got of takeItems(bot.inventory, fits, typeof want.count === 'number' ? want.count : have)) {
+        const put = this.putIntoDevice(d, got, got.count)
+        moved += put
+        if (put < got.count) putInInventory(bot, got, got.count - put)
+      }
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    this.runDevice(d)
+    return { moved, freeSlots: 36 - bot.inventory.length }
+  }
+
+  private deviceWithdraw(bot: MockBot, d: MockDevice, wanted: Json[], fromInputs: boolean): Json {
+    const from = d.slots.filter((x) => (fromInputs ? x.kind === 'in' : x.kind === 'out'))
+    const missing: Json[] = []
+    let moved = 0
+    for (const want of wanted) {
+      let left = typeof want.count === 'number' ? want.count : Infinity
+      for (const x of from) {
+        if (left <= 0 || !x.item || x.item.id !== want.id || (typeof want.meta === 'number' && x.item.meta !== want.meta)) continue
+        const n = Math.min(left, x.item.count)
+        putInInventory(bot, x.item, n)
+        x.item.count -= n
+        moved += n
+        left -= n
+        if (x.item.count <= 0) delete x.item
+      }
+      if (Number.isFinite(left) && left > 0) missing.push({ id: want.id, ...(typeof want.meta === 'number' ? { meta: want.meta } : {}), count: left })
+    }
+    return missing.length > 0 ? { moved, missing } : { moved }
+  }
+
+  /**
+   * 对着身体不认识的机器 process：把原料点进去 → 等里面不再变化 → 把产物格里的东西取回来。
+   * apply 为 false 只看它开不开工（不动任何东西）。10 秒里面什么都没变就是没开工：原料取回来，以 invalid 失败。
+   */
+  private processOnDevice(bot: MockBot, task: MockTask, d: MockDevice, apply: boolean): { result: Json; error?: NonNullable<MockTask['error']> } {
+    const wanted = (Array.isArray(task.params.inputs) ? task.params.inputs : []) as Json[]
+    // 在一份副本上试
+    const trial: MockDevice = apply ? d : { ...d, slots: d.slots.map((x) => ({ kind: x.kind, ...(x.item ? { item: { ...x.item } } : {}) })) }
+    const pack: MockBot = apply ? bot : { ...bot, inventory: bot.inventory.map((i) => ({ ...i })) }
+    let put = 0
+    for (const want of wanted) {
+      const fits = (i: MockItem): boolean => i.id === want.id && (typeof want.meta !== 'number' || i.meta === want.meta)
+      for (const got of takeItems(pack.inventory, fits, Number(want.count))) {
+        const n = this.putIntoDevice(trial, got, got.count)
+        put += n
+        if (n < got.count) putInInventory(pack, got, got.count - n)
+      }
+    }
+    pack.inventory = pack.inventory.filter((i) => i.count > 0)
+    const rounds = put > 0 ? this.runDevice(trial) : 0
+    if (rounds === 0) {
+      // 放进去的原样取回
+      if (apply) for (const want of wanted) this.deviceWithdraw(bot, d, [want], true)
+      return {
+        error: { code: 'invalid', message: put > 0 ? 'the machine did not start: nothing inside it changed in 10 seconds. It may need fuel, power, or something these inputs do not include. The inputs are back in the inventory.' : 'the machine took none of the inputs', detail: { x: d.x, y: d.y, z: d.z, name: d.name } },
+        result: { put, outputs: [], freeSlots: 36 - bot.inventory.length },
+      }
+    }
+    const outputs: Json[] = []
+    for (const x of trial.slots) {
+      if (x.kind !== 'out' || !x.item) continue
+      outputs.push({ ...x.item })
+      putInInventory(pack, x.item, x.item.count)
+      delete x.item
+    }
+    if (apply) bot.inventory = pack.inventory
+    return { result: { put, outputs, freeSlots: 36 - pack.inventory.length } }
+  }
+
+  private screenOpen(bot: MockBot, p: Json): Json {
+    if (bot.task) throw new RpcError('busy', 'a task is running; screens can only be used while the bot has no task')
+    const opener = p.item as { id: string; meta?: number } | undefined
+    if (opener) {
+      if (!bot.inventory.some((i) => i.id === opener.id && (typeof opener.meta !== 'number' || i.meta === opener.meta))) throw new RpcError('no_material', 'the bot carries no such item')
+      const inside = this.bags.get(opener.id)
+      // 右键后没有界面打开的东西：open 是 false
+      if (!inside) return { open: false }
+      this.screens.set(bot.name, { title: opener.id, slots: Array.from({ length: 27 }, (_, n) => (inside[n] ? { kind: 'in' as const, item: inside[n]! } : { kind: 'in' as const })) })
+      return this.screenLook(bot)
+    }
+    const at = { x: Number(p.x), y: Number(p.y), z: Number(p.z) }
+    const me = this.blockOf(bot)
+    if (Math.max(Math.abs(at.x - me.x), Math.abs(at.y - me.y), Math.abs(at.z - me.z)) > 5) throw new RpcError('out_of_reach', `the block at ${at.x},${at.y},${at.z} is too far to reach`)
+    const device = this.deviceAt(at)
+    if (!device) return { open: false }
+    this.screens.set(bot.name, { title: device.name, slots: device.slots, device })
+    return this.screenLook(bot)
+  }
+
+  private screenLook(bot: MockBot): Json {
+    const open = this.screens.get(bot.name)
+    if (!open) return { open: false }
+    const own = [...bot.inventory].sort((a, b) => a.slot - b.slot)
+    return {
+      open: true,
+      screen: open.title,
+      slotCount: open.slots.length + 36,
+      slots: [
+        ...open.slots.map((x, slot) => ({ slot, ...(x.item ? { item: { ...x.item } } : {}), ...(x.kind === 'out' ? { takesNothing: true } : {}), ...(x.kind === 'ghost' ? { ghost: true } : {}) })),
+        // 自己背包的格子排在后面；空格不列
+        ...own.map((i) => ({ slot: open.slots.length + i.slot, own: true, item: { id: i.id, meta: i.meta, count: i.count, name: i.name } })),
+      ],
+      ...(open.cursor ? { cursor: { ...open.cursor } } : {}),
+    }
+  }
+
+  /** 点一格，和游戏自己的界面一样：Shift 点是整组挪到另一边；左键拿起或放下一整组，右键拿一半或放一个。 */
+  private screenClick(bot: MockBot, p: Json): Json {
+    const open = this.screens.get(bot.name)
+    if (!open) throw new RpcError('invalid', 'no screen is open')
+    const slot = Number(p.slot)
+    const right = p.button === 1
+    const theirs = open.slots[slot]
+    const mine = theirs ? undefined : bot.inventory.find((i) => i.slot === slot - open.slots.length)
+    if (p.shift === true) {
+      if (theirs?.item && theirs.kind !== 'ghost') {
+        putInInventory(bot, theirs.item, theirs.item.count)
+        delete theirs.item
+      } else if (mine) {
+        // 进界面里“该去的地方”：能放东西的格子
+        const target = open.slots.find((x) => x.kind === 'in' && x.item && x.item.id === mine.id && x.item.meta === mine.meta) ?? open.slots.find((x) => x.kind === 'in' && !x.item)
+        if (target) {
+          if (target.item) target.item.count += mine.count
+          else target.item = { id: mine.id, meta: mine.meta, count: mine.count, name: mine.name }
+          mine.count = 0
+        }
+      }
+    } else if (theirs && theirs.kind !== 'ghost') {
+      if (!open.cursor && theirs.item) {
+        const n = right ? Math.ceil(theirs.item.count / 2) : theirs.item.count
+        open.cursor = { ...theirs.item, count: n }
+        theirs.item.count -= n
+        if (theirs.item.count <= 0) delete theirs.item
+      } else if (open.cursor && theirs.kind === 'in' && (!theirs.item || (theirs.item.id === open.cursor.id && theirs.item.meta === open.cursor.meta))) {
+        const n = right ? 1 : open.cursor.count
+        if (theirs.item) theirs.item.count += n
+        else theirs.item = { ...open.cursor, count: n }
+        open.cursor.count -= n
+        if (open.cursor.count <= 0) delete open.cursor
+      }
+    } else if (mine || !theirs) {
+      if (!open.cursor && mine) {
+        const n = right ? Math.ceil(mine.count / 2) : mine.count
+        open.cursor = { id: mine.id, meta: mine.meta, name: mine.name, count: n }
+        mine.count -= n
+      } else if (open.cursor) {
+        const n = right ? 1 : open.cursor.count
+        putInInventory(bot, open.cursor, n)
+        open.cursor.count -= n
+        if (open.cursor.count <= 0) delete open.cursor
+      }
+    }
+    bot.inventory = bot.inventory.filter((i) => i.count > 0)
+    if (open.device) this.runDevice(open.device)
+    return this.screenLook(bot)
   }
 
   // ── 机器 ──

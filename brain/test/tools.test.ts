@@ -66,11 +66,11 @@ describe('工具清单', () => {
       'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks',
       'list_blueprints', 'check_blueprint', 'build_blueprint',
       'run_program', 'start_routine', 'routine_status', 'stop_routine', 'list_images', 'view_image', 'list_drafts', 'view_draft', 'publish_draft', 'delete_draft',
-      'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item',
-      'find_item', 'plan_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
+      'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'close_screen',
+      'find_item', 'find_recipes', 'find_uses', 'find_in_storage', 'find_machines', 'craft_item', 'process_items',
       'list_quest_lines', 'find_quests', 'get_quest',
       'task_status', 'cancel_task', 'remember', 'forget', 'set_reminder',
-      'list_manuals', 'read_manual',
+      'list_manuals', 'read_manual', 'write_manual',
       'report_problem',
     ]
     const names = ALL_TOOLS.map((x) => x.name)
@@ -352,7 +352,10 @@ describe('观察', () => {
     assert.equal((await s.run('list_stock')).content, `No containers within 16 blocks of you.${hint}`)
     assert.equal((await s.run('find_blocks', { ids: ['minecraft:chest'] })).content, `No minecraft:chest within 24 blocks of you.${hint}`)
     assert.match((await s.run('find_machines')).content, /^No GregTech machine within 32 blocks of you .* give "at"\.$/)
-    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }] })).content, /^There is no container within 32 blocks of you .*give "at" \(the position of a chest or drawer controller there, or where your owner stands\), or go there\.$/)
+    // find_in_storage 不给范围时看的是整个基地（往四周错开四个点各查 64 格）：五十格外的那个箱子它看得到
+    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }] })).content, /^Looked into 1 container\(s\) within 112 blocks of you \(the whole base, as far as chunks are loaded\)\.[^\n]*\n- minecraft:dirt \(any meta\): 27 in total\n  - \(61,64,-4\) Chest: 27$/)
+    // 给了半径就只看身边那么远：没有，并说可以换个中心
+    assert.match((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], radius: 32 })).content, /^There is no container within 32 blocks of you .*give "at" \(the position of a chest or drawer controller there, or where your owner stands\), or go there\.$/)
     assert.match((await s.run('look_around')).content, /\nContainers: none near you \(to look around another place, give "at"\)\n/)
 
     // 以抽屉管理器为中心：都看得到，结果里写明是那个地方的周围
@@ -361,7 +364,7 @@ describe('观察', () => {
     assert.match((await s.run('list_stock', { at: AT })).content, /^Looked into 1 chest\(s\) and drawer\(s\) within 16 blocks of \(60,64,-4\): 1 kind\(s\) of item\. 1 item\(s\), most first:\n- 27× /)
     assert.equal((await s.run('find_blocks', { ids: ['minecraft:chest'], at: AT })).content, 'Found 1, nearest to (60,64,-4) first:\n(61,64,-4) minecraft:chest/3 — 1 away')
     assert.match((await s.run('find_machines', { at: AT })).content, /^1 GregTech machine\(s\) within 32 blocks of \(60,64,-4\), nearest first\.[^\n]*\n- \(62,64,-4\) "Basic Lathe"/)
-    assert.deepEqual((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], at: AT })).content.split('\n').map((l) => l.replace(/\. Take things out.*$/, '.')), ['Looked into 1 container(s) within 32 blocks of (60,64,-4).', '- minecraft:dirt: 27 in total', '  - (61,64,-4) Chest: 27'])
+    assert.deepEqual((await s.run('find_in_storage', { items: [{ id: 'minecraft:dirt' }], at: AT })).content.split('\n').map((l) => l.replace(/\. withdraw_items takes things out.*$/, '.')), ['Looked into 1 container(s) within 32 blocks of (60,64,-4).', '- minecraft:dirt: 27 in total', '  - (61,64,-4) Chest: 27'])
     const around = await s.run('look_around', { at: AT })
     assert.match(around.content, /^You are at \(10,64,-4\) in overworld \(dim 0\)\. Within 16 blocks of \(60,64,-4\):\n/)
     assert.match(around.content, /\nContainers \(1\):\n- \(61,64,-4\) Chest /)
@@ -409,7 +412,7 @@ describe('观察', () => {
     const s = setup(t)
     s.game.handlers['world.block'] = (p) => ({ x: p.x, y: p.y, z: p.z, loaded: false })
     const far = await s.run('inspect_block', { x: 5000, y: 64, z: 5000 })
-    assert.match(far.content, /\(5000,64,5000\): unknown, that chunk is not loaded/)
+    assert.match(far.content, /\(5000,64,5000\): unknown: that chunk is not loaded/)
     s.game.handlers['world.block'] = () => ({ id: 'minecraft:chest', meta: 3, name: 'Chest', air: false, solid: true, hardness: 2.5, tileEntity: true, inventory: true })
     const chest = await s.run('inspect_block', { x: -51, y: 99, z: -87 })
     assert.equal(chest.content, '(-51,99,-87): minecraft:chest/3 "Chest" [solid, tileEntity, inventory] hardness 2.5')
@@ -553,7 +556,7 @@ describe('任务类工具', () => {
       { type: 'withdraw', container: { x: -525, y: 69, z: 38 }, items: [shape] },
     ])
     const bag = await s.run('withdraw_items', { bag: { id: 'Backpack:backpack' }, items: [shape], fromInputs: true })
-    assert.deepEqual([bag.isError, bag.content], [true, '"fromInputs" is for a GregTech machine: give its position as "container", not a bag.'])
+    assert.deepEqual([bag.isError, bag.content], [true, '"fromInputs" is for a machine: give its position as "container", not a bag.'])
     assert.equal(s.game.callsOf('task.start').length, 2)
   })
 
@@ -783,7 +786,7 @@ describe('图纸', () => {
     const s = setup(t)
     s.game.handlers['blueprint.check'] = () => ({ ...WORKSHOP_CHECK, unloaded: 1820 })
     const res = await s.run('check_blueprint', { name: '02_Workshop_v3', x: -592, y: 63, z: 80 })
-    assert.match(res.content, /INCOMPLETE: 1820 cells are in chunks that are not loaded.*Go closer/)
+    assert.match(res.content, /INCOMPLETE: 1820 cells are in chunks that are not loaded.*only be compared from near enough for the chunks to be loaded/)
   })
 
   it('check_blueprint：没给 clear 时说明一块都不会挖；clear 会挖到不是天然地形的方块时单独点出来', async (t) => {
@@ -1050,12 +1053,12 @@ describe('物品、配方、库存、合成', () => {
     })
     const res = await s.run('find_in_storage', { items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }] })
     assert.equal(res.isError, undefined)
-    // 以 bot 为中心查；不带 meta 的就不带 meta（任何变体都算）
-    assert.deepEqual(s.game.callsOf('world.stock'), [
-      { bot: 'Alu', items: [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }], radius: 32 },
-    ])
+    // 没说看哪、看多远：看整个基地——以它站的 (10,64,-4) 为中心往四个斜方向各错开 48 格，各查 64 格；不带 meta 的就不带 meta（任何变体都算）
+    const wanted = [{ id: 'IC2:itemRecipePart', meta: 12 }, { ore: 'screwSteel' }, { id: 'minecraft:wool' }]
+    assert.deepEqual(s.game.callsOf('world.stock'), [[-38, -52], [-38, 44], [58, -52], [58, 44]].map(([x, z]) => ({ x, y: 64, z, dim: 0, items: wanted, radius: 64 })))
     const lines = res.content.split('\n')
-    assert.match(lines[0]!, /^Looked into 37 container\(s\) within 32 blocks of you\./)
+    // 四次查询看到的是同一批容器：一个容器只算一次，数量不翻倍
+    assert.match(lines[0]!, /^Looked into 37 container\(s\) within 112 blocks of you \(the whole base, as far as chunks are loaded\)\./)
     assert.deepEqual(lines.slice(1), [
       '- IC2:itemRecipePart/12: 9 in total',
       '  - (-51,99,-87) Chest: 8',
@@ -1138,7 +1141,8 @@ describe('物品、配方、库存、合成', () => {
     const none = await s.run('find_machines', { name: ' Centrifuge ', radius: 48, limit: 5 })
     assert.deepEqual(s.game.callsOf('world.machines')[1], { bot: 'Alu', radius: 48, name: 'Centrifuge', limit: 5 })
     assert.match(none.content, /^No GregTech machine whose name or recipe type contains "Centrifuge" within 48 blocks of you/)
-    assert.match(none.content, /Steam machines and machines of other mods are never listed and cannot be used\./)
+    // 没列出来不等于用不了：带界面的方块都能当机器用
+    assert.match(none.content, /Any block with a screen can still be used as a machine: give its position to process_items, or open it with open_screen\./)
   })
 
   it('process_items 启动 process 任务：哪台机器、放进去什么（含不消耗的编程电路）、最多等多久；原料没写数量的不发出去', async (t) => {
@@ -1205,6 +1209,27 @@ describe('手册', () => {
       assert.ok(lines.some((l) => new RegExp(`^- ${name}: .{8,}`).test(l)), `lists ${name} with its one-line summary`)
     }
     assert.equal(lines.at(-1), '- 基地布局 (written by your owner): 要在基地里找仓库、机器、工作台时看。')
+  })
+
+  it('它把主人教的做法写成自己的手册（write_manual）：之后列得出、读得到，标着是它写的；盖不了默认的和主人写的；有长度和本数的上限', async (t) => {
+    const s = setup(t)
+    const saved = await s.run('write_manual', { name: '模具从哪来', when: '缺模具、模头的时候', text: '主人说：先看压模机的原料格。' })
+    assert.equal(saved.content, 'Saved as your manual "模具从哪来" (14 characters). It is in the list of manuals from now on, and your owner can see and edit it on the control panel.')
+    assert.match((await s.run('list_manuals')).content, /\n- 模具从哪来 \(written by you\): 缺模具、模头的时候$/m)
+    assert.match((await s.run('read_manual', { name: '模具从哪来' })).content, /^Manual "模具从哪来" \(written by you, from what your owner taught you\): 缺模具、模头的时候\n\n主人说：先看压模机的原料格。\n/)
+    // 用自己那本的名字再写：改写它
+    await s.run('write_manual', { name: '模具从哪来', when: '缺模具、模头的时候', text: '主人说：先看压模机的原料格，拿之前问他。' })
+    assert.match((await s.run('read_manual', { name: '模具从哪来' })).content, /拿之前问他。/)
+    // 默认手册的名字、主人写的那本的名字：不让盖
+    const builtin = await s.run('write_manual', { name: 'crafting', when: 'x', text: 'y' })
+    assert.deepEqual([builtin.isError, builtin.content], [true, 'there already is a manual named "crafting" (a built-in one): pick another name for yours'])
+    s.manuals.save({ name: '基地', summary: '找基地里的东西时', body: '仓库在南边。' })
+    assert.match((await s.run('write_manual', { name: '基地', when: 'x', text: 'y' })).content, /^there already is a manual named "基地" \(written by your owner\)/)
+    // 太长、写得太多本
+    assert.match((await s.run('write_manual', { name: '长', when: 'x', text: '字'.repeat(4001) })).content, /^Invalid arguments|at most 4000/)
+    for (let n = 2; n <= 20; n++) await s.run('write_manual', { name: `笔记${n}`, when: '第 n 本', text: '内容' })
+    const full = await s.run('write_manual', { name: '第二十一本', when: 'x', text: 'y' })
+    assert.match(full.content, /^you have written 20 manuals, the most you can keep \(20\): rewrite one of yours instead/)
   })
 
   it('read_manual 给出整本手册，比“单个工具结果上限”长也不截断；主人改过的默认手册读到的是主人的那份', async (t) => {

@@ -43,7 +43,7 @@ function reason(e: unknown): string {
 /** world.block / bot.probe 共用的一行描述。 */
 function describeBlock(pos: BlockPos, b: BlockInfo): string {
   if (b.loaded === false || typeof b.id !== 'string') {
-    return `${formatPos(pos)}: unknown, that chunk is not loaded (nobody is near it). Go closer and look again.`
+    return `${formatPos(pos)}: unknown: that chunk is not loaded (nobody is near it), so it can only be read from nearer.`
   }
   const flags = (['air', 'solid', 'liquid', 'replaceable', 'tileEntity', 'inventory'] as const).filter((k) => b[k] === true)
   let s = `${formatPos(pos)}: ${b.id}${b.meta ? `/${b.meta}` : ''}`
@@ -60,7 +60,9 @@ export const getStatus: Tool = {
     'Your current state: position, health, food, held item, inventory (merged per item, written as count× id or id/meta), current task and queue.',
   inputSchema: obj({}),
   async run(ctx) {
-    return formatStatus(await ctx.bridge.botStatus(ctx.botName))
+    const status = await ctx.bridge.botStatus(ctx.botName)
+    // data：给程序用的原样状态（位置、背包每一格……）
+    return { content: formatStatus(status), data: status }
   },
 }
 

@@ -360,7 +360,9 @@ tools/make-packdata.py textures \
 
 **同一种东西两个 id。** GregTech 把登记在同一个“材料件”矿辞名下的物品当成一种（`ingotDarkSteel` 下有 EnderIO 的和 GregTech 的两个玄钢锭；机器配方点名的、高炉产出的常常是 EnderIO 那个）。只对 `ingot`、`plate`、`dust`、`gem`、`stick`、`bolt`、`screw`、`ring`、`gear`、`foil`、`rotor`、`spring`、`round`、`wireFine`、`lens`、`nugget`、`block` 这些前缀的矿辞名这样办（`UNIFIED_ORE`）：查其中一个的做法时把做另一个的配方也算上并说明；机器配方里点名的那格标 `(or any 矿辞名)`；`process_items` 身上是哪种就放哪种。手工合成里点名某个 id 的格子不这样办。
 
-**做法规划**（`plan_item`，`brain/src/tools/planner.ts`）拿同一本配方册把整棵树走完：每样东西先看库存，不够的往下展开，按上面那套“现在做得了”的比对挑做法，数量沿树算，最后排成取料和加工的步骤。它另外不走两类配方：页的 `key` 里带 `recycling` 的（回收：把成品拆回材料），和原料里有它自己上游的（绕圈子）。怎么挑、到哪为止见 `brain/README.md` 的“做法规划”。
+**做法规划**（`brain/src/tools/planner.ts`）曾经拿这本配方册替模型把整棵树走完、挑好每一步；它已经不是给模型的工具了（原因见 `brain/README.md` 的“做一样东西”），代码留着。现在模型自己一层层查，要算总原料时用库函数 `total_materials`（只做乘法，路线由模型给）。
+
+**认机器。** 配方页的 `machines`（做这类配方的机器，作为物品的 id + meta）除了和 `world.machines` 里的 GregTech 机器比对，还用来认身体读不懂状态的机器：`world.containers` 里方块 id 对得上的容器（同一个 id 下有好几种机器时再按英文名对）就是一台别的 mod 的机器或熔炉，可以照玩家的办法用。见 `brain/README.md` 的“机器：身体读得懂的，和照配方册认的”。
 
 **交给身体。**
 
@@ -391,6 +393,8 @@ tools/make-packdata.py textures \
 - `palette` 里机器零件的 `meta` 是它作为物品时的 meta（各种仓、主机都是同一个方块，靠这个区分）。
 - 有的机器除了等级还有别的可调项（线圈、玻璃等级），这里只导了默认的那一档；高炉这类“等级就是线圈”的，每种线圈一行。
 - 这份数据是让游戏在一个临时世界里把结构真的搭一遍再读出来的（和 NEI 预览同一段代码），不是抄的说明文字。
+
+**大脑怎么用。** 启动时整个读进来（334 台机器、1426 行，四五十毫秒，多占 30 MB 左右；文件不在就当没有）。它不是模型的工具，是模型写的程序里的数据：`data.structure(名字或 id, meta)`，加上三个只在程序里能调的库函数（`find_structure`、`check_structure`、`read_blocks`），见 `docs/SCRIPTS.md` 的“库函数”；面板“图纸”页最下面可以按名字搜一台机器，看它每一级的材料和三维预览。对着世界里的机器比的时候要知道：主机、各种仓和总线在世界里是同一个方块（`gregtech:gt.blockmachines`），`world.blocks` 给的 meta 分不出是哪一种，所以“预览是机器零件、世界里也是机器零件”就算对。
 
 ### 怎么导出
 

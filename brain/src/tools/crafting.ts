@@ -5,10 +5,11 @@
 // 怎么挑配方写在 crafting 手册里，这里的说明只讲每个工具给什么、要什么。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { StockQuery } from '../bridge/protocol.ts'
-import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey } from './format.ts'
+import type { StockQuery, StockResult } from '../bridge/protocol.ts'
+import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey, nameOf } from './format.ts'
+import type { OtherMachineLine } from './format.ts'
 import { PLAN_MAX_COUNT, planItemLocal } from './planner.ts'
-import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, isHandCraft, processPlan, quantity, whereItStands } from './recipe-book.ts'
+import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, spread, whereItStands } from './recipe-book.ts'
 import type { Carried } from './recipe-book.ts'
 import { arr, bool, int, obj, str } from './schema.ts'
 import { pos, queue, startTask } from './tasks.ts'
@@ -24,6 +25,10 @@ export const STOCK_MAX_RADIUS = 64
 export const CRAFT_MAX_COUNT = 2304
 export const CRAFT_MAX_ROUNDS = 64
 export const MACHINES_MAX_RADIUS = 64
+/** find_in_storage 看整个基地时，四个查询点各往斜方向错开这么多格。 */
+const WIDE_STOCK_STEP = 48
+/** 身体不认识的机器是从容器里认出来的，容器一次最多看 32 格。 */
+const OTHER_MACHINES_RADIUS = 32
 export const MACHINES_MAX_LIMIT = 60
 export const PROCESS_MAX_INPUTS = 9
 export const PROCESS_MAX_ROUNDS = 64
@@ -124,7 +129,7 @@ export const findInStorage: Tool = {
         }),
         { min: 1, max: STOCK_MAX_ITEMS },
       ),
-      radius: int('Search radius in blocks (default 32).', { min: 1, max: STOCK_MAX_RADIUS }),
+      radius: int('Search radius in blocks. Without it (and without "at") the whole base is searched, about 110 blocks each way.', { min: 1, max: STOCK_MAX_RADIUS }),
       at: AT,
     },
     ['items'],
@@ -136,10 +141,30 @@ export const findInStorage: Tool = {
       if (it.ore !== undefined) wanted.push({ ore: it.ore })
       else wanted.push(it.meta === undefined ? { id: it.id! } : { id: it.id!, meta: it.meta })
     }
+    // 没说看哪、看多远：看整个基地——身体一次最多看 64 格，往四周错开四个点各查一次再合起来（每个方向一百来格）
+    const me = i.radius === undefined && i.at === undefined ? await whereItStands(ctx) : undefined
+    if (me) {
+      const answers = await Promise.all(spread(me, WIDE_STOCK_STEP).map((c) => ctx.bridge.worldStock(c, { items: wanted, radius: STOCK_MAX_RADIUS })))
+      const merged: StockResult = {
+        containersLookedInto: Math.max(0, ...answers.map((a) => a.containersLookedInto ?? 0)),
+        items: wanted.map((q, n) => {
+          // 四次查询的范围有重叠：同一个容器只算一次
+          const places = new Map<string, NonNullable<NonNullable<StockResult['items']>[number]['places']>[number]>()
+          for (const a of answers) for (const place of a.items?.[n]?.places ?? []) places.set(`${place.x},${place.y},${place.z}`, place)
+          const listed = [...places.values()].sort((x, y) => y.count - x.count)
+          const total = Math.max(listed.reduce((sum, place) => sum + place.count, 0), ...answers.map((a) => a.items?.[n]?.total ?? 0))
+          // 身体每样最多列几处：还有没列出来的照实带上
+          const more = Math.max(0, ...answers.map((a) => a.items?.[n]?.morePlaces ?? 0))
+          return { ...q, total, places: listed, ...(more > 0 ? { morePlaces: more } : {}) }
+        }),
+      }
+      return { content: formatStock(merged, WIDE_STOCK_STEP + STOCK_MAX_RADIUS, { of: 'you (the whole base, as far as chunks are loaded)', hint: '' }), data: merged }
+    }
     const radius = i.radius ?? 32
     const from = await lookFrom(ctx, i.at)
     const res = await ctx.bridge.worldStock(from.center, { items: wanted, radius })
-    return formatStock(res, radius, from)
+    // data：给程序用的原样结果（每样东西的 total 和 places）
+    return { content: formatStock(res, radius, from), data: res }
   },
 }
 
@@ -169,7 +194,7 @@ async function carriedOrNone(ctx: ToolContext): Promise<Carried | undefined> {
 export const craftItem: Tool = {
   name: 'craft_item',
   description:
-    'Craft by hand from what you carry (task): give the # number of a hand-crafting recipe from find_recipes or plan_item. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the one nearest to you; leave "table" out unless your owner names one.',
+    'Craft by hand from what you carry (task): give the # number of a hand-crafting recipe from find_recipes. Ingredients and tools must be in your inventory; if not, it fails with no_material and lists what is missing. A recipe that needs a crafting table is made at the one nearest to you; leave "table" out unless your owner names one.',
   inputSchema: obj({
     recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
     count: int('How many of the product you want (default: one round of the recipe).', { min: 1, max: CRAFT_MAX_COUNT }),
@@ -189,7 +214,7 @@ export const craftItem: Tool = {
     const recipe = book.get(i.recipe)
     if (!recipe) return fail(`There is no recipe #${i.recipe}. Take the number from find_recipes (numbers change when the recipe book is re-exported).`)
     if (!isHandCraft(recipe)) {
-      return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not hand crafting${recipe.handler.gregtech ? ': run it on a machine with process_items' : ''}.`)
+      return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not hand crafting${isMachineWay(recipe.handler) ? ': run it on a machine with process_items' : ''}.`)
     }
     const product = recipe.out[0]
     if (!product) return fail(`Recipe #${i.recipe} lists no product.`)
@@ -207,7 +232,7 @@ export const craftItem: Tool = {
 
 export const findMachines: Tool = {
   name: 'find_machines',
-  description: `The GregTech machines around you, or around a place you give ("at"), nearest first: single-block machines and the controllers of multiblocks, with what recipes each runs, its tier, power, and whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Steam machines and other mods' machines are not listed.`,
+  description: `The machines around you, or around a place you give ("at"), nearest first. GregTech machines (single-block ones and the controllers of multiblocks, steam ones included) with what recipes each runs, its tier, power, and whether it is busy; for a multiblock also whether it is formed, its buses and hatches. Then the machines of other mods and furnaces, recognised from the recipe book: their state cannot be read, but process_items works on them too.`,
   inputSchema: obj({
     name: str('Only machines whose name or recipe type contains this (English), e.g. "Lathe".', { maxLength: 60 }),
     radius: int('Search radius in blocks (default 32).', { min: 1, max: MACHINES_MAX_RADIUS }),
@@ -222,8 +247,24 @@ export const findMachines: Tool = {
       from.center,
       { radius, ...(name !== undefined ? { name } : {}), ...(i.limit !== undefined ? { limit: i.limit } : {}) },
     )
-    const handlers = ctx.packdata?.recipes?.handlers
-    return formatMachines(res, { radius, of: from.of, hint: from.hint, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName: (key: string) => handlers.find((h) => h.key === key)?.name } : {}) })
+    const book = ctx.packdata?.recipes
+    const handlers = book?.handlers
+    const wayName = (key: string): string | undefined => handlers?.find((h) => h.key === key)?.name
+    // 身体不认识的机器（别的 mod 的、熔炉）：把同一片地方的容器看一遍，照配方册认
+    let others: OtherMachineLine[] = []
+    if (book) {
+      try {
+        const seen = await ctx.bridge.worldContainers(from.center, { radius: Math.min(radius, OTHER_MACHINES_RADIUS), limit: 100 })
+        const word = name?.toLowerCase()
+        others = otherMachines(seen.containers ?? [], res.machines ?? [], book, ctx.packdata?.items)
+          .map((o) => ({ ...o, wayNames: o.ways.map((key) => wayName(key) ?? key) }))
+          .filter((o) => word === undefined || `${o.name ?? ''}\n${nameOf(o.item) ?? ''}\n${o.wayNames.join('\n')}`.toLowerCase().includes(word))
+      } catch (e) {
+        // 容器看不了时，身体认识的那些机器照样给
+        if (!(e instanceof BridgeError)) throw e
+      }
+    }
+    return formatMachines(res, { radius, of: from.of, hint: from.hint, others, ...(name !== undefined ? { name } : {}), ...(handlers ? { wayName } : {}) })
   },
 }
 
@@ -258,10 +299,10 @@ interface ProcessInput {
 export const processItems: Tool = {
   name: 'process_items',
   description:
-    'Run one batch through a GregTech machine (task): walks to it, puts the inputs in, waits, and takes the products out. Give the machine (for a multiblock: its controller) and the # number of a recipe from find_recipes with "rounds": the inputs, the programmed circuit and the expected products are worked out from it. Everything it consumes, and molds or shapes, must be in your inventory; the programmed circuit is set on the machine, not carried. Details and multiblocks: crafting manual.',
+    'Run one batch through a machine (task): walks to it, puts the inputs in, waits, and takes the products out. Any block with a screen that takes items works: GregTech machines (for a multiblock give its controller), other mods\' machines, a furnace. Give the machine and the # number of a recipe from find_recipes with "rounds": the inputs, the programmed circuit and the expected products are worked out from it; or give "inputs" yourself (a furnace also needs its fuel there). Everything it consumes, and molds or shapes, must be in your inventory; the programmed circuit is set on the machine, not carried. Details, multiblocks and machines you have not seen before: crafting manual.',
   inputSchema: obj(
     {
-      machine: pos('Position of the machine (a multiblock: its controller), as find_machines or find_recipes gives it.'),
+      machine: pos('Position of the machine (a multiblock: its controller), as find_machines, find_recipes or your owner gives it.'),
       recipe: int('The # number of the recipe, from find_recipes.', { min: 0 }),
       rounds: int('How many times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
       inputs: stackList('Instead of "recipe": exactly what to put in (things not used up, like a mold, with count 1).', PROCESS_MAX_INPUTS),
@@ -285,8 +326,9 @@ export const processItems: Tool = {
       if (!book) return fail('There is no recipe book on this brain: give "inputs" (and "circuit") yourself.')
       const recipe = book.get(i.recipe)
       if (!recipe) return fail(`There is no recipe #${i.recipe}. Take the number from find_recipes (numbers change when the recipe book is re-exported).`)
-      if (!recipe.handler.gregtech) {
-        return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a GregTech machine recipe${recipe.handler.grid ? ': make it with craft_item' : ', and you cannot run it'}.`)
+      // 哪个 mod 的机器都行：身体认识的（GregTech）读得懂状态，别的照玩家的办法把原料点进去、等、取产物
+      if (!isMachineWay(recipe.handler)) {
+        return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a machine recipe${recipe.handler.grid ? ': make it with craft_item' : ': no machine does it'}.`)
       }
       const plan = processPlan(recipe, i.rounds ?? 1, await carriedOrNone(ctx), ctx.packdata?.items, i.moldInside === true)
       inputs ??= plan.inputs

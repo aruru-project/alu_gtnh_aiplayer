@@ -13,6 +13,11 @@ export const MANUAL_SUMMARY_MAX_CHARS = 150
 /** 一本手册是整本给模型看的（不受“单个工具结果上限”截断），所以正文自己要有上限。 */
 export const MANUAL_BODY_MAX_CHARS = 8000
 export const USER_MANUALS_MAX = 50
+/** 它自己写的手册（把主人教的做法记成一篇）：最多这么多本，每本正文最长这么多字符。 */
+export const SELF_MANUALS_MAX = 20
+export const SELF_MANUAL_BODY_MAX_CHARS = 4000
+/** 记着哪几本是它自己写的（和主人写的放在同一个目录里，面板上主人一样能看、能改、能删）。 */
+const SELF_INDEX = '.self.json'
 
 const SUFFIX = '.md'
 
@@ -25,6 +30,8 @@ export interface Manual {
   source: 'default' | 'user'
   /** 主人的这本盖住了一本同名的默认手册。 */
   overridesDefault: boolean
+  /** 这本是它（模型）自己写的：主人教过的做法，它记成了一篇。 */
+  self?: boolean
 }
 
 /** 名字不合规、内容太长这类问题：消息是给面板上的人看的。 */
@@ -61,7 +68,7 @@ function endMarker(name: string, version: string): string {
 
 /** read_manual 给模型看的整本手册。结尾的那一行用来认出“这段工具结果是某本手册完整的原文”。 */
 export function manualText(m: Manual): string {
-  const by = m.source === 'user' ? ' (written by your owner)' : ''
+  const by = m.self ? ' (written by you, from what your owner taught you)' : m.source === 'user' ? ' (written by your owner)' : ''
   return `Manual "${m.name}"${by}: ${m.summary}\n\n${m.body}\n\n${endMarker(m.name, manualVersion(m))}`
 }
 
@@ -110,7 +117,8 @@ export class ManualStore {
 
   /** 模型能看到的全部手册：默认的在前（被主人改过的换成主人的那本），主人自己新写的在后。 */
   list(): Manual[] {
-    const user = new Map(readDir(this.userDir, 'user').map((m) => [m.name, m]))
+    const own = this.selfNames()
+    const user = new Map(readDir(this.userDir, 'user').map((m) => [m.name, own.has(m.name) ? { ...m, self: true } : m]))
     const out: Manual[] = []
     for (const d of this.defaults()) {
       const mine = user.get(d.name)
@@ -152,6 +160,40 @@ export class ManualStore {
     }
     writeFileAtomic(this.userFile(name), `${summary}\n\n${body}\n`)
     return { name, summary, body, source: 'user', overridesDefault: this.defaults().some((d) => d.name === name) }
+  }
+
+  /**
+   * 它自己写一本（或者改写它自己写过的那本）。不能盖住默认手册和主人写的；有本数和长度上限。
+   * 不合规时抛 ManualError，消息是给模型看的（英文）。
+   */
+  saveOwn(input: { name: string; summary: string; body: string }): Manual {
+    const name = input.name.trim()
+    const own = this.selfNames()
+    const taken = this.list().find((m) => m.name.toLowerCase() === name.toLowerCase())
+    if (taken && !taken.self) throw new ManualError(`there already is a manual named "${taken.name}" (${taken.source === 'default' ? 'a built-in one' : 'written by your owner'}): pick another name for yours`)
+    if (!taken && own.size >= SELF_MANUALS_MAX) throw new ManualError(`you have written ${own.size} manuals, the most you can keep (${SELF_MANUALS_MAX}): rewrite one of yours instead (${[...own].join(', ')})`)
+    const body = input.body.replace(/\r\n/g, '\n').trim()
+    if (body.length > SELF_MANUAL_BODY_MAX_CHARS) throw new ManualError(`the text is ${body.length} characters; a manual of yours can be at most ${SELF_MANUAL_BODY_MAX_CHARS}. Keep what your owner taught and what to do, drop the rest, or split it in two`)
+    let saved: Manual
+    try {
+      saved = this.save({ name: taken?.name ?? name, summary: input.summary, body })
+    } catch (e) {
+      // save 的消息是给面板上的人看的（中文）：模型也看得懂，原样带上
+      throw e instanceof ManualError ? new ManualError(`the manual was not saved: ${e.message}`) : e
+    }
+    own.add(saved.name)
+    writeFileAtomic(path.join(this.userDir, SELF_INDEX), JSON.stringify([...own].sort()))
+    return { ...saved, self: true }
+  }
+
+  /** 哪几本是它自己写的（文件已经不在的不算）。 */
+  private selfNames(): Set<string> {
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(path.join(this.userDir, SELF_INDEX), 'utf8'))
+      return new Set(Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string' && fs.existsSync(path.join(this.userDir, `${n}${SUFFIX}`))) : [])
+    } catch {
+      return new Set()
+    }
   }
 
   /** 删掉主人的那本。它盖着一本默认手册的话，默认的就回来了。返回有没有删到东西。 */

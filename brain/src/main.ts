@@ -255,6 +255,7 @@ async function main(): Promise<void> {
     feedback,
     pictures,
     ...(packdata.textures ? { textures: packdata.textures } : {}),
+    ...(packdata.structures ? { structures: packdata.structures } : {}),
     bridge,
     bridgeStatus: () => bridgeClient.status(),
     agent,

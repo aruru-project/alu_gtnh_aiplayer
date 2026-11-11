@@ -13,7 +13,7 @@ import { cleanChatText } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
-import { QUERY_TOOLS, QuestProgressCache, SurroundingsCache, runTool, toToolSpecs } from '../tools/index.ts'
+import { QUERY_TOOLS, QuestProgressCache, SurroundingsCache, programTools, runTool, toToolSpecs } from '../tools/index.ts'
 import type { ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, historyMessages } from './compaction.ts'
 import { buildSnapshot, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
@@ -498,7 +498,7 @@ export class Agent {
     }
     const args = compactJson(input, 160)
     this.deps.log.add({ kind: 'tool_call', who: name, text: `[程序] ${args}` })
-    const res = await runTool(this.deps.tools, this.toolContext(this.deps.settings().botName), name, input, { maxResultChars: this.deps.settings().toolResultMaxChars })
+    const res = await runTool(programTools(this.deps.tools), this.toolContext(this.deps.settings().botName), name, input, { maxResultChars: this.deps.settings().toolResultMaxChars })
     const line = firstLine(res.content)
     const entry: Parameters<ActivityLog['add']>[0] = { kind: 'tool_result', who: name, text: `[程序] ${line}` }
     if (line !== res.content) entry.detail = res.content

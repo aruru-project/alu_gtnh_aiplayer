@@ -6,7 +6,7 @@
 // 结果是给模型看的：说明用英文，物品名是物品表里的中文名。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
+import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
 import type { PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
@@ -211,9 +211,31 @@ export function carried(inventory: readonly InventoryItem[], items: ItemTable | 
 
 // ── 附近有什么机器、工作台 ──
 
+/**
+ * 身体读不懂状态的机器：别的 mod 的机器、原版熔炉、不是“加工机器”那一类的 GregTech 方块。
+ * 它在世界里是一个容器（world.containers 列得出来），而配方册里有配方页把它（作为物品的 id + meta）列为做这类配方的机器。
+ * 身体照玩家的办法用它：把原料点进去，等里面不再变化，把产物格里的东西取回来。
+ */
+export interface OtherMachine {
+  x: number
+  y: number
+  z: number
+  /** 方块 id 和服务器给的英文名。 */
+  id: string
+  name?: string
+  /** 它是配方册里的哪个物品（配方页的 machines 里的那一对）。 */
+  item: { id: string; meta: number }
+  /** 它能做哪几页的配方（handlers.json 的 key）。 */
+  ways: string[]
+  attached?: AttachedBlock[]
+  dist?: number
+}
+
 export interface Surroundings {
-  /** 由近到远（dist 是到它站的地方的距离）。 */
+  /** 身体读得懂状态的机器（GregTech 的单方块加工机器、多方块主机），由近到远（dist 是到它站的地方的距离）。 */
   machines: MachineInfo[]
+  /** 身体读不懂状态、但配方册说能做某类配方的机器。没查过时是 undefined（查一次要把周围的容器扫一遍，见 findOthers）。 */
+  others?: OtherMachine[]
   /** 范围里一共多少台（machines 只是每次查询里最近的那些）。 */
   machinesTotal: number
   /** 合成台，由近到远。 */
@@ -308,6 +330,138 @@ export async function lookAround(ctx: ToolContext): Promise<Surroundings> {
   return around
 }
 
+// ── 身体不认识的机器：照配方册认 ──
+
+/** 一个方块 id 下，配方册里列为“机器”的那些物品（meta、英文名）各自能做哪几页配方。 */
+type Catalog = Map<string, { meta: number; en?: string; ways: string[] }[]>
+const CATALOGS = new WeakMap<RecipeBook, Catalog>()
+
+function catalogOf(book: RecipeBook, items: ItemTable | undefined): Catalog {
+  let catalog = CATALOGS.get(book)
+  if (catalog) return catalog
+  catalog = new Map()
+  for (const h of book.handlers) {
+    // 合成台那一类不是“机器”；没列机器的页（信息页、图表）也不是
+    if (wayKind(h) === 'craft' || wayKind(h) === 'other') continue
+    for (const m of h.machines) {
+      let list = catalog.get(m.id)
+      if (!list) catalog.set(m.id, (list = []))
+      let entry = list.find((e) => e.meta === m.meta)
+      if (!entry) {
+        const en = items?.get(m.id, m.meta)?.en
+        list.push((entry = { meta: m.meta, ...(en ? { en } : {}), ways: [] }))
+      }
+      if (!entry.ways.includes(h.key)) entry.ways.push(h.key)
+    }
+  }
+  CATALOGS.set(book, catalog)
+  return catalog
+}
+
+/** 烧着的熔炉是另一个方块 id（minecraft:lit_furnace）：当成没烧着的那个。 */
+const unlit = (id: string): string => id.replace(/:lit_/, ':')
+
+/**
+ * 这个容器是不是配方册里的一台机器。world.containers 只给方块 id 和名字、不给 meta，所以这样认：
+ * 这个 id 下只有一种机器的（熔炉），就是它；有好几种的（IC2:blockMachine、gregtech:gt.blockmachines），按名字对。
+ */
+function asOtherMachine(c: ContainerInfo, catalog: Catalog): OtherMachine | undefined {
+  if (typeof c.id !== 'string') return undefined
+  const id = unlit(c.id)
+  const listed = catalog.get(id)
+  if (!listed) return undefined
+  const hits = listed.length === 1 ? listed : listed.filter((e) => e.en !== undefined && e.en === c.name)
+  if (hits.length === 0) return undefined
+  return {
+    x: c.x,
+    y: c.y,
+    z: c.z,
+    id,
+    ...(c.name ? { name: c.name } : {}),
+    item: { id, meta: hits[0]!.meta },
+    ways: [...new Set(hits.flatMap((e) => e.ways))],
+    ...(c.attached && c.attached.length > 0 ? { attached: c.attached } : {}),
+  }
+}
+
+/** 一批容器里，身体不认识、配方册认得的机器。known 是身体认识的那些（连同它们的总线和仓），不重复算。 */
+export function otherMachines(containers: readonly ContainerInfo[], known: readonly MachineInfo[], book: RecipeBook, items: ItemTable | undefined, from?: Spot): OtherMachine[] {
+  const catalog = catalogOf(book, items)
+  const taken = new Set<string>()
+  for (const m of known) {
+    taken.add(`${m.x},${m.y},${m.z}`)
+    for (const h of [...(m.inputBuses ?? []), ...(m.outputBuses ?? []), ...(m.inputHatches ?? []), ...(m.outputHatches ?? [])]) taken.add(`${h.x},${h.y},${h.z}`)
+  }
+  const out: OtherMachine[] = []
+  for (const c of containers) {
+    if (taken.has(`${c.x},${c.y},${c.z}`) || c.kind === 'drawers' || c.kind === 'drawer_controller') continue
+    const found = asOtherMachine(c, catalog)
+    if (found) out.push(from ? { ...found, dist: distance(from, found) } : found)
+  }
+  return out.sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0))
+}
+
+const CONTAINERS_QUERY_RADIUS = 32
+const CONTAINERS_QUERY_STEP = 64
+const CONTAINERS_PAGE = 100
+/** 把周围的容器扫一遍时最多看这么多个。 */
+export const CONTAINERS_SCAN_MAX = 1200
+export const CONTAINERS_REACH = CONTAINERS_QUERY_STEP + CONTAINERS_QUERY_RADIUS
+
+/**
+ * 把周围的容器扫一遍（world.containers 一次最多看 32 格：以 me 为中心 3×3 九个点各查一次，每个方向看得到 96 格）。
+ * cut：容器太多、没读完。
+ */
+export async function scanContainers(ctx: ToolContext, me: Spot): Promise<{ containers: ContainerInfo[]; cut: boolean }> {
+  const seen = new Map<string, ContainerInfo>()
+  let cut = false
+  const scanFrom = async (at: Spot): Promise<void> => {
+    for (let offset = 0; seen.size < CONTAINERS_SCAN_MAX; ) {
+      const res = await ctx.bridge.worldContainers(at, { radius: CONTAINERS_QUERY_RADIUS, offset, limit: CONTAINERS_PAGE })
+      const got: ContainerInfo[] = res.containers ?? []
+      const total = res.total ?? offset + got.length
+      // 相邻两次查询的边上会重：一个容器只算一次
+      for (const c of got) if (!seen.has(`${c.x},${c.y},${c.z}`)) seen.set(`${c.x},${c.y},${c.z}`, c)
+      if (got.length === 0 || res.offset === undefined || offset + got.length >= total) break
+      offset += got.length
+      if (seen.size >= CONTAINERS_SCAN_MAX) cut = true
+    }
+  }
+  await Promise.all(spread(me, CONTAINERS_QUERY_STEP, 3).map(scanFrom))
+  return { containers: [...seen.values()], cut }
+}
+
+/** 周围有哪些身体不认识的机器（查过就记在 around 里；问不到游戏时当没有）。 */
+export async function findOthers(ctx: ToolContext, around: Surroundings): Promise<OtherMachine[]> {
+  if (around.others) return around.others
+  const book = ctx.packdata?.recipes
+  if (!book || around.error) return []
+  try {
+    const me = await whereItStands(ctx)
+    if (!me) return []
+    const { containers } = await scanContainers(ctx, me)
+    around.others = otherMachines(containers, around.machines, book, ctx.packdata?.items, me)
+  } catch (e) {
+    if (!(e instanceof BridgeError)) throw e
+    return []
+  }
+  return around.others
+}
+
+export function otherText(m: OtherMachine): string {
+  return `${nameOf(m, { block: true }) ?? 'machine'} at ${formatPos(m)}`
+}
+
+/** 烧蒸汽、不烧电：存着多少电、电压够不够都无从说起。身体还没有单独的字段，先按名字认（Steam Macerator、High Pressure Steam Furnace）。 */
+export function runsOnSteam(m: MachineInfo): boolean {
+  return m.steam === true || /\bSteam\b/.test(m.name ?? '')
+}
+
+/** 这台机器的电力身体读不出来：蒸汽机器，或者没有能源仓却已经成型的多方块（蒸汽多方块）。 */
+export function powerUnread(m: MachineInfo): boolean {
+  return runsOnSteam(m) || (m.kind === 'multiblock' && m.formed !== false && (m.inputVoltage ?? 0) === 0)
+}
+
 export function runsWay(m: MachineInfo, h: RecipeHandler): boolean {
   return m.recipeKey === h.key || (m.id !== undefined && h.machines.some((x) => x.id === m.id && x.meta === m.meta))
 }
@@ -322,10 +476,12 @@ export function machineProblems(m: MachineInfo, recipe: Recipe | undefined): str
   const problems: string[] = []
   if (m.unreadable === true) return ['its state cannot be read']
   if (m.kind === 'multiblock' && m.formed === false) problems.push(`its structure is not complete${m.idleReason ? ` (${m.idleReason})` : ''}`)
-  if (m.kind !== 'multiblock' && m.storedEU === 0) problems.push('NO POWER')
+  // 蒸汽机器不烧电：没有“没电”“电压不够”这回事（它有没有蒸汽、压力够不够，身体读不出来，只能试）
+  const unread = powerUnread(m)
+  if (m.kind !== 'multiblock' && m.storedEU === 0 && !unread) problems.push('NO POWER')
   if (m.switchedOff === true) problems.push('switched off')
   const volts = m.kind === 'multiblock' ? m.inputVoltage : (voltsOf(m.tier) ?? m.inputVoltage)
-  if (recipe?.eut !== undefined && volts !== undefined && recipe.eut > volts) problems.push(`the recipe needs ${tierOf(recipe.eut)}, it is ${m.tier ?? `${volts} V`}`)
+  if (!unread && recipe?.eut !== undefined && volts !== undefined && recipe.eut > volts) problems.push(`the recipe needs ${tierOf(recipe.eut)}, it is ${m.tier ?? `${volts} V`}`)
   if (recipe?.special !== undefined && m.heat !== undefined && recipe.special > m.heat) problems.push(`the recipe needs ${recipe.special} K, its coils reach ${m.heat} K`)
   return problems
 }
@@ -345,10 +501,25 @@ export function isHandCraft(recipe: Recipe): boolean {
   return recipe.handler.grid && recipe.in.length > 0 && recipe.in.reduce((n, s) => n + Math.max(1, s.g === undefined ? s.n : 1), 0) <= 9 && recipe.in.every((s) => s.g === undefined || s.g <= 8)
 }
 
-/** 这种方式是哪一类：GregTech 机器、手工合成，还是它自己操作不了的（别的 mod 的机器、熔炉……）。 */
-export function wayKind(h: RecipeHandler): 'machine' | 'craft' | 'other' {
-  return h.grid ? 'craft' : h.gregtech ? 'machine' : 'other'
+/**
+ * 这种方式是哪一类：
+ *   craft   手工合成；
+ *   machine GregTech 的机器配方（身体读得懂这类机器的状态；同一个材料件矿辞名下的东西放哪个都行）；
+ *   device  别的机器（原版熔炉、别的 mod 的机器）：配方页列着做它的机器，身体照玩家的办法用——把原料点进去、等、取产物；
+ *   other   没有机器可言的页（信息页、图表、世界里发生的事）：它做不了。
+ */
+export function wayKind(h: RecipeHandler): 'machine' | 'device' | 'craft' | 'other' {
+  if (h.grid) return 'craft'
+  if (h.gregtech) return 'machine'
+  // 列着合成台的页其实是合成（AE2、ProjectRed 自己的合成页，导出时没标成合成格）：不是“把原料点进去等着”的机器
+  return h.machines.length > 0 && !h.machines.some((m) => CRAFTING_TABLES.includes(m.id)) ? 'device' : 'other'
 }
+
+/** 用机器做的（不管身体认不认识那种机器）。 */
+export const isMachineWay = (h: RecipeHandler): boolean => wayKind(h) === 'machine' || wayKind(h) === 'device'
+
+/** 身体读不懂状态的机器，开工前该知道的一句话。 */
+export const UNREAD_NOTE = 'its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"'
 
 interface Availability {
   /** 排序用：0 现在做得了，1 手工工具配方（有机器时不用），2 有机器但现在不行，3 附近没有，4 它操作不了。 */
@@ -358,13 +529,13 @@ interface Availability {
 
 function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings, machineWayExists: boolean): Availability {
   const kind = wayKind(h)
-  if (kind === 'other') return { rank: 4, text: 'you cannot run this yourself (not hand crafting, not a GregTech machine you can use)' }
+  if (kind === 'other') return { rank: 4, text: 'you cannot run this yourself (no machine or crafting grid does it: it is an information page, or something that happens in the world)' }
   if (kind === 'craft') {
     const craftable = recipes.filter(isHandCraft)
     if (craftable.length === 0) return { rank: 4, text: 'needs a bigger crafting grid than you can use' }
-    // 手工工具配方（锤子敲板那类）：这个物品另有机器做法时才提醒“有机器就别用它”
-    const tools = machineWayExists && craftable.every((r) => r.in.some(isTool))
-    const hand = tools ? 'hand-tool recipe: use it only when no machine can make this' : ''
+    // 手工工具配方（锤子敲板那类）：照实说它要工具，用不用由模型定
+    const tools = craftable.every((r) => r.in.some(isTool))
+    const hand = tools ? 'uses hand tools (not used up, but they wear)' : ''
     if (craftable.some(fitsPocketGrid)) return { rank: tools ? 1 : 0, text: ['CAN CRAFT NOW in your own 2x2 grid (no table needed)', hand].filter(Boolean).join('; ') }
     if (around.error) return { rank: tools ? 1 : 0, text: ['by hand at a crafting table', hand].filter(Boolean).join('; ') }
     const table = around.tables[0]
@@ -376,17 +547,31 @@ function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surr
   // 看不了附近有什么机器时：机器做法照样排在手工工具配方前面
   if (around.error) return { rank: 0, text: 'machine recipe' }
   const candidates = around.machines.filter((m) => runsWay(m, h))
-  if (candidates.length === 0) return { rank: 3, text: `no such machine within ${MACHINES_REACH} blocks` }
+  // 身体不认识、配方册认得的机器：可以试
+  const untested = (around.others ?? []).filter((o) => o.ways.includes(h.key))
+  const tryOn = untested.length > 0 ? `CAN TRY on ${otherText(untested[0]!)}${untested.length > 1 ? ` (and ${untested.length - 1} more)` : ''}: ${UNREAD_NOTE}` : undefined
+  if (candidates.length === 0) return tryOn ? { rank: 1, text: tryOn } : { rank: 3, text: `no such machine within ${MACHINES_REACH} blocks` }
   // 拿最省电的那条配方来比：它都做不了，别的更做不了
   const easiest = [...recipes].sort((a, b) => (a.eut ?? 0) - (b.eut ?? 0) || (a.special ?? 0) - (b.special ?? 0))[0]
   const judged = candidates.map((m) => ({ m, problems: machineProblems(m, easiest) }))
   const ready = judged.filter((j) => j.problems.length === 0)
   if (ready.length > 0) {
     const idle = ready.find((j) => j.m.active !== true) ?? ready[0]!
-    return { rank: 0, text: `CAN RUN NOW on ${machineText(idle.m)}${ready.length > 1 ? ` (and ${ready.length - 1} more)` : ''}` }
+    const steam = powerUnread(idle.m) ? ' (steam-powered: whether it has steam, and whether this recipe is within its pressure, cannot be read — try it)' : ''
+    return { rank: 0, text: `CAN RUN NOW on ${machineText(idle.m)}${ready.length > 1 ? ` (and ${ready.length - 1} more)` : ''}${steam}` }
   }
+  if (tryOn) return { rank: 1, text: tryOn }
   const best = judged[0]!
   return { rank: 2, text: `machine here but not usable now: ${machineText(best.m)}: ${best.problems.join(', ')}` }
+}
+
+/** 这条配方要的流体，附近做它的机器里有没有：多方块看得到输入仓，单方块的罐子看不到——照实说。 */
+function fluidFact(recipe: Recipe, candidates: readonly MachineInfo[]): string {
+  if (recipe.fin.length === 0 || candidates.length === 0) return ''
+  const multi = candidates.find((m) => m.kind === 'multiblock')
+  if (!multi) return ' [its fluid has to be inside the machine already: a single-block machine\'s tank cannot be seen or filled by you]'
+  const have = recipe.fin.map((f) => `${quantity((multi.inputHatches ?? []).filter((h) => h.fluid === f.f).reduce((n, h) => n + (h.amount ?? 0), 0))} mB ${f.name}`)
+  return ` [the input hatches of the ${nameOf(multi) ?? 'machine'} hold ${have.join(', ')}]`
 }
 
 // ── 一条配方写成一行 ──
@@ -614,13 +799,14 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
 
   // 汇总：每种方式几条、每个成品耗多少、附近做不做得了
   const around = await lookAround(ctx)
-  const machineWayExists = ways.some((w) => wayKind(w.handler) === 'machine')
-  // 同样是“现在做得了”：机器排在手工前面（手工搅粉、手工切板这类不要工具的配方也往往比机器费料）
-  const machineFirst = (h: RecipeHandler): number => (wayKind(h) === 'machine' ? 0 : 1)
+  // 有别的 mod 的机器、熔炉这类做法时，看看周围有没有这样的机器（身体不认识它们，要把容器扫一遍照配方册认）
+  if (ways.some((w) => isMachineWay(w.handler))) await findOthers(ctx, around)
+  const machineWayExists = ways.some((w) => isMachineWay(w.handler))
   const judged = ways
     .map((w, order) => ({ ...w, order, avail: availability(w.handler, w.recipes, around, machineWayExists) }))
-    .sort((a, b) => a.avail.rank - b.avail.rank || machineFirst(a.handler) - machineFirst(b.handler) || a.order - b.order)
-  const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}.${twinNote} Ways you can use now come first:`]
+    // 不排“哪种更好”：照配方册里的先后
+    .sort((a, b) => a.order - b.order)
+  const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}.${twinNote} Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:`]
   if (around.error) lines.push(`(Which machines and crafting tables are around you could not be checked: ${around.error}.)`)
   else if (around.machinesTotal > around.machines.length) lines.push(`(Only ${around.machines.length} of about ${around.machinesTotal} machines within ${MACHINES_REACH} blocks were checked.)`)
   judged.slice(0, WAYS_SHOWN).forEach((w, n) => {
@@ -632,7 +818,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     for (const r of shown) {
       const blocked = candidates.length > 0 && w.avail.rank === 0 ? candidates.map((m) => machineProblems(m, r)) : []
       const cannot = blocked.length > 0 && blocked.every((p) => p.length > 0) ? ` [NOT on the machine(s) here: ${blocked[0]!.join(', ')}]` : ''
-      lines.push(`   ${recipeLine(r, nm, { target: wanted })}${cannot}`)
+      lines.push(`   ${recipeLine(r, nm, { target: wanted })}${cannot}${fluidFact(r, candidates)}`)
     }
     if (count > shown.length) {
       lines.push(`   … ${count - shown.length} more recipe(s) of this way are not shown (often one per material). See them with way "${wayLabel(w.handler, ways)}", narrowed with "contains" (a word of an ingredient), page by page.`)
@@ -641,7 +827,9 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   if (judged.length > WAYS_SHOWN) {
     lines.push(`${judged.length - WAYS_SHOWN} more way(s) are not shown: ${judged.slice(WAYS_SHOWN).map((w) => `"${wayLabel(w.handler, ways)}" (${w.recipes.length})`).join(', ')}. Ask for one with "way".`)
   }
-  lines.push('"CAN … NOW" is about machines and tables only, not about the ingredients: plan_item works out the whole chain (what to fetch, what to make first, what is missing). Use a recipe by its # number: craft_item or process_items.')
+  lines.push(
+    '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage), about a fluid a single-block machine needs (its tank cannot be seen), or about which way is better. A recipe is used by its # number: craft_item or process_items.',
+  )
   return { content: lines.join('\n'), keepWhole: true }
 }
 

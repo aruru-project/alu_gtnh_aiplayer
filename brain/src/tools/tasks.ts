@@ -355,7 +355,7 @@ export const withdrawItems: Tool = {
       container: pos('Position of the chest or drawers.'),
       bag,
       items: arr('What to take.', itemFilter, { min: 1, max: 36 }),
-      fromInputs: bool('The container is a GregTech machine: true takes from its INPUT slots (a mold or shape kept there, unused inputs) instead of its products. They are your owner\'s: ask first, and put them back.'),
+      fromInputs: bool('The container is a machine (any mod\'s: its screen has output slots): true takes from its other slots (a mold or shape kept there, unused inputs, fuel) instead of its products. They are your owner\'s: ask first, and put them back.'),
       queue,
     },
     ['items'],
@@ -363,7 +363,7 @@ export const withdrawItems: Tool = {
   async run(ctx, i: { container?: unknown; bag?: { id: string; meta?: number }; items: unknown[]; fromInputs?: boolean; queue?: boolean }) {
     const where = containerOrBag(i)
     if ('error' in where) return fail(where.error)
-    if (i.fromInputs === true && i.bag) return fail('"fromInputs" is for a GregTech machine: give its position as "container", not a bag.')
+    if (i.fromInputs === true && i.bag) return fail('"fromInputs" is for a machine: give its position as "container", not a bag.')
     return startTask(ctx, { type: 'withdraw', container: where.container, items: i.items, ...(i.fromInputs === true ? { fromInputs: true } : {}) }, i.queue)
   },
 }

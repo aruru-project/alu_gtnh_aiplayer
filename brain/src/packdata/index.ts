@@ -5,6 +5,7 @@
 // 这一层只读文件、建索引、回答查询，不碰 bridge。启动时读一次；目录或某个文件不在、读不了时，对应的那一项是 undefined，
 // 用它的工具自己退回去问服务器。
 
+import { StructureBook } from './structures.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { BUILTIN_BLOCK_COLORS, parseBlockColor } from './blocks.ts'
@@ -23,6 +24,8 @@ export type { TextureAtlas } from './textures.ts'
 export { ANY_META, CIRCUIT_ID, RecipeBook } from './recipes.ts'
 export type { Recipe, RecipeFluid, RecipeHandler, RecipeSlot, RecipeStack } from './recipes.ts'
 export { ItemTable } from './items.ts'
+export { StructureBook, structureCells } from './structures.ts'
+export type { Structure, StructurePart, StructureRow } from './structures.ts'
 export type { PackItemInfo } from './items.ts'
 export { QuestBook, isQuestId, logicHolds, normalizeQuestId } from './quests.ts'
 export type { PackItem, PackQuest, PackQuestLine, PackQuestReward, PackQuestTask, QuestFilter, QuestMatch, QuestSearchResult, QuestState } from './quests.ts'
@@ -40,6 +43,8 @@ export interface PackData {
   textures?: TextureAtlas
   /** 配方册（handlers.json、recipes.jsonl）。没有时查做法、合成退回去问服务器。 */
   recipes?: RecipeBook
+  /** 多方块机器怎么搭（structures.jsonl）。没有时查不了结构。 */
+  structures?: StructureBook
 }
 
 /** 像素画用的方块颜色表：blocks.jsonl 加载到了就用它，否则是内置的 16 色羊毛和 16 色染色粘土。 */
@@ -224,5 +229,15 @@ export function loadPackData(dir: string, log: (message: string) => void = () =>
   if (textures) data.textures = textures
   const recipes = loadRecipes(dir, log)
   if (recipes) data.recipes = recipes
+  try {
+    const loaded = StructureBook.load(dir)
+    // 文件不在就当没有，不用说
+    if (loaded) {
+      data.structures = loaded.book
+      log(`多方块结构：${loaded.book.machines.length} 台机器、${loaded.rows} 种等级的结构${loaded.bad > 0 ? `（${loaded.bad} 行认不出来，跳过了）` : ''}。`)
+    }
+  } catch (e) {
+    log(`多方块结构（structures.jsonl）读不了（${reason(e)}），当它没有。`)
+  }
   return data
 }

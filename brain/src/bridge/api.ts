@@ -24,6 +24,7 @@ import type {
   QuestProgress,
   RecipeFindResult,
   ScanResult,
+  ScreenState,
   WorldBlocks,
   ServerInfo,
   StockQuery,
@@ -97,6 +98,20 @@ export class BridgeApi {
   worldMachines(center: Center, p: { radius?: number; name?: string; limit?: number } = {}): Promise<{ machines?: MachineInfo[]; total?: number }> {
     return this.call('world.machines', { ...center, ...p })
   }
+  // ── 界面（通用）：打开、看格子、点、关。只在 bot 没有任务在跑时可用 ──
+  screenOpen(bot: string, target: { x: number; y: number; z: number } | { item: { id: string; meta?: number } }): Promise<ScreenState> {
+    return this.call('screen.open', { bot, ...target })
+  }
+  screenLook(bot: string): Promise<ScreenState> {
+    return this.call('screen.look', { bot })
+  }
+  screenClick(bot: string, p: { slot: number; button?: number; shift?: boolean }): Promise<ScreenState> {
+    return this.call('screen.click', { bot, ...p })
+  }
+  screenClose(bot: string): Promise<Record<string, unknown>> {
+    return this.call('screen.close', { bot })
+  }
+
   /** 这些东西存在附近哪些箱子、抽屉里，各多少。 */
   worldStock(center: Center, p: { items: StockQuery[]; radius?: number }): Promise<StockResult> {
     return this.call('world.stock', { ...center, ...p })

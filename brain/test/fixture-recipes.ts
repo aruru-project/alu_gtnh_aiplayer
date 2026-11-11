@@ -38,6 +38,7 @@ export const ITEMS = [
   { id: 'gregtech:gt.metaitem.01', meta: 2032, name: '铁粉', en: 'Iron Dust', ores: ['dustIron'] },
   { id: 'gregtech:gt.blockmachines', meta: 221, name: '基础卷板机', en: 'Basic Bending Machine' },
   { id: 'gregtech:gt.blockmachines', meta: 1000, name: '工业高炉', en: 'Electric Blast Furnace' },
+  { id: 'minecraft:furnace', meta: 0, name: '熔炉', en: 'Furnace' },
   { id: 'gregtech:gt.blockmachines', meta: 611, name: '基础锻造锤', en: 'Basic Forge Hammer' },
   { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
   { id: 'IronChest:BlockIronChest', meta: 3, name: '压缩箱子', en: 'Compressed Chest' },
@@ -116,7 +117,7 @@ export const RECIPE_LINES: (Record<string, unknown> | string)[] = [
     in: [...[0, 1, 2, 3, 4, 5].map((g) => ({ id: 'demo:ingot', meta: n, n: 1, g })), { ore: 'stickWood', n: 1, g: 7, any: [['minecraft:stick', 0]] as [string, number][], more: 0 }],
     out: [{ id: 'gregtech:gt.metatool.01', meta: 12, n: 1 }],
   })),
-  // 24：熔炉（它操作不了的那类）
+  // 24：熔炉（身体不认识的机器：读不到状态，照玩家的办法用）
   { h: 'codechicken.nei.recipe.FurnaceRecipeHandler', in: [gt(2032, 1)], out: [{ id: 'minecraft:iron_ingot', meta: 0, n: 1 }] },
   // 25：组装机用钢板
   { h: 'gt.recipe.assembler', in: [gt(17305, 8), circuit(1)], out: [{ id: 'gregtech:gt.blockcasings2', meta: 0, n: 1 }], eut: 15, ticks: 50 },

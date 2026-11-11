@@ -50,9 +50,11 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `img.resize(宽, 高?)` | 缩放成一张新图。缩小时每格是它盖住的那一块的平均色（按不透明度加权）；不给高就按比例 |
 | `palette()` | 方块颜色表：`[{ id, meta, name?, color: [r, g, b] }]`。来自 `brain/packdata/blocks.jsonl`，没有这个文件时是内置的 16 色羊毛加 16 色染色粘土 |
 | `nearestBlock(r, g, b, among?)` 或 `nearestBlock([r, g, b], among?)` | 颜色最接近的方块（返回颜色表里的一项，可以直接交给 `b.set`）。`among` 是一个方块列表，只在里面挑；`"minecraft:wool"` 指它的所有 meta |
-| `data.available()` | 现在有哪几样本地资料：`items`、`quests`、`questLines` 里的几个 |
+| `data.available()` | 现在有哪几样本地资料：`items`、`quests`、`questLines`、`structures` 里的几个 |
 | `data.items()` / `data.item(id, meta?)` | 物品表（`items.jsonl`） |
 | `data.quests()` / `data.questLines()` | 任务书（字段见 `docs/PACKDATA.md`） |
+| `data.structures()` | 全部多方块机器：`[{ id, meta, name, tiers }]`（`structures.jsonl`） |
+| `data.structure(名字)` 或 `data.structure(id, meta)` | 一台多方块机器：`{ id, meta, name, tiers, info, structureInfo, rows, tier(n) }`。`rows` 的每一项是一种搭法 `{ tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }`，`palette[cells[(y * size[2] + z) * size[0] + x]]` 是那一格的方块，主机正面朝南；`tier(n)` 是第 n 级的搭法。没有是 `null`，重名的抛错并列出各自的 id/meta |
 | `log(…)`，`console.log(…)` | 打日志。一共留 4000 字符，多的丢掉并说明丢了几条 |
 | `await tool(名字, 参数)` | 调一个工具，参数和模型自己调时一样。返回 `{ ok, text, data }`：成没成、模型会看到的那段文字、同一个结果的数据形式（有些工具没有）。工具失败不抛错，只是 `ok` 为 `false` |
 
@@ -85,6 +87,21 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 - 例程不落盘。大脑退出时它停下、正在做的任务被取消；下次启动，模型第一件事就是被告知“例程没跑完，停在哪一步”，带着日志。
 
 **计时分两种。** 程序等工具结果的时候，沙箱子进程是停着的（读标准输入等那一行结果），这段时间不算进“程序自己的计算时间”；等一个任务做完可能要几分钟，由总时长管。所以一个不调工具的死循环，20 秒内就会被停掉。
+
+## 库函数：只在程序里能调的
+
+有些事是“查本地资料，再算一算”，模型不常用，用的时候写几行程序就行。它们不做成发给模型的工具（每个工具的说明每一轮都要发给模型，现在一共六万多字符），而是**库函数**：和工具一样的写法、一样用 `await tool(名字, 参数)` 调、一样返回 `{ ok, text, data }`，但只在程序里调得到。登记在 `brain/src/tools/index.ts` 的 `LIBRARY_TOOLS`；都是只查不动手的，所以 `run_program` 里也能调。模型自己直接调会得到“没有这个工具”。
+
+| | |
+|---|---|
+| `read_blocks { x1, y1, z1, x2, y2, z2 }` | 世界里一个盒子的全部方块（每边最多 64）。`data`：`{ x, y, z, sx, sy, sz, palette: [{ id, meta, name? }], cells, unloaded }`，盒子从 `(x, y, z)` 起，`palette[cells[(dy * sz + dz) * sx + dx]]` 是那一格（`palette[0]` 是空气） |
+| `find_structure { name \| id, meta, tier?, from? }` | 一台多方块机器怎么搭：等级、每级的尺寸和材料、机器自己的结构说明、相邻两级差什么（`text` 是整理好的一段话）。`tier` 看一级，`from` + `tier` 看两级之差。`data`：`{ id, meta, name, tiers, rows: [{ tiers, size, blocks }] }` |
+| `total_materials { id, meta?, count?, recipes: [#…] }` | 纯计算：模型**自己选定**了每一层用哪条配方之后，把总原料算出来（数量沿树相乘，一轮出几个按轮数取整，模具和工具只算一个）。没给配方的东西算成“要现成的”。它不查库存、不看机器、不替模型选任何一步。`data`：`{ target, steps: [{ recipe, way, rounds, makes, needed }], raw, kept, fluids, unused }` |
+| `check_structure { at, tier, id?, meta? }` | 把世界里 `at` 那台主机周围的方块和它 `tier` 级的搭法对一遍（四个水平朝向都试，取对得最上的；机器零件占着机械方块的位置算对）。`data`：`{ machine, tier, facing, looksLike, total, right, changes: [{ x, y, z, from, to }], need: [{ id, meta, name, count, carried, stored, short }] }` |
+
+加一个库函数：写成一个 `Tool`（`brain/src/tools/structures.ts` 是例子），放进 `LIBRARY_TOOLS`。结果里的 `data` 是给程序用的，`text` 是模型把结果 `return` 出来时看的。模型的工具有不少还没有 `data`（只有文字）；给程序用得上的陆续补（现在有的见 `brain/manuals/routines.md` 的“常用的 data”）。
+
+按场景的示例程序在手册里：`routines`（一样样搬东西）、`multiblocks`（这台多方块升到某一级要换什么——取结构、读世界、试朝向、列差异、对库存）。手册里的示例都有测试照抄着跑一遍。
 
 ## 草稿和图片
 

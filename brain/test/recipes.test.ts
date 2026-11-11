@@ -18,6 +18,10 @@ import { MACHINES, RECIPE_LINES, writeRecipeFixture } from './fixture-recipes.ts
 import { tmpDir } from './helpers.ts'
 
 const NOW = 1_800_000_000_000
+/** 汇总的开头和结尾：按加工方式一种种列，说的是事实，不排好坏、不推荐。 */
+const LISTED = "Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:"
+const FACTS_ONLY =
+  '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage), about a fluid a single-block machine needs (its tank cannot be seen), or about which way is better. A recipe is used by its # number: craft_item or process_items.'
 const PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17305 }
 const HAMMER = { id: 'gregtech:gt.metatool.01', meta: 12 }
 
@@ -55,7 +59,7 @@ function setup(t: { after(fn: () => void): void }, opts: { inventory?: { id: str
 describe('配方册：读进来', () => {
   it('启动时读一遍建索引：只是示意的配方哪里都查不到，坏行跳过并说明，编号就是行号', (t) => {
     const s = setup(t)
-    assert.ok(s.lines.includes('物品表：49 种物品。'), s.lines.join('\n'))
+    assert.ok(s.lines.includes('物品表：50 种物品。'), s.lines.join('\n'))
     const loaded = s.lines.find((l) => l.startsWith('配方册：'))!
     assert.match(loaded, /^配方册：28 条配方、11 个配方页，做得出 12 种物品（读了 \d+ 毫秒；另有 1 条只是示意的不列；1 行认不出来，跳过了）。$/)
     const book = s.packdata.recipes!
@@ -116,25 +120,25 @@ describe('find_item：找物品', () => {
 })
 
 describe('find_recipes：查做法', () => {
-  it('先按加工方式汇总：每种几条、每个成品耗多少料、电压和时长、要不要电路和模具；附近现在做得了的排前面；重复的合并，示意的不列', async (t) => {
+  it('先按加工方式汇总：每种几条、每个成品耗多少料、电压和时长、要不要电路和模具；照配方册的先后列，不排好坏；重复的合并，示意的不列', async (t) => {
     const s = setup(t)
     const res = await s.run('find_recipes', PLATE)
     assert.equal(res.isError, undefined, res.content)
     assert.deepEqual(res.content.split('\n'), [
-      '钢板 [gregtech:gt.metaitem.01/17305] can be made 4 way(s), 4 recipe(s) in all (1 exact duplicate(s) in the book are merged). Ways you can use now come first:',
+      '钢板 [gregtech:gt.metaitem.01/17305] can be made 4 way(s), 4 recipe(s) in all (1 exact duplicate(s) in the book are merged). ' + LISTED,
       // 卷板机：1 锭出 1 板，附近那台有电
       '1. 卷板机 — 1 recipe(s); CAN RUN NOW on 基础卷板机 at (16,64,-4) LV',
       '   #0: 1× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs programmed circuit 1 → 1× 钢板 — LV (24 EU/t), 2.8 s',
-      // 手工锤：2 锭出 1 板；有机器做法时提醒别用它
-      // 要工作台的只说附近有、离多远，不给坐标（合成时由 craft_item 找离它那时最近的）
-      '2. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); hand-tool recipe: use it only when no machine can make this',
-      '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (worn, not used up) → 1× 钢板 — needs a crafting table (3x3)',
       // 锻造锤：3 锭出 2 板，每个板 1.5 锭；附近那台没电
-      '3. 锻造锤 — 1 recipe(s); machine here but not usable now: 基础锻造锤 at (18,64,-4) LV: NO POWER',
+      '2. 锻造锤 — 1 recipe(s); machine here but not usable now: 基础锻造锤 at (18,64,-4) LV: NO POWER',
       '   #2: 3× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel) → 2× 钢板 (per 钢板: 1.5 钢锭) — LV (16 EU/t), 2.8 s',
+      // 手工锤：2 锭出 1 板；照实说它要工具（用不用由它自己定）
+      // 要工作台的只说附近有、离多远，不给坐标（合成时由 craft_item 找离它那时最近的）
+      '3. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (not used up, but they wear)',
+      '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (worn, not used up) → 1× 钢板 — needs a crafting table (3x3)',
       '4. 合金炉 — 1 recipe(s); no such machine within 112 blocks',
       '   #4: 2× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs 模具（板） [gregtech:gt.metaitem.01/32301] (stays in the machine, not used up) → 1× 钢板 — LV (30 EU/t), 5.6 s',
-      '"CAN … NOW" is about machines and tables only, not about the ingredients: plan_item works out the whole chain (what to fetch, what to make first, what is missing). Use a recipe by its # number: craft_item or process_items.',
+      FACTS_ONLY,
     ])
     // 看了一眼基地里的机器和工作台。基地常常比身体一次查询的范围大（仓库在这头，高炉在那头）：
     // 以它站的地方 (10,64,-4) 为中心，往四个斜方向各错开一点各查一次，合起来每个方向看得到一百来格
@@ -146,17 +150,17 @@ describe('find_recipes：查做法', () => {
     assert.ok(!res.content.includes('板材切割机') && !res.content.includes('#5'))
   })
 
-  it('不用工具的手工配方和机器配方都做得了时：机器排在前面，两边每个成品耗多少都写着（手工搅粉出 2 个，搅拌机同样的料出 3 个）', async (t) => {
+  it('手工配方和机器配方都做得了时：不替它排先后，两边每个成品耗多少都写着（手工搅粉出 2 个，搅拌机同样的料出 3 个）', async (t) => {
     const s = setup(t)
     s.game.handlers['world.machines'] = () => ({
       machines: [...MACHINES, { x: 20, y: 64, z: -4, name: 'Basic Mixer', id: 'gregtech:gt.blockmachines', meta: 581, recipes: 'Mixer', recipeKey: 'gt.recipe.mixer', tier: 'LV', inputSlots: 6, active: false, storedEU: 5000, inputVoltage: 32, dist: 9 }],
       total: MACHINES.length + 1,
     })
     assert.deepEqual((await s.run('find_recipes', { id: 'gregtech:gt.metaitem.01', meta: 2364 })).content.split('\n').slice(1, 5), [
-      '1. 搅拌机 — 1 recipe(s); CAN RUN NOW on 基础搅拌机 at (20,64,-4) LV',
-      '   #29: 1× 磁钢粉 [gregtech:gt.metaitem.01/2365] + 1× 煤粉 [gregtech:gt.metaitem.01/2535] + 1× 黑曜石粉 [gregtech:gt.metaitem.01/2804]; needs programmed circuit 2 → 3× 玄钢粉 (per 玄钢粉: 0.33 磁钢粉 + 0.33 煤粉 + 0.33 黑曜石粉) — ULV (7 EU/t), 5 s',
-      '2. 无序合成 — 1 recipe(s); CAN CRAFT NOW in your own 2x2 grid (no table needed)',
+      '1. 无序合成 — 1 recipe(s); CAN CRAFT NOW in your own 2x2 grid (no table needed)',
       '   #28: 1× 磁钢粉 [gregtech:gt.metaitem.01/2365] + 1× any dustCoal (e.g. 煤粉 [gregtech:gt.metaitem.01/2535]) + 1× any dustObsidian (e.g. 黑曜石粉 [gregtech:gt.metaitem.01/2804]) → 2× 玄钢粉 (per 玄钢粉: 0.5 磁钢粉 + 0.5 any dustCoal (e.g. 煤粉) + 0.5 any dustObsidian (e.g. 黑曜石粉)) — fits your 2x2 grid',
+      '2. 搅拌机 — 1 recipe(s); CAN RUN NOW on 基础搅拌机 at (20,64,-4) LV',
+      '   #29: 1× 磁钢粉 [gregtech:gt.metaitem.01/2365] + 1× 煤粉 [gregtech:gt.metaitem.01/2535] + 1× 黑曜石粉 [gregtech:gt.metaitem.01/2804]; needs programmed circuit 2 → 3× 玄钢粉 (per 玄钢粉: 0.33 磁钢粉 + 0.33 煤粉 + 0.33 黑曜石粉) — ULV (7 EU/t), 5 s',
     ])
   })
 
@@ -165,7 +169,7 @@ describe('find_recipes：查做法', () => {
     // 高炉炉温 1801 K：要 1800 K 的那条做得了，要 2200 K 的那条做不了
     const ingot = (await s.run('find_recipes', { id: 'EnderIO:itemAlloy', meta: 6 })).content.split('\n')
     assert.equal(ingot[1], '1. 工业高炉 — 2 recipe(s); CAN RUN NOW on 工业高炉 at (-5,64,9) HV')
-    assert.equal(ingot[2], '   #6: 1× 玄钢粉 [gregtech:gt.metaitem.01/2364] + 1000 mB 氧气 (fluid); needs programmed circuit 11 → 1× 玄钢锭 — MV (120 EU/t), 50 s, coil heat 1800 K')
+    assert.equal(ingot[2], '   #6: 1× 玄钢粉 [gregtech:gt.metaitem.01/2364] + 1000 mB 氧气 (fluid); needs programmed circuit 11 → 1× 玄钢锭 — MV (120 EU/t), 50 s, coil heat 1800 K [the input hatches of the 工业高炉 hold 8000 mB 氧气]')
     assert.match(ingot[3]!, /^ {3}#7: .* coil heat 2200 K \[NOT on the machine\(s\) here: the recipe needs 2200 K, its coils reach 1801 K\]$/)
 
     const judge = async (machine: Record<string, unknown>): Promise<string> => {
@@ -181,7 +185,7 @@ describe('find_recipes：查做法', () => {
     assert.equal(await judge({ recipeKey: 'gt.recipe.other', meta: 9999 }), '1. 工业高炉 — 2 recipe(s); no such machine within 112 blocks')
   })
 
-  it('手工合成：附近没有工作台时说要工作台，摆得进 2×2 的不用；它操作不了的方式（熔炉）照实说；没连上游戏时照样给配方', async (t) => {
+  it('手工合成：附近没有工作台时说要工作台，摆得进 2×2 的不用；身体不认识的机器（熔炉）附近有就说可以试、怎么试；没连上游戏时照样给配方', async (t) => {
     const s = setup(t)
     s.game.handlers['world.find'] = () => ({ matches: [], total: 0 })
     assert.equal((await s.run('find_recipes', { id: 'Backpack:backpack' })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks')
@@ -189,9 +193,20 @@ describe('find_recipes：查做法', () => {
     assert.equal(pocket[1], '1. 无序合成 — 1 recipe(s); CAN CRAFT NOW in your own 2x2 grid (no table needed)')
     // 一次出 2 个：每个耗半份料
     assert.equal(pocket[2], '   #10: 1× 钢板 [gregtech:gt.metaitem.01/17305] + 1× any stickWood (e.g. 木棍 [minecraft:stick]) → 2× 钢板标牌 (per 钢板标牌: 0.5 钢板 + 0.5 any stickWood (e.g. 木棍)) — fits your 2x2 grid')
-    assert.equal((await s.run('find_recipes', { id: 'minecraft:iron_ingot' })).content.split('\n')[1], '1. 烧制 — 1 recipe(s); you cannot run this yourself (not hand crafting, not a GregTech machine you can use)')
-    // 只有工具配方一条路时不说“有机器就别用”
-    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks')
+    // 熔炉不是身体认识的机器（world.machines 里没有它）。附近没有熔炉：没有这种机器
+    assert.equal((await s.run('find_recipes', { id: 'minecraft:iron_ingot' })).content.split('\n')[1], '1. 烧制 — 1 recipe(s); no such machine within 112 blocks')
+    // 附近有一个（正烧着的熔炉是另一个方块 id）：配方册说“烧制”这一页的机器是熔炉，世界里那个容器就是一台——可以试
+    s.game.handlers['world.containers'] = () => ({ containers: [{ x: 14, y: 64, z: -4, id: 'minecraft:lit_furnace', name: 'Furnace', slots: 3, usedSlots: 1, items: [{ id: 'minecraft:coal', meta: 1, count: 3, name: 'Charcoal' }] }], total: 1, offset: 0 })
+    assert.equal(
+      (await s.run('find_recipes', { id: 'minecraft:iron_ingot' })).content.split('\n')[1],
+      '1. 烧制 — 1 recipe(s); CAN TRY on 熔炉 at (14,64,-4): its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"',
+    )
+    // 照这条配方用它：和别的机器一样，给机器的位置和配方编号（没有编程电路）
+    await s.run('process_items', { machine: { x: 14, y: 64, z: -4 }, recipe: 24, rounds: 4 })
+    assert.deepEqual(s.lastTask(), { type: 'process', machine: { x: 14, y: 64, z: -4 }, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 2032, count: 4 }], expect: [{ id: 'minecraft:iron_ingot', meta: 0, count: 4 }] })
+    s.game.handlers['world.containers'] = () => ({ containers: [], total: 0, offset: 0 })
+    // 要工具的配方照实说要工具
+    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks; uses hand tools (not used up, but they wear)')
 
     s.game.connected = false
     const offline = (await s.run('find_recipes', PLATE)).content.split('\n')
@@ -205,7 +220,7 @@ describe('find_recipes：查做法', () => {
     const gt = (await s.run('find_recipes', { id: 'gregtech:gt.metaitem.01', meta: 11364 })).content.split('\n')
     assert.equal(
       gt[0],
-      '玄钢锭 [gregtech:gt.metaitem.01/11364] can be made 1 way(s), 2 recipe(s) in all. Recipes that make 玄钢锭 [EnderIO:itemAlloy/6] are included: under the ore name ingotDarkSteel it is the same thing (GregTech machines and "any ingotDarkSteel" recipes take either). Ways you can use now come first:',
+      '玄钢锭 [gregtech:gt.metaitem.01/11364] can be made 1 way(s), 2 recipe(s) in all. Recipes that make 玄钢锭 [EnderIO:itemAlloy/6] are included: under the ore name ingotDarkSteel it is the same thing (GregTech machines and "any ingotDarkSteel" recipes take either). ' + LISTED,
     )
     assert.match(gt[2]!, /^ {3}#6: 1× 玄钢粉 /)
     // 机器配方里点名的是另一个 id：写明同名矿辞下的都行
@@ -215,7 +230,7 @@ describe('find_recipes：查做法', () => {
   it('一种方式下配方很多（每种材质一把锤子）：汇总里只举例并说明还有多少；按方式、按“原料里含某物”筛，翻页，总数和这是第几页都写明', async (t) => {
     const s = setup(t, { inventory: [{ id: 'demo:ingot', meta: 3, count: 9 }, { id: 'minecraft:stick', count: 2 }] })
     const summary = (await s.run('find_recipes', HAMMER)).content.split('\n')
-    assert.equal(summary[0], '锤 [gregtech:gt.metatool.01/12] can be made 1 way(s), 12 recipe(s) in all. Ways you can use now come first:')
+    assert.equal(summary[0], '锤 [gregtech:gt.metatool.01/12] can be made 1 way(s), 12 recipe(s) in all. ' + LISTED)
     assert.equal(summary[1], '1. 有序合成 — 12 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself)')
     assert.match(summary[2]!, /^ {3}#12: 6× 铜锭 \[demo:ingot\] \+ 1× any stickWood \(e\.g\. 木棍 \[minecraft:stick\]\) → 1× 锤 — needs a crafting table \(3x3\)$/)
     assert.equal(summary[4], '   … 10 more recipe(s) of this way are not shown (often one per material). See them with way "有序合成", narrowed with "contains" (a word of an ingredient), page by page.')
@@ -338,11 +353,56 @@ describe('craft_item：照配方册里的配方手工合成', () => {
       assert.deepEqual([res.isError, res.content], [true, why])
     }
     await refused({ recipe: 0 }, 'Recipe #0 is a "卷板机" recipe, not hand crafting: run it on a machine with process_items.')
-    await refused({ recipe: 24 }, 'Recipe #24 is a "烧制" recipe, not hand crafting.')
+    await refused({ recipe: 24 }, 'Recipe #24 is a "烧制" recipe, not hand crafting: run it on a machine with process_items.')
     await refused({ recipe: 5 }, 'There is no recipe #5. Take the number from find_recipes (numbers change when the recipe book is re-exported).')
     await refused({}, 'Give "recipe": the # number of a hand-crafting recipe from find_recipes.')
     await refused({ recipe: 10, count: 200 }, '200 would take 100 rounds of this recipe (2 per round); one task does at most 64 rounds (128). Split it into several tasks.')
     assert.equal(s.game.callsOf('task.start').length, 0)
+  })
+})
+
+describe('身体读不全状态的机器：照配方册认，可以试', () => {
+  it('find_machines 也列别的 mod 的机器和熔炉：配方页把它（作为物品）列为做这类配方的机器，而它在世界里是一个容器；箱子不算；可以按名字筛', async (t) => {
+    const s = setup(t)
+    s.game.handlers['world.containers'] = () => ({
+      containers: [
+        { x: 14, y: 64, z: -4, id: 'minecraft:furnace', name: 'Furnace', slots: 3, usedSlots: 0, items: [], attached: [{ x: 14, y: 65, z: -4, name: 'Hopper', kind: 'hopper' }] },
+        { x: 12, y: 64, z: -4, id: 'minecraft:chest', name: 'Chest', slots: 27, usedSlots: 0, items: [] },
+        // 身体认识的机器也是容器：已经在上面那一段里了，不重复列
+        { x: 16, y: 64, z: -4, id: 'gregtech:gt.blockmachines', name: 'Basic Bending Machine', kind: 'machine', slots: 4, usedSlots: 0, items: [] },
+      ],
+      total: 3,
+      offset: 0,
+    })
+    const lines = (await s.run('find_machines')).content.split('\n')
+    assert.match(lines[0]!, /^3 GregTech machine\(s\) within 32 blocks of you, nearest first\./)
+    assert.deepEqual(lines.slice(-2), [
+      "1 other machine(s) within 32 blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read, but process_items works on them the way a player would — inputs in, wait, products out):",
+      '- (14,64,-4) "熔炉": runs "烧制" recipes; AUTOMATED: Hopper at (14,65,-4) feeds or drains it',
+    ])
+    // 和身体认识的机器查的是同一片地方
+    assert.deepEqual(s.game.callsOf('world.containers').at(-1), { bot: 'Alu', radius: 32, limit: 100 })
+    // 按名字筛：身体那边没有叫这个的，照配方册认出来的那台有
+    s.game.handlers['world.machines'] = () => ({ machines: [], total: 0 })
+    const furnace = (await s.run('find_machines', { name: '烧制' })).content.split('\n')
+    assert.match(furnace[0]!, /^No GregTech machine whose name or recipe type contains "烧制" within 32 blocks of you/)
+    assert.equal(furnace.at(-1), '- (14,64,-4) "熔炉": runs "烧制" recipes; AUTOMATED: Hopper at (14,65,-4) feeds or drains it')
+    assert.doesNotMatch((await s.run('find_machines', { name: 'Lathe' })).content, /other machine/)
+  })
+
+  it('蒸汽机器不烧电：存着 0 EU 不是“没电”，电压也无从比——算做得了，写明蒸汽读不出来、要试；没有能源仓却成型了的多方块（蒸汽多方块）一样', async (t) => {
+    const s = setup(t)
+    const steamHammer = { x: 18, y: 64, z: -4, name: 'Steam Forge Hammer', id: 'gregtech:gt.blockmachines', meta: 112, recipes: 'Forge Hammer', recipeKey: 'gt.recipe.hammer', tier: 'ULV', inputSlots: 1, active: false, storedEU: 0, inputVoltage: 0, dist: 8 }
+    s.game.handlers['world.machines'] = () => ({ machines: [steamHammer], total: 1 })
+    const way = async (): Promise<string> => (await s.run('find_recipes', PLATE)).content.split('\n').find((l) => / 锻造锤 — /.test(l))!
+    assert.match(await way(), / CAN RUN NOW on Steam Forge Hammer at \(18,64,-4\) ULV \(steam-powered: whether it has steam, and whether this recipe is within its pressure, cannot be read — try it\)$/)
+    assert.match((await s.run('find_machines')).content, /\(18,64,-4\) "Steam Forge Hammer": runs "锻造锤" recipes, tier ULV, steam-powered \(whether it has steam cannot be read\), idle/)
+    // 同一台锤子要是电动的（名字里没有 Steam）：0 EU 就是没电
+    s.game.handlers['world.machines'] = () => ({ machines: [{ ...steamHammer, name: 'Basic Forge Hammer', tier: 'LV' }], total: 1 })
+    assert.match(await way(), / machine here but not usable now: .*NO POWER$/)
+    // 蒸汽多方块：成型了、没有能源仓（0 V）——不拿电压去卡它
+    s.game.handlers['world.machines'] = () => ({ machines: [{ x: 30, y: 64, z: 0, name: 'Steam Presser', id: 'gregtech:gt.blockmachines', meta: 31083, kind: 'multiblock', formed: true, recipes: 'Forge Hammer', recipeKey: 'gt.recipe.hammer', inputVoltage: 0, tier: 'ULV', active: false, inputBuses: [{ x: 31, y: 64, z: 0, name: 'Input Bus (Steam)', kind: 'input bus', slots: 4, usedSlots: 0 }], dist: 20 }], total: 1 })
+    assert.match(await way(), / CAN RUN NOW on Steam Presser at \(30,64,0\) ULV \(steam-powered: /)
   })
 })
 
@@ -408,8 +468,7 @@ describe('process_items：照配方册里的配方用机器加工', () => {
     await s.run('process_items', { machine: { x: -5, y: 64, z: 9 }, recipe: 7, circuit: 2 })
     assert.equal(s.lastTask().circuit, 2)
     for (const [input, why] of [
-      [{ machine: { x: 1, y: 1, z: 1 }, recipe: 3 }, 'Recipe #3 is a "有序合成" recipe, not a GregTech machine recipe: make it with craft_item.'],
-      [{ machine: { x: 1, y: 1, z: 1 }, recipe: 24 }, 'Recipe #24 is a "烧制" recipe, not a GregTech machine recipe, and you cannot run it.'],
+      [{ machine: { x: 1, y: 1, z: 1 }, recipe: 3 }, 'Recipe #3 is a "有序合成" recipe, not a machine recipe: make it with craft_item.'],
       [{ machine: { x: 1, y: 1, z: 1 } }, 'Give "recipe" (the # number from find_recipes) or "inputs".'],
     ] as const) {
       const res = await s.run('process_items', input)

@@ -1,4 +1,6 @@
-// 做法规划（plan_item）：给一个目标，替模型把整棵“怎么做”的树走完，返回可以照着调用的步骤、缺的叶子、要主人先点头的事。
+// 做法规划（planner.ts）：给一个目标，把整棵“怎么做”的树走完，返回步骤、缺的叶子、要主人先点头的事。
+// 它已经**不是给模型的工具**了（主人的意见：一份机械的操作手册会替模型定死一条不一定最优的路），也不在程序的库函数里；
+// 代码留着没删，这些测试只是不让它烂掉。这里直接拿那个没登记的 Tool 对象来跑。
 // 入口是模型用的工具；配方册是自造的小样本（fixture-plan.ts），游戏是按方法名应答的假基地（机器、合成台、箱子里的东西）。
 // 预期的数量都是照配方手算的（4 根柄 × 9 锭 = 36 锭，搅拌机一轮出 3 个所以 4 个要 2 轮……），不是拿被测的代码算的。
 
@@ -9,11 +11,12 @@ import { loadPackData } from '../src/packdata/index.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { useLocalNames } from '../src/tools/format.ts'
-import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
+import { planItem } from '../src/tools/crafting.ts'
+import { ALL_TOOLS, LIBRARY_TOOLS, programTools, runTool } from '../src/tools/index.ts'
 import type { PlanData } from '../src/tools/planner.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
-import { ALL_MACHINES, BENDER, CHEST, EXTRUDER, MACERATOR, MIXER, P, R, SOLIDIFIER, chest, furnace, inside, installBase, stack, writePlanFixture } from './fixture-plan.ts'
+import { ALL_MACHINES, BENDER, CHEST, EXTRUDER, FURNACE_BLOCK, MACERATOR, MIXER, P, R, SOLIDIFIER, chest, furnace, furnaceBlock, inside, installBase, stack, writePlanFixture } from './fixture-plan.ts'
 import type { Box } from './fixture-plan.ts'
 import { tmpDir } from './helpers.ts'
 
@@ -38,12 +41,14 @@ function setup(t: { after(fn: () => void): void }, init: Parameters<typeof insta
     now: () => 1_800_000_000_000,
   }
   const plan = async (target: { id: string; meta: number }, more: Record<string, unknown> = {}): Promise<ToolResult & { plan: PlanData; lines: string[] }> => {
-    const res = await runTool(ALL_TOOLS, ctx, 'plan_item', { ...target, ...more }, { maxResultChars: 6000 })
+    const res = await runTool([planItem], ctx, 'plan_item', { ...target, ...more }, { maxResultChars: 6000 })
     return { ...res, plan: res.data as PlanData, lines: res.content.split('\n') }
   }
   /** 每一步调哪个工具、给什么参数：模型（或者例程）照着调的就是这些。 */
   const calls = (p: PlanData): [string, unknown][] => p.steps.map((s) => [s.tool, s.input])
-  return { game, world, plan, calls }
+  /** 程序里调库函数走的那一步。 */
+  const lib = (name: string, input: unknown): Promise<ToolResult> => runTool(programTools(ALL_TOOLS), ctx, name, input, { maxResultChars: 6000 })
+  return { game, world, plan, calls, lib }
 }
 
 const at = (m: { x: number; y: number; z: number }) => ({ x: m.x, y: m.y, z: m.z })
@@ -61,6 +66,47 @@ const FULL: Box['items'] = [
   stack(P.hammer, 1),
 ]
 const without = (...gone: { id: string; meta: number }[]): Box['items'] => FULL.filter((i) => !gone.some((g) => g.id === i.id && g.meta === i.meta))
+
+describe('plan_item 不再给模型用', () => {
+  it('不在模型的工具清单里，也不在程序的库函数里', () => {
+    assert.equal([...ALL_TOOLS, ...LIBRARY_TOOLS].some((tool) => tool.name === 'plan_item'), false)
+  })
+})
+
+describe('total_materials：路线由它自己选，这里只做乘法', () => {
+  it('给了目标和它选定的每一层的配方：数量沿树相乘，一轮出几个按轮数取整，模头和工具只算一个；没给配方的算成要现成的；它不替人选任何一步', async (t) => {
+    const s = setup(t)
+    // 桨叶 ← 4 柄（压模机，9 锭一根，模头（转轴）不消耗）← 模头（转轴）（4 玄钢板 + 模头（杆），要锤）← 玄钢板（卷板机）← 玄钢锭（高炉）← 玄钢粉（搅拌机一轮出 3 个）
+    const res = await s.lib('total_materials', { ...P.blades, recipes: [R.blades, R.shaft, R.shaftShape, R.bendDark, R.smeltDark, R.mixDark] })
+    assert.equal(res.isError, undefined, res.content)
+    assert.deepEqual(res.content.split('\n'), [
+      'For 1× 直升机桨叶 [adventurebackpack:backpackComponent/6], with the 6 recipe(s) you chose (this only adds up amounts; it checks neither the storage nor the machines):',
+      'To make, things that are needed by later lines first:',
+      // 4 个玄钢粉要搅拌机 2 轮（一轮 3 个），多出 2 个
+      `- #${R.mixDark} (搅拌机) × 2 round(s) → 6× 玄钢粉 (4 needed, 2 left over)`,
+      `- #${R.smeltDark} (工业高炉) × 4 round(s) → 4× 玄钢锭`,
+      `- #${R.bendDark} (卷板机) × 4 round(s) → 4× 玄钢板`,
+      // 模头（转轴）只是留在压模机里：做 4 根柄也只要 1 个
+      `- #${R.shaftShape} (有序合成) × 1 round(s) → 1× 模头（转轴）`,
+      `- #${R.shaft} (压模机) × 4 round(s) → 4× 精炼铁柄`,
+      `- #${R.blades} (有序合成) × 1 round(s) → 1× 直升机桨叶`,
+      'Taken ready-made (you gave no recipe for these): 3× 钢螺丝 [gregtech:gt.metaitem.01/27305], 1× 钢齿轮 [gregtech:gt.metaitem.02/31305], 36× 钢锭 [gregtech:gt.metaitem.01/11305], 1× 模头（杆） [gregtech:gt.metaitem.01/32351], 2× 磁钢粉 [gregtech:gt.metaitem.01/2365], 2× 煤粉 [gregtech:gt.metaitem.01/2535], 2× 黑曜石粉 [gregtech:gt.metaitem.01/2804]',
+      'Needed but not used up, one of each (no recipe given for them): any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22]), any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12])',
+    ])
+    // 换一条路（玄钢粉手工搅，一轮出 2 个）、要 3 个桨叶：照它给的算，12 根柄、12 块板、6 轮手工
+    const hand = await s.lib('total_materials', { ...P.blades, count: 3, recipes: [R.blades, R.shaft, R.shaftShape, R.bendDark, R.smeltDark, R.handMixDark] })
+    assert.match(hand.content, new RegExp(`\\n- #${R.handMixDark} \\(无序合成\\) × 2 round\\(s\\) → 4× 玄钢粉\\n`))
+    assert.match(hand.content, new RegExp(`\\n- #${R.shaft} \\(压模机\\) × 12 round\\(s\\) → 12× 精炼铁柄\\n`))
+    assert.match(hand.content, /108× 钢锭 /)
+    // 要流体的配方：流体合计写出来（有没有它不管）
+    assert.match((await s.lib('total_materials', { ...P.darkIngot, count: 2, recipes: [R.smeltDarkOxygen] })).content, /\nFluids, in all: 2000 mB 氧$/)
+    // 没给目标自己的配方、给了绕圈子的配方：说清楚，不猜
+    assert.match((await s.lib('total_materials', { ...P.blades, recipes: [R.shaft] })).content, /^None of the recipes you gave makes 直升机桨叶 /)
+    assert.match((await s.lib('total_materials', { ...P.steelIngot, recipes: [R.smeltSteel, R.grindIngot] })).content, /^These recipes feed each other in a circle/)
+    // 只在程序里调得到，不是给模型的工具
+    assert.equal(ALL_TOOLS.some((tool) => tool.name === 'total_materials'), false)
+  })
+})
 
 describe('plan_item：把整条做法排出来', () => {
   it('直升机桨叶：桨叶 ← 4 根柄（压模机，9 钢锭一根，模头不消耗）← 模头（转轴）← 4 玄钢板（卷板机）← 玄钢锭（高炉）← 玄钢粉（搅拌机一轮出 3 个），数量沿树算对，先取料再一步步做', async (t) => {
@@ -457,6 +503,48 @@ describe('plan_item：还不能直接用的机器做法排在后面', () => {
     const res = await s.plan(P.shaftShape)
     assert.deepEqual(res.plan.missing.map((m) => [m.ore, m.count]), [['dustObsidian', 2]])
     assert.equal(res.plan.steps.some((x) => x.input.recipe === R.castTitanPlate || x.input.recipe === R.shaftShapeTitan), false, res.content)
+  })
+})
+
+describe('plan_item：身体不认识的机器', () => {
+  it('没有高炉，但世界里有一个原版熔炉、配方册说熔炉能把钢粉烧成钢锭：照样排进计划，写明身体读不到它的状态、是放进去试；熔炉里的燃料不算库存；有读得懂的机器能做时用那台', async (t) => {
+    const CHARCOAL = { id: 'minecraft:coal', meta: 1 }
+    // 熔炉不在 world.machines 里（身体不认识它），只是 world.containers 里的一个容器，里面放着主人的木炭
+    const s = setup(t, { boxes: [chest([stack(P.steelDust, 5)]), furnaceBlock([stack(CHARCOAL, 6)])], machines: [BENDER] })
+    const res = await s.plan(P.steelPlate, { count: 2 })
+    assert.deepEqual(s.calls(res.plan), [
+      ['withdraw_items', { container: CHEST, items: [stack(P.steelDust, 2)] }],
+      ['process_items', { machine: FURNACE_BLOCK, recipe: R.furnaceSteel, rounds: 2 }],
+      ['process_items', { machine: at(BENDER), recipe: R.bendSteel, rounds: 2 }],
+    ])
+    assert.deepEqual([res.plan.feasible, res.plan.steps.map((x) => x.untested === true)], [true, [false, true, false]])
+    assert.equal(
+      res.lines.find((l) => l.startsWith('2. ')),
+      `2. process_items {"machine":{"x":14,"y":64,"z":-2},"recipe":${R.furnaceSteel},"rounds":2} — make 2× 钢锭 on the 熔炉; UNTESTED MACHINE: its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"`,
+    )
+    // 熔炉里没烧完的 3 个钢粉不是库存：要 4 块板时只有箱子里的 2 个钢粉算数，缺 2 个，不会排成“从熔炉里取”
+    s.world.boxes = [chest([stack(P.steelDust, 2)]), furnaceBlock([stack(CHARCOAL, 6), stack(P.steelDust, 3)])]
+    const short = await s.plan(P.steelPlate, { count: 4 })
+    assert.deepEqual(short.plan.missing.map((m) => [m.id, m.meta, m.count]), [[P.steelDust.id, P.steelDust.meta, 2]])
+    assert.deepEqual(short.plan.steps.filter((x) => x.tool === 'withdraw_items').map((x) => x.input), [{ container: CHEST, items: [stack(P.steelDust, 2)] }])
+
+    // 读得懂、确实做得了的机器排在前面，哪怕去试那台不认识的更省料：
+    // 钢销在熔炉里 1 锭出 8 个，压模机 1 锭出 4 个（模头现成、有电）——用压模机
+    s.world.boxes = [chest([stack(P.steelIngot, 8), stack(P.shaftShape, 1)]), furnaceBlock()]
+    s.world.machines = [BENDER, EXTRUDER]
+    const known = await s.plan(P.pin, { count: 8 })
+    assert.deepEqual(s.calls(known.plan).at(-1), ['process_items', { machine: at(EXTRUDER), recipe: R.pinExtrude, rounds: 2 }])
+    assert.match(known.lines.at(-1)!, new RegExp(`other ways: 烧制 #${R.furnacePin}, 0\\.13 钢锭 each`))
+    // 列着合成台的配方页（别的 mod 自己的合成页）不当机器：旁边就有一个合成站，也不会排成“把钢板放进合成站试试”
+    s.world.boxes = [chest([stack(P.steelPlate, 4)]), { x: 9, y: 64, z: -4, id: 'TConstruct:CraftingStation', name: 'Crafting Station', items: [] }]
+    const pattern = await s.plan(P.pattern)
+    assert.equal(pattern.content, 'Plan for 1× 样板 [demo:pattern]: it CANNOT be made here: it is only made by "AE 合成", which you cannot run yourself.')
+
+    // 熔炉不在了：钢锭就做不了
+    s.world.machines = [BENDER]
+    s.world.boxes = [chest([stack(P.steelDust, 5)])]
+    const none = await s.plan(P.steelPlate, { count: 2 })
+    assert.deepEqual(none.plan.missing.map((m) => [m.ore, m.count]), [['ingotSteel', 2]])
   })
 })
 

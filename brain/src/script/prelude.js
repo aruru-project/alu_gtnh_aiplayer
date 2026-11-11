@@ -369,9 +369,65 @@
     quests: () => dataset('quests', jsonLines),
     /** 任务书的章节。 */
     questLines: () => dataset('questLines', (text) => JSON.parse(text).lines),
-    /** 现在有哪几样资料：['items', 'quests', 'questLines'] 里的几个。 */
+    /** 多方块机器：[{ id, meta, name, tiers }]（主机这件物品、它有哪些等级）。 */
+    structures: () => [...structureIndex().values()].map((m) => ({ id: m.id, meta: m.meta, name: m.name, tiers: m.tiers })),
+    /**
+     * 一台多方块机器各等级的结构。给主机的 id（和 meta），或者它的中文名（要正好是它；好几台重名时报错，列出各自的 id/meta）。没有就是 null。
+     * 返回 { id, meta, name, tiers, info, structureInfo, rows, tier(n) }；rows 的每一项是一种搭法：
+     * { tiers, size: [x, y, z], controller: [x, y, z], blocks: [{ id, meta, name, n }], palette, cells }，
+     * cells[(y * size[2] + z) * size[0] + x] 是 palette 的下标（0 是空），主机正面朝南（+z）。tier(n) 是第 n 级用的那一项。
+     */
+    structure(idOrName, meta = 0) {
+      const index = structureIndex()
+      const text = String(idOrName)
+      const byId = index.get(`${text}/${meta}`)
+      if (byId) return byId
+      const named = [...index.values()].filter((m) => m.name === text)
+      if (named.length > 1) throw new Error(`${named.length} machines are named ${text}: use data.structure(id, meta) with one of ${named.map((m) => `${m.id}/${m.meta}`).join(', ')}`)
+      return named[0] ?? null
+    },
+    /** 现在有哪几样资料：['items', 'quests', 'questLines', 'structures'] 里的几个。 */
     available: () => [...config.data],
   })
+
+  let structures
+  function structureIndex() {
+    if (structures) return structures
+    structures = new Map()
+    for (const raw of dataset('structures', jsonLines)) {
+      const key = `${raw.id}/${raw.meta}`
+      let machine = structures.get(key)
+      if (!machine) {
+        machine = { id: raw.id, meta: raw.meta, name: raw.name, tiers: [], info: raw.info ?? [], structureInfo: raw.structureInfo ?? [], rows: [], tier: (n) => machine.rows.find((r) => r.tiers.includes(n)) ?? null }
+        structures.set(key, machine)
+      }
+      const row = { tiers: raw.tiers, size: raw.size, controller: raw.controller, blocks: raw.blocks, palette: raw.palette }
+      // 每格一个下标，用到时才展开（大的结构有二十万格）
+      let cells
+      Object.defineProperty(row, 'cells', {
+        enumerable: false,
+        get() {
+          if (!cells) {
+            cells = new Array(raw.size[0] * raw.size[1] * raw.size[2]).fill(0)
+            let at = 0
+            for (let i = 0; i + 1 < raw.runs.length && at < cells.length; i += 2) {
+              const count = Math.min(raw.runs[i + 1], cells.length - at)
+              if (raw.runs[i] !== 0) cells.fill(raw.runs[i], at, at + count)
+              at += count
+            }
+          }
+          return cells
+        },
+      })
+      machine.rows.push(row)
+      machine.tiers.push(...raw.tiers)
+    }
+    for (const m of structures.values()) {
+      m.rows.sort((a, b) => a.tiers[0] - b.tiers[0])
+      m.tiers = [...new Set(m.tiers)].sort((a, b) => a - b)
+    }
+    return structures
+  }
 
   // ── 调工具 ──
   // 程序 await tool(名字, 参数)：请求经宿主交给大脑，大脑照模型自己调工具的那条路执行，结果再送回来。

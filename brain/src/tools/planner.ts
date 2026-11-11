@@ -35,13 +35,18 @@ import {
   signature,
   slotKey,
   unifiedOre,
+  otherMachines,
+  powerUnread,
+  scanContainers,
   spread,
   wayKind,
   whereItStands,
+  CONTAINERS_REACH,
   MACHINES_REACH,
   TABLES_REACH,
+  UNREAD_NOTE,
 } from './recipe-book.ts'
-import type { Namer, Spot, Surroundings } from './recipe-book.ts'
+import type { Namer, OtherMachine, Spot, Surroundings } from './recipe-book.ts'
 import { fail } from './types.ts'
 import type { ToolContext, ToolResult } from './types.ts'
 
@@ -65,12 +70,7 @@ const STOCK_BATCH = 24
 // world.stock 一次最多看 64 格，四个点各错开 48 格；world.containers 一次最多看 32 格，3×3 九个点各隔 64 格。
 const STOCK_QUERY_RADIUS = 64
 const STOCK_QUERY_STEP = 48
-const SCAN_QUERY_RADIUS = 32
-const SCAN_QUERY_STEP = 64
-const SCAN_PAGE = 100
-/** 粗表最多看这么多个容器。 */
-const SCAN_MAX_CONTAINERS = 1200
-export const STORAGE_REACH = SCAN_QUERY_STEP + SCAN_QUERY_RADIUS
+export const STORAGE_REACH = CONTAINERS_REACH
 /** 能做的做法比做不了的那种费料到这个倍数，就算“差别很大”，要问主人。 */
 const MUCH_MORE = 1.5
 /** 省料的做法现在就用不上（要先另做模具）时，这一步总共多耗的料不到这么多个，就不为它问主人。 */
@@ -142,13 +142,19 @@ interface Inside {
 }
 
 type Usable =
-  | { state: 'now'; machine?: MachineInfo; bus?: Pos; pocket?: boolean; asks: string[] }
+  /**
+   * unread：这台机器的状态身体读不全，只能放进去试。
+   *   steam   蒸汽机器（有没有蒸汽、压力够不够读不出来）；
+   *   unknown 身体不认识的机器（别的 mod 的、原版熔炉）：照配方册认出来的，照玩家的办法用。
+   */
+  | { state: 'now'; machine?: MachineInfo; bus?: Pos; pocket?: boolean; asks: string[]; unread?: 'steam' | 'unknown' }
   /** absent：附近没有这种机器、合成台（why 是一句完整的话，lacks 是缺的那样东西）；blocked：有但现在不行；cannot：它操作不了的方式。 */
   | { state: 'absent' | 'blocked' | 'cannot'; why: string; lacks?: string }
 
 interface Candidate {
   recipe: Recipe
-  kind: 'machine' | 'craft' | 'other'
+  /** machine 是 GregTech 的机器配方，device 是别的机器（熔炉、别的 mod 的），见 recipe-book.ts 的 wayKind。 */
+  kind: 'machine' | 'device' | 'craft' | 'other'
   /** 要电池的（电动工具）。 */
   powered: boolean
   /** 一轮出几个要的那样东西。 */
@@ -206,6 +212,8 @@ export interface PlanStep {
   waitsFor?: string[]
   /** 这一步要主人先点头。 */
   ask?: boolean
+  /** 这一步用的机器，身体读不全它的状态（蒸汽机器、别的 mod 的机器、熔炉）：是放进去试。 */
+  untested?: boolean
 }
 
 export interface PlanData {
@@ -299,39 +307,30 @@ class Stock {
     this.materials = new Materials(items)
   }
 
-  /** 把附近的容器扫一遍：粗表，和每个容器的标记。机器（含总线、仓）里的东西不算库存。 */
-  async scan(machines: readonly MachineInfo[]): Promise<void> {
+  /**
+   * 记下扫回来的容器：粗表，和每个容器的标记。机器里的东西不算库存——
+   * 身体认识的机器（含总线、仓）、身体不认识但配方册认得的机器（熔炉里的燃料和没取走的产物）都一样。
+   */
+  load(machines: readonly MachineInfo[], others: readonly OtherMachine[], scanned: { containers: readonly ContainerInfo[]; cut: boolean }): void {
     for (const m of machines) {
       this.flags.set(posKey(m), { kind: 'machine' })
       for (const h of [...(m.inputBuses ?? []), ...(m.outputBuses ?? []), ...(m.inputHatches ?? []), ...(m.outputHatches ?? [])]) {
         this.flags.set(posKey(h), { kind: 'machine', ...(h.attached ? { attached: h.attached } : {}) })
       }
     }
-    const seen = new Set<string>()
-    const scanFrom = async (at: Spot): Promise<void> => {
-      for (let offset = 0; this.scanned < SCAN_MAX_CONTAINERS; ) {
-        const res = await this.ctx.bridge.worldContainers(at, { radius: SCAN_QUERY_RADIUS, offset, limit: SCAN_PAGE })
-        const got: ContainerInfo[] = res.containers ?? []
-        const total = res.total ?? offset + got.length
-        for (const c of got) {
-          // 相邻两次查询的边上会重：一个容器只算一次
-          if (seen.has(posKey(c))) continue
-          seen.add(posKey(c))
-          this.scanned++
-          const flag: Flag = { ...(c.kind ? { kind: c.kind } : {}), ...(c.attached && c.attached.length > 0 ? { attached: c.attached } : {}) }
-          // 机器的主机和总线上面已经记过：留着那边记的 attached
-          this.flags.set(posKey(c), { ...this.flags.get(posKey(c)), ...flag })
-          if (c.kind === 'machine') this.inMachines.set(posKey(c), (c.items ?? []).filter((it) => it && typeof it.id === 'string').map((it) => ({ id: it.id, meta: it.meta ?? 0, count: typeof it.count === 'number' ? it.count : 1 })))
-          if (c.kind === 'machine' || c.kind === 'drawer_controller') continue
-          for (const it of c.items ?? []) if (it && typeof it.id === 'string') this.addBroad(it.id, it.meta ?? 0, typeof it.count === 'number' ? it.count : 1)
-        }
-        if (got.length === 0 || res.offset === undefined || offset + got.length >= total) break
-        offset += got.length
-        // 没读完就到了上限：粗表不全，说一声
-        if (this.scanned >= SCAN_MAX_CONTAINERS) this.scanCut = true
-      }
+    for (const o of others) this.flags.set(posKey(o), { kind: 'machine' })
+    this.scanned = scanned.containers.length
+    this.scanCut = scanned.cut
+    for (const c of scanned.containers) {
+      const flag: Flag = { ...(c.kind ? { kind: c.kind } : {}), ...(c.attached && c.attached.length > 0 ? { attached: c.attached } : {}) }
+      // 机器的主机和总线上面已经记过：留着那边记的 kind 和 attached
+      const known = this.flags.get(posKey(c))
+      this.flags.set(posKey(c), { ...known, ...flag, ...(known?.kind === 'machine' ? { kind: 'machine' } : {}) })
+      const machine = c.kind === 'machine' || known?.kind === 'machine'
+      if (machine) this.inMachines.set(posKey(c), (c.items ?? []).filter((it) => it && typeof it.id === 'string').map((it) => ({ id: it.id, meta: it.meta ?? 0, count: typeof it.count === 'number' ? it.count : 1 })))
+      if (machine || c.kind === 'drawer_controller') continue
+      for (const it of c.items ?? []) if (it && typeof it.id === 'string') this.addBroad(it.id, it.meta ?? 0, typeof it.count === 'number' ? it.count : 1)
     }
-    await Promise.all(spread(this.me, SCAN_QUERY_STEP, 3).map(scanFrom))
     for (const it of this.inventory) if (it && typeof it.id === 'string') this.addBroad(it.id, it.meta ?? 0, typeof it.count === 'number' ? it.count : 1)
   }
 
@@ -630,7 +629,7 @@ class Planner {
   /** 这条配方现在做不做得了：哪台机器、哪个总线，或者为什么不行。 */
   private usable(recipe: Recipe): Usable {
     const kind = wayKind(recipe.handler)
-    if (kind === 'other') return { state: 'cannot', why: `"${recipe.handler.name}" is not something you can run` }
+    if (kind === 'other') return { state: 'cannot', why: `"${recipe.handler.name}" is not something a machine or a crafting grid does` }
     if (kind === 'craft') {
       if (!isHandCraft(recipe)) return { state: 'cannot', why: `"${recipe.handler.name}" needs a bigger crafting grid than you can use` }
       if (fitsPocketGrid(recipe)) return { state: 'now', pocket: true, asks: [] }
@@ -647,7 +646,20 @@ class Planner {
 
   private usableMachine(recipe: Recipe): Usable {
     const here = this.around.machines.filter((m) => runsWay(m, recipe.handler))
-    if (here.length === 0) return { state: 'absent', why: `there is no ${recipe.handler.name} within ${MACHINES_REACH} blocks`, lacks: `a ${recipe.handler.name}` }
+    // 身体不认识、配方册认得的机器（熔炉、别的 mod 的机器）：读不到状态，但可以照玩家的办法放进去试
+    const untested = (this.around.others ?? []).filter((o) => o.ways.includes(recipe.handler.key))
+    const tryOn = (): Usable => {
+      const o = untested[0]!
+      const m: MachineInfo = { x: o.x, y: o.y, z: o.z, id: o.item.id, meta: o.item.meta, ...(o.name ? { name: o.name } : {}) }
+      return { state: 'now', machine: m, asks: this.asksOf(m).asks, unread: 'unknown' }
+    }
+    if (here.length === 0) {
+      if (untested.length > 0) return tryOn()
+      // 别的 mod 的配方页，名字是“烧制”“冶炼”这样的动作：把做它的机器（熔炉）说出来
+      const block = wayKind(recipe.handler) === 'device' ? recipe.handler.machines[0] : undefined
+      const what = block ? `${this.nm.name(block.id, block.meta)} (for "${recipe.handler.name}" recipes)` : recipe.handler.name
+      return { state: 'absent', why: `there is no ${what} within ${MACHINES_REACH} blocks`, lacks: `a ${what}` }
+    }
     const judged = here.map((m, order) => {
       const problems = machineProblems(m, recipe)
       if (m.kind === 'multiblock' && m.formed !== false && (m.inputBuses ?? []).length === 0) problems.push('it has no input bus you can put things into')
@@ -655,13 +667,14 @@ class Planner {
     })
     const ready = judged.filter((j) => j.problems.length === 0)
     if (ready.length === 0) {
+      if (untested.length > 0) return tryOn()
       const best = judged[0]!
       return { state: 'blocked', why: `the ${this.machineName(best.m)} at ${formatPos(best.m)} cannot run it now: ${best.problems.join(', ')}` }
     }
     // 不用问主人的、闲着的、近的在前
     ready.sort((a, b) => a.asks.length - b.asks.length || Number(a.m.active === true) - Number(b.m.active === true) || a.order - b.order)
     const pick = ready[0]!
-    return { state: 'now', machine: pick.m, ...(pick.bus ? { bus: pick.bus } : {}), asks: pick.asks }
+    return { state: 'now', machine: pick.m, ...(pick.bus ? { bus: pick.bus } : {}), asks: pick.asks, ...(powerUnread(pick.m) ? { unread: 'steam' as const } : {}) }
   }
 
   private machineName(m: MachineInfo): string {
@@ -865,7 +878,7 @@ class Planner {
 
   /** 单方块机器的流体配方：罐子里有什么它看不到，也灌不了，只能问主人接没接好。 */
   private blind(c: Candidate): boolean {
-    return c.kind === 'machine' && c.recipe.fin.length > 0 && c.usable.state === 'now' && c.usable.machine?.kind !== 'multiblock'
+    return c.kind !== 'craft' && c.recipe.fin.length > 0 && c.usable.state === 'now' && c.usable.machine?.kind !== 'multiblock'
   }
 
   /**
@@ -963,12 +976,14 @@ class Planner {
     // 还不能直接用的做法，排在不用另作准备的后面：
     //   - 机器要的模具、模头手头没有（得先另做一个）：差一个模具时，玩家会先用手边的办法，而不是为它去做一整套模具；
     //   - 单方块机器要流体的配方（罐子里有没有看不到，得主人确认）；或者缺的原料只有靠这种配方才弄得到。
-    const setup = new Map(now.map((c) => [c, c.unsure > 0 || this.blind(c) || (c.kind === 'machine' && c.slots.some((s) => s.n === 0 && this.lacks(s, true, 1))) ? 1 : 0]))
+    const setup = new Map(now.map((c) => [c, c.unsure > 0 || this.blind(c) || (c.kind !== 'craft' && c.slots.some((s) => s.n === 0 && this.lacks(s, c.kind === 'machine', 1))) ? 1 : 0]))
+    // 身体读不到状态的机器（别的 mod 的、熔炉）：能试，但排在读得到、确实做得了的做法后面
+    const untried = (c: Candidate): number => (c.usable.state === 'now' && c.usable.unread === 'unknown' ? 1 : 0)
     // 要的熔融金属，基地里连这种材料都没有：排在最后（只有它这一条路时才用，照样要问主人）
     const implausible = (c: Candidate): number => (this.blind(c) && !this.plausible(c) ? 1 : 0)
     const fluidShort = (c: Candidate): number => (this.fluidShort(c, Math.ceil(count / c.yield)) ? 1 : 0)
     // 手工工具配方只在没有机器做得了时用：机器那条路走得通（原料有，或者做得出来）、又不用另作准备，才算“机器做得了”
-    const machineWorks = now.some((c) => c.kind === 'machine' && c.blocked === 0 && setup.get(c) === 0)
+    const machineWorks = now.some((c) => c.kind === 'machine' && c.blocked === 0 && setup.get(c) === 0 && untried(c) === 0)
     // 目标只是一堆产物里的一样（电解、离心拆出来的）：不当正经做法
     const byproduct = (c: Candidate): number => (c.recipe.out.filter((o) => o.chance === undefined).length > 1 && !need.products.some((p) => p.id === c.recipe.out[0]!.id && p.meta === c.recipe.out[0]!.meta) ? 1 : 0)
     const asks = (c: Candidate): number => (c.usable.state === 'now' ? c.usable.asks.length : 0)
@@ -981,6 +996,7 @@ class Planner {
       c.blocked > 0 ? 1 : 0,
       c.handTool && machineWorks ? 1 : 0,
       setup.get(c) ?? 0,
+      untried(c),
       c.hopeless ? 1 : 0,
       c.blocked > 0 ? repack(c) : 0,
       c.oddBlocked,
@@ -1083,7 +1099,8 @@ class Planner {
     const others = ranked.slice(1)
     // 真能用的别的做法：现在做得了、原料也弄得到的。每种方式提一条，最多两条
     const real = others.filter((c) => c.usable.state === 'now' && c.blocked === 0 && c.unsure === 0)
-    const notUsable = others.filter((c) => c.usable.state === 'absent' || c.usable.state === 'blocked')
+    // 别的 mod 的机器这里根本没有的，不算“省料的做法现在用不上”：主人没建那种机器，不值得为它去问
+    const notUsable = others.filter((c) => (c.usable.state === 'absent' && c.kind !== 'device') || c.usable.state === 'blocked')
     node.why = `${this.wayText(pick)}, ${this.costText(pick)}`
     node.others = []
     const ways = new Set<string>([pick.recipe.handler.key])
@@ -1346,7 +1363,7 @@ class Planner {
       const product = c.recipe.out.find((o) => node.need.products.some((p) => p.id === o.id && p.meta === o.meta)) ?? node.need.products[0]!
       const made = nm.name(product.id, product.meta)
       const why = [`why: ${node.why}`, ...(node.others && node.others.length > 0 ? [`other ways: ${node.others.join('; ')}`] : [])].join('. ')
-      const m = c.kind === 'machine' ? c.usable.machine! : undefined
+      const m = c.kind !== 'craft' ? c.usable.machine! : undefined
       const single = m && m.kind !== 'multiblock' ? m : undefined
 
       // 这一步要用、却还在别的机器原料格里的模具：现在取出来。就在这台机器里的不用取，原地用
@@ -1419,7 +1436,14 @@ class Planner {
           if (seconds > DEFAULT_WAIT_SEC - 30) input.wait = Math.min(3600, Math.ceil(seconds * 1.2) + 30)
           const circuit = c.circuit !== undefined ? `; programmed circuit ${c.circuit} is set for you` : ''
           const mold = usedInPlace.length > 0 ? `; the ${usedInPlace.join(', ')} already in that machine is used where it is` : ''
-          steps.push({ n: steps.length + 1, tool: 'process_items', input, text: `make ${rounds * c.yield}× ${made} on the ${this.machineName(m)}${circuit}${mold}`, ...(waitsFor.length > 0 ? { waitsFor } : {}) })
+          // 身体读不全状态的机器：照样排进去，写明这一步是“试”
+          const unread =
+            c.usable.unread === 'unknown'
+              ? `; UNTESTED MACHINE: ${UNREAD_NOTE}`
+              : c.usable.unread === 'steam'
+                ? '; steam-powered: whether it has steam, and whether the recipe is within its pressure, cannot be read — if it does not start, that is the first thing to check'
+                : ''
+          steps.push({ n: steps.length + 1, tool: 'process_items', input, text: `make ${rounds * c.yield}× ${made} on the ${this.machineName(m)}${circuit}${mold}${unread}`, ...(waitsFor.length > 0 ? { waitsFor } : {}), ...(c.usable.unread ? { untested: true } : {}) })
         }
         // 配方要的流体：多方块看输入仓里够不够，单方块看不了
         for (const f of this.fluidsIn(m, c.recipe.fin, node.rounds)) {
@@ -1526,8 +1550,11 @@ export async function planItemLocal(ctx: ToolContext, input: PlanInput): Promise
     freeSlots = status.freeSlots
     around = await lookAround(ctx)
     if (around.error) return fail(`The machines and crafting tables around you could not be looked at (${around.error}), so nothing can be planned right now.`)
+    // 把周围的容器扫一遍：库存的粗表，顺带照配方册认出身体不认识的机器（熔炉、别的 mod 的机器）
+    const scanned = await scanContainers(ctx, me)
+    around.others = otherMachines(scanned.containers, around.machines, book, items, me)
     stock = new Stock(ctx, items, inventory, me)
-    await stock.scan(around.machines)
+    stock.load(around.machines, around.others, scanned)
   } catch (e) {
     if (e instanceof BridgeError) return fail(`The game could not be asked what is in storage (${e.code}: ${e.message}), so nothing can be planned right now.`)
     throw e

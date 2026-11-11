@@ -14,7 +14,8 @@ import { loadPackData } from '../src/packdata/index.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { useLocalNames } from '../src/tools/format.ts'
-import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
+import { ROUTINE_BLOCKED_TOOLS } from '../src/agent/routine.ts'
+import { ALL_TOOLS, QUERY_TOOLS, runTool } from '../src/tools/index.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame, chat, makeAgent, reply } from './agent-harness.ts'
 import { writeRecipeFixture } from './fixture-recipes.ts'
@@ -342,5 +343,80 @@ describe('主人指着说', () => {
     // 老的身体没有 world.player：只说位置
     delete s.game.handlers['world.player']
     assert.equal((await s.run('get_player_position', { player: 'steve' })).content, 'Steve is in overworld (dim 0) at (12,64,3).')
+  })
+})
+
+describe('通用的界面动作：打开、看格子、点、关', () => {
+  const STEEL_INGOT = { id: 'gregtech:gt.metaitem.01', meta: 11305, name: 'Steel Ingot' }
+  const STEEL_PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17305, name: 'Steel Plate' }
+  /** 一台身体不认识的机器的界面：两个原料格、一个产物格、一个只显示的电路格；自己的背包里有两样东西。 */
+  const screen = (more: Record<string, unknown> = {}) => ({
+    open: true,
+    screen: 'Alloy Furnace',
+    slotCount: 40,
+    slots: [
+      { slot: 0, item: { ...STEEL_INGOT, count: 4 } },
+      { slot: 1 },
+      { slot: 2, takesNothing: true, item: { ...STEEL_PLATE, count: 2 } },
+      { slot: 3, ghost: true, item: { id: 'gregtech:gt.integrated_circuit', meta: 1, count: 1, name: 'Programmed Circuit' } },
+      { slot: 13, own: true, item: { ...STEEL_INGOT, count: 60 } },
+      { slot: 22, own: true, item: { ...COAL, count: 8 } },
+    ],
+    ...more,
+  })
+
+  it('界面的样子说得清：它自己的格子和你背包的格子分开列，产物格和只显示的格子标出来，鼠标上拿着什么，物品是中文名；点一格交给身体的就是左键、右键、Shift', async (t) => {
+    const s = setup(t, { names: true })
+    s.game.handlers['screen.open'] = () => screen()
+    s.game.handlers['screen.look'] = () => screen()
+    s.game.handlers['screen.click'] = () => screen({ cursor: { ...COAL, count: 8 } })
+    s.game.handlers['screen.close'] = () => ({})
+    const opened = await s.run('open_screen', { at: { x: 14, y: 64, z: -4 } })
+    assert.deepEqual(s.game.callsOf('screen.open'), [{ bot: 'Alu', x: 14, y: 64, z: -4 }])
+    assert.deepEqual(opened.content.split('\n'), [
+      'Screen "Alloy Furnace" is open (40 slots in all).',
+      'Its slots (4):',
+      '- slot 0: 4× 钢锭 [gregtech:gt.metaitem.01/11305]',
+      '- slot 1: empty',
+      '- slot 2 (OUTPUT: products appear here, nothing can be put in): 2× 钢板 [gregtech:gt.metaitem.01/17305]',
+      '- slot 3 (display only: nothing real in it, e.g. a programmed-circuit setting): 1× 编程电路 1 [gregtech:gt.integrated_circuit/1]',
+      'Your own inventory (only the slots holding something):',
+      '- slot 13: 60× 钢锭 [gregtech:gt.metaitem.01/11305]',
+      '- slot 22: 8× Coal [minecraft:coal]',
+      'Nothing on your cursor.',
+    ])
+    // 不给参数：再看一眼已经开着的界面（不重新打开）
+    assert.equal((await s.run('open_screen')).content, opened.content)
+    assert.deepEqual([s.game.callsOf('screen.look'), s.game.callsOf('screen.open').length], [[{ bot: 'Alu' }], 1])
+    // 点：左键、右键、按着 Shift
+    const picked = await s.run('click_slot', { slot: 22 })
+    assert.equal(picked.content.split('\n').at(-1), 'On your cursor (picked up, not put down yet): 8× Coal [minecraft:coal]. Clicking a slot puts it down; closing the screen sends it back to your inventory.')
+    await s.run('click_slot', { slot: 1, right: true })
+    await s.run('click_slot', { slot: 13, shift: true })
+    assert.deepEqual(s.game.callsOf('screen.click'), [{ bot: 'Alu', slot: 22 }, { bot: 'Alu', slot: 1, button: 1 }, { bot: 'Alu', slot: 13, shift: true }])
+    assert.equal((await s.run('close_screen')).content, 'The screen is closed.')
+    assert.deepEqual(s.game.callsOf('screen.close'), [{ bot: 'Alu' }])
+    // 身上的东西（背包）也能打开
+    await s.run('open_screen', { item: { id: 'Backpack:backpack' } })
+    assert.deepEqual(s.game.callsOf('screen.open').at(-1), { bot: 'Alu', item: { id: 'Backpack:backpack' } })
+  })
+
+  it('开不了时说清下一步：有任务在跑、够不着、右键后没有界面、方块和物品都给或都没给', async (t) => {
+    const s = setup(t)
+    s.game.handlers['screen.open'] = () => {
+      throw new BridgeError('busy', 'a task is running')
+    }
+    assert.deepEqual(await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } }), { content: 'A task of yours is still running: screens can only be used while you have no task. Wait for it to end (or cancel_task), then try again.', isError: true })
+    s.game.handlers['screen.open'] = () => {
+      throw new BridgeError('out_of_reach', 'the block at 1,64,1 is 9.2 blocks away')
+    }
+    assert.equal((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, 'That block is out of reach (the block at 1,64,1 is 9.2 blocks away). Walk next to it first (go_to), then open it.')
+    // 有的界面点开后过一小会儿才出现；一直不出现的就是没有界面
+    s.game.handlers['screen.open'] = () => ({ open: false })
+    assert.match((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, /^No screen is open right now\. A screen can take a moment to appear after opening: look again with open_screen without arguments/)
+    assert.deepEqual(await s.run('open_screen', { at: { x: 1, y: 64, z: 1 }, item: { id: 'Backpack:backpack' } }), { content: 'Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.', isError: true })
+    assert.equal(s.game.callsOf('screen.open').length, 3)
+    // 例程里可以调这三个（同样的点法要重复很多遍时）；只算不动手的 run_program 不行
+    for (const name of ['open_screen', 'click_slot', 'close_screen']) assert.deepEqual([ROUTINE_BLOCKED_TOOLS.includes(name), QUERY_TOOLS.includes(name)], [false, false], name)
   })
 })

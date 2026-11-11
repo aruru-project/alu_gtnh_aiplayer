@@ -8,6 +8,7 @@ import { BridgeApi } from '../src/bridge/api.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../src/llm/index.ts'
 import { DesignWorkspace, decodePng } from '../src/design/index.ts'
+import { StructureBook } from '../src/packdata/index.ts'
 import type { TextureAtlas } from '../src/packdata/index.ts'
 import { PanelServer } from '../src/panel/server.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
@@ -19,12 +20,13 @@ import { MemoryStore } from '../src/store/memory.ts'
 import { PictureStore } from '../src/store/pictures.ts'
 import { UsageStore } from '../src/store/usage.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
+import { S, writeStructureFixture } from './fixture-structures.ts'
 import { encodePng, tmpDir, waitFor } from './helpers.ts'
 import { readSchematic } from './mock-bridge.ts'
 
 const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
 
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas } = {}) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook } = {}) {
   const tmp = tmpDir()
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = new FakeGame()
@@ -52,6 +54,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     feedback,
     pictures,
     ...(opts.textures ? { textures: opts.textures } : {}),
+    ...(opts.structures ? { structures: opts.structures } : {}),
     bridge: new BridgeApi(game),
     bridgeStatus: () => ({ state: 'connected', address: '127.0.0.1:1' }),
     agent: {
@@ -124,7 +127,7 @@ describe('面板：鉴权', () => {
     assert.equal(page.status, 200)
     assert.match(page.text, /<title>AI 玩家/)
     assert.equal((await s.call('GET', '/app.js')).status, 200)
-    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log']) {
+    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log']) {
       assert.equal((await s.call('GET', route)).status, 401, route)
     }
     assert.equal((await s.call('POST', '/api/command', { text: '回家' })).status, 401)
@@ -810,6 +813,33 @@ describe('面板：对话、AI 玩家、记忆', () => {
       assert.equal((await picture(bad)).status, 400, bad)
     }
     assert.equal((await s.call('GET', '/api/drafts/picture?name=nope')).status, 404)
+  })
+
+  it('多方块结构：按名字搜得到机器，一台机器某个等级的材料、说明和三维预览的数据都给得出；没有这份资料时照实说', async (t) => {
+    const dir = tmpDir()
+    t.after(dir.cleanup)
+    writeStructureFixture(dir.dir)
+    const s = await setup(t, {}, { structures: StructureBook.load(dir.dir)!.book })
+    await s.login()
+    const all = await s.call('GET', '/api/structures')
+    assert.deepEqual([all.json.available, all.json.total, all.json.machines[0]], [true, 4, { ...S.centrifuge, name: '大型蒸汽离心机', tiers: [1, 2] }])
+    assert.deepEqual((await s.call('GET', `/api/structures?q=${encodeURIComponent('高炉')}`)).json.machines.map((m: { name: string; tiers: number[] }) => [m.name, m.tiers.length]), [['工业高炉', 6]])
+    // 小离心机的 2 级：3×2×3，15 个脱氧钢机械方块、1 个钢齿轮箱、1 个主机；格子和草稿的预览同一种写法
+    const model = await s.call('GET', `/api/structures/model?id=${encodeURIComponent(S.centrifuge.id)}&meta=${S.centrifuge.meta}&tier=2`)
+    assert.equal(model.status, 200, model.text)
+    assert.deepEqual([model.json.name, model.json.tier, model.json.tiers, model.json.size, model.json.controller], ['大型蒸汽离心机', 2, [1, 2], { x: 3, y: 2, z: 3 }, [1, 0, 2]])
+    assert.deepEqual(model.json.blocks.map((b: { name: string; n: number }) => [b.name, b.n]), [['脱氧钢机械方块', 15], ['钢齿轮箱机械方块', 1], ['大型蒸汽离心机', 1]])
+    assert.deepEqual(model.json.runs, [1, 4, 2, 1, 1, 2, 3, 1, 1, 5, 0, 1, 1, 4])
+    assert.deepEqual(model.json.kinds.slice(1).map((k: { key: string; count: number }) => [k.key, k.count]), [['gregtech:gt.blockcasings2', 15], ['gregtech:gt.blockcasings2/3', 1], ['gregtech:gt.blockmachines', 1]])
+    assert.equal(model.json.structureInfo[2], '控制器: 底层，正面中央')
+    // 不给等级就是最低的那一级；没有的等级、没有的机器是 404
+    assert.equal((await s.call('GET', `/api/structures/model?id=${encodeURIComponent(S.centrifuge.id)}&meta=${S.centrifuge.meta}`)).json.tier, 1)
+    assert.equal((await s.call('GET', `/api/structures/model?id=${encodeURIComponent(S.centrifuge.id)}&meta=${S.centrifuge.meta}&tier=9`)).status, 404)
+    assert.equal((await s.call('GET', '/api/structures/model?id=minecraft:stone&meta=0')).status, 404)
+    // 大脑没有这份资料
+    const bare = await setup(t)
+    await bare.login()
+    assert.deepEqual((await bare.call('GET', '/api/structures')).json, { available: false, total: 0, machines: [] })
   })
 
   it('三维预览的数据：草稿和对话日志里的简图都给得出“每一格是什么、每种方块怎么画”；有贴图图集时指到图集的第几格，图集那张图也取得到', async (t) => {

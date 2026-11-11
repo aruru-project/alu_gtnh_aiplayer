@@ -12,7 +12,7 @@ import type { DesignWorkspace, ProgramRun } from '../design/index.ts'
 import type { ProgramCall, ProgramCallResult } from '../script/sandbox.ts'
 import type { ActivityLog } from '../store/activity-log.ts'
 import { clip, compactJson, formatTask } from '../tools/format.ts'
-import { runTool } from '../tools/index.ts'
+import { programTools, runTool } from '../tools/index.ts'
 import type { Tool, ToolContext, ToolResult } from '../tools/index.ts'
 
 export interface RoutineLimits {
@@ -258,7 +258,7 @@ export class RoutineRunner {
     try {
       res = ROUTINE_BLOCKED_TOOLS.includes(call.name)
         ? { content: `${call.name} cannot be called from inside a routine`, isError: true }
-        : await runTool(this.deps.tools, ctx, call.name, call.input, { maxResultChars: this.deps.maxResultChars ?? 6000 })
+        : await runTool(programTools(this.deps.tools), ctx, call.name, call.input, { maxResultChars: this.deps.maxResultChars ?? 6000 })
     } finally {
       run.calling--
     }

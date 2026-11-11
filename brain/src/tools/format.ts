@@ -650,7 +650,7 @@ export function formatBlueprintCheck(c: BlueprintCheck, opts: { clearGiven: bool
   lines.push(head)
   if (count(c.unloaded) > 0) {
     lines.push(
-      `INCOMPLETE: ${c.unloaded} cells are in chunks that are not loaded and could not be compared. Go closer to the site and check again before relying on these numbers.`,
+      `INCOMPLETE: ${c.unloaded} cells are in chunks that are not loaded and could not be compared. Those can only be compared from near enough for the chunks to be loaded, so these numbers are not the whole picture.`,
     )
   }
 
@@ -927,7 +927,7 @@ export function formatStock(res: StockResult, radius: number, from: { of: string
     return `There is no container within ${radius} blocks of ${from.of} (only loaded chunks are searched). ${from.of === 'you' ? 'Look around where the storage is instead: give "at" (the position of a chest or drawer controller there, or where your owner stands), or go there.' : 'Check the position with your owner.'}`
   }
   const lines: string[] = [
-    `Looked into ${looked} container(s) within ${radius} blocks of ${from.of}. Take things out with withdraw_items (container = the position, items = the exact id/meta).`,
+    `Looked into ${looked} container(s) within ${radius} blocks of ${from.of}. withdraw_items takes things out (container = the position, items = the exact id/meta).`,
   ]
   for (const it of items) {
     // 点名了 meta 的带上名字（不限 meta 的不带：那会是 meta 0 的名字，具体是哪几种下面每一处都写着）
@@ -1102,7 +1102,10 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
   if (typeof m.tier === 'string') parts.push(`tier ${m.tier}${m.kind === 'multiblock' && typeof m.inputVoltage === 'number' ? ` (${m.inputVoltage} V)` : ''}`)
   if (typeof m.heat === 'number') parts.push(`coil heat ${m.heat} K`)
   if (typeof m.circuit === 'number') parts.push(`programmed circuit ${m.circuit} set`)
-  if (typeof m.storedEU === 'number') parts.push(m.storedEU > 0 ? `has power (${m.storedEU} EU stored)` : 'NO POWER (0 EU stored)')
+  // 蒸汽机器不烧电：0 EU 不是“没电”（它有没有蒸汽身体读不出来）
+  const steam = m.steam === true || /\bSteam\b/.test(typeof m.name === 'string' ? m.name : '')
+  if (steam) parts.push('steam-powered (whether it has steam cannot be read)')
+  else if (typeof m.storedEU === 'number') parts.push(m.storedEU > 0 ? `has power (${m.storedEU} EU stored)` : 'NO POWER (0 EU stored)')
   if (m.switchedOff === true) parts.push('SWITCHED OFF')
   if (m.active === true) {
     const done = count(m.maxProgress) > 0 ? ` (${Math.round((count(m.progress) * 100) / count(m.maxProgress))}% of the current item done)` : ''
@@ -1133,16 +1136,46 @@ function hatchLine(h: MachineHatch): string {
 }
 
 /** world.machines 的结果：每台机器的坐标、名字、跑哪种配方、等级、有没有电、是不是正在忙。 */
-export function formatMachines(res: { machines?: MachineInfo[]; total?: number }, asked: { radius: number; name?: string; wayName?: WayName; of?: string; hint?: string }): string {
+/** 身体读不懂状态的机器（照配方册认出来的）：find_machines 里的一行。 */
+export interface OtherMachineLine {
+  x: number
+  y: number
+  z: number
+  id: string
+  name?: string
+  item: { id: string; meta: number }
+  /** 它能做哪几页配方（页的名字）。 */
+  wayNames: string[]
+  attached?: readonly AttachedBlock[]
+}
+
+function otherMachineLines(others: readonly OtherMachineLine[], radius: number): string[] {
+  if (others.length === 0) return []
+  const lines = [
+    `${others.length} other machine(s) within ${Math.min(radius, 32)} blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read, but process_items works on them the way a player would — inputs in, wait, products out):`,
+  ]
+  for (const o of others.slice(0, 30)) {
+    const auto = attachedText(o.attached)
+    lines.push(`- ${formatPos(o)} "${nameOf(o.item) ?? nameOf(o, { block: true }) ?? o.name ?? o.id}": runs ${o.wayNames.slice(0, 4).map((w) => `"${w}"`).join(', ')}${o.wayNames.length > 4 ? ` and ${o.wayNames.length - 4} more kinds of` : ''} recipes${auto ? `; ${auto}` : ''}`)
+  }
+  if (others.length > 30) lines.push(`- … and ${others.length - 30} more`)
+  return lines
+}
+
+export function formatMachines(
+  res: { machines?: MachineInfo[]; total?: number },
+  asked: { radius: number; name?: string; wayName?: WayName; of?: string; hint?: string; others?: readonly OtherMachineLine[] },
+): string {
   const of = asked.of ?? 'you'
   const machines = res.machines ?? []
   const filter = asked.name ? ` whose name or recipe type contains "${asked.name}"` : ''
+  const others = otherMachineLines(asked.others ?? [], asked.radius)
   if (machines.length === 0) {
-    return (
+    const none =
       `No GregTech machine${filter} within ${asked.radius} blocks of ${of} (only loaded chunks are searched). ` +
-      (asked.name ? 'Look again without "name" to see every machine here. ' : '') +
-      `Steam machines and machines of other mods are never listed and cannot be used.${asked.hint ?? ''}`
-    )
+      (asked.name ? 'Look again without "name" to see every machine here. ' : '')
+    if (others.length > 0) return `${none.trim()}\n${others.join('\n')}`
+    return `${none}Any block with a screen can still be used as a machine: give its position to process_items, or open it with open_screen.${asked.hint ?? ''}`
   }
   const total = Math.max(count(res.total), machines.length)
   const lines: string[] = []
@@ -1154,7 +1187,8 @@ export function formatMachines(res: { machines?: MachineInfo[]; total?: number }
   const more = total > machines.length ? ` (${total} in range, the nearest ${machines.length} shown: give "name" or a smaller radius to see the others)` : ''
   return (
     `${machines.length} GregTech machine(s)${filter} within ${asked.radius} blocks of ${of}${more}, nearest first. ` +
-    `A machine can run a recipe when it runs that kind of recipe, its tier is at least the recipe's, it has power and is idle:\n${lines.join('\n')}`
+    `A machine can run a recipe when it runs that kind of recipe, its tier is at least the recipe's, it has power and is idle:\n${lines.join('\n')}` +
+    (others.length > 0 ? `\n${others.join('\n')}` : '')
   )
 }
 

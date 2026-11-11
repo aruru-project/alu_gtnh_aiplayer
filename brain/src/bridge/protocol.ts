@@ -376,11 +376,36 @@ export interface MachineHatch {
  * 读不出状态的只有坐标、名字和 unreadable。
  * id + meta 是这台机器作为物品时的那一对，和配方册里配方页的 machines 可以直接比对；recipeKey 是它跑的配方在配方册里的页。
  */
+/** 打开着的界面里的一格（screen.look）。 */
+export interface ScreenSlot {
+  /** 点击用的编号。 */
+  slot: number
+  /** bot 自己背包里的格子（自己的空格不列）。 */
+  own?: boolean
+  item?: Item
+  /** 放不进东西的格子：机器出产物的地方。 */
+  takesNothing?: boolean
+  /** 只显示、里面没有真东西的格子（编程电路的设置）。 */
+  ghost?: boolean
+}
+
+/** screen.open / look / click 的结果：点完之后界面的样子。有的界面点开后过一小会儿才出现，那时 open 是 false。 */
+export interface ScreenState {
+  open?: boolean
+  screen?: string
+  slotCount?: number
+  slots?: ScreenSlot[]
+  /** 鼠标上拿着的东西。 */
+  cursor?: Item
+}
+
 export interface MachineInfo {
   x: number
   y: number
   z: number
   name?: string
+  /** 烧蒸汽、不烧电的机器。身体现在还不给这一项（大脑先按名字认）；给了以它为准。 */
+  steam?: boolean
   id?: string
   meta?: number
   /** 它跑哪种配方（英文，如 Lathe）。 */

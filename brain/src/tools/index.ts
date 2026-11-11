@@ -4,11 +4,12 @@ import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
 import { buildBlueprint, checkBlueprint, listBlueprints } from './blueprint.ts'
 import { say, whisper } from './chat.ts'
-import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, planItem, processItems } from './crafting.ts'
+import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
+import { totalMaterials } from './materials.ts'
 import { deleteDraft, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
 import { reportProblem } from './feedback.ts'
 import { clip } from './format.ts'
-import { listManuals, readManual } from './manuals.ts'
+import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
 import {
   findBlocks,
@@ -45,6 +46,8 @@ import {
   useItem,
   withdrawItems,
 } from './tasks.ts'
+import { clickSlot, closeScreen, openScreen } from './screen.ts'
+import { checkStructure, findStructure, readBlocks } from './structures.ts'
 import { ToolFailure } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
@@ -97,8 +100,10 @@ export const ALL_TOOLS: readonly Tool[] = [
   collectItems,
   giveItems,
   useItem,
+  openScreen,
+  clickSlot,
+  closeScreen,
   findItem,
-  planItem,
   findRecipes,
   findUses,
   findInStorage,
@@ -115,6 +120,7 @@ export const ALL_TOOLS: readonly Tool[] = [
   setReminder,
   listManuals,
   readManual,
+  writeManual,
   reportProblem,
 ]
 
@@ -122,6 +128,17 @@ export const ALL_TOOLS: readonly Tool[] = [
  * 只看不动的工具：run_program 的程序里可以调（它在模型的这一轮里跑完，不能去开任务）。
  * 会开任务、说话、改记忆的不在里面：那些要用 start_routine（后台例程）。
  */
+/**
+ * 库函数：只在它写的程序里能调（await tool(名字, 参数)），不是发给模型的工具——不占每一轮的工具清单。
+ * “查本地资料、把结果算一算”这类事放在这里：模型要用的时候写几行程序。都是只查不动手的，run_program 里也能调。
+ */
+export const LIBRARY_TOOLS: readonly Tool[] = [readBlocks, findStructure, checkStructure, totalMaterials]
+
+/** 程序里调得到的全部：模型的工具，加上库函数。 */
+export function programTools(tools: readonly Tool[]): Tool[] {
+  return [...tools, ...LIBRARY_TOOLS.filter((lib) => !tools.some((t) => t.name === lib.name))]
+}
+
 export const QUERY_TOOLS: readonly string[] = [
   'get_status',
   'look_around',
@@ -139,7 +156,6 @@ export const QUERY_TOOLS: readonly string[] = [
   'list_images',
   'list_drafts',
   'find_item',
-  'plan_item',
   'find_recipes',
   'find_uses',
   'find_in_storage',
@@ -148,6 +164,7 @@ export const QUERY_TOOLS: readonly string[] = [
   'find_quests',
   'get_quest',
   'task_status',
+  ...LIBRARY_TOOLS.map((t) => t.name),
 ]
 
 export function toToolSpecs(tools: readonly Tool[]): ToolSpec[] {
@@ -159,7 +176,7 @@ const BRIDGE_HINTS: Record<string, string> = {
   disconnected: 'The brain is not connected to the game server right now. Nothing in the game can be done until it reconnects.',
   timeout: 'The game server did not answer in time; it may be lagging. Try again later.',
   offline: 'The bot is not in the game world right now.',
-  denied: 'The server refused this. Do not retry; ask a player.',
+  denied: 'The server refused this; asking again gives the same answer. A player can do it, or can allow you to.',
   not_found: 'Check the name or id.',
   bad_request: 'The arguments were rejected; fix them before trying again.',
   too_large: 'The request is too big; split it into smaller pieces.',

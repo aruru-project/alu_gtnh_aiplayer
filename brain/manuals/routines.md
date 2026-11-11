@@ -19,7 +19,9 @@
 - list_containers：r.data.containers 是 [{ x, y, z, id, name, kind, slots, usedSlots, items: [{ id, meta, count, name }], attached }]，r.data.total 是总数。
 - list_stock：r.data.items 是 [{ id, meta, count, automated, places: [{ x, y, z, count }] }]（全部，不分页）。
 - get_player_position：r.data 里有 block、facing、lookingAt、ahead。
-- plan_item：r.data 是 { feasible, steps: [{ n, tool, input, text, ask, waitsFor }], missing, decisions }。feasible 为 true 又没有 decisions 时，可以挨个 await tool(s.tool, s.input) 把整份计划做完，哪一步不 ok 就 return 停下。
+- get_status：r.data 是你的原样状态（block、inventory: [{ slot, id, meta, count, name }]、freeSlots……）。
+- find_in_storage：r.data.items 和你问的一一对应，每项有 total 和 places: [{ x, y, z, count }]。
+- 多方块结构是程序里的数据和库函数（data.structure、find_structure、check_structure、read_blocks），见 multiblocks 手册。
 - 别的工具没有 data 时，从 r.text 里看。拿不准某个工具给什么，先用 run_program 调一次、return JSON.stringify(r.data) 看一眼。
 
 # 例子：把抽屉里不到 128 个的东西都搬到一个箱子里

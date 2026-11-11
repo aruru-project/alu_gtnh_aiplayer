@@ -17,6 +17,7 @@ import { DRAFTS_MAX, DRAFT_MAX_SIDE, DesignStoreError, IMAGES_MAX, IMAGE_MAX_BYT
 import type { DesignWorkspace } from '../design/index.ts'
 import { listAdapters } from '../llm/index.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../llm/index.ts'
+import { StructureBook } from '../packdata/index.ts'
 import type { TextureAtlas } from '../packdata/index.ts'
 import { BlockLooks, CORNERS, GridError, PICTURE_MAX_SIZE, SIDES, gridFromBlocks, gridFromDraft, renderView, sceneOf } from '../render/index.ts'
 import type { Corner, Scene, Side, ViewSpec, VoxelGrid } from '../render/index.ts'
@@ -58,6 +59,8 @@ export interface PanelDeps {
   pictures?: { get(id: string): Buffer | undefined; blocks(id: string): unknown }
   /** 方块贴图的图集（本地资料里的 textures/）。没提供时三维预览按方块颜色画。 */
   textures?: TextureAtlas
+  /** 多方块机器怎么搭（本地资料里的 structures.jsonl）。没提供时“多方块结构”一块说明没有这份资料。 */
+  structures?: StructureBook
   bridge: BridgeApi
   bridgeStatus(): BridgeStatus
   agent: {
@@ -492,6 +495,10 @@ export class PanelServer {
         return this.draftModel(url.searchParams.get('name') ?? '')
       case 'GET /pictures/model':
         return this.pictureModel(url.searchParams.get('id') ?? '')
+      case 'GET /structures':
+        return this.structureList(url.searchParams.get('q') ?? '')
+      case 'GET /structures/model':
+        return this.structureModel(url.searchParams.get('id') ?? '', Number(url.searchParams.get('meta') ?? 0), url.searchParams.get('tier'))
       case 'GET /drafts/view':
         return this.draftView(url.searchParams.get('name') ?? '')
       case 'DELETE /drafts':
@@ -1022,6 +1029,32 @@ export class PanelServer {
       nameOf: (kind) => this.deps.design.nameOf(kind),
       ...(textures ? { textures, atlasUrl: `/api/textures/atlas.png?v=${encodeURIComponent(textures.version)}` } : {}),
     })
+  }
+
+  /** 多方块机器的名单（按名字搜）。 */
+  private structureList(query: string): unknown {
+    const book = this.deps.structures
+    if (!book) return { available: false, total: 0, machines: [] }
+    const hits = query.trim().length > 0 ? book.search(query) : book.machines
+    return { available: true, total: hits.length, machines: hits.slice(0, 60).map((m) => ({ id: m.id, meta: m.meta, name: m.name, tiers: StructureBook.tiersOf(m) })) }
+  }
+
+  /** 一台多方块机器某个等级的结构：材料清单、说明文字，和三维预览要的数据（和草稿的预览同一种）。 */
+  private structureModel(id: string, meta: number, tierText: string | null): unknown {
+    const machine = this.deps.structures?.get(id, meta)
+    if (!machine) throw new HttpError(404, 'not_found', '没有这台多方块机器的结构')
+    const tiers = StructureBook.tiersOf(machine)
+    const tier = tierText === null || tierText === '' ? tiers[0]! : Number(tierText)
+    const row = StructureBook.rowOf(machine, tier)
+    if (!row) throw new HttpError(404, 'not_found', `这台机器没有 ${tierText} 级，它有：${tiers.join('、')}`)
+    let grid: VoxelGrid
+    try {
+      grid = gridFromBlocks({ x: 0, y: 0, z: 0, sx: row.size[0], sy: row.size[1], sz: row.size[2], palette: row.palette, runs: Array.from(row.runs) })
+    } catch (e) {
+      if (e instanceof GridError) throw new HttpError(400, 'bad_request', e.message)
+      throw e
+    }
+    return { id: machine.id, meta: machine.meta, name: machine.name, tier, tiers, sameAs: row.tiers, controller: row.controller, blocks: row.blocks, info: machine.info, structureInfo: machine.structureInfo, ...this.model(grid) }
   }
 
   private draftModel(name: string): unknown {

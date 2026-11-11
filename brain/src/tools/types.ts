@@ -41,6 +41,8 @@ export interface ToolResult {
 export interface ManualAccess {
   list(): Manual[]
   get(name: string): Manual | undefined
+  /** 它自己写一本（把主人教的做法记成一篇）。不合规时抛 ManualError。 */
+  saveOwn(input: { name: string; summary: string; body: string }): Manual
 }
 
 /** 工具需要的记忆接口（store/memory.ts 的 MemoryStore 满足）。 */

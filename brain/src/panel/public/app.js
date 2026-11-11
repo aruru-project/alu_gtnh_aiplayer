@@ -1168,6 +1168,7 @@ async function enterManuals() {
 
 function manualBadge(m) {
   if (m.source === 'default') return h('span', { class: 'badge', text: '默认' })
+  if (m.self) return h('span', { class: 'badge', text: '它自己写的' })
   return m.overridesDefault ? h('span', { class: 'badge warn', text: '你改过的' }) : h('span', { class: 'badge ok', text: '你写的' })
 }
 
@@ -1298,11 +1299,75 @@ const blueprintSize = (b) => (b.size ? `${b.size.x}×${b.size.y}×${b.size.z}` :
 function enterBlueprints() {
   const root = $('#tab-blueprints')
   if (!$('#bp-drafts')) {
-    root.replaceChildren(h('div', { class: 'stack' }, h('div', { id: 'bp-drafts', class: 'stack' }), h('div', { id: 'bp-images', class: 'stack' }), h('div', { id: 'bp-server', class: 'stack' })))
+    root.replaceChildren(h('div', { class: 'stack' }, h('div', { id: 'bp-drafts', class: 'stack' }), h('div', { id: 'bp-images', class: 'stack' }), h('div', { id: 'bp-server', class: 'stack' }), h('div', { id: 'bp-structures', class: 'stack' })))
   }
   loadDrafts()
   loadImages()
   loadServerBlueprints()
+  loadStructures()
+}
+
+// ── 图纸：多方块结构（游戏里那个“投影”：一台多方块机器每个等级怎么搭）──
+
+/** 正在看的那台机器的三维预览。 */
+let structureViewer = null
+
+async function loadStructures(query = '') {
+  const root = $('#bp-structures')
+  let data
+  try {
+    data = await api('GET', `/structures?q=${encodeURIComponent(query)}`)
+  } catch (e) {
+    if (e.status === 401) return
+    sectionError(root, '多方块结构', `拿不到多方块结构的名单：${e.message}`, '', () => loadStructures(query))
+    return
+  }
+  structureViewer?.destroy()
+  structureViewer = null
+  const search = h('input', { type: 'search', placeholder: '机器的名字，比如 蒸汽离心机', value: query, 'aria-label': '搜多方块机器' })
+  const go = h('button', { type: 'button', text: '搜' })
+  go.addEventListener('click', () => loadStructures(search.value))
+  search.addEventListener('keydown', (e) => e.key === 'Enter' && loadStructures(search.value))
+  const detail = h('div', { class: 'stack' })
+  const list = h('div', { class: 'row' })
+  for (const m of data.machines) {
+    const b = h('button', { type: 'button', text: `${m.name}${m.tiers.length > 1 ? `（${m.tiers.length} 级）` : ''}` })
+    b.addEventListener('click', () => showStructure(detail, m, m.tiers[0]))
+    list.append(b)
+  }
+  const hint = !data.available
+    ? '大脑没有这份资料（packdata/structures.jsonl）。'
+    : data.machines.length === 0
+      ? '没有名字里含这几个字的多方块机器。'
+      : `${data.total} 台多方块机器${data.total > data.machines.length ? `，这里列了前 ${data.machines.length} 台，搜名字缩小范围` : ''}。点一台看它怎么搭。`
+  root.replaceChildren(h('div', { class: 'card' }, h('h2', { text: '多方块结构' }), h('p', { class: 'hint', text: hint }), data.available ? h('div', { class: 'row' }, search, go) : null, list, detail))
+}
+
+async function showStructure(detail, machine, tier) {
+  let data
+  try {
+    data = await api('GET', `/structures/model?id=${encodeURIComponent(machine.id)}&meta=${machine.meta}&tier=${tier}`)
+  } catch (e) {
+    detail.replaceChildren(h('p', { class: 'error', text: `这台机器的结构没取到：${e.message}` }))
+    return
+  }
+  structureViewer?.destroy()
+  const tiers = h('div', { class: 'row' })
+  for (const t of data.tiers) {
+    const b = h('button', { type: 'button', text: `${t} 级`, 'aria-pressed': String(t === data.tier) })
+    b.addEventListener('click', () => showStructure(detail, machine, t))
+    tiers.append(b)
+  }
+  const stage = h('div')
+  const notes = [...data.info, ...data.structureInfo].filter((line) => !/^-{5,}$/.test(line.trim()))
+  detail.replaceChildren(
+    h('h3', { text: `${data.name}，${data.tier} 级（${data.size.x}×${data.size.y}×${data.size.z}，主机朝南）` }),
+    data.tiers.length > 1 ? tiers : null,
+    h('p', { text: `材料：${data.blocks.map((b) => `${b.n}× ${b.name ?? b.id}`).join('，')}` }),
+    stage,
+    notes.length > 0 ? h('details', {}, h('summary', { text: '机器自己的说明' }), h('pre', { text: notes.join('\n') })) : null,
+  )
+  structureViewer = createViewer(stage, data)
 }
 
 /** 某一块没拿到数据时：原因留在页面上，带一个重试。 */

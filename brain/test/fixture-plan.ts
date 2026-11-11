@@ -43,6 +43,7 @@ export const P = {
   motor: { id: GT, meta: 32600 },
   battery: { id: GT, meta: 32518 },
   titanPlate: { id: GT, meta: 17028 },
+  pattern: { id: 'demo:pattern', meta: 0 },
   /** 每种材质一把锤子用的锭：demo:ingot/0…11。 */
   demoIngot: (n: number) => ({ id: 'demo:ingot', meta: n }),
   /** 一条长链上的第 n 节。 */
@@ -83,6 +84,8 @@ export const ITEMS = [
   { ...P.motor, name: '电动马达（LV）', en: 'Electric Motor (LV)' },
   { ...P.battery, name: '小型锂电池', en: 'Small Lithium Battery', ores: ['batteryLV'] },
   { ...P.titanPlate, name: '钛板', en: 'Titanium Plate', ores: ['plateTitanium'] },
+  { ...P.pattern, name: '样板', en: 'Pattern' },
+  { id: 'TConstruct:CraftingStation', meta: 0, name: '合成站', en: 'Crafting Station' },
   { id: 'gregtech:gt.integrated_circuit', meta: 1, name: '编程电路 1', en: 'Programmed Circuit' },
   { id: MACHINE, meta: 221, name: '基础卷板机', en: 'Basic Bending Machine' },
   { id: MACHINE, meta: 282, name: '进阶压模机', en: 'Advanced Extruder' },
@@ -91,6 +94,8 @@ export const ITEMS = [
   { id: MACHINE, meta: 301, name: '基础研磨机', en: 'Basic Macerator' },
   { id: MACHINE, meta: 521, name: '基础流体固化器', en: 'Basic Fluid Solidifier' },
   { id: 'minecraft:chest', meta: 0, name: '箱子', en: 'Chest' },
+  { id: 'minecraft:furnace', meta: 0, name: '熔炉', en: 'Furnace' },
+  { id: 'minecraft:coal', meta: 1, name: '木炭', en: 'Charcoal' },
   { id: 'minecraft:hopper', meta: 0, name: '漏斗', en: 'Hopper' },
   { id: 'avaritiaddons:CompressedChest', meta: 0, name: '压缩箱子', en: 'Compressed Chest' },
   ...DEMO.map((zh, n) => ({ ...P.demoIngot(n), name: `${zh}锭`, en: `Ingot ${n}`, ores: [`ingotDemo${n}`] })),
@@ -110,6 +115,8 @@ export const HANDLERS = [
   { key: SHAPED, name: '有序合成', mod: 'Minecraft', grid: true, machines: [{ id: 'minecraft:crafting_table', meta: 0 }], read: 'all' },
   { key: SHAPELESS, name: '无序合成', mod: 'Minecraft', grid: true, machines: [], read: 'all' },
   { key: 'codechicken.nei.recipe.FurnaceRecipeHandler', name: '烧制', mod: 'Minecraft', machines: [{ id: 'minecraft:furnace', meta: 0 }], read: 'all' },
+  // 别的 mod 自己的合成页：列着合成台，可导出时没标成合成格（grid）——不是合成格，也不是“把原料点进去等着”的机器
+  { key: 'appeng.NEIAEShapedRecipeHandler', name: 'AE 合成', mod: 'AE2', machines: [{ id: 'minecraft:crafting_table', meta: 0 }, { id: 'TConstruct:CraftingStation', meta: 0 }], read: 'all' },
 ]
 
 const item = (p: { id: string; meta: number }, n: number, g?: number) => ({ ...p, n, ...(g !== undefined ? { g } : {}) })
@@ -150,6 +157,8 @@ export const R = {
   pinCast: 48,
   shaftShapeTitan: 49,
   castTitanPlate: 50,
+  furnacePin: 51,
+  aePattern: 52,
 }
 
 export const RECIPES: Record<string, unknown>[] = [
@@ -183,7 +192,7 @@ export const RECIPES: Record<string, unknown>[] = [
   ...Array.from({ length: 12 }, (_, n) => ({ h: SHAPED, in: [...[0, 1, 2, 3, 4, 5].map((g) => item(P.demoIngot(n), 1, g)), ore('stickWood', [P.stick], 7)], out: [item(P.hammer, 1)] })),
   // 26–37：一条长链
   ...Array.from({ length: LINKS - 1 }, (_, n) => ({ h: SHAPED, in: [item(P.link(n + 1), 1, 0), ore('stickWood', [P.stick], 3)], out: [item(P.link(n), 1)] })),
-  // 38：熔炉也能把钢粉烧成锭（它操作不了的那类）
+  // 38：熔炉也能把钢粉烧成锭（熔炉不是身体认识的机器：世界里有一个时可以试）
   { h: 'codechicken.nei.recipe.FurnaceRecipeHandler', in: [item(P.steelDust, 1)], out: [item(P.steelIngot, 1)] },
   // 39、40：钢杆。压模机 1 锭 2 根，模头（杆）不消耗；手工锤 1 锭 1 根
   { h: 'gt.recipe.extruder', in: [item(P.steelIngot, 1), item(P.rodShape, 0)], out: [item(P.steelRod, 2)], eut: 64, ticks: 100 },
@@ -204,6 +213,10 @@ export const RECIPES: Record<string, unknown>[] = [
   // 49、50：模头（转轴）也可以用 4 钛板做；钛板只有流体固化器浇得出来（144 mB 熔融钛）——基地里没有钛
   { h: SHAPED, in: [HAMMER, item(P.titanPlate, 1, 1), item(P.titanPlate, 1, 3), item(P.rodShape, 1, 4), item(P.titanPlate, 1, 5), item(P.titanPlate, 1, 7)], out: [item(P.shaftShape, 1)] },
   { h: 'gt.recipe.fluidsolidifier', in: [], out: [item(P.titanPlate, 1)], fin: [{ f: 'molten.titanium', name: '熔融钛', mb: 144 }], eut: 30, ticks: 40 },
+  // 51：钢销在熔炉里烧最省料（1 锭 8 个）——熔炉是身体不认识的机器
+  { h: 'codechicken.nei.recipe.FurnaceRecipeHandler', in: [item(P.steelIngot, 1)], out: [item(P.pin, 8)] },
+  // 52：样板只有“AE 合成”那一页做得出
+  { h: 'appeng.NEIAEShapedRecipeHandler', in: [item(P.steelPlate, 1)], out: [item(P.pattern, 1)] },
 ]
 
 export function writePlanFixture(dir: string): void {
@@ -236,6 +249,9 @@ export const BENDER = single(16, 'Basic Bending Machine', 221, 'Bending Machine'
 export const EXTRUDER = single(18, 'Advanced Extruder', 282, 'Extruder', 'gt.recipe.extruder', 'MV', 128)
 export const MIXER = single(20, 'Basic Mixer', 581, 'Mixer', 'gt.recipe.mixer', 'LV', 32, 6)
 export const MACERATOR = single(22, 'Basic Macerator', 301, 'Macerator', 'gt.recipe.macerator', 'LV', 32)
+/** 一个原版熔炉：身体不认识的机器，world.machines 里没有它，只在 world.containers 里是一个容器（烧着时方块 id 是 lit_furnace）。默认的基地里没有。 */
+export const FURNACE_BLOCK = { x: 14, y: 64, z: -2 }
+export const furnaceBlock = (items: Box['items'] = []): Box => ({ ...FURNACE_BLOCK, id: 'minecraft:lit_furnace', name: 'Furnace', items })
 /** 流体固化器：单方块，罐子里有什么它看不到。默认的基地里没有，要的测试自己加。 */
 export const SOLIDIFIER = single(24, 'Basic Fluid Solidifier', 521, 'Fluid Solidifier', 'gt.recipe.fluidsolidifier', 'LV', 32)
 /** 一台机器的格子里放着的东西（world.containers 里，机器也是一个容器，kind 是 machine）。 */
