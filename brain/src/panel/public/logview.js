@@ -159,6 +159,7 @@ const RELAY_KINDS = {
   report: ['汇报', ''],
   question: ['提问，在等回答', 'warn'],
   result: ['做完了', 'ok'],
+  progress: ['还在干，留了句话', ''],
   trouble: ['出了状况', 'bad'],
   stop: ['叫停', 'bad'],
 }
@@ -171,7 +172,7 @@ function renderRelay(item, compact = false) {
     'div',
     { class: `rband k-${item.kind}${item.isError ? ' is-error' : ''} ${toWork ? 'to-work' : 'to-talk'}${compact ? ' compact' : ''}`, title: compact ? item.text : '' },
     h('div', { class: 'relay-route', title: toWork ? `${left}交给干活线的` : '干活线送给对话线的' }, h('span', { class: 'tag talk', text: left }), h('span', { class: 'relay-arrow', 'aria-label': toWork ? '交给' : '送回', text: item.kind === 'stop' ? '■→' : toWork ? '──→' : '←──' }), h('span', { class: 'tag work', text: '干活线' })),
-    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), item.background ? h('span', { class: 'chip', title: '两条线来回了太多轮没有外面的新消息：这一条只放进对方的背景里，没有叫醒它', text: '只作背景，没叫醒它' }) : null, h('span', { class: 'relay-text', text: item.text }), item.quotes > 0 && !compact ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
+    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: label }), item.background && item.kind !== 'progress' ? h('span', { class: 'chip', title: '两条线来回了太多轮没有外面的新消息：这一条只放进对方的背景里，没有叫醒它', text: '只作背景，没叫醒它' }) : null, h('span', { class: 'relay-text', text: item.text }), item.kind === 'progress' ? h('span', { class: 'muted', title: '它开的任务或例程还在跑：这句话只放进对话线的背景里，没有叫醒对话线；任务或例程一结束，干活线自己会被叫醒接着做', text: item.waiting ? `（${item.waiting}）` : '（没叫醒对话线）' }) : null, item.quotes > 0 && !compact ? h('span', { class: 'muted', title: '程序原样附上的主人原话和站位、指向', text: `（附 ${item.quotes} 句原话）` }) : null),
     time(item.time),
   )
   // “只看对话”那一档里它只占一行，不抢人话的位置；全文在另外两档里看
@@ -189,7 +190,9 @@ function stepHead(step, live) {
       if (typeof call.ms === 'number') parts.push(h('span', { text: duration(call.ms) }))
       const tokens = tokensText(call.inputTokens, call.outputTokens, call.cacheReadTokens)
       if (tokens) parts.push(h('span', { text: tokens }))
-      if (call.state === 'halted' || (call.state === 'failed' && call.errorKind === 'aborted')) parts.push(h('span', { class: 'warn', title: call.error ?? '', text: '想到一半被打断了' }))
+      // 被叫停（对话线 stop_work、主人点“全部停下”）和大脑进程要关时中止的那一次都不是模型出错
+      if (call.state === 'halted' || call.stop === 'halted') parts.push(h('span', { class: 'warn', title: '对话线叫停了干活线，或者你在面板上点了“全部停下”', text: '想到一半被叫停了' }))
+      else if (call.state === 'failed' && call.errorKind === 'aborted') parts.push(h('span', { class: 'muted', title: call.error ?? '', text: '大脑进程要停，这一步被中止了' }))
       else if (call.state === 'failed') parts.push(h('span', { class: 'bad', text: `失败${call.errorKind ? `（${call.errorKind}）` : ''}：${call.error ?? ''}` }))
       else if (call.stop && call.stop !== 'tool_calls') parts.push(h('span', { class: call.stop === 'truncated' ? 'warn' : '', text: STOP_REASONS[call.stop] ?? call.stop }))
     }
@@ -200,7 +203,7 @@ function stepHead(step, live) {
 function renderStep(step, live) {
   return h(
     'div',
-    { class: `step${step.call?.state === 'failed' ? ' failed' : ''}` },
+    { class: `step${step.call?.state === 'failed' && step.call.errorKind !== 'aborted' ? ' failed' : ''}` },
     // 旧日志没有每一步的账：不画步头，工具直接排
     step.call || step.n !== undefined ? stepHead(step, live) : null,
     step.texts.map((t) => h('div', { class: 'model-text', title: '模型写的文字。只有它用 say 说的才进游戏聊天' }, h('span', { class: 'label', text: '它写道' }), h('span', { text: t.text }))),

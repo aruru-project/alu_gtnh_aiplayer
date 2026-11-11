@@ -1,7 +1,7 @@
 // 游戏味的那几样组件：物品格子（图标、数量、耐久条、悬停说明）、物品栏、开着的界面、血量和饥饿、玩家的头。
 // 图都是整数倍放大、不抹匀的（image-rendering: pixelated）。心、鸡腿、头是照着像素表画在 canvas 上的，不用任何图片文件。
 
-import { h, put } from './ui.js'
+import { api, h, put } from './ui.js'
 
 /** 一个格子里图标的边长（像素）。格子本身是 36：四周各 2 像素的凹槽边。 */
 const ICON = 32
@@ -145,18 +145,96 @@ export function slotEl(slot, looks, onPick) {
   return el
 }
 
-/** 一行详情：选中的那一格是什么（给触屏和不方便悬停的时候看）。 */
+/** 选中的那一格的详情：一行它是什么，下面是它的提示文字（游戏里鼠标放上去看到的那几行）。 */
 export function slotDetail(slot) {
   const item = slot?.item
   if (!item) return h('p', { class: 'slot-detail muted', text: '点一个格子看它是什么。' })
   return h(
-    'p',
-    { class: 'slot-detail' },
-    h('strong', { text: item.name }),
-    ` ×${item.count}`,
-    typeof item.durability === 'number' ? ` · 耐久剩 ${Math.round(item.durability * 100)}%` : '',
-    h('span', { class: 'mono muted', text: `  ${item.id}${item.meta ? `/${item.meta}` : ''}` }),
+    'div',
+    null,
+    h(
+      'p',
+      { class: 'slot-detail' },
+      h('strong', { text: item.name }),
+      ` ×${item.count}`,
+      typeof item.durability === 'number' ? ` · 耐久剩 ${Math.round(item.durability * 100)}%` : '',
+      h('span', { class: 'mono muted', text: `  ${item.id}${item.meta ? `/${item.meta}` : ''}` }),
+    ),
+    tooltipBox(item),
   )
+}
+
+// ── 提示文字 ──
+
+/** 问过的提示文字："id/meta" → { tip, shift?, ctrl? }；没有提示的是 null。没有这份资料时整个是 false。 */
+const tooltips = new Map()
+let tooltipsAvailable = true
+/** 上次看的是哪个画面（不按键 / Shift / Ctrl）：换一格还停在那个画面上（有的话）。 */
+let tooltipScreen = 'tip'
+const SCREENS = [
+  ['tip', '不按键'],
+  ['shift', '按住 Shift'],
+  ['ctrl', '按住 Ctrl'],
+]
+
+/**
+ * 一样东西的提示文字：三个画面分开（按住 Shift、Ctrl 时是换成另一版，不是接在后面）。
+ * 第一次要的时候去问，问到了填进这个框里；问过的记着。
+ */
+function tooltipBox(item) {
+  const key = `${item.id}/${item.meta ?? 0}`
+  const box = h('div', { class: 'mc-tt-box' })
+  const fill = () => {
+    const tt = tooltips.get(key)
+    if (!tooltipsAvailable) return put(box)
+    if (tt === undefined) return put(box, h('p', { class: 'hint', text: '正在取它的提示文字…' }))
+    if (tt === null) return put(box, h('p', { class: 'hint', text: '游戏里它的名字下面没有别的字。' }))
+    const have = SCREENS.filter(([k]) => k === 'tip' || tt[k])
+    const screen = have.some(([k]) => k === tooltipScreen) ? tooltipScreen : 'tip'
+    const lines = tt[screen] ?? []
+    const tabs =
+      have.length > 1
+        ? h(
+            'div',
+            { class: 'mc-tt-tabs', role: 'tablist', 'aria-label': '按住哪个键' },
+            have.map(([k, label]) => {
+              const b = h('button', { type: 'button', role: 'tab', class: 'small', 'aria-selected': String(k === screen), text: label })
+              b.addEventListener('click', () => {
+                tooltipScreen = k
+                fill()
+              })
+              return b
+            }),
+          )
+        : null
+    put(
+      box,
+      tabs,
+      h(
+        'div',
+        { class: 'mc-tt', role: 'tabpanel', 'aria-label': `${SCREENS.find(([k]) => k === screen)[1]}时的提示` },
+        h('div', { class: 'mc-tt-name', text: item.name }),
+        lines.length === 0 ? h('div', { class: 'mc-tt-empty', text: screen === 'tip' ? '（不按键时名字下面没有字，按住 Shift 才有）' : '（这时名字下面没有字）' }) : lines.map((line) => (line === '---' ? h('hr') : line.trim() === '' ? h('div', { class: 'mc-tt-gap' }) : h('div', { class: 'mc-tt-line', text: line }))),
+      ),
+      h('p', { class: 'hint', text: '这几行是对着一件新拿出来的样品看到的：电量、存量、经验、绑定这类说的是样品，不是它身上这一件。' }),
+    )
+  }
+  fill()
+  if (!tooltips.has(key) && tooltipsAvailable) {
+    api('GET', `/items/tooltips?q=${encodeURIComponent(key)}`).then(
+      (res) => {
+        if (res.available === false) tooltipsAvailable = false
+        tooltips.set(key, res.tooltips?.[key] ?? null)
+        fill()
+      },
+      () => {
+        // 这个版本的大脑没有这个接口，或者一时没连上：不显示
+        tooltipsAvailable = false
+        fill()
+      },
+    )
+  }
+  return box
 }
 
 /**

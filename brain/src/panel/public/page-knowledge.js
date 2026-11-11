@@ -1,14 +1,20 @@
 // “知识”页：它记着的、照着做的、想对你说的。
-//   记忆     它自己记的笔记（键 → 一段话），每一轮都给它看；你可以直接改
-//   手册     它要干某一类活时才去翻的说明：默认的随程序发布，你可以改、可以新写，它自己也会写
-//   意见簿   它干活时觉得哪里有问题，自己记下的反馈；你看过、处理过可以标一下
+//   记忆        它自己记的笔记（键 → 一段话），每一轮都给它看；你可以直接改
+//   基地的做法  这个基地怎么做东西：你教的、它自己定的（knowledge-methods.js）
+//   手册        它要干某一类活时才去翻的说明：默认的随程序发布，你可以改、可以新写，它自己也会写
+//   指南        整合包带的游戏内指南，只读（knowledge-guide.js）
+//   意见簿      它干活时觉得哪里有问题，自己记下的反馈；你看过、处理过可以标一下
 
 import { state } from './data.js'
+import { showGuide } from './knowledge-guide.js'
+import { showMethods } from './knowledge-methods.js'
 import { act, api, badge, bus, button, dateTime, empty, field, h, kv, loadError, num, progressBar, put, subTabs, TASK_STATES, when } from './ui.js'
 
 const TABS = [
   { id: 'memory', label: '记忆' },
+  { id: 'methods', label: '基地的做法' },
   { id: 'manuals', label: '手册' },
+  { id: 'guide', label: '指南' },
   { id: 'feedback', label: '意见簿' },
 ]
 
@@ -321,7 +327,7 @@ function setCount(n) {
 
 // ════════ 进出这一页 ════════
 
-function show(tab) {
+function show(tab, arg) {
   current = tab
   // 头一次进这一块：数据到之前先写一句，不留白
   const target = root.querySelector(`[data-tab="${tab}"]`)
@@ -329,7 +335,9 @@ function show(tab) {
   for (const p of root.querySelectorAll('[data-tab]')) p.hidden = p.dataset.tab !== tab
   for (const b of root.querySelectorAll('.subtabs button')) b.setAttribute('aria-selected', String(b.dataset.id === tab))
   if (tab === 'memory') loadMemory()
+  else if (tab === 'methods') showMethods(target)
   else if (tab === 'manuals') loadManuals()
+  else if (tab === 'guide') showGuide(target, arg)
   else loadFeedback()
 }
 
@@ -342,8 +350,17 @@ export function enter(el, sub) {
     el.append(h('h1', { class: 'page-title', text: '知识' }), subTabs(TABS, current, (id) => (location.hash = `#knowledge/${id}`)), ...TABS.map((t) => h('div', { 'data-tab': t.id, hidden: true })))
   }
   setCount(state.overview?.feedback?.unread ?? 0)
+  // 地址里可以带一个参数：#knowledge/guide:<指南的一页>
+  const colon = sub?.indexOf(':') ?? -1
+  const tab = colon >= 0 ? sub.slice(0, colon) : sub
+  let arg
+  try {
+    arg = colon >= 0 ? decodeURIComponent(sub.slice(colon + 1)) : undefined
+  } catch {
+    arg = undefined
+  }
   // 导航上那个数字是意见簿里没看过的条数：有的话，点“知识”先落在意见簿
-  show(TABS.some((t) => t.id === sub) ? sub : (state.overview?.feedback?.unread ?? 0) > 0 ? 'feedback' : current)
+  show(TABS.some((t) => t.id === tab) ? tab : (state.overview?.feedback?.unread ?? 0) > 0 ? 'feedback' : current, arg)
   unsubscribe = [bus.on('overview', (o) => setCount(o.feedback?.unread ?? 0))]
 }
 
