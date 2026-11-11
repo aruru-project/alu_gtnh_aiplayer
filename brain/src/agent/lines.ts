@@ -383,6 +383,11 @@ export class Lines {
   /** 过一小会儿看要不要因为清单叫醒干活线（再来一次就从头等）。清单上没有没做的就不用看。 */
   private armTodo(): void {
     if (!this.deps.todo || this.closed) return
+    // 叫醒它时就在清单上的那几条，已经不是“没做”的（做完了、在等人、删掉了）就从里面去掉：以后被重新打开，算新多出来的
+    if (this.todoNudged) {
+      const open = new Set(this.todoOpen().map((i) => i.id))
+      for (const id of [...this.todoNudged]) if (!open.has(id)) this.todoNudged.delete(id)
+    }
     if (this.todoTimer) clearTimeout(this.todoTimer)
     this.todoTimer = undefined
     if (this.todoOpen().length === 0) return

@@ -227,18 +227,27 @@ describe('工作清单：干活线停下来以后被叫醒', () => {
     h.todo.apply({ change: [{ id: 1, state: 'done' }, { id: 2, note: '不急' }] }, 'owner', T0)
     await sleep(200)
     assert.equal(h.llm.requests.length, 3)
-    // 主人加了一件没做的：再叫，列出现在还没做的
-    h.todo.apply({ add: [{ text: '修二号高炉' }] }, 'owner', T0)
-    await waitFor('woken again after a new item', () => h.llm.requests.length >= 4)
-    assert.equal(nudges(h)[1], '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 2 件没做完、也没标成在等人：#2 挖完北边的矿洞、#3 修二号高炉')
+    // 叫醒时就在的 #2 被标成在等人、后来又重新打开：算新多出来的，再叫
+    h.todo.apply({ change: [{ id: 2, waitingFor: 'Steve 让路' }] }, 'owner', T0)
+    await sleep(200)
+    assert.equal(h.llm.requests.length, 3)
+    h.todo.apply({ change: [{ id: 2, state: 'open' }] }, 'owner', T0)
+    await waitFor('woken again after #2 was reopened', () => h.llm.requests.length >= 4)
+    assert.equal(nudges(h)[1], '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 1 件没做完、也没标成在等人：#2 挖完北边的矿洞')
     await sleep(200)
     assert.equal(h.llm.requests.length, 4)
+    // 主人加了一件没做的：再叫，列出现在还没做的
+    h.todo.apply({ add: [{ text: '修二号高炉' }] }, 'owner', T0)
+    await waitFor('woken again after a new item', () => h.llm.requests.length >= 5)
+    assert.equal(nudges(h)[2], '[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 2 件没做完、也没标成在等人：#2 挖完北边的矿洞、#3 修二号高炉')
+    await sleep(200)
+    assert.equal(h.llm.requests.length, 5)
     // 清单没变，可它为别的事（对话线交来的）走了一轮：走完再叫
     h.agent.handleEvent(told('仓库门口的火把补一下'))
-    await waitFor('woken again after another turn', () => h.llm.requests.length >= 6)
-    assert.equal(nudges(h).length, 3)
+    await waitFor('woken again after another turn', () => h.llm.requests.length >= 7)
+    assert.equal(nudges(h).length, 4)
     await sleep(200)
-    assert.equal(h.llm.requests.length, 6)
+    assert.equal(h.llm.requests.length, 7)
   })
 
   it('对话线正在想的时候清单变了：先不叫，等它想完（它可能正要把事交过来）', async (t) => {
