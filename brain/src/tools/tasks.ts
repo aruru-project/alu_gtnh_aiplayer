@@ -26,6 +26,19 @@ export const queue = bool('true: queue it after your other tasks. Default: start
 /** 一个方块的位置。 */
 export const pos = (description?: string): Schema => obj({ x: int(), y: int(), z: int() }, ['x', 'y', 'z'], description)
 
+/** 方块的六个面（use_item 的 side、存取和开界面时点哪个面）。 */
+export const USE_SIDES = ['down', 'up', 'north', 'south', 'west', 'east']
+
+/**
+ * 存取用的容器位置。带 side / sneak 时不是普通地右键它，而是点那个面（蹲着或不蹲），打开什么界面就往什么界面里存取：
+ * 机器某个面上的覆盖板（槽位扩展）有它自己的界面，里面的东西这样才拿得到。
+ */
+const containerAt = obj(
+  { x: int(), y: int(), z: int(), side: str(undefined, { enum: USE_SIDES }), sneak: bool() },
+  ['x', 'y', 'z'],
+  'Position of the container. "side" (a face) and "sneak": that face is clicked, sneaking or not, and the screen that opens is used (a cover on a machine\'s face has its own).',
+)
+
 /** 一个盒子的两个对角。说明写在工具自己的说明里（BOX_WORDS），六个坐标不各写一句。 */
 export const boxProps = { x1: int(), y1: int(undefined, { min: 0, max: 255 }), z1: int(), x2: int(), y2: int(undefined, { min: 0, max: 255 }), z2: int() }
 export const boxRequired = ['x1', 'y1', 'z1', 'x2', 'y2', 'z2']
@@ -362,7 +375,7 @@ export const depositItems: Tool = {
   description:
     'Walk to a container (a chest or similar, Storage Drawers, a machine) and put items into it (task). Without "items": everything except tools, food and the ids in "keep". Fails with container_full if it does not fit. Give "container" or "bag".',
   inputSchema: obj({
-    container: pos('Position of the container.'),
+    container: containerAt,
     bag,
     items: arr(`What to put in, ${EACH_ITEM}. A bag needs this list.`, itemFilter, { min: 1, max: 36 }),
     keep: arr('Item ids to keep in your inventory.', str(), { min: 1, max: 36 }),
@@ -383,7 +396,7 @@ export const withdrawItems: Tool = {
     'Walk to a container (a chest or similar, Storage Drawers, a machine) and take items out (task); counts are exact. It ends as done even when there was not enough: "missing" in the result says what. Give "container" or "bag".',
   inputSchema: obj(
     {
-      container: pos('Position of the container.'),
+      container: containerAt,
       bag,
       items: arr(`What to take, ${EACH_ITEM}.`, itemFilter, { min: 1, max: 36 }),
       fromInputs: bool('For a machine: true takes from its other slots (a mold or shape left there, unused inputs, fuel) instead of its products.'),
@@ -459,7 +472,6 @@ export const giveItems: Tool = {
   },
 }
 
-export const USE_SIDES = ['down', 'up', 'north', 'south', 'west', 'east']
 
 /**
  * 像玩家那样右键：手里拿着一件东西（或者空手），对着空中或者对着一个方块；可以指定点哪个面、点面上的哪一点、连点几下。

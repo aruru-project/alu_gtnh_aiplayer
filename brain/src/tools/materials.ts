@@ -4,11 +4,11 @@
 // 凿子的一步（从同组的另一种凿出来）不是配方、没有编号，用 chisel 参数给：一换一，凿子不消耗。
 
 import { ANY_META } from '../packdata/index.ts'
-import type { Recipe, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
+import type { FluidInfo, Recipe, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable } from '../packdata/items.ts'
 import { CHISEL_COST } from './chisel.ts'
 import { itemKey } from './format.ts'
-import { circuitOf, isTool, mergedSlots, namer, quantity, slotKey, slotName, unifiedOre } from './recipe-book.ts'
+import { circuitOf, fluidLabel, isTool, mergedSlots, namer, quantity, slotKey, slotName, unifiedOre } from './recipe-book.ts'
 import { arr, int, obj, str } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -33,14 +33,15 @@ function serves(slot: RecipeSlot, out: { id: string; meta: number }, items: Item
 
 export const totalMaterials: Tool = {
   name: 'total_materials',
-  brief: '{id, meta?, count?, recipes?, chisel?}: adds up recipes and chisel steps you chose -> steps[], raw[], kept[]',
+  brief: '{id | fluid, meta?, count?, recipes?, chisel?}: adds up recipes and chisel steps you chose -> steps[], raw[], kept[], fluids[]',
   description:
-    'Pure arithmetic over recipes YOU chose: for a target item and count, and the # number of the recipe you decided to use for each thing that is to be made, it multiplies the amounts down the tree (rounds are rounded up; molds and tools that are not used up count once) and lists how many rounds of each recipe, what has to come from storage, what is kept, and the fluids. A block made with a chisel from another block of its chisel group is not a recipe and has no #: give it in "chisel" (one block gives one block). It chooses nothing: a thing you gave no recipe for is counted as taken ready-made.',
+    'Pure arithmetic over recipes YOU chose: for a target item and count, and the # number of the recipe you decided to use for each thing that is to be made, it multiplies the amounts down the tree (rounds are rounded up; molds and tools that are not used up count once) and lists how many rounds of each recipe, what has to come from storage, what is kept, and the fluids. A fluid a recipe takes is charged to the recipe you chose that gives it (in mB), or listed as taken ready-made. A block made with a chisel from another block of its chisel group is not a recipe and has no #: give it in "chisel" (one block gives one block). It chooses nothing: a thing you gave no recipe for is counted as taken ready-made.',
   inputSchema: obj(
     {
       id: str('Item id of the target.'),
       meta: int('Item meta of the target (default 0).', { min: 0 }),
-      count: int('How many of the target (default 1).', { min: 1, max: 100000 }),
+      fluid: str('Instead of "id": a fluid as the target, by its name or internal name; "count" is then mB.', { maxLength: 80 }),
+      count: int('How many of the target (default 1); for a fluid, mB.', { min: 1, max: 100_000_000 }),
       recipes: arr('The # numbers of the recipes you chose: one for the target, and one for every ingredient you want made rather than taken from storage.', int('recipe #', { min: 0 }), { max: RECIPES_MAX }),
       chisel: arr(
         'Things you chose to make with a chisel from another block of the same chisel group (find_recipes shows the group): one block gives one block.',
@@ -48,9 +49,8 @@ export const totalMaterials: Tool = {
         { max: CHISEL_MAX },
       ),
     },
-    ['id'],
   ),
-  async run(ctx: ToolContext, i: { id: string; meta?: number; count?: number; recipes?: number[]; chisel?: { id: string; meta?: number; from: { id: string; meta?: number } }[] }): Promise<ToolResult | string> {
+  async run(ctx: ToolContext, i: { id?: string; meta?: number; fluid?: string; count?: number; recipes?: number[]; chisel?: { id: string; meta?: number; from: { id: string; meta?: number } }[] }): Promise<ToolResult | string> {
     const book = ctx.packdata?.recipes
     const items = ctx.packdata?.items
     const carving = ctx.packdata?.carving
@@ -59,7 +59,20 @@ export const totalMaterials: Tool = {
     if (asked.length === 0 && carved.length === 0) return fail('Give "recipes" (the # numbers of the recipes you chose), "chisel" (blocks chiselled from another block of their group), or both.')
     if (asked.length > 0 && !book) return fail('There is no recipe book on this brain, so nothing can be added up.')
     const nm = namer(items)
-    const target = { id: i.id.trim(), meta: i.meta ?? 0 }
+    // 目标是一个物品，或者一种流体（数量按 mB）
+    const wantsItem = typeof i.id === 'string' && i.id.trim().length > 0
+    const wantsFluid = typeof i.fluid === 'string' && i.fluid.trim().length > 0
+    if (wantsItem === wantsFluid) return fail('Give exactly one target: "id" (an item) or "fluid" (a fluid; "count" is then mB).')
+    let liquid: FluidInfo | undefined
+    if (wantsFluid) {
+      const table = ctx.packdata?.fluids
+      const text = i.fluid!.trim()
+      const found = table?.get(text) ? [table.get(text)!] : (table?.search(text).exact ?? [])
+      if (found.length !== 1) return fail(found.length === 0 ? `No fluid is named "${text}": give its internal name (find_item shows it in brackets).` : `${found.length} fluids are named "${text}": ${found.map(fluidLabel).join(', ')}. Give the internal name in the brackets.`)
+      liquid = found[0]!
+    }
+    const target = { id: (i.id ?? '').trim(), meta: i.meta ?? 0 }
+    const targetLabel = liquid ? fluidLabel(liquid) : nm.label(target.id, target.meta)
     const count = i.count ?? 1
     const chosen: Recipe[] = []
     for (const ref of [...new Set(asked)]) {
@@ -85,14 +98,14 @@ export const totalMaterials: Tool = {
       groupOfStep.set(ref, group.group)
       chosen.push({ ref, handler: CHISEL_HANDLER, in: [{ kind: 'item', id: from.id, meta: from.meta, n: 1 }], out: [{ id: to.id, meta: to.meta, n: 1 }], fin: [], fout: [] })
     }
-    const targetSlot: RecipeSlot = { kind: 'item', id: target.id, meta: target.meta, n: 1 }
-    const makerOf = (slot: RecipeSlot): Recipe | undefined => chosen.find((r) => r.out.some((o) => o.chance === undefined && serves(slot, o, items)))
-    const top = makerOf(targetSlot)
-    if (!top) return fail(`None of the recipes you gave makes ${nm.label(target.id, target.meta)}: the first thing to choose is the recipe for the target itself.`)
+    /** 一轮出多少“要的那样东西”：物品按个，流体按 mB。 */
+    type Yield = { n: number } & ({ id: string; meta: number; fluid?: undefined } | { fluid: string; name: string })
+    const yields = new Map<number, Yield>()
+    const makerOf = (slot: RecipeSlot): Recipe | undefined => chosen.find((r) => r.out.some((o) => o.chance === undefined && serves(slot, o, items)) && yields.get(r.ref)?.fluid === undefined)
+    /** 产出这种流体的那条配方（你选的里面的）；它已经被当成做别的东西的配方时不算。 */
+    const fluidMakerOf = (fluid: string): Recipe | undefined => chosen.find((r) => r.fout.some((o) => o.f === fluid) && (yields.get(r.ref) === undefined || yields.get(r.ref)!.fluid === fluid))
     const inputs = (r: Recipe): RecipeSlot[] => mergedSlots(r.in).filter((s) => circuitOf(s) === undefined)
-    /** 一轮出几个“要的那样东西”。 */
-    const yields = new Map<number, { n: number; id: string; meta: number }>()
-    const yieldOf = (r: Recipe, slot: RecipeSlot): { n: number; id: string; meta: number } => {
+    const yieldOf = (r: Recipe, slot: RecipeSlot): Yield => {
       let y = yields.get(r.ref)
       if (!y) {
         const outs = r.out.filter((o) => o.chance === undefined && serves(slot, o, items))
@@ -101,7 +114,26 @@ export const totalMaterials: Tool = {
       }
       return y
     }
-    yieldOf(top, targetSlot)
+    const fluidYieldOf = (r: Recipe, fluid: string): Yield => {
+      let y = yields.get(r.ref)
+      if (!y) {
+        const outs = r.fout.filter((o) => o.f === fluid)
+        y = { n: outs.reduce((n, o) => n + o.mb, 0), fluid, name: outs[0]!.name }
+        yields.set(r.ref, y)
+      }
+      return y
+    }
+    let top: Recipe | undefined
+    if (liquid) {
+      top = fluidMakerOf(liquid.fluid)
+      if (!top) return fail(`None of the recipes you gave gives ${targetLabel}: the first thing to choose is the recipe for the target itself.`)
+      fluidYieldOf(top, liquid.fluid)
+    } else {
+      const targetSlot: RecipeSlot = { kind: 'item', id: target.id, meta: target.meta, n: 1 }
+      top = makerOf(targetSlot)
+      if (!top) return fail(`None of the recipes you gave makes ${targetLabel}: the first thing to choose is the recipe for the target itself.`)
+      yieldOf(top, targetSlot)
+    }
 
     // 先排顺序：用到别人的排在别人前面（目标最前），这样轮到一条配方时，要它出多少已经加全了
     const order: Recipe[] = []
@@ -121,6 +153,14 @@ export const totalMaterials: Tool = {
           visit(maker)
         }
       }
+      // 它要的流体也可以是你选的另一条配方出的（流体提取机把钢板化成熔融钢，固化器再拿去浇）
+      for (const f of r.fin) {
+        const maker = fluidMakerOf(f.f)
+        if (maker) {
+          fluidYieldOf(maker, f.f)
+          visit(maker)
+        }
+      }
       state.set(r.ref, 'done')
       order.unshift(r)
     }
@@ -132,17 +172,23 @@ export const totalMaterials: Tool = {
     const kept = new Map<string, RecipeSlot>()
     const keptMade = new Set<number>()
     const fluids = new Map<string, { name: string; mb: number }>()
-    const steps: { recipe?: number; chisel?: { group: string; from: { id: string; meta: number; name: string } }; way: string; rounds: number; makes: { id: string; meta: number; name: string; count: number }; needed: number }[] = []
+    type Made = { id: string; meta: number; name: string; count: number } | { fluid: string; name: string; count: number }
+    const steps: { recipe?: number; chisel?: { group: string; from: { id: string; meta: number; name: string } }; way: string; rounds: number; makes: Made; needed: number }[] = []
     for (const r of order) {
       const y = yields.get(r.ref)!
       const needed = demand.get(r.ref) ?? 0
       const rounds = Math.ceil(needed / y.n)
-      const makes = { id: y.id, meta: y.meta, name: nm.name(y.id, y.meta), count: rounds * y.n }
+      const makes: Made = y.fluid !== undefined ? { fluid: y.fluid, name: y.name, count: rounds * y.n } : { id: y.id, meta: y.meta, name: nm.name(y.id, y.meta), count: rounds * y.n }
       if (isChiselStep(r)) {
         const from = r.in[0] as Extract<RecipeSlot, { kind: 'item' }>
         steps.push({ chisel: { group: groupOfStep.get(r.ref)!, from: { id: from.id, meta: from.meta, name: nm.name(from.id, from.meta) } }, way: 'chisel', rounds, makes, needed })
       } else steps.push({ recipe: r.ref, way: r.handler.name, rounds, makes, needed })
-      for (const f of r.fin) fluids.set(f.f, { name: f.name, mb: (fluids.get(f.f)?.mb ?? 0) + f.mb * rounds })
+      for (const f of r.fin) {
+        const maker = fluidMakerOf(f.f)
+        // 你选了出这种流体的配方：算到那条配方头上（按 mB）；没选的记成“要现成的流体”
+        if (maker && yields.get(maker.ref)?.fluid === f.f) demand.set(maker.ref, (demand.get(maker.ref) ?? 0) + f.mb * rounds)
+        else fluids.set(f.f, { name: f.name, mb: (fluids.get(f.f)?.mb ?? 0) + f.mb * rounds })
+      }
       for (const slot of inputs(r)) {
         const maker = makerOf(slot)
         const stays = slot.n === 0 || isTool(slot)
@@ -161,11 +207,13 @@ export const totalMaterials: Tool = {
     const usesChisel = order.some(isChiselStep)
     // 先做的在前
     const made = [...steps].reverse()
-    const lines: string[] = [`For ${count}× ${nm.label(target.id, target.meta)}, with the ${order.length} ${usesChisel ? 'step(s)' : 'recipe(s)'} you chose (this only adds up amounts; it checks neither the storage nor the machines):`, 'To make, things that are needed by later lines first:']
+    const lines: string[] = [`For ${liquid ? `${count} mB` : `${count}×`} ${targetLabel}, with the ${order.length} ${usesChisel ? 'step(s)' : 'recipe(s)'} you chose (this only adds up amounts; it checks neither the storage nor the machines):`, 'To make, things that are needed by later lines first:']
     for (const s of made) {
       const over = s.makes.count - s.needed
-      if (s.chisel) lines.push(`- chisel (group "${s.chisel.group}") × ${s.rounds} → ${s.makes.count}× ${nm.label(s.makes.id, s.makes.meta)}, from ${s.rounds}× ${nm.label(s.chisel.from.id, s.chisel.from.meta)}`)
-      else lines.push(`- #${s.recipe} (${s.way}) × ${s.rounds} round(s) → ${s.makes.count}× ${s.makes.name}${over > 0 ? ` (${s.needed} needed, ${over} left over)` : ''}`)
+      const left = over > 0 ? ` (${s.needed} needed, ${over} left over)` : ''
+      if (s.chisel && 'id' in s.makes) lines.push(`- chisel (group "${s.chisel.group}") × ${s.rounds} → ${s.makes.count}× ${nm.label(s.makes.id, s.makes.meta)}, from ${s.rounds}× ${nm.label(s.chisel.from.id, s.chisel.from.meta)}`)
+      else if ('fluid' in s.makes) lines.push(`- #${s.recipe} (${s.way}) × ${s.rounds} round(s) → ${s.makes.count} mB ${s.makes.name}${left}`)
+      else lines.push(`- #${s.recipe} (${s.way}) × ${s.rounds} round(s) → ${s.makes.count}× ${s.makes.name}${left}`)
     }
     const rawList = [...raw.values()]
     lines.push(rawList.length > 0 ? `Taken ready-made (you gave no recipe for these): ${rawList.map((x) => `${quantity(x.n)}× ${slotName(x.slot, nm, true)}`).join(', ')}` : 'Nothing has to be taken ready-made.')
@@ -178,7 +226,7 @@ export const totalMaterials: Tool = {
     return {
       content: lines.join('\n'),
       data: {
-        target: { ...target, count },
+        target: liquid ? { fluid: liquid.fluid, name: liquid.name, count } : { ...target, count },
         steps: made,
         raw: rawList.map((x) => ({ ...slotData(x.slot), name: slotName(x.slot, nm, false), count: x.n })),
         kept: [...[...kept.values()].map((slot) => ({ ...slotData(slot), name: slotName(slot, nm, false) })), ...(usesChisel ? [{ tool: 'chisel', name: '凿子' }] : [])],

@@ -57,7 +57,8 @@ export class BridgeApi {
   serverInfo(): Promise<ServerInfo> {
     return this.call('server.info')
   }
-  worldBlock(p: Dim & BlockPos): Promise<BlockInfo> {
+  /** detail / path：连同这个方块自己知道的全部（它对扫描器说的话、存档里的全部数据；path 只看其中一部分）。 */
+  worldBlock(p: Dim & BlockPos & { detail?: boolean; path?: string }): Promise<BlockInfo> {
     return this.call('world.block', p)
   }
   worldScan(p: Dim & { x1: number; z1: number; x2: number; z2: number }): Promise<ScanResult> {
@@ -103,7 +104,8 @@ export class BridgeApi {
     return this.call('world.machines', { ...center, ...p })
   }
   // ── 界面（通用）：打开、看格子、点、关。只在 bot 没有任务在跑时可用 ──
-  screenOpen(bot: string, target: { x: number; y: number; z: number } | { item: { id: string; meta?: number } }): Promise<ScreenState> {
+  /** 打开一个方块的界面（side / hit / sneak：点哪个面、哪一点、蹲不蹲——有的方块这样打开的是另一个界面），或者身上一件东西的界面。 */
+  screenOpen(bot: string, target: { x: number; y: number; z: number; side?: string; hit?: { x: number; y: number; z: number }; sneak?: boolean } | { item: { id: string; meta?: number } }): Promise<ScreenState> {
     return this.call('screen.open', { bot, ...target })
   }
   screenLook(bot: string): Promise<ScreenState> {

@@ -47,8 +47,8 @@ export function str(description?: string, opts: { enum?: string[]; maxLength?: n
   return s
 }
 
-export function bool(description: string): Schema {
-  return { type: 'boolean', description }
+export function bool(description?: string): Schema {
+  return description ? { type: 'boolean', description } : { type: 'boolean' }
 }
 
 export function arr(description: string | undefined, items: Schema, range: { min?: number; max?: number } = {}): Schema {

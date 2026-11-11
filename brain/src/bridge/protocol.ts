@@ -142,6 +142,24 @@ export interface BlockInfo {
   hardness?: number
   tileEntity?: boolean
   inventory?: boolean
+  covers?: Cover[]
+  tanks?: Tank[]
+  // ── 下面是 world.block 带 detail:true（或 path）时才有的：这个方块自己知道的全部，不按种类做任何假设 ──
+  /** 没有自己数据的方块（普通方块）：一句说明。 */
+  detail?: string
+  /** 它的方块实体是哪个类。 */
+  class?: string
+  /** 它对扫描器自报的那几行话（GregTech 的机器有）。 */
+  says?: string[]
+  /** 它存档里的全部数据：键是它自己起的内部名字，值是原样的；物品换成了 {item, meta, count, name, …}。 */
+  saved?: unknown
+  /** saved 里有被省略的部分（太深、列表太长、总量太大），省略处写着怎么要。 */
+  savedCut?: boolean
+  /** 只看了 saved 的这一部分。 */
+  path?: string
+  /** 那个路径不存在：saved 是顶层的样子。 */
+  pathNotFound?: boolean
+  savedError?: string
 }
 
 export interface ScanResult {
@@ -201,6 +219,33 @@ export interface AttachedBlock {
   kind?: string
 }
 
+/**
+ * 机器、管道某个面上的一块覆盖板（GregTech）。能装东西的（槽位扩展）带 slots / items：这些东西不在机器自己的格子里，
+ * 要蹲着右键那个面、打开覆盖板自己的界面才拿得到。
+ */
+export interface Cover {
+  /** 在哪个面：down / up / north / south / west / east。 */
+  side: string
+  id?: string
+  meta?: number
+  name?: string
+  /** 蹲着右键这个面会打开它自己的界面。 */
+  screen?: boolean
+  slots?: number
+  usedSlots?: number
+  items?: Item[]
+  moreKinds?: number
+}
+
+/** 一个流体罐里现在有什么。空的罐只有容量。有的机器有的罐不对外报，那就不在列表里。 */
+export interface Tank {
+  /** 流体的注册名（molten.steel），和配方册里的写法一样。 */
+  fluid?: string
+  name?: string
+  amount?: number
+  capacity?: number
+}
+
 export interface ContainerInfo {
   x: number
   y: number
@@ -222,6 +267,10 @@ export interface ContainerInfo {
   attached?: AttachedBlock[]
   /** 抽屉：管着它的抽屉管理器。 */
   controller?: BlockPos
+  /** 它各个面上的覆盖板，和能装东西的覆盖板里装着什么。 */
+  covers?: Cover[]
+  /** 它的流体罐里现在有什么。 */
+  tanks?: Tank[]
 }
 
 /** world.drawers 里的一格。 */
@@ -442,6 +491,10 @@ export interface MachineInfo {
   switchedOff?: boolean
   unreadable?: boolean
   dist?: number
+  /** 它各个面上的覆盖板（模具常放在“槽位扩展”这种覆盖板里）。 */
+  covers?: Cover[]
+  /** 它的流体罐里现在有什么（单方块机器的输入罐、输出罐）。没有这一项：这台机器的罐读不到。 */
+  tanks?: Tank[]
 }
 
 /** world.stock 要找的一样东西：一种物品（可以不限 meta），或者一个矿辞名。 */
@@ -453,7 +506,10 @@ export interface StockPlace {
   z: number
   /** 容器的显示名。 */
   container?: string
-  kind?: 'drawers' | (string & {})
+  /** "cover"：东西在这个方块某个面的覆盖板里（cover 是覆盖板的名字，side 是哪个面），不在它自己的格子里。 */
+  kind?: 'drawers' | 'cover' | (string & {})
+  cover?: string
+  side?: string
   count: number
   /** 按矿辞名或不带 meta 查时：这一处具体是哪几种（可以直接拿去 withdraw）。 */
   items?: Item[]
