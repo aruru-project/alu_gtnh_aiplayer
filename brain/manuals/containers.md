@@ -11,9 +11,19 @@
 - 机器也能当容器，哪个 mod 的都行（界面里有“放不进东西的格子”的就是机器）：deposit_items 是放进它能放东西的格子；withdraw_items 默认只从产物格取，给 fromInputs:true 才取其余格子里的（主人留在里面的模具、模头、燃料）。那是主人摆好的，取之前先问，用完放回去。
 - 存取任务对付不了的界面（要放进指定的某一格、要一格格点的）：open_screen 打开自己点，见 screens 手册。
 
+# 覆盖板里的东西
+- 覆盖板是 GregTech 贴在机器或管道某个面上的一块板（传送带、泵、槽位扩展……）。其中“槽位扩展”自带 9 格，主人常把模具、编程电路这类东西放在里面。
+- 这些东西不在机器自己的格子里：list_containers、find_machines、inspect_block 把每个面的覆盖板和它装着什么单独列出来；find_in_storage 搜得到，那一处写着“in the cover … on its west face”，后面跟着取它用的容器。
+- 取和放：容器位置带上 side（哪个面）和 sneak: true。`withdraw_items { container: { x: -525, y: 70, z: 41, side: "west", sneak: true }, items: [{ id: "gregtech:gt.metaitem.01", meta: 32322, count: 1 }] }`。身体走过去、蹲着点那个面，打开的是覆盖板自己的界面，就往那个界面里存取。
+- 这是通用的：有的方块点不同的面、蹲不蹲，打开的界面不一样。side 和 sneak 就是告诉身体怎么点；自己开来看用 open_screen 的 side、sneak（见 screens 手册）。
+
+# 流体罐
+- 装流体的方块（机器的罐、储罐、超级缸）里现在有什么：inspect_block、list_containers、find_machines 的结果里写着，每个罐是 多少 of 容量 mB 什么流体 [fluid 内部名]，空罐写 empty。
+- 流体不是物品，不能直接存取；能查它怎么来、能做什么（crafting 手册的“流体”）。
+
 # 看仓库
 - **主人说的是某个地方的东西，就以那个地方为中心看，不要以自己为中心。**下面这几个工具（还有 look_around、find_blocks、find_machines）默认看的是你身边；给 at（一个坐标）就改成看那个地方的周围。“我这边的箱子”：先 get_player_position 找到主人，at 给他的位置。“抽屉管理器旁边那个箱子”：at 给抽屉管理器的坐标。你站在几十格外时，以自己为中心什么也看不到，这不等于没有。
-- 只想知道某几样东西放在哪：find_in_storage，可以按 id 或矿辞名一次查好几样。
+- 只想知道某几样东西放在哪：find_in_storage，可以按 id 或矿辞名一次查好几样。机器上覆盖板里的东西它也搜（见下面“覆盖板里的东西”）。
 - 想知道这片仓库一共有什么：库函数 list_stock，把范围里所有箱子和抽屉的东西合成一张总表，多的在前；contains 按名字筛，below 只看少于某个数的。库函数不在工具清单里，用 run_program 写一行程序调：`return (await tool("list_stock", { contains: "钢" })).text`；要接着算就用 r.data.items（见 routines 手册的“库函数”）。
 - 一个个容器看：list_containers，由近到远一页 20 个。一页里每个容器只列前 30 种东西，行尾写着“… and N more kinds”的就是还有没列的。
 - 把一个容器看全（大箱子里上百种东西）：list_containers 给 at（那个容器的坐标）和 radius: 0，它里面的每一种都列出来。在程序里，r.data.containers 里每个容器的 items 一直是全的。

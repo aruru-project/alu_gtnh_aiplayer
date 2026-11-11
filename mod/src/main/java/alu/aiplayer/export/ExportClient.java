@@ -18,7 +18,8 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 
 /**
  * Drives a client that was started only to export (tools/client): joins the given server from the title screen,
- * waits for NEI to finish reading the game, runs {@link NeiExport} and closes the game.
+ * waits for NEI to finish reading the game, runs {@link NeiExport} and {@link IconExport} and closes the game.
+ * {@code -Daiplayer.export.only=names} or {@code =icons} does just that part, from the items.jsonl already there.
  * <p>
  * Joining is done from here because the game's own {@code --server} argument trips over Forge in this version.
  * Only installed when the game was started with {@code -Daiplayer.export=<directory>}.
@@ -35,6 +36,7 @@ public final class ExportClient {
     private int pagesStableSince;
     private boolean started;
     private final boolean namesOnly = "names".equals(System.getProperty("aiplayer.export.only"));
+    private final boolean iconsOnly = "icons".equals(System.getProperty("aiplayer.export.only"));
 
     private ExportClient(File dir, String join) {
         this.dir = dir;
@@ -59,7 +61,7 @@ public final class ExportClient {
             // Names need no world, only a game that has finished starting.
             if (mc.currentScreen == null || ticks < 100) return;
             started = true;
-            work(true);
+            work();
             return;
         }
         if (mc.theWorld == null || mc.thePlayer == null) {
@@ -99,6 +101,13 @@ public final class ExportClient {
             pagesSeen = -1;
         }
         if (ticks % 20 != 0) return;
+        if (iconsOnly) {
+            // Drawing needs the item list (for the stacks NEI shows) but none of the recipe pages.
+            if (!NEIClientConfig.isLoaded() || !ItemList.loadFinished || ticks - inWorldSince < 300) return;
+            started = true;
+            work();
+            return;
+        }
         // NEI reads items and recipe pages in the background after the world is there. It has no single "done"
         // flag for the pages, so wait until their number has stopped changing for a while.
         int pages = GuiCraftingRecipe.craftinghandlers.size() + GuiCraftingRecipe.serialCraftingHandlers.size();
@@ -112,24 +121,45 @@ public final class ExportClient {
             && ticks - inWorldSince >= 1200;
         if (!ready) return;
         started = true;
-        work(false);
+        work();
     }
 
-    private void work(boolean names) {
+    private void work() {
         Thread t = new Thread(() -> {
             boolean ok = false;
             try {
-                if (names) NeiExport.names(dir);
+                if (namesOnly) NeiExport.names(dir);
+                else if (iconsOnly) IconExport.run(dir);
                 else NeiExport.run(dir);
                 ok = true;
             } catch (Throwable e) {
                 AiPlayerMod.LOG.error("export: failed", e);
             }
-            AiPlayerMod.LOG.info("export: {}, closing the game", ok ? "finished" : "did not finish");
             try {
                 // Read by tools/export-packdata, which cannot tell a finished run from a crash otherwise.
                 new File(dir, ok ? "export.ok" : "export.failed").createNewFile();
             } catch (Throwable ignored) {}
+            if (ok && !namesOnly && !iconsOnly) {
+                // After the mark on purpose: the icons are an extra, and whatever drawing 60,000 items of 300 mods
+                // does to the game, the export above is already safe. icons/icons.json says whether they got done.
+                try {
+                    IconExport.run(dir);
+                } catch (Throwable e) {
+                    AiPlayerMod.LOG.error("export: the item icons could not be drawn", e);
+                }
+            }
+            AiPlayerMod.LOG.info("export: {}, closing the game", ok ? "finished" : "did not finish");
+            // A client thread that an item's drawing left hanging would never get to the shutdown asked for here.
+            Thread last = new Thread(() -> {
+                try {
+                    Thread.sleep(90_000L);
+                } catch (InterruptedException ignored) {}
+                AiPlayerMod.LOG.error("export: the game did not close by itself, ending it");
+                FMLCommonHandler.instance()
+                    .exitJava(0, true);
+            }, "aiplayer-export-exit");
+            last.setDaemon(true);
+            last.start();
             Minecraft.getMinecraft()
                 .shutdown();
         }, "aiplayer-export");

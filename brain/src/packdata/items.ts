@@ -1,6 +1,8 @@
 // 本地物品表：items.jsonl，一行一个物品（格式见 docs/PACKDATA.md）。
 // 给物品配中文名（任务书、背包、箱子、配方里的东西都靠它），按中文名、英文名、id、矿辞名找物品。
 
+import { editDistance } from './fluids.ts'
+
 export interface PackItemInfo {
   id: string
   meta: number
@@ -125,6 +127,29 @@ export class ItemTable {
     found.sort((a, b) => a.score - b.score)
     const offset = Math.max(0, opts.offset ?? 0)
     return { hits: found.slice(offset, offset + Math.max(1, opts.limit ?? 12)).map((f) => f.item), total: found.length }
+  }
+
+  /**
+   * 名字和 query 只差一两个字的物品（记错、打错一个字时用），最像的在前；同名的只留一个。
+   * 只在什么都没搜到的时候才用，所以每次把整张表过一遍也无妨。
+   */
+  closest(query: string, limit = 5): PackItemInfo[] {
+    const text = query.trim().toLowerCase()
+    if (text.length < 2) return []
+    const max = text.length >= 5 ? 2 : 1
+    const found: { item: PackItemInfo; d: number }[] = []
+    const seen = new Set<string>()
+    for (const item of this.list) {
+      if (item.meta === ANY_META || seen.has(item.name)) continue
+      const d = Math.min(editDistance(text, item.name.toLowerCase(), max), item.en ? editDistance(text, item.en.toLowerCase(), max) : max + 1)
+      if (d > max) continue
+      seen.add(item.name)
+      found.push({ item, d })
+    }
+    return found
+      .sort((a, b) => a.d - b.d || a.item.name.localeCompare(b.item.name))
+      .slice(0, limit)
+      .map((f) => f.item)
   }
 }
 

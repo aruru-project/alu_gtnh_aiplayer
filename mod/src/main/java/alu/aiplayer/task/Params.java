@@ -35,6 +35,25 @@ final class Params {
         return new alu.aiplayer.act.ItemFilter(id, J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1);
     }
 
+    private static final String[] SIDES = { "down", "up", "north", "south", "west", "east" };
+
+    /** A side name as 0 down .. 5 east; -1 when absent. */
+    static int side(JsonObject o, String key) {
+        if (o == null || !J.has(o, key)) return -1;
+        String name = J.str(o, key, "");
+        for (int i = 0; i < SIDES.length; i++) if (SIDES[i].equalsIgnoreCase(name)) return i;
+        throw new IllegalArgumentException(key + " is one of down, up, north, south, west, east");
+    }
+
+    /**
+     * How a container reference asks to be opened: {side, sneak} on the same object as its position. {-1, 0} for
+     * a plain click.
+     */
+    static int[] face(JsonObject params, String key) {
+        JsonObject o = J.object(params, key);
+        return new int[] { side(o, "side"), o != null && J.bool(o, "sneak", false) ? 1 : 0 };
+    }
+
     static int[] pos(JsonObject params, String key) {
         JsonObject o = J.object(params, key);
         if (o == null) throw new IllegalArgumentException(key + " must be a position {x,y,z}");

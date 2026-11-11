@@ -6,8 +6,8 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { Item, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
 import { itemKey, nameOf } from './format.ts'
-import { bool, int, obj, str } from './schema.ts'
-import { pos } from './tasks.ts'
+import { bool, int, num, obj, str } from './schema.ts'
+import { USE_SIDES, pos } from './tasks.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
@@ -102,16 +102,22 @@ async function act(run: () => Promise<ScreenState>, opened?: { look(): Promise<S
 export const openScreen: Tool = {
   name: 'open_screen',
   description:
-    'Open the screen of a block within your reach (any block with a screen, of any mod) or of an item you carry, and see its slots. Without arguments: the screen you already have open, as it is now. Works only while you have no task running, and does not walk. Details: screens manual.',
+    'Open the screen of a block within your reach (any block with a screen, of any mod) or of an item you carry, and see its slots. Which face is clicked, and whether sneaking, can change which screen opens (a cover on a machine\'s face has its own). Without arguments: the screen you already have open, as it is now. Works only while you have no task running, and does not walk. Details: screens manual.',
   inputSchema: obj({
     at: pos('The block to open.'),
     item: obj({ id: str(), meta: int(undefined, { min: 0 }) }, ['id'], 'Instead of "at": an item you carry whose screen to open, as {id, meta?}.'),
+    side: str('With "at": the face to click; you must already stand in front of it.', { enum: USE_SIDES }),
+    hit: obj({ x: num(undefined, { min: 0, max: 1 }), y: num(undefined, { min: 0, max: 1 }), z: num(undefined, { min: 0, max: 1 }) }, ['x', 'y', 'z'], 'With "at": the point to click, each 0 to 1 from the block\'s lowest corner.'),
+    sneak: bool('With "at": click while sneaking.'),
   }),
-  async run(ctx: ToolContext, i: { at?: { x: number; y: number; z: number }; item?: { id: string; meta?: number } }) {
+  async run(ctx: ToolContext, i: { at?: { x: number; y: number; z: number }; item?: { id: string; meta?: number }; side?: string; hit?: { x: number; y: number; z: number }; sneak?: boolean }) {
     if (i.at !== undefined && i.item !== undefined) return fail('Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.')
     // 什么都不给：看一眼已经开着的界面（界面点开后过一小会儿才出现的、机器做了一会儿之后）
+    const how = { ...(i.side !== undefined ? { side: i.side } : {}), ...(i.hit !== undefined ? { hit: i.hit } : {}), ...(i.sneak === true ? { sneak: true } : {}) }
+    if (i.at === undefined && Object.keys(how).length > 0) return fail('"side", "hit" and "sneak" say how to click a block: give the block as "at".')
     if (i.at === undefined && i.item === undefined) return act(() => ctx.bridge.screenLook(ctx.botName))
-    return act(() => ctx.bridge.screenOpen(ctx.botName, i.at ?? { item: i.item!.meta === undefined ? { id: i.item!.id } : { id: i.item!.id, meta: i.item!.meta } }), { look: () => ctx.bridge.screenLook(ctx.botName) })
+    const target = i.at ? { ...i.at, ...how } : { item: i.item!.meta === undefined ? { id: i.item!.id } : { id: i.item!.id, meta: i.item!.meta } }
+    return act(() => ctx.bridge.screenOpen(ctx.botName, target), { look: () => ctx.bridge.screenLook(ctx.botName) })
   },
 }
 

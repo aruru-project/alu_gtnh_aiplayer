@@ -2,8 +2,9 @@ import { BridgeError } from '../bridge/protocol.ts'
 import type { BlockInfo, BlockPos } from '../bridge/protocol.ts'
 import {
   compactJson,
+  COVER_NOTE,
+  coverText,
   dimName,
-  nameOf,
   formatContainer,
   formatEntities,
   formatPlayerView,
@@ -11,10 +12,14 @@ import {
   formatScan,
   formatStatus,
   formatTerrainSummary,
+  holdsCoverItems,
+  itemKey,
   mergeItems,
+  nameOf,
+  tanksText,
 } from './format.ts'
-import { arr, int, obj, str } from './schema.ts'
-import { ToolFailure, fail } from './types.ts'
+import { arr, bool, int, obj, str } from './schema.ts'
+import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At } from './where.ts'
@@ -54,6 +59,11 @@ function describeBlock(pos: BlockPos, b: BlockInfo): string {
   if (name) s += ` "${name}"`
   if (flags.length > 0) s += ` [${flags.join(', ')}]`
   if (typeof b.hardness === 'number') s += ` hardness ${b.hardness}${b.hardness < 0 ? ' (unbreakable)' : ''}`
+  // 它的流体罐里现在有什么、各个面上的覆盖板（能装东西的写出装着什么）
+  const tanks = tanksText(b.tanks)
+  if (tanks) s += `\n${tanks}`
+  for (const cover of b.covers ?? []) s += `\n${coverText(cover, 40)}`
+  if (holdsCoverItems(b)) s += `\n${COVER_NOTE}`
   return s
 }
 
@@ -107,6 +117,7 @@ export const lookAround: Tool = {
         lines.push(`Containers (${total})${cut ? `, the ${LOOK_KINDS} main kinds of each (everything in one: list_containers with "at" it and radius 0)` : ''}:`)
         for (const c of shown) lines.push(`- ${formatContainer(c, LOOK_KINDS)}`)
         if (total > 12) lines.push(`- … ${total - 12} more (use list_containers with a smaller radius)`)
+        if (shown.some(holdsCoverItems)) lines.push(COVER_NOTE)
       }
     } else {
       lines.push(`Containers: unavailable (${reason(containers.reason)})`)
@@ -137,12 +148,121 @@ export const scanArea: Tool = {
   },
 }
 
+/** 一个值写成一行紧凑的 JSON（键一个不丢）。 */
+const oneLine = (v: unknown): string => JSON.stringify(v) ?? 'null'
+
+/** 存档数据的顶层一项一行（列表是一个元素一行）：比一整行 JSON 好找，又不比它长多少。 */
+function savedLines(saved: unknown): string[] {
+  if (Array.isArray(saved)) return saved.map((v, n) => `  [${n}]: ${oneLine(v)}`)
+  if (saved !== null && typeof saved === 'object') return Object.entries(saved).map(([k, v]) => `  ${k}: ${oneLine(v)}`)
+  return [`  ${oneLine(saved)}`]
+}
+
+const GLOSSARY_MAX = 24
+
+/**
+ * 方块自己的话和存档数据里出现的内部名字，本地资料里查得到中文名的，列一个小对照表（原文不动）：
+ * 流体的注册名（gas_gas、molten.steel，或者写成 fluid.gas_gas）、流体的英文名、物品（item + meta）。
+ */
+function glossary(ctx: ToolContext, block: BlockInfo): string[] {
+  const fluids = ctx.packdata?.fluids
+  const out = new Map<string, string>()
+  const asFluid = (text: string): void => {
+    if (!fluids || out.size >= GLOSSARY_MAX || text.length === 0 || text.length > 80 || out.has(text)) return
+    const info = fluids.get(text) ?? (text.startsWith('fluid.') ? fluids.get(text.slice(6)) : undefined)
+    if (info) out.set(text, info.name)
+  }
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 14 || out.size >= GLOSSARY_MAX) return
+    if (typeof v === 'string') asFluid(v)
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1)
+    else if (v !== null && typeof v === 'object') {
+      const o = v as { item?: unknown; meta?: unknown; name?: unknown }
+      // 物品：存档里换好的 {item, meta, count, name}
+      if (typeof o.item === 'string' && o.item.includes(':')) {
+        const key = itemKey({ id: o.item, meta: typeof o.meta === 'number' ? o.meta : 0 })
+        const local = ctx.packdata?.items?.get(o.item, typeof o.meta === 'number' ? o.meta : 0)?.name
+        if (local !== undefined && local !== o.name && !out.has(key)) out.set(key, local)
+      }
+      for (const x of Object.values(v)) walk(x, depth + 1)
+    }
+  }
+  for (const line of block.says ?? []) {
+    for (const word of line.split(/[\s,;:()]+/)) asFluid(word)
+    // 整行就是一种流体的英文名（"Chlorine"）
+    const named = fluids?.search(line).exact ?? []
+    if (named.length === 1 && named[0]!.name !== line && !out.has(line) && out.size < GLOSSARY_MAX) out.set(line, named[0]!.name)
+  }
+  walk(block.saved, 0)
+  return [...out.entries()].map(([key, name]) => `${key} = ${name}`)
+}
+
+/** 这个方块自己知道的全部（world.block 的 detail）：它对扫描器说的话、存档里的全部数据。不超过 room 个字符。 */
+function describeDetail(ctx: ToolContext, block: BlockInfo, room: number): string[] {
+  const lines: string[] = []
+  if (typeof block.detail === 'string') return [`It keeps no data of its own (${block.detail}).`]
+  if (block.says && block.says.length > 0) lines.push('What it says of itself (as to a scanner):', ...block.says.map((line) => `  ${line}`))
+  if (block.savedError !== undefined) return [...lines, `Its saved data could not be read: ${block.savedError}`]
+  if (block.saved === undefined) return lines.length > 0 ? lines : ['Nothing more is known of it.']
+  const names = glossary(ctx, block)
+  const tail = names.length > 0 ? [`Names in the above, as the game shows them: ${names.join('; ')}`] : []
+  const where = block.pathNotFound ? `There is nothing at "${block.path}" in its saved data. Its top level:` : block.path !== undefined ? `Its saved data under "${block.path}":` : `Its own saved data, whole${block.class ? ` (class ${block.class})` : ''}; the keys are its internal names, the values raw:`
+  lines.push(where)
+  const body = savedLines(block.saved)
+  const cutNote = block.savedCut === true ? ['Where an entry says "ask for this path" or "more entr(ies)", that part was left out: give it as "path" (written like gt.covers or Inventory[3].tag).'] : []
+  const used = (list: readonly string[]): number => list.reduce((n, line) => n + line.length + 1, 0)
+  const total = used(body)
+  const budget = room - used(lines) - used(cutNote) - used(tail)
+  if (total <= budget) return [...lines, ...body, ...cutNote, ...tail]
+  // 放不下：能放几项放几项，写明一共多长、每一项多长（照着大小挑一项用 path 往里看）
+  const under = block.path !== undefined && !block.pathNotFound ? block.path : ''
+  const sizes = body
+    .map((line) => {
+      const key = line.slice(2, line.indexOf(': '))
+      return { path: under === '' ? key : key.startsWith('[') ? `${under}${key}` : `${under}.${key}`, chars: line.length }
+    })
+    .sort((a, b) => b.chars - a.chars)
+  const index = `It is ${total} characters, more than fits here. One part of it whole: give one of these as "path" (path: characters) — ${sizes.slice(0, 40).map((s) => `${s.path}: ${s.chars}`).join(', ')}${sizes.length > 40 ? `, and ${sizes.length - 40} smaller ones` : ''}.`
+  let left = budget - index.length - 1
+  const shown: string[] = []
+  for (const line of body) {
+    if (line.length + 1 > left) {
+      // 一项就放不下的，给个开头（至少看得出它是什么）
+      if (left > 200) shown.push(`${line.slice(0, left - 60)}… (cut: ${line.length} characters)`)
+      break
+    }
+    shown.push(line)
+    left -= line.length + 1
+  }
+  return [...lines, index, ...shown, ...(shown.length < body.length ? [`… ${body.length - shown.length} more key(s) not shown.`] : []), ...cutNote, ...tail]
+}
+
 export const inspectBlock: Tool = {
   name: 'inspect_block',
-  description: 'What block is at a position: id, meta, whether it is air/solid/liquid, hardness, and whether it holds data or an inventory.',
-  inputSchema: obj({ x: int('x'), y: int('y', { min: 0, max: 255 }), z: int('z') }, ['x', 'y', 'z']),
-  async run(ctx, input: BlockPos) {
-    return describeBlock(input, await ctx.bridge.worldBlock(input))
+  description:
+    'What block is at a position: id, meta, air/solid/liquid, hardness, whether it holds data or an inventory, what its tanks hold, the covers on its faces and what they hold. "detail": also what it reports to a scanner and its own saved data, whole (internal key names, raw values).',
+  inputSchema: obj(
+    {
+      x: int('x'),
+      y: int('y', { min: 0, max: 255 }),
+      z: int('z'),
+      detail: bool(),
+      path: str('One part of the saved data, in full, e.g. "gt.covers", "Inventory[3].tag".', { maxLength: 200 }),
+    },
+    ['x', 'y', 'z'],
+  ),
+  async run(ctx, input: BlockPos & { detail?: boolean; path?: string }): Promise<ToolResult> {
+    const at = { x: input.x, y: input.y, z: input.z }
+    const path = input.path?.trim()
+    const deep = input.detail === true || (path !== undefined && path.length > 0)
+    const block = await ctx.bridge.worldBlock(deep ? { ...at, detail: true, ...(path ? { path } : {}) } : at)
+    const head = describeBlock(at, block)
+    // data：身体的原样回答（tanks、covers 在里面；要了 detail 时还有 says 和 saved，一个键不少）
+    const data = { ...at, ...block }
+    if (!deep || block.loaded === false || typeof block.id !== 'string') return { content: head, data }
+    // 存档数据可以上万字符：自己按“单个工具结果上限”收，放不下的写明每一项多长、怎么用 path 往里看
+    const room = (ctx.maxResultChars?.() ?? DEFAULT_RESULT_MAX_CHARS) - head.length - 1
+    return { content: [head, ...describeDetail(ctx, block, room)].join('\n'), data, keepWhole: true }
   },
 }
 

@@ -142,7 +142,8 @@ async function main(): Promise<void> {
   const packdata = loadPackData(path.resolve(BRAIN_ROOT, config.packdataDir()), (message) => info(`[packdata] ${message}`))
   // ── 自己出设计：跑程序的沙箱、图纸草稿（drafts/）、主人传的图片（images/）──
   // 服务器回来的东西（背包、箱子、任务结果、事件）给模型看时，名字都用本地物品表里的中文名
-  useLocalNames(packdata.items)
+  // 物品和流体都用游戏里的中文名（身体给的是英文）
+  useLocalNames(packdata.items, packdata.fluids)
   const design = new DesignWorkspace({ dataDir, packdata })
   const pictures = new PictureStore(dataDir)
 

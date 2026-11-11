@@ -2,6 +2,7 @@
 //
 // recipes.jsonl 有一百来兆、三十万条。启动时从头到尾读一遍，只在内存里留索引：每条配方在文件里的位置、属于哪一页，
 // 以及“哪些配方产出这个物品”“哪些配方用到这个物品（或这个矿辞名）”两张倒排表。配方本身用到时才从文件里读那一行。
+// 流体也有同样的两张表（哪些配方产出、用到这种流体），外加流体的注册名 → 中文名：GregTech 的页把流体写在 fin / fout 里。
 // 真实的整合包：读一遍不到一秒，索引占四十兆左右。fake:true 的示意配方不进倒排表，哪里都查不到。
 //
 // 一条配方的编号（ref）就是它在 recipes.jsonl 里是第几行（从 0 数）。文件重新导出以后编号会变，所以编号只在这次运行里用。
@@ -158,6 +159,11 @@ export class RecipeBook {
   private readonly handlerOf: Uint16Array
   private readonly makes: Map<string, number[]>
   private readonly used: Map<string, number[]>
+  /** 流体（注册名）→ 产出它的配方、用到它的配方。 */
+  private readonly fluidMakes: Map<string, number[]>
+  private readonly fluidUsed: Map<string, number[]>
+  /** 流体的注册名 → 配方册里的名字（中文）。 */
+  private readonly fluidNames: Map<string, string>
   private readonly byKey: Map<string, RecipeHandler>
   private buffer = Buffer.allocUnsafe(64 * 1024)
 
@@ -187,6 +193,17 @@ export class RecipeBook {
     const handlerOf: number[] = []
     const makes = new Map<string, number[]>()
     const used = new Map<string, number[]>()
+    const fluidMakes = new Map<string, number[]>()
+    const fluidUsed = new Map<string, number[]>()
+    const fluidNames = new Map<string, string>()
+    const fluidsOf = (raw: unknown, into: Map<string, number[]>, ref: number): void => {
+      if (!Array.isArray(raw)) return
+      for (const f of raw) {
+        if (!isRecord(f) || typeof f.f !== 'string') continue
+        add(into, f.f, ref)
+        if (typeof f.name === 'string' && f.name.length > 0 && !fluidNames.has(f.f)) fluidNames.set(f.f, f.name)
+      }
+    }
     let bad = 0
     let fake = 0
     const onLine = (text: string, offset: number, length: number): void => {
@@ -225,6 +242,8 @@ export class RecipeBook {
           else for (const [id, meta] of pairs(i.any)) add(used, itemPosting(id, meta), ref)
         }
       }
+      fluidsOf(r.fout, fluidMakes, ref)
+      fluidsOf(r.fin, fluidUsed, ref)
     }
 
     const fd = fs.openSync(file, 'r')
@@ -255,11 +274,21 @@ export class RecipeBook {
       fs.closeSync(fd)
       throw e
     }
-    const book = new RecipeBook(fd, handlers, Uint32Array.from(offsets), Uint32Array.from(lengths), Uint16Array.from(handlerOf), makes, used, fake)
+    const book = new RecipeBook(fd, handlers, Uint32Array.from(offsets), Uint32Array.from(lengths), Uint16Array.from(handlerOf), makes, used, fake, { makes: fluidMakes, used: fluidUsed, names: fluidNames })
     return { book, bad, ms: Math.round(performance.now() - started) }
   }
 
-  private constructor(fd: number, handlers: RecipeHandler[], offsets: Uint32Array, lengths: Uint32Array, handlerOf: Uint16Array, makes: Map<string, number[]>, used: Map<string, number[]>, fake: number) {
+  private constructor(
+    fd: number,
+    handlers: RecipeHandler[],
+    offsets: Uint32Array,
+    lengths: Uint32Array,
+    handlerOf: Uint16Array,
+    makes: Map<string, number[]>,
+    used: Map<string, number[]>,
+    fake: number,
+    fluids: { makes: Map<string, number[]>; used: Map<string, number[]>; names: Map<string, string> },
+  ) {
     this.fd = fd
     this.handlers = handlers
     this.offsets = offsets
@@ -267,6 +296,9 @@ export class RecipeBook {
     this.handlerOf = handlerOf
     this.makes = makes
     this.used = used
+    this.fluidMakes = fluids.makes
+    this.fluidUsed = fluids.used
+    this.fluidNames = fluids.names
     this.fake = fake
     this.size = offsets.length
     this.byKey = new Map(handlers.map((h) => [h.key, h]))
@@ -295,6 +327,26 @@ export class RecipeBook {
     if (lists.length === 0) return []
     if (lists.length === 1) return [...lists[0]!]
     return [...new Set(lists.flat())].sort((a, b) => a - b)
+  }
+
+  /** 产出这种流体（注册名，如 molten.steel）的配方的编号，按文件里的顺序。 */
+  makesFluid(fluid: string): readonly number[] {
+    return this.fluidMakes.get(fluid) ?? EMPTY
+  }
+
+  /** 用到这种流体的配方的编号。 */
+  usesFluid(fluid: string): readonly number[] {
+    return this.fluidUsed.get(fluid) ?? EMPTY
+  }
+
+  /** 流体的名字（配方册里的中文名）；配方册里没出现过这种流体就是 undefined。 */
+  fluidName(fluid: string): string | undefined {
+    return this.fluidNames.get(fluid)
+  }
+
+  /** 配方册里出现过的全部流体：注册名和名字。 */
+  fluidEntries(): IterableIterator<[string, string]> {
+    return this.fluidNames.entries()
   }
 
   /** 做得出多少种物品、多少种物品（和矿辞名）被用作原料。 */

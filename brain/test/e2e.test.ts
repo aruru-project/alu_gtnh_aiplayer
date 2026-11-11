@@ -2111,3 +2111,66 @@ it('端到端：带着只有一条线时留下的数据目录启动 → 配置�
   again.child.kill('SIGTERM')
   assert.equal(await again.exited, 0)
 })
+
+it('端到端：主人说模具在流体固化器的覆盖板里 → 它搜库存搜到“在那台机器西面的覆盖板里” → 照结果里写的容器（带着面和“蹲着”）去取 → 模具到了身上；它再看那台机器，罐里的流体和各面的覆盖板都看得到，还能把机器自己存的全部数据调出来', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  const talk = relayTalk()
+  const GT = 'gregtech:gt.metaitem.01'
+  const SOLIDIFIER = { x: 20, y: 65, z: -8 }
+  const MOLD = { id: GT, meta: 32322, count: 1, name: 'Mold (Ring)' }
+  // 一台流体固化器：西面的覆盖板“槽位扩展”里放着模具（环），罐里有 144 mB 熔融钢
+  bridge.machines = [
+    {
+      ...SOLIDIFIER, name: 'Basic Fluid Solidifier', recipes: 'Fluid Solidifier', tier: 'LV', inputSlots: 1, storedEU: 4000, inputVoltage: 32,
+      covers: [{ side: 'west', id: GT, meta: 32380, name: 'Basic Item Holder', slots: 9, items: [MOLD] }],
+      tanks: [{ fluid: 'molten.steel', name: 'Molten Steel', amount: 144, capacity: 16000 }],
+      says: ['Fluid Solidifier', 'Progress: 0 s / 0 s'],
+      saved: { mActive: 0, mFluid: { FluidName: 'molten.steel', Amount: 144 }, 'gt.covers': [{ side: 4, items: [{ item: GT, meta: 32322, count: 1, name: 'Mold (Ring)' }] }] },
+    },
+  ]
+  await bridge.start()
+  await llm.start()
+  await talk.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const brain = startBrain(tmp.dir, bridge, { talk })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    await talk.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+
+  llm.enqueue(
+    { toolCalls: [{ name: 'find_in_storage', input: { items: [{ id: GT, meta: 32322 }], radius: 32 } }] },
+    // 取的容器照搜到的那一行写
+    { toolCalls: [{ name: 'withdraw_items', input: { container: { ...SOLIDIFIER, side: 'west', sneak: true }, items: [{ id: GT, meta: 32322, count: 1 }] } }] },
+    { toolCalls: [{ name: 'inspect_block', input: SOLIDIFIER }, { name: 'inspect_block', input: { ...SOLIDIFIER, detail: true } }] },
+    { toolCalls: [{ name: 'report', input: { text: '模具拿到了。' } }] },
+    { text: '' },
+  )
+  bridge.whisper('Alu', 'Steve', '模具（环）在流体固化器的覆盖板里，拿出来')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('模具拿到了')), 15_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
+
+  // 搜到的那一行：哪台机器、哪个面、哪块覆盖板，和取它用的容器
+  assert.match(seen(1), /\n {2}- \(20,65,-8\) Basic Fluid Solidifier, in the cover "Basic Item Holder" on its west face: 1 — container \{x: 20, y: 65, z: -8, side: "west", sneak: true\}\n/)
+  // 身体收到的取货任务带着面和“蹲着”；模具真的从覆盖板里到了身上
+  assert.deepEqual(bridge.requestsOf('task.start').map((p) => p.task), [{ type: 'withdraw', container: { ...SOLIDIFIER, side: 'west', sneak: true }, items: [{ id: GT, meta: 32322, count: 1 }] }])
+  assert.equal(bridge.bots.get('Alu')!.inventory.filter((i) => i.id === GT && i.meta === 32322).reduce((n, i) => n + i.count, 0), 1)
+  assert.deepEqual(bridge.machines[0]!.covers![0]!.items, [])
+  // 取完再看这台机器：罐里的流体、西面那块（现在空了的）覆盖板；带 detail 时还有它自己说的话和存的全部数据
+  const looked = seen(3)
+  assert.match(looked, /\(20,65,-8\): gregtech:gt\.blockmachines "Basic Fluid Solidifier" \[solid, tileEntity, inventory\] hardness 2\ntank: 144 of 16000 mB Molten Steel \[fluid molten\.steel\]\ncover on its west face: Basic Item Holder \[gregtech:gt\.metaitem\.01\/32380\], 0\/9 slots used: empty\n/)
+  assert.match(looked, /What it says of itself \(as to a scanner\):\n {2}Fluid Solidifier\n {2}Progress: 0 s \/ 0 s\nIts own saved data, whole \(class gregtech\.api\.metatileentity\.BaseMetaTileEntity\); the keys are its internal names, the values raw:\n {2}mActive: 0\n {2}mFluid: \{"FluidName":"molten\.steel","Amount":144\}\n {2}gt\.covers: \[\{"side":4,"items":\[\{"item":"gregtech:gt\.metaitem\.01","meta":32322,"count":1,"name":"Mold \(Ring\)"\}\]\}\]/)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})

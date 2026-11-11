@@ -210,7 +210,7 @@ describe('list_stock：一片仓库合成一张存货总表', () => {
       { bot: 'Alu', radius: 32, offset: 100, limit: 50, kinds: 2000 },
     ])
     assert.deepEqual(res.content.split('\n'), [
-      'Looked into 132 chest(s) and drawer(s) within 32 blocks of you (2 machine(s) and drawer controller(s) not counted): 2 kind(s) of item. 2 item(s), most first:',
+      'Looked into 132 chest(s) and drawer(s) within 32 blocks of you (the own slots of 2 machine(s) and drawer controller(s) not counted): 2 kind(s) of item. 2 item(s), most first:',
       // 5000 + 130×2
       '- 5260× Coal [minecraft:coal]: (200,64,0) drawers 5000, (0,64,0) 2, and 129 more place(s)',
       '- 64× Steel Ingot [gregtech:gt.metaitem.01/11305]: (200,64,0) drawers 40, (201,64,0) AUTOMATED 24 (24 of them in automated containers)',
