@@ -4,6 +4,7 @@
 
 import { actions, agentLabel, bodyAgent, presenceOf, refresh, serverNow, state, watchLiveClosely } from './data.js'
 import { foodBar, hearts, inventoryPanel, screenPanel, slotDetail } from './items.js'
+import { addForm, keepFocus, todoRow, todoUi } from './todo.js'
 import { describeArgs, recentActivity } from './logmodel.js'
 import { itemName } from './names.js'
 import { getTimeline } from './logstore.js'
@@ -305,6 +306,31 @@ function renderWork(el) {
   )
 }
 
+// ── 左边：工作清单上还没做完的 ──
+
+/** 最多列几条（再多的去清单页看）。 */
+const TODO_SHOWN = 8
+
+function renderTodo(el) {
+  const data = state.todo
+  if (!data || !data.available) return put(el)
+  const pending = (data.items ?? []).filter((i) => i.state !== 'done')
+  const c = data.counts ?? {}
+  keepFocus(el, () =>
+    put(
+      el,
+      h(
+        'div',
+        { class: 'card now-todo' },
+        h('div', { class: 'card-head' }, h('h3', null, '工作清单', h('span', { class: 'muted count-note', text: pending.length > 0 ? ` 没做 ${c.open ?? 0} · 在等人 ${c.waiting ?? 0}` : '' })), h('a', { class: 'more', href: '#todo', text: (c.done ?? 0) > 0 ? `去清单页（还有做完的 ${c.done} 条）` : '去清单页' })),
+        pending.length === 0 ? h('p', { class: 'muted', text: '清单上没有要做的事。' }) : h('ul', { class: 'todo-list' }, pending.slice(0, TODO_SHOWN).map((i) => todoRow(i, { compact: true }))),
+        pending.length > TODO_SHOWN ? h('p', { class: 'hint' }, `还有 ${pending.length - TODO_SHOWN} 条，`, h('a', { href: '#todo', text: '去清单页看' })) : null,
+        addForm(),
+      ),
+    ),
+  )
+}
+
 // ── 左边：最近几步、最近说的话 ──
 
 const FEED_TAGS = { say: ['它说', 'say'], heard: ['', 'heard'], step: ['模型', 'model'], tool: ['', 'model'], run: ['', 'routine'], relay: ['', 'relay'], error: ['出错', 'bad'] }
@@ -593,11 +619,14 @@ export function enter(el) {
   unsubscribe = []
   if (el.childElementCount === 0) {
     el.append(
-      h('div', { class: 'now-left' }, h('div', { class: 'now-work' }), h('div', { class: 'card now-feed' }), h('div', { class: 'card now-say' })),
+      h('div', { class: 'now-left' }, h('div', { class: 'now-work' }), h('div', { class: 'now-todo-wrap' }), h('div', { class: 'card now-feed' }), h('div', { class: 'card now-say' })),
       h('div', { class: 'now-game', 'aria-label': '游戏里的它' }),
     )
   }
   renderSay(el.querySelector('.now-say'))
+  // 这一页没有地方改一条（只能勾掉），清单变了整块重画
+  todoUi.onChange = () => renderTodo(el.querySelector('.now-todo-wrap'))
+  todoUi.onChange()
   workKey = liveKey = feedKey = ''
   paint(true)
   paintFeed()
@@ -607,6 +636,7 @@ export function enter(el) {
     bus.on('live', () => paint()),
     bus.on('status-error', () => paint()),
     bus.on('log', () => (paintFeed(), paint())),
+    bus.on('todo', () => todoUi.onChange()),
     bus.on('names', () => {
       feedKey = ''
       paintFeed()

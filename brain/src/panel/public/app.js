@@ -8,6 +8,7 @@ import { SLOW_STEP_MS, STALE_TASK_MS, renderSide, taskStaleMs } from './side.js'
 import { $, act, api, bus } from './ui.js'
 import * as pageNow from './page-now.js'
 import * as pageChat from './page-chat.js'
+import * as pageTodo from './page-todo.js'
 import * as pageKnowledge from './page-knowledge.js'
 import * as pageBuild from './page-build.js'
 import * as pageSettings from './page-settings.js'
@@ -15,6 +16,7 @@ import * as pageSettings from './page-settings.js'
 const PAGES = {
   now: { title: '现在', module: pageNow },
   chat: { title: '对话', module: pageChat },
+  todo: { title: '清单', module: pageTodo },
   knowledge: { title: '知识', module: pageKnowledge },
   build: { title: '建造', module: pageBuild },
   settings: { title: '设置', module: pageSettings },
@@ -165,6 +167,12 @@ function paintSide() {
     // 问不到大脑时，页面上留着的旧样子调暗
     $('#app').classList.toggle('stale', state.lostAt !== null)
   }
+  const todo = state.todo?.counts
+  const left = todo ? (todo.open ?? 0) + (todo.waiting ?? 0) : 0
+  const todoCount = $('#nav-todo-count')
+  todoCount.hidden = !(left > 0)
+  todoCount.textContent = left > 0 ? String(left) : ''
+  todoCount.title = todo ? `工作清单上还没做完的：没做 ${todo.open ?? 0}、在等人 ${todo.waiting ?? 0}` : ''
   const unread = o?.feedback?.unread ?? 0
   const count = $('#nav-feedback-count')
   count.hidden = !(unread > 0)
@@ -177,6 +185,7 @@ bus.on('overview', setTitle)
 bus.on('overview', paintSide)
 bus.on('live', paintSide)
 bus.on('status-error', paintSide)
+bus.on('todo', paintSide)
 setInterval(() => !document.hidden && tickClocks(), 1000)
 
 // ── 启动 ──

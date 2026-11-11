@@ -2,6 +2,7 @@
 //   status   它现在在干什么：每条线（对话 / 干活；现在后端只有一条）各自的模型状态、例程、身体的任务。一秒一问。
 //   overview 连接、服务商和模型的清单、今日用量、意见簿没看的条数、提醒、历史。四秒一问。
 //   live     游戏里的它：血量位置、身上的东西、开着的界面、附近的人。“现在”页开着时两秒一问，别的页五秒；页面在后台时都不问。
+//   todo     工作清单（两条线和主人共用的那一张）。和概览一起四秒一问；在面板上改了，用改完回来的那份。
 // 后端的 /api/status 还没有时（404），从 /api/overview 里凑一个出来：只分得出“忙 / 闲 / 故障”，不知道第几步。
 
 import { api, bus } from './ui.js'
@@ -11,6 +12,8 @@ export const state = {
   status: null,
   overview: null,
   live: null,
+  /** 工作清单：{ available, counts, items }；还没问到是 null。 */
+  todo: null,
   /** 最近一次没问到的原因（连不上大脑进程）；问到了就清掉。 */
   error: null,
   /** 从什么时候起问不到了（大脑那边的钟）；问得到时是 null。问不到的时候页面上留着的都是断开前的样子。 */
@@ -200,6 +203,42 @@ async function pollOverview() {
   }
 }
 
+async function pollTodo() {
+  if (!running || document.hidden) return
+  try {
+    setTodo(await api('GET', '/todo'))
+  } catch (e) {
+    // 这个版本的大脑没有工作清单（404）：当没有
+    if (e.status === 404) setTodo({ available: false, counts: { open: 0, waiting: 0, done: 0 }, items: [] })
+  }
+}
+
+let todoKey = ''
+/** 换上一份新的清单；和上一份一样就不通知（免得正在填的表单被重画掉）。 */
+export function setTodo(data) {
+  const key = JSON.stringify(data)
+  if (key === todoKey) return
+  todoKey = key
+  state.todo = data
+  bus.emit('todo', data)
+}
+
+/** 改清单（面板上改的算主人改的）：POST /api/todo，回来的是改完以后的整张。被拒时抛出，message 是后端的原话（英文）。 */
+export async function editTodo(edit) {
+  const res = await api('POST', '/todo', edit)
+  setTodo({ available: true, counts: res.counts, items: res.items })
+  return res
+}
+
+/** 马上再取一遍清单（改动被拒以后：多半是清单在别处刚变过）。 */
+export const refreshTodo = () => pollTodo()
+
+export async function removeTodo(id) {
+  const res = await api('DELETE', '/todo', { id })
+  await pollTodo()
+  return res
+}
+
 async function pollLive() {
   if (!running || document.hidden) return
   lastLiveAt = Date.now()
@@ -214,7 +253,7 @@ async function pollLive() {
 
 /** 做了会改状态的事以后马上再问一遍，不等下一个钟点。 */
 export async function refresh() {
-  await Promise.all([pollOverview(), pollLive()])
+  await Promise.all([pollOverview(), pollLive(), pollTodo()])
   await pollStatus()
 }
 
@@ -233,7 +272,7 @@ export function startPolling() {
   refresh()
   timers = [
     setInterval(() => !document.hidden && pollStatus(), 1000),
-    setInterval(() => !document.hidden && pollOverview(), 4000),
+    setInterval(() => !document.hidden && (pollOverview(), pollTodo()), 4000),
     setInterval(() => Date.now() - lastLiveAt >= liveEveryMs - 100 && pollLive(), 1000),
   ]
 }

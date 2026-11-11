@@ -28,6 +28,7 @@
       <nav id="nav" class="nav" aria-label="页面">
         <button type="button" data-page="now"><span class="nav-mark" aria-hidden="true"></span>现在</button>
         <button type="button" data-page="chat"><span class="nav-mark" aria-hidden="true"></span>对话</button>
+        <button type="button" data-page="todo"><span class="nav-mark" aria-hidden="true"></span>清单<span id="nav-todo-count" class="count soft" title="工作清单上还没做完的（没做、在等人）" hidden></span></button>
         <button type="button" data-page="knowledge"><span class="nav-mark" aria-hidden="true"></span>知识<span id="nav-feedback-count" class="count" title="意见簿里还没看过的条数" hidden></span></button>
         <button type="button" data-page="build"><span class="nav-mark" aria-hidden="true"></span>建造</button>
         <button type="button" data-page="settings"><span class="nav-mark" aria-hidden="true"></span>设置</button>
@@ -41,6 +42,7 @@
     <main id="main" class="main">
       <section id="page-now" class="page page-now" aria-label="现在" hidden></section>
       <section id="page-chat" class="page page-chat" aria-label="对话" hidden></section>
+      <section id="page-todo" class="page page-todo" aria-label="清单" hidden></section>
       <section id="page-knowledge" class="page" aria-label="知识" hidden></section>
       <section id="page-build" class="page" aria-label="建造" hidden></section>
       <section id="page-settings" class="page" aria-label="设置" hidden></section>
