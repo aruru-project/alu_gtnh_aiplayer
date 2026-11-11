@@ -5,13 +5,16 @@ Run once per version of the pack; takes about a quarter of an hour. Needs `tools
 built, and a server the client may join (it joins as "Exporter", who has to be on the whitelist).
 
   tools/export-packdata [--join HOST:PORT] [--out DIR]
-  tools/export-packdata --only icons [--join HOST:PORT] [--out DIR]
+  tools/export-packdata --only icons|tooltips|icons,tooltips [--join HOST:PORT] [--out DIR]
 
 The game is started twice: once in Chinese for everything, once in English for the names only, because some
-mods fix their names when the game starts. The first start also draws every item's icon (icons/).
+mods fix their names when the game starts. The first start also reads every item's tooltip (tooltips.jsonl)
+and draws every item's icon (icons/).
 
---only icons draws the icons again for the items.jsonl that is already in DIR and touches nothing else there
-(two minutes, most of it the game starting).
+--only does just the named parts again, for the items.jsonl that is already in DIR, and touches nothing else
+there (two or three minutes, most of it the game starting). With --probe the tooltips are also read with Ctrl
+and with Alt held and every part of them is written to client/export/tooltips-probe.jsonl, to look at; that
+file goes nowhere.
 """
 import glob
 import hashlib
@@ -96,40 +99,103 @@ def icons_drawn(items):
     return info
 
 
-def draw_icons(join):
-    run_client(["--lang", "zh_CN", "-D", "aiplayer.export=" + WORK, "-D", "aiplayer.export.only=icons",
-                "-D", "aiplayer.export.join=" + join, "-D", "fml.readTimeout=180"], 20)
+def tooltips_read(items):
+    """tooltips.json of the working directory, when it is there and is about exactly these items."""
+    try:
+        info = json.load(open(os.path.join(WORK, "tooltips.json"), encoding="utf8"))
+    except (OSError, ValueError):
+        return None
+    if info.get("itemsSha1") != items_sha1(items) or not os.path.exists(os.path.join(WORK, "tooltips.jsonl")):
+        return None
+    return info
+
+
+DONE = {"icons": icons_drawn, "tooltips": tooltips_read}
+
+
+def go_over_items(join, parts, probe=False):
+    """One start of the game that only does these parts, for the items.jsonl of the working directory."""
+    args = ["--lang", "zh_CN", "-D", "aiplayer.export=" + WORK, "-D", "aiplayer.export.only=" + ",".join(parts),
+            "-D", "aiplayer.export.join=" + join, "-D", "fml.readTimeout=180"]
+    if probe:
+        args += ["-D", "aiplayer.export.tooltips.probe=true"]
+    run_client(args, 40)
+
+
+def write_meta(out, key, section):
+    meta_path = os.path.join(out, "meta.json")
+    meta = json.load(open(meta_path, encoding="utf8")) if os.path.exists(meta_path) else {}
+    if section is None:
+        meta.pop(key, None)
+    else:
+        meta[key] = section
+    with open(meta_path + ".part", "w", encoding="utf8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    os.replace(meta_path + ".part", meta_path)
 
 
 def publish_icons(out):
     """Put the icons next to the items.jsonl they belong to, or take away icons that belong to another one."""
     info = icons_drawn(os.path.join(out, "items.jsonl"))
     dest = os.path.join(out, "icons")
-    meta_path = os.path.join(out, "meta.json")
-    meta = json.load(open(meta_path, encoding="utf8")) if os.path.exists(meta_path) else {}
     if info is None:
         # Icons are found by line number, so the ones of another items.jsonl would be the wrong pictures.
         if os.path.isdir(dest):
             shutil.rmtree(dest)
-        meta.pop("icons", None)
-    else:
-        fresh = dest + ".part"
-        if os.path.isdir(fresh):
-            shutil.rmtree(fresh)
-        os.makedirs(fresh)
-        for name in info["files"] + ["icons.json"]:
-            shutil.copy2(os.path.join(WORK, "icons", name), os.path.join(fresh, name))
-        if os.path.isdir(dest):
-            os.rename(dest, dest + ".old")
-        os.rename(fresh, dest)
-        shutil.rmtree(dest + ".old", ignore_errors=True)
-        meta["icons"] = {"format": info["format"], "generatedAt": info["generatedAt"], "cell": info["cell"],
-                         "icons": info["count"], "sheets": len(info["files"]), "missing": len(info["missing"]),
-                         "seconds": info["seconds"]}
-    with open(meta_path + ".part", "w", encoding="utf8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=1)
-    os.replace(meta_path + ".part", meta_path)
+        write_meta(out, "icons", None)
+        return None
+    fresh = dest + ".part"
+    if os.path.isdir(fresh):
+        shutil.rmtree(fresh)
+    os.makedirs(fresh)
+    for name in info["files"] + ["icons.json"]:
+        shutil.copy2(os.path.join(WORK, "icons", name), os.path.join(fresh, name))
+    if os.path.isdir(dest):
+        os.rename(dest, dest + ".old")
+    os.rename(fresh, dest)
+    shutil.rmtree(dest + ".old", ignore_errors=True)
+    write_meta(out, "icons", {"format": info["format"], "generatedAt": info["generatedAt"], "cell": info["cell"],
+                              "icons": info["count"], "sheets": len(info["files"]),
+                              "missing": len(info["missing"]), "seconds": info["seconds"]})
     return info
+
+
+def publish_tooltips(out):
+    """Put the tooltips next to the items.jsonl they were read for, or take away those of another one."""
+    info = tooltips_read(os.path.join(out, "items.jsonl"))
+    dest = os.path.join(out, "tooltips.jsonl")
+    if info is None:
+        # They would still be right item by item, but nobody could tell that they are whole.
+        if os.path.exists(dest):
+            os.remove(dest)
+        write_meta(out, "tooltips", None)
+        return None
+    shutil.copy2(os.path.join(WORK, "tooltips.jsonl"), dest + ".part")
+    os.replace(dest + ".part", dest)
+    write_meta(out, "tooltips", {"format": info["format"], "generatedAt": info["generatedAt"], "lang": info["lang"],
+                                 "itemsSha1": info["itemsSha1"], "items": info["items"], "shift": info["shift"],
+                                 "ctrl": info["ctrl"], "lines": info["lines"], "errors": info["failed"],
+                                 "seconds": info["seconds"]})
+    return info
+
+
+PUBLISH = {"icons": publish_icons, "tooltips": publish_tooltips}
+
+
+def say(part, info):
+    if info is None:
+        print("%s: none" % part)
+    elif part == "icons":
+        print("icons: %d on %d sheets, %d empty or failed, %s s"
+              % (info["count"], len(info["files"]), len(info["missing"]), info["seconds"]))
+    else:
+        print("tooltips: %d of %d items have one, %d another one with Shift, %d with Ctrl, %d lines, %d failed, %s s"
+              % (info["items"], info["rows"], info["shift"], info["ctrl"], info["lines"], info["failed"],
+                 info["seconds"]))
+        again = info.get("checked") or {}
+        if again.get("different"):
+            print("tooltips: %d of the %d read a second time, slowly, came out differently; see checked in"
+                  " client/export/tooltips.json" % (again["different"], again["items"]))
 
 
 def install_mod():
@@ -143,34 +209,39 @@ def install_mod():
     os.makedirs(WORK, exist_ok=True)
 
 
-def only_icons(join, out):
+def only_parts(join, out, parts, probe):
     listed = os.path.join(out, "items.jsonl")
     if not os.path.exists(listed):
         raise SystemExit("no items.jsonl in %s; run the whole export first" % out)
     install_mod()
-    # The game draws what the working directory lists; that has to be the list the icons will sit next to.
+    # The game goes over what the working directory lists; that has to be the list the results will sit next to.
     work = os.path.join(WORK, "items.jsonl")
     if not os.path.exists(work) or items_sha1(work) != items_sha1(listed):
         shutil.copy2(listed, work)
     t0 = time.time()
-    draw_icons(join)
-    info = publish_icons(out)
-    if info is None:
-        raise SystemExit("the client finished but left no icons; see client/client.log")
-    print("done in %d s: %d icons on %d sheets, %d empty or failed (%s s of drawing)"
-          % (time.time() - t0, info["count"], len(info["files"]), len(info["missing"]), info["seconds"]))
+    go_over_items(join, parts, probe)
+    missing = []
+    for part in parts:
+        info = PUBLISH[part](out)
+        say(part, info)
+        if info is None:
+            missing.append(part)
+    print("done in %d s" % (time.time() - t0))
+    if missing:
+        raise SystemExit("the client finished but left no %s; see client/client.log" % " and no ".join(missing))
 
 
 def main():
     join = opt("--join", "127.0.0.1:10186")
     out = opt("--out", os.path.join(ROOT, "brain", "packdata"))
     only = opt("--only", None)
-    if only not in (None, "icons"):
-        raise SystemExit("--only takes: icons")
+    parts = [p for p in ("tooltips", "icons") if only and p in only.split(",")]
+    if only is not None and (not parts or len(parts) != len(only.split(","))):
+        raise SystemExit("--only takes: icons, tooltips, or both with a comma between")
     if running():
         raise SystemExit("a client is already running (tools/client stop)")
-    if only == "icons":
-        only_icons(join, out)
+    if parts:
+        only_parts(join, out, parts, "--probe" in sys.argv[1:])
         return
     install_mod()
 
@@ -214,22 +285,19 @@ def main():
         json.dump(meta, f, ensure_ascii=False, indent=1)
     os.replace(meta_path + ".part", meta_path)
 
-    # The first start drew the icons after everything else. If that went wrong, once more on its own; if that
-    # goes wrong too the export is still good, only without pictures.
-    if icons_drawn(os.path.join(out, "items.jsonl")) is None:
-        print("3/2 the icons did not get drawn with the rest, drawing them on their own")
+    # The first start read the tooltips and drew the icons after everything else. What of that went wrong, once
+    # more on its own; if that goes wrong too the export is still good, only without it.
+    listed = os.path.join(out, "items.jsonl")
+    missing = [part for part in ("tooltips", "icons") if DONE[part](listed) is None]
+    if missing:
+        print("3/2 no %s from the first start, once more on their own" % " and no ".join(missing))
         try:
-            draw_icons(join)
+            go_over_items(join, missing)
         except SystemExit as failed:
-            print("no icons this time (%s)" % failed)
-    icons = publish_icons(out)
+            print("still none (%s)" % failed)
     print("done in %d s: %s" % (time.time() - t0, json.dumps(nei, ensure_ascii=False)))
-    if icons is None:
-        print("icons: none")
-    else:
-        print("icons: %d on %d sheets, %d empty or failed, %s s"
-              % (icons["count"], len(icons["files"]), len(icons["missing"]), icons["seconds"]))
-
+    for part in ("tooltips", "icons"):
+        say(part, PUBLISH[part](out))
 
 if __name__ == "__main__":
     main()

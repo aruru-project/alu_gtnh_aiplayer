@@ -18,8 +18,9 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 
 /**
  * Drives a client that was started only to export (tools/client): joins the given server from the title screen,
- * waits for NEI to finish reading the game, runs {@link NeiExport} and {@link IconExport} and closes the game.
- * {@code -Daiplayer.export.only=names} or {@code =icons} does just that part, from the items.jsonl already there.
+ * waits for NEI to finish reading the game, runs {@link NeiExport}, {@link TooltipExport} and {@link IconExport}
+ * and closes the game. {@code -Daiplayer.export.only=names}, {@code =icons}, {@code =tooltips} (or the last two
+ * with a comma between) does just that, from the items.jsonl already there.
  * <p>
  * Joining is done from here because the game's own {@code --server} argument trips over Forge in this version.
  * Only installed when the game was started with {@code -Daiplayer.export=<directory>}.
@@ -35,8 +36,13 @@ public final class ExportClient {
     private int pagesSeen = -1;
     private int pagesStableSince;
     private boolean started;
-    private final boolean namesOnly = "names".equals(System.getProperty("aiplayer.export.only"));
-    private final boolean iconsOnly = "icons".equals(System.getProperty("aiplayer.export.only"));
+    private final java.util.List<String> only = java.util.Arrays.asList(
+        System.getProperty("aiplayer.export.only", "")
+            .split(","));
+    private final boolean namesOnly = only.contains("names");
+    /** Only what goes over an items.jsonl that is there already; needs a world and NEI's item list, no recipes. */
+    private final boolean extrasOnly = !namesOnly
+        && (only.contains("icons") || only.contains("tooltips") || only.contains("shots"));
 
     private ExportClient(File dir, String join) {
         this.dir = dir;
@@ -101,8 +107,8 @@ public final class ExportClient {
             pagesSeen = -1;
         }
         if (ticks % 20 != 0) return;
-        if (iconsOnly) {
-            // Drawing needs the item list (for the stacks NEI shows) but none of the recipe pages.
+        if (extrasOnly) {
+            // These need the item list (for the stacks NEI shows) but none of the recipe pages.
             if (!NEIClientConfig.isLoaded() || !ItemList.loadFinished || ticks - inWorldSince < 300) return;
             started = true;
             work();
@@ -129,8 +135,12 @@ public final class ExportClient {
             boolean ok = false;
             try {
                 if (namesOnly) NeiExport.names(dir);
-                else if (iconsOnly) IconExport.run(dir);
-                else NeiExport.run(dir);
+                else if (extrasOnly) {
+                    if (only.contains("tooltips")) TooltipExport.run(dir);
+                    if (only.contains("icons")) IconExport.run(dir);
+                    // Pictures of tooltips, for tools/tooltip-check to compare the export with; not an export.
+                    if (only.contains("shots")) TooltipShots.run(dir);
+                } else NeiExport.run(dir);
                 ok = true;
             } catch (Throwable e) {
                 AiPlayerMod.LOG.error("export: failed", e);
@@ -139,9 +149,15 @@ public final class ExportClient {
                 // Read by tools/export-packdata, which cannot tell a finished run from a crash otherwise.
                 new File(dir, ok ? "export.ok" : "export.failed").createNewFile();
             } catch (Throwable ignored) {}
-            if (ok && !namesOnly && !iconsOnly) {
-                // After the mark on purpose: the icons are an extra, and whatever drawing 60,000 items of 300 mods
-                // does to the game, the export above is already safe. icons/icons.json says whether they got done.
+            if (ok && !namesOnly && !extrasOnly) {
+                // After the mark on purpose: tooltips and icons are extras, and whatever asking 60,000 items of
+                // 300 mods for them does to the game, the export above is already safe. tooltips.json and
+                // icons/icons.json say whether they got done.
+                try {
+                    TooltipExport.run(dir);
+                } catch (Throwable e) {
+                    AiPlayerMod.LOG.error("export: the tooltips could not be read", e);
+                }
                 try {
                     IconExport.run(dir);
                 } catch (Throwable e) {

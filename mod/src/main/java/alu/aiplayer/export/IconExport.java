@@ -2,10 +2,7 @@ package alu.aiplayer.export;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStreamReader;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -13,11 +10,8 @@ import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
@@ -31,22 +25,18 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.renderer.texture.ITextureObject;
 import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.client.shader.Framebuffer;
-import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.ReportedException;
 import net.minecraft.util.ResourceLocation;
-import net.minecraftforge.oredict.OreDictionary;
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
 import alu.aiplayer.AiPlayerMod;
-import codechicken.nei.ItemList;
 
 /**
  * Draws every item of items.jsonl the way a slot of the inventory shows it and writes the pictures as sheets:
@@ -57,8 +47,7 @@ import codechicken.nei.ItemList;
  * two pictures say exactly how much of the background showed through: that is the transparency, and the colour
  * follows from it. The drawing itself is the call the inventory makes, on the client thread, a batch at a time.
  * <p>
- * The stack drawn for a line is the first one NEI lists with that id and damage value (so a tool that only has a
- * look with its tag gets the one NEI shows first), or a bare stack when NEI does not list it. Client only.
+ * The stack drawn for a line is the one {@link ItemRows} gives for it. Client only.
  */
 final class IconExport {
 
@@ -102,44 +91,9 @@ final class IconExport {
         // Whoever reads the directory goes by this file; without it a run that stopped halfway is no icons at all.
         Files.deleteIfExists(new File(out, "icons.json").toPath());
 
-        List<String> ids = new ArrayList<>();
-        List<Integer> metas = new ArrayList<>();
-        MessageDigest digest = MessageDigest.getInstance("SHA-1");
-        JsonParser parser = new JsonParser();
-        try (BufferedReader in = new BufferedReader(
-            new InputStreamReader(new FileInputStream(new File(dir, "items.jsonl")), StandardCharsets.UTF_8))) {
-            for (String line = in.readLine(); line != null; line = in.readLine()) {
-                String id = "";
-                int meta = 0;
-                try {
-                    JsonObject o = parser.parse(line)
-                        .getAsJsonObject();
-                    String readId = o.get("id")
-                        .getAsString();
-                    meta = o.get("meta")
-                        .getAsInt();
-                    id = readId;
-                } catch (Throwable ignored) {
-                    // A line nobody can read still takes its place, so that the lines after it keep their numbers.
-                    meta = 0;
-                }
-                ids.add(id);
-                metas.add(meta);
-                digest.update((id + "/" + meta + "\n").getBytes(StandardCharsets.UTF_8));
-            }
-        }
-        int total = ids.size();
-        Map<String, ItemStack> listed = new HashMap<>();
-        try {
-            for (ItemStack s : new ArrayList<>(ItemList.items)) {
-                if (s == null || s.getItem() == null) continue;
-                Object name = Item.itemRegistry.getNameForObject(s.getItem());
-                if (name != null) listed.putIfAbsent(name + "/" + s.getItemDamage(), s);
-            }
-        } catch (Throwable t) {
-            AiPlayerMod.LOG.warn("export: NEI's item list could not be read, icons are drawn from bare stacks", t);
-        }
-        AiPlayerMod.LOG.info("export: drawing {} icons ({} of them as NEI lists them)", total, countListed(ids, metas, listed));
+        ItemRows rows = new ItemRows(dir);
+        int total = rows.size();
+        AiPlayerMod.LOG.info("export: drawing {} icons ({} of them as NEI lists them)", total, rows.countListed());
 
         int sheets = (total + PER_SHEET - 1) / PER_SHEET;
         List<Integer> missing = new ArrayList<>();
@@ -166,7 +120,7 @@ final class IconExport {
                     }
                     final int count = Math.min(BATCH, sheetEnd - first);
                     final ItemStack[] stacks = new ItemStack[count];
-                    for (int k = 0; k < count; k++) stacks[k] = stack(ids.get(first + k), metas.get(first + k), listed);
+                    for (int k = 0; k < count; k++) stacks[k] = rows.stack(first + k);
                     final String[] problems = new String[count];
                     Callable<int[]> job = () -> batch(stacks, problems);
                     @SuppressWarnings("unchecked")
@@ -228,7 +182,7 @@ final class IconExport {
         o.addProperty("columns", COLUMNS);
         o.addProperty("rows", ROWS);
         o.addProperty("count", total);
-        o.addProperty("itemsSha1", hex(digest.digest()));
+        o.addProperty("itemsSha1", rows.sha1);
         o.add("files", files);
         JsonArray m = new JsonArray();
         for (int i : missing) m.add(new JsonPrimitive(i));
@@ -252,41 +206,11 @@ final class IconExport {
         return o;
     }
 
-    private static int countListed(List<String> ids, List<Integer> metas, Map<String, ItemStack> listed) {
-        int n = 0;
-        for (int i = 0; i < ids.size(); i++) if (listed.containsKey(ids.get(i) + "/" + metas.get(i))) n++;
-        return n;
-    }
-
     private static boolean contains(JsonArray a, String s) {
         for (int i = 0; i < a.size(); i++) if (a.get(i)
             .getAsString()
             .equals(s)) return true;
         return false;
-    }
-
-    private static String hex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b & 255));
-        return sb.toString();
-    }
-
-    private static ItemStack stack(String id, int meta, Map<String, ItemStack> listed) {
-        try {
-            ItemStack known = listed.get(id + "/" + meta);
-            ItemStack s;
-            if (known != null) {
-                s = known.copy();
-            } else {
-                Item item = (Item) Item.itemRegistry.getObject(id);
-                if (item == null) return null;
-                s = new ItemStack(item, 1, meta == OreDictionary.WILDCARD_VALUE ? 0 : meta);
-            }
-            s.stackSize = 1;
-            return s;
-        } catch (Throwable t) {
-            return null;
-        }
     }
 
     // ---- on the client thread -------------------------------------------------------------------------------
