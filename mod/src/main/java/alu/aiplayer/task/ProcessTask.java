@@ -87,7 +87,17 @@ public final class ProcessTask extends Task {
         wantedBus = J.has(params, "bus") ? Params.pos(params, "bus") : null;
         expect = J.has(params, "expect") ? Inventories.filters(J.array(params, "expect")) : new ArrayList<ItemFilter>();
         limitTicks = 20 * Math.max(5, Math.min(3600, J.i(params, "wait", 180)));
+        leave = J.bool(params, "leave", false);
     }
+
+    /**
+     * Put the inputs in, see that the machine has started, and go: what a player does with a machine that takes
+     * minutes. Nothing is collected and the circuit setting stays as it was set; the products are taken out
+     * later, like out of any container.
+     */
+    private final boolean leave;
+    private boolean left;
+    private JsonObject leftState;
 
     @Override
     public void start(Bot bot) {
@@ -365,6 +375,14 @@ public final class ProcessTask extends Task {
                 } else {
                     idle++;
                 }
+                if (leave && (ran || plain)) {
+                    // It runs (a machine this mod cannot read is taken at its word once the things are in).
+                    left = true;
+                    leftState = plain ? null : Machines.describe(te);
+                    circuitSet = false; // the setting stays: the machine needs it for the rounds still to come
+                    done();
+                    return;
+                }
                 if (!ran && waited > (multi || plain ? START_WAIT_MULTI : START_WAIT)) {
                     // It never started. Take the inputs back out rather than leave them sitting there.
                     phase = "taking the inputs back";
@@ -577,6 +595,26 @@ public final class ProcessTask extends Task {
         JsonObject o = new JsonObject();
         o.addProperty("put", put);
         if (poured > 0) o.addProperty("cellsPoured", poured);
+        if (left) {
+            o.addProperty("left", true);
+            o.addProperty(
+                "note",
+                plain
+                    ? "the things are in and the task ended without waiting; whether this machine started cannot be"
+                        + " read. What it makes stays in it until it is taken out"
+                    : "the machine has started and the task ended without waiting for it. What it makes stays in"
+                        + " it until it is taken out (withdraw with the machine as the container); what was put in"
+                        + " and is not used up, such as a mould, stays in it too");
+            if (leftState != null) o.add("machine", leftState);
+            if (circuit >= 0) {
+                JsonObject c = new JsonObject();
+                c.addProperty("now", circuit);
+                c.addProperty("was", oldCircuit);
+                o.add("circuit", c);
+            }
+            if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
+            return o;
+        }
         o.add("outputs", outputs);
         if (passedOn) {
             o.addProperty(

@@ -487,7 +487,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
-| `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
+| `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180, leave?=false}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
 | `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
@@ -546,6 +546,10 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
   - 机器没开工（单方块 3 秒、多方块 10 秒）就把原料取回来，以 `invalid` 失败，`error.message` 里带原因（多方块是它界面上的说法，如 `No valid recipe found`），`error.detail` 是这台机器的状态。可能是没电、缺电路或流体、没有这个配方、炉温或电压不够、输出口被占着。
   - 原料一样都放不进去（输入格、输入总线满了）也以 `invalid` 失败。输入总线带 `attached` 时多半是被自动喂料占满的，这要主人决定怎么办。
   - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], timedOut?, note?, passedTo?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
+  - **`leave:true`：放进去就走。** 不给它时这个任务从放料一直占着身体到取完产物（机器要转几分钟，身体就站几分钟）。给了它：原料放进去、电路设好、看到机器开工，任务就以 `done` 结束，身体可以去做别的；机器自己接着转。结果是 `{put, cellsPoured?, left:true, note, machine?, circuit?:{now, was}, freeSlots}`——`machine` 是结束那一刻这台机器的状态（同 `world.machines` 的一项，带 `progress`/`maxProgress`，单位 tick），身体不认识的机器没有这一项。
+    - 产物、没消耗掉的模具都留在机器里，之后像从容器里取东西一样取：`withdraw` 的 `container` 给这台机器（产物格；`fromInputs:true` 是原料格，模具在那里）；多方块取输出总线。
+    - 电路**不恢复**（后面几轮还要用），`circuit.was` 是原来的值；要恢复得之后自己设回去。
+    - 没开工的处理和不带 `leave` 时一样：原料取回、电路恢复、以 `invalid` 失败。
   - 多方块的总线和仓不按名单找：主机名下登记的所有总线和仓都算（蒸汽多方块的蒸汽总线也在内）。
   - 还不行的：单方块机器的流体格（要它已经接好流体来源）；界面里要点按钮才能开工的机器（用 `screen.*` 自己点）。
 - **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。
