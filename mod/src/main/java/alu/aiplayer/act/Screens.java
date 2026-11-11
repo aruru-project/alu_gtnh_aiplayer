@@ -25,6 +25,19 @@ public final class Screens {
 
     private Screens() {}
 
+    /** The block whose screen each bot has open, so that what is changed through it is saved with the world. */
+    private static final java.util.Map<String, int[]> AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void opened(Bot bot, int[] at) {
+        if (at == null) AT.remove(bot.name);
+        else AT.put(bot.name, at.clone());
+    }
+
+    private static void changed(Bot bot) {
+        int[] at = AT.get(bot.name);
+        if (at != null && bot.online()) ContainerSession.markChanged(bot.player().worldObj, at[0], at[1], at[2]);
+    }
+
     /** Opens the screen of a block within reach, or the one a carried item opens when used. */
     public static JsonObject open(Bot bot, int[] at, ItemFilter item) {
         return open(bot, at, item, -1, null, false);
@@ -60,6 +73,7 @@ public final class Screens {
         if (bot.clickWasRefused(at[0], at[1], at[2])) {
             throw RpcException.denied("opening that was refused; it may be protected");
         }
+        opened(bot, at);
         return look(bot);
     }
 
@@ -88,6 +102,7 @@ public final class Screens {
                 throw RpcException.denied("opening that was refused; it may be protected");
             }
         }
+        opened(bot, item != null ? null : at);
         return look(bot);
     }
 
@@ -148,6 +163,7 @@ public final class Screens {
         try {
             c.slotClick(slot, button, shift ? 1 : 0, p);
             c.detectAndSendChanges();
+            changed(bot);
         } catch (RuntimeException e) {
             throw new RpcException("invalid", "the screen did not take that click: " + e);
         }
@@ -159,6 +175,7 @@ public final class Screens {
         Container c = open(bot);
         Controls.press(c, panel, key, button, shift);
         c.detectAndSendChanges();
+        changed(bot);
         return look(bot);
     }
 
@@ -167,6 +184,7 @@ public final class Screens {
         Container c = open(bot);
         Controls.set(c, panel, key, value);
         c.detectAndSendChanges();
+        changed(bot);
         return look(bot);
     }
 
@@ -188,6 +206,8 @@ public final class Screens {
         }
         if (p.openContainer != p.inventoryContainer) bot.conn()
             .closeWindow();
+        changed(bot);
+        opened(bot, null);
         JsonObject o = new JsonObject();
         o.addProperty("open", false);
         return o;
