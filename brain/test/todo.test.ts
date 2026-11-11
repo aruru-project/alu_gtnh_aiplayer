@@ -4,6 +4,7 @@
 // 面板接口（/api/todo）在 panel.test.ts。
 
 import assert from 'node:assert/strict'
+import type { AgentEvent } from '../src/agent/events.ts'
 import { describe, it } from 'node:test'
 import { Presence } from '../src/agent/presence.ts'
 import { TODO_NUDGE_MAX } from '../src/agent/lines.ts'
@@ -287,6 +288,42 @@ describe('工作清单：干活线停下来以后被叫醒', () => {
     again.todo.apply({ add: [{ text: '挖矿洞' }] }, 'owner', T0)
     await sleep(200)
     assert.deepEqual([again.llm.requests.length, nudges(again).length], [2, 1])
+  })
+
+  it('被叫停以后（审查找到的三条路）：大脑重启了照样不叫；叫停时正在收尾的那一轮（它的事来得比叫停早）收完也不解开；为叫停以后交来的事走完一轮才解开', async (t) => {
+    const { h } = setup(t)
+    h.todo.apply({ add: [{ text: '拆掉那台旧机器' }] }, 'owner', T0)
+    await waitFor('woken by the list', () => nudges(h).length === 1)
+    await h.agent.whenIdle()
+    await h.agent.stopWork('先别干了', 'panel')
+    // 叫停时正在收尾的那一轮：它是为叫停以前就来的事走的
+    ;(h.agent as unknown as { workEnded(triggers: AgentEvent[]): void }).workEnded([told('拆掉那台旧机器', [], T0 - 60_000)])
+    h.todo.apply({ add: [{ text: '补火把' }] }, 'owner', T0)
+    await sleep(200)
+    assert.equal(nudges(h).length, 1)
+    // 大脑重启：还是叫停着
+    await h.agent.stop()
+    const again = h.restart({ timing: {} })
+    t.after(() => again.agent.stop())
+    await sleep(300)
+    // 重启前后用的是同一个假模型：数的还是重启前那一次
+    assert.equal(nudges(again).length, 1)
+    // 交来新的事，它走完这一轮：解开，清单上没做的再叫醒它
+    again.agent.handleEvent(told('接着干吧'))
+    await waitFor('woken by the list after new work', () => nudges(again).length === 2)
+  })
+
+  it('下线时清单上多了没做的：那时不叫（叫醒它也做不了）；它一上线就叫（审查找到的：原来要等别的事来才会再看）', async (t) => {
+    const { h } = setup(t)
+    h.game.online = false
+    h.agent.handleEvent({ type: 'despawned', time: Date.now(), reason: 'idle' })
+    await h.agent.whenIdle()
+    h.todo.apply({ add: [{ text: '修二号高炉' }] }, 'owner', T0)
+    await sleep(200)
+    assert.equal(nudges(h).length, 0)
+    h.game.online = true
+    h.agent.handleEvent({ type: 'spawned', time: Date.now() })
+    await waitFor('woken by the list after coming online', () => nudges(h).length === 1)
   })
 
   it('每次被叫醒它都只往清单上再加一件、不开任务也不提问：中间没有外面的事，连着叫到上限就不再叫，日志里记一条', async (t) => {

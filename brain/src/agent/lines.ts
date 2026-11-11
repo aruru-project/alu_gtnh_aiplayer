@@ -48,6 +48,8 @@ export interface LineModel {
 export interface LinkState {
   waiting?: { text: string; since: number }
   lastReport?: { type: WorkerNote; text: string; time: number }
+  /** 干活线被叫停的时刻：之后清单不再叫醒它，直到它为叫停以后来的事走完一轮。存着，重启后照旧。 */
+  haltedAt?: number
 }
 
 export interface LinesDeps {
@@ -182,7 +184,6 @@ export class Lines {
   /** 上一次叫醒以后，它有没有为别的事走过一轮。 */
   private todoFresh = true
   /** 被叫停了：在它为新的事走完一轮之前，不因为清单叫醒它。 */
-  private todoHalted = false
   /** 中间没有外面的事，因为清单连着叫醒了几次；到了上限记过日志没有。 */
   private todoInRow = 0
   private todoCapLogged = false
@@ -283,8 +284,12 @@ export class Lines {
     else if (ev.type === 'whisper') this.deps.chatLog?.add({ time: ev.time, kind: 'whisper', who: ev.from, text: ev.message, ...(ev.speaker ? { speaker: ev.speaker } : {}) })
     else if (ev.type === 'panel_command') this.deps.chatLog?.add({ time: ev.time, kind: 'panel', who: 'owner (panel)', text: ev.text })
     // 外面的事：有人说话、提醒到点、任务结束、死了。两条线之间“连着往来了几次”从头数
-    if (ev.type === 'chat' || ev.type === 'whisper' || ev.type === 'panel_command' || ev.type === 'reminder' || ev.type === 'task_ended' || ev.type === 'death') this.outside()
+    // 别的 bot 说的话不算：两个 bot 你一句我一句，不该一次次把防空转的数清零
+    const fromBot = (ev.type === 'chat' || ev.type === 'whisper') && ev.isBot === true
+    if (!fromBot && (ev.type === 'chat' || ev.type === 'whisper' || ev.type === 'panel_command' || ev.type === 'reminder' || ev.type === 'task_ended' || ev.type === 'death')) this.outside()
     const to = lineOf(ev)
+    // 刚上线：下线期间清单上多出来的事，那时看过一眼就放下了（不在线叫醒它也没用），现在再看
+    if (ev.type === 'spawned') queueMicrotask(() => this.armTodo())
     if (to === 'talk') this.talk.handleEvent(ev)
     else if (to === 'work') this.work.handleEvent(ev)
     else {
@@ -373,11 +378,15 @@ export class Lines {
 
   /** 干活线走完了一轮：它为别的事（不只是清单的那句）走的，就算“来了别的事”，被叫停的也解开。过一小会儿看要不要叫醒它。 */
   private workEnded(triggers: readonly AgentEvent[]): void {
-    if (triggers.some((ev) => ev.type !== 'todo')) {
-      this.todoFresh = true
-      this.todoHalted = false
-    }
+    if (triggers.some((ev) => ev.type !== 'todo')) this.todoFresh = true
+    // 被叫停以后：只有为叫停之后才来的事走完的一轮才解开（叫停时正在收尾、写交接记录的那一轮不算）
+    const halted = this.links.haltedAt
+    if (halted !== undefined && triggers.some((ev) => ev.type !== 'todo' && ev.type !== 'halted' && ev.time > halted)) this.saveLinks({ ...this.links, haltedAt: undefined })
     this.armTodo()
+  }
+
+  private get todoHalted(): boolean {
+    return this.links.haltedAt !== undefined
   }
 
   /** 过一小会儿看要不要因为清单叫醒干活线（再来一次就从头等）。清单上没有没做的就不用看。 */
@@ -523,8 +532,8 @@ export class Lines {
     const botName = this.deps.settings('work').botName
     const note: Extract<AgentEvent, { type: 'halted' }> = { type: 'halted', time: this.now(), by, reason, said }
     const halt = this.work.halt(note)
-    // 叫停了：不因为清单再把它叫起来，等有新的事交给它
-    this.todoHalted = true
+    // 叫停了：不因为清单再把它叫起来，等有新的事交给它（存着，重启后照旧）
+    this.saveLinks({ ...this.links, haltedAt: this.now() })
     if (this.todoTimer) clearTimeout(this.todoTimer)
     this.todoTimer = undefined
     const tasks: string[] = []
@@ -607,7 +616,7 @@ export class Lines {
       relay: { type: kind, from: 'work', to: 'talk', ...(progress && waiting !== undefined ? { waiting } : {}) },
       ...(kind === 'trouble' ? { isError: true } : {}),
     })
-    this.saveLinks({ ...(kind === 'question' ? { waiting: { text, since: now } } : this.links.waiting ? { waiting: this.links.waiting } : {}), lastReport: { type: kind, text, time: now } })
+    this.saveLinks({ ...this.links, ...(kind === 'question' ? { waiting: { text, since: now } } : {}), lastReport: { type: kind, text, time: now } })
     this.talk.handleEvent({ type: 'worker', time: now, kind, text, ...(progress && waiting !== undefined ? { waiting } : {}) }, spinning ? { background: true } : {})
     if (spinning) return `Sent, but it does not wake the talk line. ${SPINNING}`
     if (kind === 'report') return 'Sent. It does not wake the talk line: it reads this the next time it is woken (someone speaks to it, you ask a question, you stop and leave a note). When you need an answer, send a question.'
@@ -617,7 +626,7 @@ export class Lines {
   }
 
   private saveLinks(next: LinkState): void {
-    this.links = { ...(next.waiting ? { waiting: next.waiting } : {}), ...(next.lastReport ? { lastReport: next.lastReport } : {}) }
+    this.links = { ...(next.waiting ? { waiting: next.waiting } : {}), ...(next.lastReport ? { lastReport: next.lastReport } : {}), ...(next.haltedAt !== undefined ? { haltedAt: next.haltedAt } : {}) }
     try {
       this.deps.persist?.links?.save(this.links)
     } catch (e) {

@@ -75,6 +75,18 @@ describe('唤醒策略：聊天', () => {
   })
 })
 
+describe('唤醒策略：两个 bot 不互相叫醒', () => {
+  it('另一个 bot 发来的私聊、自己发给自己的私聊都不叫醒（审查找到的：两个 bot 一来一回私聊会停不下来）；真人的私聊照样叫醒', () => {
+    const whisper = (from: string, extra: Record<string, unknown> = {}): AgentEvent => ({ type: 'whisper', time: NOW, from, message: '在吗', ...extra })
+    assert.equal(decideWake(whisper('Bob', { isBot: true }), policy(), state()).reason, 'other_bot')
+    assert.equal(decideWake(whisper('alu'), policy(), state()).reason, 'other_bot')
+    assert.equal(wakes(whisper('Steve')), true)
+    // 身体在私聊里写明了是不是 bot，大脑照着记下
+    const ev = fromBridgeEvent({ event: 'whisper', data: { bot: 'Alu', from: 'Bob', message: '在吗', isBot: true } } as never, 'Alu', NOW)
+    assert.equal(ev?.type === 'whisper' && ev.isBot, true)
+  })
+})
+
 describe('唤醒策略：其他事件', () => {
   it('私聊、面板指令、提醒、死亡总是触发', () => {
     assert.equal(wakes({ type: 'whisper', time: NOW, from: 'Steve', message: 'hi' }), true)

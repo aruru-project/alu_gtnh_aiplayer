@@ -1,4 +1,4 @@
-import { boxPieces } from './reach.ts'
+import { boxPieces, pieceCount } from './reach.ts'
 import { BridgeError } from '../bridge/protocol.ts'
 import type { BlockInfo, BlockPos } from '../bridge/protocol.ts'
 import {
@@ -141,8 +141,9 @@ export const scanArea: Tool = {
     const depth = Math.abs(input.z2 - input.z1) + 1
     if (width > SCAN_MAX_SIDE || depth > SCAN_MAX_SIDE) {
       // 照实说要分几块，每块的两个角写出来
-      const parts = boxPieces({ x1: input.x1, z1: input.z1, x2: input.x2, z2: input.z2, y1: 0, y2: 0 }, SCAN_MAX_SIDE)
-      return fail(`The area is ${width}×${depth}; one scan covers at most ${SCAN_MAX_SIDE}×${SCAN_MAX_SIDE}, so this area is ${parts.length} scans: ${parts.slice(0, 16).map((p) => `(${p.x1}, ${p.z1})–(${p.x2}, ${p.z2})`).join('; ')}${parts.length > 16 ? `; … ${parts.length - 16} more in the same pattern` : ''}.`)
+      const whole = { x1: input.x1, z1: input.z1, x2: input.x2, z2: input.z2, y1: 0, y2: 0 }
+      const parts = { length: pieceCount(whole, SCAN_MAX_SIDE), shown: boxPieces(whole, SCAN_MAX_SIDE, 16) }
+      return fail(`The area is ${width}×${depth}; one scan covers at most ${SCAN_MAX_SIDE}×${SCAN_MAX_SIDE}, so this area is ${parts.length} scans: ${parts.shown.map((p) => `(${p.x1}, ${p.z1})–(${p.x2}, ${p.z2})`).join('; ')}${parts.length > 16 ? `; … ${parts.length - 16} more in the same pattern` : ''}.`)
     }
     const scan = await ctx.bridge.worldScan(input)
     if (!Array.isArray(scan.heights)) return fail(`unexpected scan result: ${compactJson(scan)}`)

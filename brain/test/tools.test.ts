@@ -263,6 +263,13 @@ describe('观察', () => {
     assert.equal(res.isError, true)
     assert.equal(res.content, 'The area is 65×11; one scan covers at most 64×64, so this area is 2 scans: (0, 0)–(63, 10); (64, 0)–(64, 10).')
     assert.equal(s.game.callsOf('world.scan').length, 0)
+    // 大得离谱的范围（审查找到的：原来先把每一块都排出来，上亿块会把进程堵死；坐标大到加 64 都不变时还会死循环）：照样马上答
+    const started = Date.now()
+    const huge = await s.run('scan_area', { x1: 0, z1: 0, x2: 1_000_000_000_000, z2: 1_000_000 })
+    assert.match(huge.content, /^The area is 1000000000001×1000001; one scan covers at most 64×64, so this area is 244156250015626 scans: \(0, 0\)–\(63, 63\); \(64, 0\)–\(127, 63\)/)
+    const flat = await s.run('scan_area', { x1: 1e20, z1: 0, x2: 1e20, z2: 100 })
+    assert.match(flat.content, /so this area is 2 scans: /)
+    assert.ok(Date.now() - started < 1000)
   })
 
   it('look_around 合并实体、箱子摘要和地形摘要；其中一项拿不到时其余照给', async (t) => {

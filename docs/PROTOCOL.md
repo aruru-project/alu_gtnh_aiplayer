@@ -578,7 +578,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?, index?, role?}`。GregTe
 | event | data | 说明 |
 |---|---|---|
 | `chat` | `{player, uuid, message, isBot, speaker?}` | 公共聊天里的每一句，含 bot 自己说的（`isBot:true`）。控制台 `/say` 不算。真人说的带 `speaker`：他说这句话时站在哪、朝哪看、指着什么（PlayerView，见“服务器与世界”） |
-| `whisper` | `{bot, from, message, speaker?}` | 有人用 `/tell` `/msg` 私聊 bot。说话的人在线时带 `speaker` |
+| `whisper` | `{bot, from, message, isBot, speaker?}` | 有人用 `/tell` `/msg` 私聊 bot。`isBot` 是发来的是不是另一个 bot（大脑据此不让两个 bot 互相叫醒）；说话的人是在线的真人时带 `speaker` |
 | `bot.message` | `{bot, text}` | 发给 bot 的其他系统消息（指令回显、死亡信息等） |
 | `task.update` | `{bot, task:TaskInfo}` | 任务开始、完成、失败、取消时各发一次；进度变化不推送 |
 | `bot.spawned` | `{bot}` | 上线，以及死亡后重生 |

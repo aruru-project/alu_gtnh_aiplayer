@@ -360,6 +360,8 @@ public final class BotManager implements TaskQueue.Listener {
         net.minecraft.entity.player.EntityPlayerMP speaker = net.minecraft.server.MinecraftServer.getServer()
             .getConfigurationManager()
             .func_152612_a(from);
+        // Another bot whispering: the brain must not be woken by it, or two bots answer each other forever.
+        data.addProperty("isBot", speaker != null && isBot(speaker));
         if (speaker != null && !isBot(speaker)) data.add("speaker", alu.aiplayer.world.PlayerView.describe(speaker));
         bridge.emit("whisper", data);
     }

@@ -333,6 +333,27 @@ public final class Machines {
         return null;
     }
 
+    /**
+     * Whether a slot of an open screen is one of the machine's own: its item handler is the machine's inventory.
+     * A cover's slots, shown on the same screen, belong to the cover.
+     */
+    public static boolean ownSlot(TileEntity te, net.minecraft.inventory.Slot slot) {
+        Object m = meta(te);
+        if (m == null) return false;
+        try {
+            Object own = m.getClass()
+                .getMethod("getInventoryHandler")
+                .invoke(m);
+            Object handler = slot.getClass()
+                .getMethod("getItemHandler")
+                .invoke(slot);
+            return own != null && handler == own;
+        } catch (Throwable t) {
+            // A screen not built from item handlers: its slots are the block's inventory, as for a plain chest.
+            return slot.inventory == te;
+        }
+    }
+
     public static boolean isActive(TileEntity te) {
         try {
             return meta(te) != null && (Boolean) active.invoke(te);

@@ -4,7 +4,7 @@
 // 这两个都标着 picture：模型能看图时才进工具清单；不能看图时列在库函数的索引里（程序里调，拿文字和 data），
 // 模型直接调也照常执行。
 
-import { boxPieces } from './reach.ts'
+import { boxPieces, pieceCount } from './reach.ts'
 import { BridgeError } from '../bridge/protocol.ts'
 import type { PlayerInfo } from '../bridge/protocol.ts'
 import { decodePng } from '../design/index.ts'
@@ -190,8 +190,8 @@ export const viewArea: Tool = {
     const sides = [Math.abs(box.x2 - box.x1) + 1, Math.abs(box.y2 - box.y1) + 1, Math.abs(box.z2 - box.z1) + 1]
     if (sides.some((n) => n > AREA_MAX_SIDE)) {
       // 照实说要分几块，并把每一块的两个角写出来：照着一块块看，不用一次次试
-      const parts = boxPieces(box, AREA_MAX_SIDE)
-      const shown = parts.slice(0, PIECES_LISTED)
+      const parts = { length: pieceCount(box, AREA_MAX_SIDE) }
+      const shown = boxPieces(box, AREA_MAX_SIDE, PIECES_LISTED)
       return fail(
         `The box is ${sides[0]}×${sides[1]}×${sides[2]} (x × y × z); one picture covers at most ${AREA_MAX_SIDE} on each side, so this box is ${parts.length} pictures: ` +
           `${shown.map((p) => `(${p.x1}, ${p.y1}, ${p.z1})–(${p.x2}, ${p.y2}, ${p.z2})`).join('; ')}${parts.length > shown.length ? `; … ${parts.length - shown.length} more in the same pattern` : ''}.`,

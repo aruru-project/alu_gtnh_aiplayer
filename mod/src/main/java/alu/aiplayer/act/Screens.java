@@ -137,8 +137,9 @@ public final class Screens {
                 j.add("item", item);
             }
             if (!own) {
-                if (gt) {
-                    // The slot's place in the machine's own inventory, and what that place is for.
+                if (gt && Machines.ownSlot(block, s)) {
+                    // The slot's place in the machine's own inventory, and what that place is for. Slots of a cover
+                    // shown on the same screen hold the cover's things; their numbers are the cover's.
                     j.addProperty("index", s.getSlotIndex());
                     String role = Machines.slotRole(block, s.getSlotIndex());
                     if (role != null) j.addProperty("role", role);

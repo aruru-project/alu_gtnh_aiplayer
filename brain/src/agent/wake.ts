@@ -115,6 +115,8 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
       return no('not_addressed')
     }
     case 'whisper': {
+      // 另一个 bot（或者它自己）发来的悄悄话不叫醒它：两个 bot 互相私聊会一来一回停不下来
+      if (ev.isBot === true || ev.from.toLowerCase() === policy.botName.toLowerCase()) return no('other_bot')
       if (!isOwner(ev.from, policy.owners)) return no('not_owner')
       if (state.botOnline === false) return no('bot_offline')
       if (state.now - ev.time > policy.staleChatMs) return no('stale')

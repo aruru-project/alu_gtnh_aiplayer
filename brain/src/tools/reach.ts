@@ -65,17 +65,31 @@ export function pieces(center: Spot3, radius: number, piece: number): Pieces {
  * 一个盒子每边最多 side 格（画图、扫地面的上限）时，大的盒子要分成几块：每块的两个角，照 x、z、y 的先后。
  * 给模型看的一句话：分成几块、每块的坐标，照着一块块调就行，不用一次次试。
  */
-export function boxPieces(box: Box3, side: number): Box3[] {
-  const span = (a: number, b: number): [number, number][] => {
-    const lo = Math.min(a, b)
-    const hi = Math.max(a, b)
-    const out: [number, number][] = []
-    for (let start = lo; start <= hi; start += side) out.push([start, Math.min(hi, start + side - 1)])
-    return out
+export function boxPieces(box: Box3, side: number, limit = Number.POSITIVE_INFINITY): Box3[] {
+  // 按编号算出第几块，不把整条轴先排出来：坐标大得离谱时（上亿格，或者大到加 side 都不变），排一条轴就会把进程堵死
+  const axis = (a: number, b: number) => ({ lo: Math.min(a, b), hi: Math.max(a, b), n: Math.ceil((Math.abs(b - a) + 1) / side) })
+  const ax = axis(box.x1, box.x2)
+  const ay = axis(box.y1, box.y2)
+  const az = axis(box.z1, box.z2)
+  const total = ax.n * ay.n * az.n
+  const piece = (a: { lo: number; hi: number }, k: number): [number, number] => {
+    const start = a.lo + k * side
+    return [start, Math.min(a.hi, start + side - 1)]
   }
   const out: Box3[] = []
-  for (const [y1, y2] of span(box.y1, box.y2)) for (const [z1, z2] of span(box.z1, box.z2)) for (const [x1, x2] of span(box.x1, box.x2)) out.push({ x1, y1, z1, x2, y2, z2 })
+  for (let i = 0; i < total && out.length < limit; i++) {
+    const [x1, x2] = piece(ax, i % ax.n)
+    const [z1, z2] = piece(az, Math.floor(i / ax.n) % az.n)
+    const [y1, y2] = piece(ay, Math.floor(i / (ax.n * az.n)))
+    out.push({ x1, y1, z1, x2, y2, z2 })
+  }
   return out
+}
+
+/** 一个盒子按每边 side 格分，一共几块（算出来，不一块块排）。 */
+export function pieceCount(box: Box3, side: number): number {
+  const n = (a: number, b: number): number => Math.ceil((Math.abs(b - a) + 1) / side)
+  return n(box.x1, box.x2) * n(box.y1, box.y2) * n(box.z1, box.z2)
 }
 
 /** “查了哪几块”：几块、每块多大、合起来是哪一片；慢的时候带上花了多久。 */

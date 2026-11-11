@@ -100,6 +100,7 @@ function parseLinkState(raw: unknown): LinkState {
   if (isRecord(r) && typeof r.text === 'string' && typeof r.time === 'number' && (r.type === 'report' || r.type === 'question' || r.type === 'result' || r.type === 'progress' || r.type === 'trouble')) {
     out.lastReport = { type: r.type, text: r.text, time: r.time }
   }
+  if (typeof raw.haltedAt === 'number') out.haltedAt = raw.haltedAt
   return out
 }
 

@@ -6,7 +6,8 @@ import { compactJson, nameOf, taskLines, trimTaskResult, withLocalNames } from '
 export type AgentEvent =
   /** speaker：他说这句话时站在哪、朝哪看、指着什么（身体给的；老的身体不给）。 */
   | { type: 'chat'; time: number; player: string; message: string; isBot: boolean; speaker?: PlayerView }
-  | { type: 'whisper'; time: number; from: string; message: string; speaker?: PlayerView }
+  /** isBot：说悄悄话的是另一个 bot（新的身体才给；老的身体不给时当作不是）。 */
+  | { type: 'whisper'; time: number; from: string; message: string; isBot?: boolean; speaker?: PlayerView }
   | { type: 'bot_message'; time: number; text: string }
   | { type: 'task_started'; time: number; task: TaskInfo }
   | { type: 'task_ended'; time: number; task: TaskInfo }
@@ -95,7 +96,7 @@ export function fromBridgeEvent(e: BridgeEvent, botName: string, now: number): A
       const message = s(d.message)
       if (!mine || from.length === 0 || message.length === 0) return undefined
       const speaker = speakerOf(d.speaker)
-      return { type: 'whisper', time, from, message, ...(speaker ? { speaker } : {}) }
+      return { type: 'whisper', time, from, message, ...(d.isBot === true ? { isBot: true } : {}), ...(speaker ? { speaker } : {}) }
     }
     case 'bot.message':
       return mine && s(d.text).length > 0 ? { type: 'bot_message', time, text: s(d.text) } : undefined
