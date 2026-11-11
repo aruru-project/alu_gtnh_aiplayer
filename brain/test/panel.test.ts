@@ -169,7 +169,8 @@ describe('面板：鉴权', () => {
 
     const ok = await s.login()
     const setCookie = ok.headers.getSetCookie()[0]!
-    assert.match(setCookie, /^aiplayer_session=[^;]+;/)
+    // 名字里带着访问的端口：同一台机器上开两个面板（测试服、正式服）时，登录一个不会把另一个的会话盖掉
+    assert.match(setCookie, /^aiplayer_session_\d+=[^;]+;/)
     assert.match(setCookie, /HttpOnly/)
     assert.match(setCookie, /SameSite=Strict/)
     assert.equal((await s.call('GET', '/api/overview')).status, 200)
