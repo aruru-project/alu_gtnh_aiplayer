@@ -523,8 +523,8 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
   - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
-  - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。
-    四周空着的行列会被去掉，摆得进 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
+  - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。**东西照给的格子原样摆**：右边、下面空着的列和行不算（所以只占左上 2×2 的配方不用工作台），左边、上面空着的列和行是配方的一部分，不会被挪掉。这个包里的黏土铸模全是“空白黏土铸模 + 小刀”，出哪一种只看两样东西各摆在哪一格。
+    只占左上 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
 - **随身的包当容器**：`deposit` / `withdraw` 的 `container` 除了位置，还可以写 `{item:{id,meta?}}`，意思是“我身上这件东西右键打开的那个界面”（背包一类）。不用走路；包本身不会被放进它自己里面；`deposit` 这样用时必须列出 `items`。身上没有这件东西是 `no_material`；右键后没有界面打开是 `invalid`。
 - **`use`**：
   - 这是玩家用东西的通用办法，做了什么由那件物品自己决定，所以结果只报看得见的变化：`{used:"名字", gained:[{id,meta,name,count}], lost:[…], openedScreen?, health, food, freeSlots}`。`gained`/`lost` 是背包里多了、少了什么（吃掉的食物、穿到身上去的装备会出现在 `lost` 里）。

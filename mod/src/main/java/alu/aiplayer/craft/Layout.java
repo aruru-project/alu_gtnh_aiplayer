@@ -77,15 +77,17 @@ public final class Layout {
 
     /**
      * A layout somebody spells out cell by cell: nine cells of a three-by-three grid, row by row, each null, an
-     * item ({id, meta?}) or an ore-dictionary name ({ore}). Empty rows and columns around it are trimmed away, so
-     * a recipe that fits two by two can be made without a table.
+     * item ({id, meta?}) or an ore-dictionary name ({ore}). Empty rows below it and empty columns to its right are
+     * dropped, so a recipe that fits two by two can be made without a table. Empty rows above it and columns to
+     * its left stay: where a shape begins is part of some recipes. The pack's clay casts are all "a blank cast and
+     * a knife", and which cast comes out is decided by the cells the two sit in.
      *
      * @throws IllegalArgumentException when a cell names nothing that exists
      */
     public static Layout fromGrid(com.google.gson.JsonArray grid, RecipeBook book) {
         if (grid.size() != 9) throw new IllegalArgumentException("grid must have 9 cells, row by row");
         Object[] all = new Object[9];
-        int minX = 3, minY = 3, maxX = -1, maxY = -1;
+        int maxX = -1, maxY = -1;
         for (int i = 0; i < 9; i++) {
             com.google.gson.JsonElement e = grid.get(i);
             if (e == null || e.isJsonNull()) continue;
@@ -105,15 +107,13 @@ public final class Layout {
                     .getAsInt() : OreDictionary.WILDCARD_VALUE;
                 all[i] = new ItemStack(item, 1, meta);
             }
-            minX = Math.min(minX, i % 3);
             maxX = Math.max(maxX, i % 3);
-            minY = Math.min(minY, i / 3);
             maxY = Math.max(maxY, i / 3);
         }
         if (maxX < 0) throw new IllegalArgumentException("the grid is empty");
-        int w = maxX - minX + 1, h = maxY - minY + 1;
+        int w = maxX + 1, h = maxY + 1;
         Object[] cells = new Object[w * h];
-        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) cells[y * w + x] = all[(y + minY) * 3 + x + minX];
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) cells[y * w + x] = all[y * 3 + x];
         return new Layout(w, h, cells, book);
     }
 
