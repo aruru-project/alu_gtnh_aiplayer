@@ -28,6 +28,7 @@ import { RunLogStore } from './agent/run-log.ts'
 import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
 import { FeedbackStore } from './store/feedback.ts'
 import { MethodStore } from './store/methods.ts'
+import { TodoStore } from './store/todo.ts'
 import { PictureStore } from './store/pictures.ts'
 import type { BrainConfig } from './store/config.ts'
 import { ensureDir, isRecord } from './store/files.ts'
@@ -122,6 +123,8 @@ async function main(): Promise<void> {
   const reminderStore = new ReminderStore(dataDir)
   // 基地的做法：主人教的、它自己定过的，怎么做东西的记录
   const methods = new MethodStore(dataDir)
+  // 工作清单：一串交代下来的事还剩哪些没做（两条线和主人共用一份）
+  const todo = new TodoStore(dataDir)
   // 意见簿：存之前把这台大脑上真正的密钥从附带的现场里抹掉（正常不会出现在里面，这是兜底）
   const feedback = new FeedbackStore(dataDir, {
     secrets: () => {
@@ -223,6 +226,7 @@ async function main(): Promise<void> {
     design,
     feedback,
     methods,
+    todo,
     versions: () => {
       const mod = bridgeClient.status().hello?.modVersion
       return { brain: VERSION, ...(mod !== undefined ? { mod } : {}) }
@@ -348,6 +352,7 @@ async function main(): Promise<void> {
     ...(packdata.tooltips ? { tooltips: packdata.tooltips } : {}),
     methods,
     methodsEnv: () => ({ book: packdata.recipes, items: packdata.items, fluids: packdata.fluids }),
+    todo,
     icons: itemIcons ?? false,
     bridge,
     bridgeStatus: () => bridgeClient.status(),

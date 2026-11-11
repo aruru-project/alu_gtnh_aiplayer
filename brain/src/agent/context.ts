@@ -6,7 +6,9 @@ import type { BotStatus } from '../bridge/protocol.ts'
 import type { Message } from '../llm/index.ts'
 import { manualInText, manualVersion } from '../store/manuals.ts'
 import type { Manual } from '../store/manuals.ts'
+import type { TodoItem } from '../store/todo.ts'
 import { formatServerInfo, formatStatus } from '../tools/format.ts'
+import { todoStateText } from '../tools/todo.ts'
 import { eventLine } from './events.ts'
 import type { AgentEvent } from './events.ts'
 
@@ -30,12 +32,14 @@ function realTime(now: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}（周${week}）`
 }
 
-/** 当前状态快照：位置、血量、背包摘要、当前任务和队列、在线玩家、游戏内时间。拿不到的部分如实说明。 */
+/** 当前状态快照：位置、血量、背包摘要、当前任务和队列、在线玩家、提醒、工作清单、时间。拿不到的部分如实说明。 */
 export async function buildSnapshot(
   bridge: BridgeApi,
   botName: string,
   reminders: readonly PendingReminder[],
   now: number,
+  /** 工作清单（两条线一样）：没做的、在等人的全列，加最近做完的几条。 */
+  todo: readonly TodoItem[] = [],
 ): Promise<Snapshot> {
   const lines: string[] = []
   let online: boolean | undefined
@@ -67,6 +71,8 @@ export async function buildSnapshot(
     const shown = reminders.slice(0, 5).map((r) => `${Math.max(0, Math.round((r.dueAt - now) / 60_000))} 分钟后「${r.note}」`)
     lines.push(`Pending reminders: ${shown.join('；')}${reminders.length > 5 ? ` 等 ${reminders.length} 个` : ''}`)
   }
+  const list = todoStateText(todo, now)
+  if (list.length > 0) lines.push(list)
   lines.push(`Real time: ${realTime(now)}`)
   return { text: lines.join('\n'), online }
 }

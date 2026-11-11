@@ -28,6 +28,7 @@ import { HistoryStore, TurnIds } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { MethodStore } from '../src/store/methods.ts'
+import { TodoStore } from '../src/store/todo.ts'
 import type { LineName } from '../src/tools/index.ts'
 import { tmpDir, waitFor } from './helpers.ts'
 
@@ -181,6 +182,8 @@ export interface AgentHarness {
   memory: MemoryStore
   /** 基地的做法（临时目录的 methods.json）。 */
   methods: MethodStore
+  /** 工作清单（临时目录的 todo.json）。 */
+  todo: TodoStore
   /** 默认手册是随代码发布的那几本；主人写的放在这次测试的临时目录里。 */
   manuals: ManualStore
   log: ActivityLog
@@ -236,6 +239,8 @@ export interface MakeAgentOptions {
   packdata?: PackData
   /** 这次启动是从只有一条线的老数据升上来的。 */
   migrated?: boolean
+  /** 大脑的钟（不给是真的钟）。 */
+  now?: () => number
 }
 
 export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
@@ -251,6 +256,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const talkHistory = new HistoryStore(tmp.dir, { file: 'talk-history.json', ids: turnIds })
   const memory = new MemoryStore(tmp.dir, () => 4000)
   const methods = new MethodStore(tmp.dir)
+  const todo = new TodoStore(tmp.dir)
   const manuals = new ManualStore(DEFAULT_MANUALS_DIR, path.join(tmp.dir, 'manuals'))
   const log = new ActivityLog()
   const chatLog = new ChatLog(tmp.dir)
@@ -267,6 +273,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     humanRetryGapMs: 0,
     announceIntervalMs: 60_000,
     afterDeathDelayMs: 0,
+    todoNudgeMs: 20,
     ...(opts.timing ?? {}),
   }
   const has = (line: LineName): boolean => opts.noModel !== true && opts.noModel !== line
@@ -279,6 +286,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     bridge: new BridgeApi(game),
     memory,
     methods,
+    todo,
     manuals,
     reminders: {
       add: (dueAt, note, line) => {
@@ -304,6 +312,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     ...(opts.routineLimits ? { routineLimits: opts.routineLimits } : {}),
     ...(opts.packdata ? { packdata: opts.packdata } : {}),
     ...(opts.migrated ? { migrated: true } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
   })
   agent.start()
   const harness: AgentHarness = {
@@ -315,6 +324,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     talkHistory,
     memory,
     methods,
+    todo,
     manuals,
     log,
     chatLog,

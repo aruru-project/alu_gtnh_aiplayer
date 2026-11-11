@@ -34,6 +34,11 @@ export type AgentEvent =
    * 它出了状况（程序替它报的：模型接口故障、到步数上限……）。waiting：progress 时它还在等什么（程序写的一句）。
    */
   | { type: 'worker'; time: number; kind: WorkerNote; text: string; waiting?: string }
+  /**
+   * 干活线停下来了（身体上没有任务、没有例程、也没有在等的回答），工作清单上却还有没做的：程序叫醒它一次，列出那几条（agent/lines.ts）。
+   * open 是叫醒那一刻清单上“没做”的（在等人的不算）。
+   */
+  | { type: 'todo'; time: number; open: { id: number; text: string }[] }
 
 /** 人说的话：聊天、悄悄话、面板上发来的。交事和叫停时原样附给干活线的就是这些。 */
 export type SaidEvent = Extract<AgentEvent, { type: 'chat' | 'whisper' | 'panel_command' }>
@@ -210,11 +215,16 @@ export function describeEvent(ev: AgentEvent): string {
         `\n  身体的任务队列和例程都已经取消，你当时正在想的那一步被打断，还没处理的事也放下了。这条只是告诉你发生了什么，不需要为它做任何事；之后要做什么等新的交代。` +
         saidBlock(ev.said, '')
       )
+    case 'todo':
+      return `[系统] 你停下来了（身体上没有在跑或排着的任务、没有例程、也没有在等的回答），工作清单上还有 ${ev.open.length} 件没做完、也没标成在等人：${ev.open.map((i) => `#${i.id} ${i.text.length > TODO_TEXT_SHOWN ? `${i.text.slice(0, TODO_TEXT_SHOWN)}…` : i.text}`).join('、')}`
     case 'worker':
       if (ev.kind === 'progress') return `干活线还在干（${ev.waiting ?? '它的事还没完'}），这是它中途留下的话：${ev.text}`
       return `${WORKER_NOTE_HEAD[ev.kind]}${ev.text}`
   }
 }
+
+/** 叫醒干活线的那句话里，每一条只给开头这么多字（全文在“当前状态”的清单里）。 */
+const TODO_TEXT_SHOWN = 80
 
 const WORKER_NOTE_HEAD: Record<Exclude<WorkerNote, 'progress'>, string> = {
   report: '干活线汇报：',

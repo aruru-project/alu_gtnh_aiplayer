@@ -15,6 +15,9 @@ import type { MethodAccess, MethodInput } from '../tools/methods.ts'
 import { blueprintData } from '../tools/blueprint.ts'
 import { dataWithLocalNames } from '../tools/format.ts'
 import type { ActivityLog, ActivityRun } from '../store/activity-log.ts'
+import { TodoRefused } from '../store/todo.ts'
+import type { TodoApplied, TodoBy, TodoEdit, TodoItem } from '../store/todo.ts'
+import { todoLine } from '../tools/todo.ts'
 import type { LineName } from '../tools/index.ts'
 
 /** 出错时怎么回（server.ts 给的是抛它自己的 HttpError）。 */
@@ -369,4 +372,71 @@ export function methodsPut(methods: MethodAccess | undefined, body: Record<strin
 export function methodsDelete(methods: MethodAccess | undefined, body: Record<string, unknown>, reject: Reject): unknown {
   if (!methods) return reject(503, 'unavailable', '这个大脑上没有“基地的做法”这份存储')
   return { removed: typeof body.key === 'string' && methods.remove(body.key) }
+}
+
+// ── 工作清单（store/todo.ts）──
+
+/** 面板用的那一面：和工具 todo 是同一份存储。 */
+export interface TodoPanelAccess {
+  list(): TodoItem[]
+  apply(edit: TodoEdit, by: TodoBy, now: number): TodoApplied
+}
+
+function todoCounts(items: readonly TodoItem[]): { open: number; waiting: number; done: number } {
+  return { open: items.filter((i) => i.state === 'open').length, waiting: items.filter((i) => i.state === 'waiting').length, done: items.filter((i) => i.state === 'done').length }
+}
+
+/** 每一条加上 line：模型在清单里看到的那一行。 */
+function todoView(items: readonly TodoItem[], now: number): unknown[] {
+  return items.map((i) => ({ ...i, line: todoLine(i, now) }))
+}
+
+/** GET /api/todo：整张清单（照编号排），和各种状态各几条。 */
+export function todoList(todo: TodoPanelAccess | undefined, now: number): unknown {
+  if (!todo) return { available: false, counts: { open: 0, waiting: 0, done: 0 }, items: [] }
+  const items = todo.list()
+  return { available: true, counts: todoCounts(items), items: todoView(items, now) }
+}
+
+/**
+ * POST /api/todo：主人在面板上加几条、改几条（by 是 owner）。body 和工具 todo 的参数一样：
+ * { add?: [{ text, note? }], change?: [{ id, text?, note?, state?, waitingFor?, remove? }] }。有一处不对整次不做，400 说清哪几处。
+ */
+export function todoEdit(todo: TodoPanelAccess | undefined, body: Record<string, unknown>, now: number, reject: Reject): unknown {
+  if (!todo) return reject(503, 'unavailable', '这个大脑上没有工作清单')
+  const add = body.add ?? []
+  const change = body.change ?? []
+  if (!Array.isArray(add) || !add.every((a) => typeof a === 'object' && a !== null && typeof (a as { text?: unknown }).text === 'string' && ['string', 'undefined'].includes(typeof (a as { note?: unknown }).note))) {
+    return reject(400, 'bad_request', 'add is a list of { text, note? } (strings).')
+  }
+  const states = ['open', 'waiting', 'done', undefined]
+  const okChange = (c: unknown): boolean => {
+    if (typeof c !== 'object' || c === null) return false
+    const r = c as Record<string, unknown>
+    return (
+      typeof r.id === 'number' &&
+      Number.isInteger(r.id) &&
+      ['text', 'note', 'waitingFor'].every((k) => r[k] === undefined || typeof r[k] === 'string') &&
+      states.includes(r.state as string | undefined) &&
+      (r.remove === undefined || typeof r.remove === 'boolean')
+    )
+  }
+  if (!Array.isArray(change) || !change.every(okChange)) {
+    return reject(400, 'bad_request', 'change is a list of { id, text?, note?, state?: "open" | "waiting" | "done", waitingFor?, remove? }.')
+  }
+  if (add.length === 0 && change.length === 0) return reject(400, 'bad_request', 'Nothing to do: give add or change.')
+  try {
+    const res = todo.apply({ add: add as TodoEdit['add'], change: change as TodoEdit['change'] }, 'owner', now)
+    return { ...res, counts: todoCounts(res.items), items: todoView(res.items, now) }
+  } catch (e) {
+    return reject(400, 'bad_request', e instanceof TodoRefused ? e.problems.join(' ') : e instanceof Error ? e.message : String(e))
+  }
+}
+
+/** DELETE /api/todo { id }：删一条。 */
+export function todoDelete(todo: TodoPanelAccess | undefined, body: Record<string, unknown>, now: number, reject: Reject): unknown {
+  if (!todo) return reject(503, 'unavailable', '这个大脑上没有工作清单')
+  if (typeof body.id !== 'number' || !todo.list().some((i) => i.id === body.id)) return { removed: false }
+  todo.apply({ change: [{ id: body.id, remove: true }] }, 'owner', now)
+  return { removed: true }
 }

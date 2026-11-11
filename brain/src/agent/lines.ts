@@ -5,6 +5,8 @@
 //   2. 接上两条线之间的往来：对话线交事和带话（当时的人的原话原样附上）、看干活线在干什么、让一切停下；
 //      干活线汇报、提问、一轮结束留下的话。每次往来在活动日志里是一条 kind: relay。
 //   3. 对外（main、面板）像原来那一个 agent：收 bridge 事件、握手后对账、状态、停。
+//   4. 工作清单（store/todo.ts）：干活线停下来了（身体上没有任务、没有例程、没有在等的回答），清单上却还有没做的，叫醒它一次。
+//      它被叫醒以后什么都没改就又停了，不再叫：等清单变了，或者它为别的事走了一轮，才重新算。
 // 共用的东西只有一份：身体（bridge）、记忆、手册、意见簿、设计工作区、每日 token 上限（两条线合计）。
 
 import type { BridgeApi } from '../bridge/api.ts'
@@ -17,11 +19,12 @@ import type { ActivityLog } from '../store/activity-log.ts'
 import type { ChatLog } from '../store/chat-log.ts'
 import type { FeedbackStore } from '../store/feedback.ts'
 import type { MethodAccess } from '../tools/methods.ts'
+import type { TodoAccess } from '../tools/todo.ts'
 import type { HistoryStore } from '../store/history.ts'
 import { clip, formatTask } from '../tools/format.ts'
 import { LINE_TOOLS, QuestProgressCache, SurroundingsCache } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ReminderAccess } from '../tools/index.ts'
-import { Agent, newLineShared } from './agent.ts'
+import { Agent, DEFAULT_TIMING, newLineShared } from './agent.ts'
 import type { AgentSettings, AgentState, AgentStatus, AgentTiming, CompactNowResult, LinePeek, LineShared, PersistedAgentState, TurnAt } from './agent.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, fromBridgeEvent } from './events.ts'
@@ -62,6 +65,8 @@ export interface LinesDeps {
   feedback?: FeedbackStore
   /** “基地的做法”：两条线用同一份。 */
   methods?: MethodAccess
+  /** 工作清单（store/todo.ts 的 TodoStore）：两条线用同一份；清单一变（谁改的都算）这里要知道。 */
+  todo?: TodoAccess & { revision(): number; onChange(fn: () => void): void }
   versions?(): { brain: string; mod?: string }
   reminders: ReminderAccess & { list(): PendingReminder[] }
   histories: Record<LineName, HistoryStore>
@@ -102,6 +107,11 @@ const HALT_SETTLE_MS = 3000
  */
 export const VOLLEY_MAX = 12
 const SPINNING = `The two lines have now woken each other ${VOLLEY_MAX} times in a row with no one speaking and nothing happening in the game (no task or routine ending), so the program has stopped waking them for each other. This message is there as background when something else wakes the other line; a player speaking, or a task ending, puts things back to normal.`
+/**
+ * 因为工作清单叫醒干活线：中间没有任何外面的事，连着叫了这么多次就不再叫（每次它都改了清单，却一直没有开任务、没有提问），
+ * 在活动日志里记一条；有外面的事就从头数。
+ */
+export const TODO_NUDGE_MAX = 8
 const NOTE_WORD: Record<WorkerNote, string> = { report: '汇报', question: '提问', result: '停下来了，留下的话', progress: '还在干，中途留下的话', trouble: '出了状况' }
 /** 干活线自己会接着做：对话线交事的结果里、状态里都写着这个事实，它就不必回头去催。 */
 const SELF_WAKE = 'When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it.'
@@ -135,6 +145,7 @@ export function lineOf(ev: AgentEvent): LineName | 'both' {
     case 'told':
     case 'halted':
     case 'notice':
+    case 'todo':
       return 'work'
   }
 }
@@ -168,6 +179,18 @@ export class Lines {
   /** 话头在两条线之间连着倒了几次（中间没有外面的事），和上一次是谁发的。 */
   private volley = 0
   private lastFrom: LineName | undefined
+  // ── 工作清单叫醒干活线 ──
+  private todoTimer: NodeJS.Timeout | undefined
+  /** 上一次因为清单叫醒它时，清单是第几版（TodoStore.revision）。 */
+  private todoNudged: number | undefined
+  /** 上一次叫醒以后，它有没有为别的事走过一轮。 */
+  private todoFresh = true
+  /** 被叫停了：在它为新的事走完一轮之前，不因为清单叫醒它。 */
+  private todoHalted = false
+  /** 中间没有外面的事，因为清单连着叫醒了几次；到了上限记过日志没有。 */
+  private todoInRow = 0
+  private todoCapLogged = false
+  private closed = false
 
   constructor(deps: LinesDeps) {
     this.deps = deps
@@ -188,6 +211,7 @@ export class Lines {
       ...(deps.runLogs ? { runLogs: deps.runLogs } : {}),
       ...(deps.feedback ? { feedback: deps.feedback } : {}),
       ...(deps.methods ? { methods: deps.methods } : {}),
+      ...(deps.todo ? { todo: deps.todo } : {}),
       ...(deps.versions ? { versions: deps.versions } : {}),
       ...(deps.chatLog ? { chatLog: deps.chatLog } : {}),
       ...(deps.timing ? { timing: deps.timing } : {}),
@@ -206,7 +230,7 @@ export class Lines {
       settings: () => deps.settings('work'),
       tools: LINE_TOOLS.work,
       history: deps.histories.work,
-      links: { toTalk: (kind, text, at, waiting) => this.toTalk(kind, text, at, waiting), outside: () => this.outside() },
+      links: { toTalk: (kind, text, at, waiting) => this.toTalk(kind, text, at, waiting), outside: () => this.outside(), ended: (turn) => this.workEnded(turn.triggers) },
     })
     this.talk = new Agent({
       ...common,
@@ -226,6 +250,7 @@ export class Lines {
     // 老数据：只有一条线的时候，“有人说话”“提醒到点”也排在那一个队列里。现在这些归对话线。
     this.talk.adoptPending(this.work.takePending((ev) => lineOf(ev) === 'talk'))
     if (deps.migrated) this.work.handleEvent({ type: 'notice', time: this.now(), wake: false, text: MIGRATION_NOTE }, { logged: true })
+    deps.todo?.onChange(() => this.armTodo())
   }
 
   private now(): number {
@@ -238,10 +263,15 @@ export class Lines {
   start(): void {
     this.talk.start()
     this.work.start()
+    // 重启前清单上就有没做的、而干活线没有别的事接着做
+    this.armTodo()
   }
 
   /** 停下：两条线各自打断正在进行的一轮并收尾；没处理完的事已经落盘，下次启动各自接着来。 */
   async stop(): Promise<void> {
+    this.closed = true
+    if (this.todoTimer) clearTimeout(this.todoTimer)
+    this.todoTimer = undefined
     await Promise.all([this.talk.stop(), this.work.stop()])
   }
 
@@ -278,6 +308,7 @@ export class Lines {
       else return
     }
     await this.work.reconcileTasks(info)
+    this.armTodo()
   }
 
   onBridgeDisconnected(): void {
@@ -329,10 +360,86 @@ export class Lines {
     return this[line].compactNow(opts)
   }
 
-  /** 大脑这边现在有没有事：哪条线在跑一轮或排着事，干活线盯着任务，例程在跑。 */
+  /**
+   * 大脑这边现在有没有事：哪条线在跑一轮或排着事，干活线盯着任务，例程在跑，工作清单上有没做的（在等人的不算）。
+   * 自动下线（presence.ts）看的就是它。
+   */
   busy(): boolean {
     const work = this.work.status()
-    return !this.talk.idle() || !this.work.idle() || work.trackedTasks.length > 0 || work.routine?.status === 'running'
+    return !this.talk.idle() || !this.work.idle() || work.trackedTasks.length > 0 || work.routine?.status === 'running' || this.todoOpen().length > 0
+  }
+
+  // ── 工作清单 ──
+
+  private todoOpen(): { id: number; text: string }[] {
+    return (this.deps.todo?.list() ?? []).filter((i) => i.state === 'open').map((i) => ({ id: i.id, text: i.text }))
+  }
+
+  /** 干活线走完了一轮：它为别的事（不只是清单的那句）走的，就算“来了别的事”，被叫停的也解开。过一小会儿看要不要叫醒它。 */
+  private workEnded(triggers: readonly AgentEvent[]): void {
+    if (triggers.some((ev) => ev.type !== 'todo')) {
+      this.todoFresh = true
+      this.todoHalted = false
+    }
+    this.armTodo()
+  }
+
+  /** 过一小会儿看要不要因为清单叫醒干活线（再来一次就从头等）。清单上没有没做的就不用看。 */
+  private armTodo(): void {
+    if (!this.deps.todo || this.closed) return
+    if (this.todoTimer) clearTimeout(this.todoTimer)
+    this.todoTimer = undefined
+    if (this.todoOpen().length === 0) return
+    this.todoTimer = setTimeout(() => {
+      this.todoTimer = undefined
+      void this.checkTodo()
+    }, this.deps.timing?.todoNudgeMs ?? DEFAULT_TIMING.todoNudgeMs)
+    this.todoTimer.unref?.()
+  }
+
+  /** 干活线是不是停下来了：没有在跑的一轮、没有排着的事、没有盯着的任务、例程没在跑、没有在等的回答。 */
+  private workStopped(): boolean {
+    const s = this.work.status()
+    return this.work.idle() && s.trackedTasks.length === 0 && s.routine?.status !== 'running' && this.links.waiting === undefined
+  }
+
+  private async checkTodo(): Promise<void> {
+    const todo = this.deps.todo
+    if (!todo || this.closed || this.todoHalted || this.todoOpen().length === 0) return
+    // 上次叫醒以后清单没变、它也没为别的事走过一轮：它看过了，没动
+    if (this.todoNudged === todo.revision() && !this.todoFresh) return
+    // 不在线（下线了、和游戏断着）：叫醒它也什么都做不了
+    if (!this.workStopped() || this.shared.online === false) return
+    // 对话线正在想：它可能马上就把事交过来（先记清单、再交事是常见的两步）。等它想完再看
+    if (!this.talk.idle()) {
+      this.armTodo()
+      return
+    }
+    if (this.todoInRow >= TODO_NUDGE_MAX) {
+      if (!this.todoCapLogged) {
+        this.todoCapLogged = true
+        this.deps.log.add({
+          kind: 'error',
+          text: `因为工作清单已经连着叫醒干活线 ${TODO_NUDGE_MAX} 次，中间没有人说话、游戏里也没有事发生（每次它都改了清单，却没有开任务、也没有提问）。为免空转，之后不再因为清单叫醒它，等外面有事再说。`,
+        })
+      }
+      return
+    }
+    // 身体上排着的任务大脑不一定都盯着：问一次
+    let tasks: TaskList
+    try {
+      tasks = await this.deps.bridge.taskList(this.deps.settings('work').botName)
+    } catch {
+      return
+    }
+    if (tasks.active || (tasks.queue ?? []).length > 0) return
+    // 问的这一会儿可能来了事
+    const open = this.todoOpen()
+    if (this.closed || this.todoHalted || open.length === 0 || !this.workStopped()) return
+    this.todoNudged = todo.revision()
+    this.todoFresh = false
+    this.todoInRow++
+    this.work.handleEvent({ type: 'todo', time: this.now(), open })
   }
 
   /** 两条线都没有在跑的一轮、也没有排着的事时兑现。测试用。 */
@@ -346,6 +453,8 @@ export class Lines {
   private outside(): void {
     this.volley = 0
     this.lastFrom = undefined
+    this.todoInRow = 0
+    this.todoCapLogged = false
   }
 
   /**
@@ -412,6 +521,10 @@ export class Lines {
     const botName = this.deps.settings('work').botName
     const note: Extract<AgentEvent, { type: 'halted' }> = { type: 'halted', time: this.now(), by, reason, said }
     const halt = this.work.halt(note)
+    // 叫停了：不因为清单再把它叫起来，等有新的事交给它
+    this.todoHalted = true
+    if (this.todoTimer) clearTimeout(this.todoTimer)
+    this.todoTimer = undefined
     const tasks: string[] = []
     let error: string | undefined
     const cancelAll = async (): Promise<void> => {

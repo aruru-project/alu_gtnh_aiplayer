@@ -30,6 +30,7 @@ import { readLog } from './log.ts'
 import { listManuals, readManual, writeManual } from './manuals.ts'
 import { forget, remember, setReminder } from './memory.ts'
 import { baseMethods, setBaseMethod } from './methods.ts'
+import { todo } from './todo.ts'
 import {
   findBlocks,
   getPlayerPosition,
@@ -137,6 +138,7 @@ export const WORK_TOOLS: readonly Tool[] = [
   setReminder,
   baseMethods,
   setBaseMethod,
+  todo,
   listManuals,
   readManual,
   writeManual,
@@ -177,6 +179,7 @@ export const TALK_TOOLS: readonly Tool[] = [
   setReminder,
   baseMethods,
   setBaseMethod,
+  todo,
   listManuals,
   readManual,
   writeManual,

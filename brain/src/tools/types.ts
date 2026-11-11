@@ -1,4 +1,5 @@
 import type { MethodAccess } from './methods.ts'
+import type { TodoAccess } from './todo.ts'
 import type { BridgeApi } from '../bridge/api.ts'
 import type { TaskInfo } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
@@ -164,6 +165,8 @@ export interface ToolContext {
   design?: DesignWorkspace
   /** “基地的做法”（store/methods.ts）。上层没提供时 base_methods、set_base_method 用不了，别处也不带它的记录。 */
   methods?: MethodAccess
+  /** 工作清单（store/todo.ts）。上层没提供时 todo 用不了。 */
+  todo?: TodoAccess
   /** 意见簿。上层没提供时 report_problem 用不了。 */
   feedback?: FeedbackAccess
   /** 后台例程。上层没提供时 start_routine 这几个工具用不了。 */

@@ -48,9 +48,9 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
-import type { MethodsEnv } from './data-api.ts'
+import type { MethodsEnv, TodoPanelAccess } from './data-api.ts'
 import type { MethodAccess } from '../tools/methods.ts'
-import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords } from './data-api.ts'
+import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords, todoDelete, todoEdit, todoList } from './data-api.ts'
 import type { HistorySize } from './data-api.ts'
 
 export interface PanelDeps {
@@ -78,6 +78,8 @@ export interface PanelDeps {
   /** 基地的做法（store/methods.ts），和查对一条记录用的本地资料。 */
   methods?: MethodAccess
   methodsEnv?(): MethodsEnv
+  /** 工作清单（store/todo.ts）：两条线和主人共用的那一份。没提供时 /api/todo 说没有。 */
+  todo?: TodoPanelAccess
   /** 物品的提示文字（本地资料里的 tooltips.jsonl）。没提供时 /api/items/tooltips 说没有这份资料。 */
   tooltips?: TooltipTable
   /** 物品图标的图集（本地资料里的 icons/）。false：没有；不给：面板自己到配置的 packdata 目录里找一次。没有时物品栏用替代的画法。 */
@@ -541,6 +543,12 @@ export class PanelServer {
         return methodsPut(this.deps.methods, body, this.deps.methodsEnv?.() ?? {}, this.now(), panelReject)
       case 'DELETE /methods':
         return methodsDelete(this.deps.methods, body, panelReject)
+      case 'GET /todo':
+        return todoList(this.deps.todo, this.now())
+      case 'POST /todo':
+        return todoEdit(this.deps.todo, body, this.now(), panelReject)
+      case 'DELETE /todo':
+        return todoDelete(this.deps.todo, body, this.now(), panelReject)
       case 'POST /command':
         return this.command(body)
       case 'GET /providers':

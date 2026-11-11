@@ -35,7 +35,7 @@ export interface PresenceDeps {
   connected(): boolean
   /** 它在不在线（不知道是 undefined）。 */
   online(): boolean | undefined
-  /** 大脑这边有没有事：哪条线在跑一轮或排着事、盯着任务、例程在跑。 */
+  /** 大脑这边有没有事：哪条线在跑一轮或排着事、盯着任务、例程在跑、工作清单上有没做的（Lines.busy）。平时的检查和下线前的复查都看它。 */
   busy(): boolean
   log(entry: { kind: 'info' | 'error'; text: string }): void
   now?(): number

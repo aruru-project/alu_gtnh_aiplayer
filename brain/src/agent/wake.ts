@@ -59,6 +59,7 @@ export interface WakeDecision {
     | 'notice'
     | 'told'
     | 'worker'
+    | 'todo'
     | 'not_owner'
     | 'not_addressed'
     | 'other_bot'
@@ -145,6 +146,9 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
       return ev.kind === 'progress' ? no('background') : yes('worker')
     case 'halted':
       return no('background')
+    // 工作清单上还有没做的：程序叫醒干活线（只在它停下来时才发）
+    case 'todo':
+      return yes('todo')
     case 'task_started':
     case 'bot_message':
     case 'spawned':

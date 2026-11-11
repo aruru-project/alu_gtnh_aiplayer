@@ -12,6 +12,7 @@ import { LlmError, keepLatestImages, textOf } from '../llm/index.ts'
 import type { GenerateRequest, GenerateResult, LlmClient, Message, TextPart, ToolResultPart, UserPart } from '../llm/index.ts'
 import type { ActivityInput, ActivityLog, ActivityModelCall } from '../store/activity-log.ts'
 import type { MethodAccess } from '../tools/methods.ts'
+import type { TodoAccess } from '../tools/todo.ts'
 import type { FeedbackContext, FeedbackStore, FeedbackTask, FeedbackToolCall } from '../store/feedback.ts'
 import type { ChatLog } from '../store/chat-log.ts'
 import type { HistoryStore } from '../store/history.ts'
@@ -70,6 +71,8 @@ export interface AgentTiming {
   announceIntervalMs: number
   /** 死亡后等这么久再开始决策：身体约 1.5 秒后自动重生，等它重生了再看状态。 */
   afterDeathDelayMs: number
+  /** 干活线一轮结束、或者工作清单变了以后，等这么久再看要不要因为清单叫醒它（免得和紧接着到的事撞在一起）。 */
+  todoNudgeMs: number
 }
 
 export const DEFAULT_TIMING: AgentTiming = {
@@ -79,6 +82,7 @@ export const DEFAULT_TIMING: AgentTiming = {
   humanRetryGapMs: 15_000,
   announceIntervalMs: 600_000,
   afterDeathDelayMs: 2500,
+  todoNudgeMs: 3000,
 }
 
 export interface PersistedAgentState {
@@ -131,6 +135,8 @@ export interface LineLinks {
   toTalk?(kind: WorkerNote, text: string, at: TurnAt, waiting?: string): string
   /** 这条线上发生了一件“外面的事”（不是另一条线引起的）：例程有了结局。两条线之间“连着往来了几次”从头数。 */
   outside?(): void
+  /** 干活线的一轮走完了（没被叫停、没因为模型用不了退回去）：triggers 是叫醒这一轮的事。看工作清单要不要叫醒它用。 */
+  ended?(turn: { id: number; triggers: readonly AgentEvent[] }): void
 }
 
 /** “现在就写交接记录”（面板的接口）的结果。 */
@@ -232,6 +238,8 @@ export interface AgentDeps {
   feedback?: FeedbackStore
   /** “基地的做法”（store/methods.ts）。不给时那两个工具用不了，提示词里也没有那一节。 */
   methods?: MethodAccess
+  /** 工作清单（store/todo.ts）：两条线用同一份。不给时 todo 用不了，“当前状态”里也没有清单。 */
+  todo?: TodoAccess
   /** 大脑和身体（mod）的版本，附在意见簿的每一条上。 */
   versions?(): { brain: string; mod?: string }
   reminders: ReminderAccess & { list(): PendingReminder[] }
@@ -403,6 +411,8 @@ export class Agent {
   private turnSaidSent = new Set<SaidEvent>()
   /** 被叫停了（干活线）：正在跑的这一轮到此为止，不重试、不把结果送出去。 */
   private halting = false
+  /** 干活线这一轮走完了（没被叫停）：收完尾以后告诉上层（links.ended）。 */
+  private turnEnded: { id: number; triggers: readonly AgentEvent[] } | undefined
   /** 正有一个工具在执行。 */
   private toolRunning = false
   /** 已经接进正在想的这一步、模型还没看到的事有几件（被叫停时它们和排着的一样算“放下了”）。 */
@@ -958,6 +968,9 @@ export class Agent {
       for (const w of this.turnWaiters.splice(0)) w()
       this.schedule()
       this.notifyIdle()
+      const ended = this.turnEnded
+      this.turnEnded = undefined
+      if (ended) this.deps.links?.ended?.(ended)
     }
   }
 
@@ -1014,7 +1027,7 @@ export class Agent {
     const turnId = this.deps.history.newTurnId()
     // 提醒到点叫醒的是对话线，干活线的状态里不列
     // 状态里只列这条线自己定的提醒（到点叫醒的是定它的那条线）
-    const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, this.deps.reminders.list().filter((r) => (r.line ?? 'talk') === this.line), startedAt)
+    const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, this.deps.reminders.list().filter((r) => (r.line ?? 'talk') === this.line), startedAt, this.deps.todo?.list() ?? [])
     if (snapshot.online !== undefined) this.shared.online = snapshot.online
     // 哪几本手册的原文现在还在历史里：压缩截掉了的、主人改过了的都不算，模型要用时会重新读
     const manuals = this.deps.manuals.list()
@@ -1296,6 +1309,8 @@ export class Agent {
         if (waiting !== undefined) links?.toTalk?.('progress', finalText, { turn: turnId, step: steps }, waiting)
         else links?.toTalk?.('result', finalText, { turn: turnId, step: steps })
       }
+      // 告诉上层要等这一轮连收尾（压缩历史）都做完、它真的闲下来以后（startTurn 的 finally）
+      this.turnEnded = { id: turnId, triggers }
     }
     await this.maybeCompact(this.compactor(llm, turnId), settings, signal)
   }
@@ -1737,6 +1752,7 @@ export class Agent {
       ...(this.deps.packdata ? { packdata: this.deps.packdata } : {}),
       ...(this.deps.design ? { design: this.deps.design } : {}),
       ...(this.deps.methods ? { methods: this.deps.methods } : {}),
+      ...(this.deps.todo ? { todo: this.deps.todo } : {}),
       ...(feedback
         ? {
             feedback: {

@@ -123,7 +123,8 @@ interface ProviderConfig {
 - **干活线**（`work`）：操作身体的只有它（任务、界面、例程、指令）。它不对玩家说话：中途用 `report` 汇报或提问（总是叫醒对话线）；一轮结束时留下的文字自动送给对话线——它真的停下来了（身体上没有它开的任务、没有例程在跑、没有刚到的事等它处理）才叫醒对话线，它只是在等自己的任务或例程结束时只作背景送达。
 - **事件怎么分**（`agent/lines.ts` 的 `lineOf`）：聊天、悄悄话、面板指令、玩家进出、干活线送来的话 → 对话线；提醒 → 定它的那条线（`reminders.json` 里每条记着 `line`，没有这一项的是对话线定的）；任务开始和结束、受伤、系统消息、对话线交来的事 → 干活线；死亡、上线、下线两条线都收到（死亡两条线都叫醒，上线下线对两条线都只是背景）。
 - **两条线之间**：`tell_worker`（这一轮里的人的原话连同站位和指向由程序原样附上）、`worker_status`、`stop_work`（一次调用取消身体的全部任务和例程、打断干活线正在进行的模型调用、放下它还没处理的事；它随后只在背景里看到“被叫停了”，不因此自己接着干）、`report`。对话线每一轮的“当前状态”里有干活线的现状：在想第几步、在等它自己开的哪个任务（类型、进度、已经多久）或例程、还是真的停着；并写着“任务或例程一结束它自己会被叫醒接着做”这个事实。话头在两条线之间连着倒了 12 次、中间没有任何外面的事时，之后的往来只作背景、不再互相叫醒（防空转）。
-- **共用**：bridge、本地资料、记忆、手册、意见簿、设计工作区、聊天记录、每日 token 上限（两条线合计）。
+- **共用**：bridge、本地资料、记忆、手册、意见簿、基地的做法、工作清单、设计工作区、聊天记录、每日 token 上限（两条线合计）。
+- **工作清单**（`store/todo.ts`，数据目录的 `todo.json`；工具 `todo` 两条线都有）：交代下来的事还剩哪些。每条：`id`、`text`、`state`（`open` 没做 / `waiting` 在等人 / `done`）、`waitingFor?`（等谁、等什么）、`note?`、`by`（`talk` / `work` / `owner`）、`at`、`changedBy?`、`changedAt?`、`doneAt?`。没做完的最多 100 条，做完的留最近 20 条。一次改动里有一处不对整次不做。每一轮的“当前状态”里列没做的、在等人的、最近做完的 3 条（两条线一样）。**叫醒干活线**（`agent/lines.ts`）：干活线一轮走完（没被叫停）、或者清单变了以后过 `todoNudgeMs`（3 秒），干活线没有在跑的一轮和排着的事、没有盯着的任务、例程没在跑、没有在等的回答（`links.waiting`）、身体的任务列表是空的、它在线，清单上又有 `open` 的，就给它一个 `todo` 事件（对话线正在想的时候先不给，等它想完再看：先记清单、再把事交过来是常见的两步）（`{ type: 'todo', open: [{ id, text }] }`，模型看到的是“[系统] 你停下来了（…），工作清单上还有 N 件没做完、也没标成在等人：#3 …、#5 …”）。叫过一次以后，清单没变、它也没为别的事走过一轮，就不再叫；被叫停（`stop_work`、面板总停止）以后，要等它为新的事走完一轮；中间没有外面的事（`outside()`：有人说话、提醒、任务结束……）连着叫了 `TODO_NUDGE_MAX`（8）次就不再叫，记一条错误日志。**自动下线**：`Lines.busy()` 把清单上有 `open` 的算作有事，`presence.ts` 平时的检查和下线前的复查都看它。
 
 下面各条说的是“一条线”的一轮怎么走，两条线都一样；只对某一条线成立的地方写明了。
 
@@ -375,7 +376,7 @@ interface ProviderConfig {
 - 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
 
 - **这个服务器**：`GET/PUT /api/bot` 的 `bot.environment = { name: string, rules: string }`（默认都是空；名字最多 40 字，规矩最多 4000 字，首尾空白去掉）。这个实例接的是哪个服务器（主人起的名字，如“测试服”“正式服”）和主人给这里写的规矩（自由文字）。它是这个实例的设置，不是它的记忆：“这里是测试服，材料随便用”这种话写在这里，不跟着记忆搬到别的服务器。`GET /api/status` 顶层带 `environment`。两样有一样不空时，两条线每一轮的系统提示词里多一节“这个服务器”（`agent/prompt.ts` 的 `environmentSection`，程序生成，在“你的记忆”前面）：名字、“这是主人给这个服务器写的设置，不是你记下来的”、规矩的原话；主人改了下一轮就是新的。
-- **自动上下线**（`agent/presence.ts`，默认关）：`GET/PUT /api/bot` 的 `bot.presence = { idleOffline: boolean, idleMinutes: number }`（默认 `false`、`5`；分钟数可以写小数，0.05–1440）。开着时：服务器上没有真人、它手上也没事，满 `idleMinutes` 分钟自己下线；有真人进服、主人从面板发指令、它定的提醒到点时再上来，那件事照常处理（进服的作背景，指令和提醒照常叫醒对话线）。
+- **自动上下线**（`agent/presence.ts`，默认关）：`GET/PUT /api/bot` 的 `bot.presence = { idleOffline: boolean, idleMinutes: number }`（默认 `false`、`5`；分钟数可以写小数，0.05–1440）。开着时：服务器上没有真人、它手上也没事（哪条线在跑一轮或排着事、盯着任务、例程在跑、工作清单上有没做的，都算有事；在等人的不算），满 `idleMinutes` 分钟自己下线；有真人进服、主人从面板发指令、它定的提醒到点时再上来，那件事照常处理（进服的作背景，指令和提醒照常叫醒对话线）。
   - “没事”= 两条线都没有在跑的一轮和排着的事、干活线没有盯着的任务、没有在跑的例程；到点下线前再问一遍身体（`server.info` 里还有没有真人、`task.list` 有没有任务和队列）。别的 bot 不算真人。
   - `bot.awayIdle`（只读的状态，不是设置）：它现在是自动下线的。记在配置文件里，所以大脑重启后仍然是：连上游戏不把它叫出来；那时服务器上有真人才上来。`GET /api/status` 里干活线的 `body` 这时多一项 `awayIdle: true`。
   - 主人手动点的下线（`POST /api/bot/despawn`）不是自动下线：`wantOnline` 变成 `false`，`awayIdle` 跟着没了，之后有人进服也不上来，直到主人手动上线。自动下线不改 `wantOnline`，也不算“被弄下线”。
@@ -425,6 +426,12 @@ interface ProviderConfig {
   - **判断失效**（照现在这份配方册、物品表算的，不存进文件；没有配方册时都不带）：`stale: boolean`——这条记录说的东西现在找不到了：具体东西的配方对不回来；`part`、`same`、`order` 里的做法名不在配方册里了；`ready` 的物品、矿辞名或前缀不在物品表里了；`machine` 总是 `false`。`thing` 另带 `recipeNow: number | null`：现在对回的配方编号，对不回来是 `null`。
 - `PUT /api/methods` body 和工具一样：`{ part, way, from?, material?, why? }`、`{ ready: "ingot" | "ingotSteel" | "mod:name/meta", why? }`、`{ use, over, noTools?, why? }`、`{ id, meta?, recipe, why? }`（流体给 `fluid`）、`{ order: [做法…], why? }`、`{ machine: {x,y,z}, does, feed?, collect?, keep?, why? }`；`by` 不给是 `owner`（面板上写的算主人定的）。→ `{ entry, replaced }`，`entry` 带着 `line`、`recipeNow?`、`stale?`。写错的（做法名认不出、配方做不出那样东西、没有这条配方、前缀没有对上的矿辞名……）400 `bad_request`，`message` 是和工具一样的那句英文。
 - `DELETE /api/methods { key }` → `{ removed }`。
+
+**8d. 工作清单**（交代下来的事还剩哪些；`store/todo.ts`，存在数据目录的 `todo.json`，实现在 `panel/data-api.ts`）。和模型用的工具 `todo` 是同一份、同一套查对。面板上改的 `by` / `changedBy` 是 `owner`。
+
+- `GET /api/todo` → `{ available, counts: { open, waiting, done }, items: [条目 + line] }`，照编号排。条目：`id`、`text`、`state`（`open` 没做 / `waiting` 在等人 / `done` 做完）、`waitingFor?`（在等人时：等谁、等什么）、`note?`、`by`（`talk` 对话线 / `work` 干活线 / `owner` 主人在面板上）、`at`（epoch ms，写下的时间）、`changedBy?`、`changedAt?`（最近一次谁改的、什么时候）、`doneAt?`。`line` 是模型在清单里看到的那一行（`- #3 waiting for Steve 回来: 修二号高炉 (the talk line, 22:30) — note: 不急`）。没有这份存储时 `{ available: false, counts: {0,0,0}, items: [] }`。
+- `POST /api/todo { add?: [{ text, note? }], change?: [{ id, text?, note?, state?, waitingFor?, remove? }] }` → `{ items, counts, added: [id…], changed: [id…], removed: [id…], cleared: [id…] }`。`state: "open"` 是重新打开（做完的、在等人的都行）；给了 `waitingFor` 不给 `state` 就是标成在等人，`state: "waiting"` 一定要有 `waitingFor`（新给的或原来的）；`note: ""` 去掉备注；`remove: true` 删掉。`cleared` 是做完的超过 20 条时清掉的最早几条。有一处不对整次不做：400 `bad_request`，`message` 是和工具一样的英文（`#9 is not on the list.` 这样一处一句）。加了没做的、而干活线停着时，它会被叫醒（见“agent 循环”的工作清单）。
+- `DELETE /api/todo { id }` → `{ removed }`。
 
 **9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面在“知识 → 指南”）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。
 

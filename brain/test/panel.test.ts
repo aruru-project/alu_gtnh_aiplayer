@@ -22,6 +22,7 @@ import { HistoryStore } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { MethodStore } from '../src/store/methods.ts'
+import { TodoStore } from '../src/store/todo.ts'
 import { PictureStore } from '../src/store/pictures.ts'
 import { UsageStore } from '../src/store/usage.ts'
 import { useLocalNames } from '../src/tools/format.ts'
@@ -73,6 +74,8 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     ...(opts.tooltips ? { tooltips: opts.tooltips } : {}),
     // 基地的做法：存在同一个数据目录里；查对一条记录用的配方册给了才有
     methods: new MethodStore(tmp.dir),
+    // 工作清单：接上真的两条线时用它们那一份（面板上改了，干活线那边看得到）
+    todo: opts.lines?.todo ?? new TodoStore(tmp.dir),
     methodsEnv: () => ({ book: opts.packdata?.recipes, items: opts.packdata?.items, fluids: opts.packdata?.fluids }),
     // 物品图标：测试里不去找这台机器上的 packdata，给了才有
     icons: opts.icons ?? false,
@@ -739,6 +742,44 @@ describe('面板：对话、AI 玩家、记忆', () => {
     away()
     await s.call('POST', '/api/bot/spawn', {})
     assert.deepEqual([s.config.get().bot.wantOnline, s.config.get().bot.awayIdle], [true, false])
+  })
+
+  it('工作清单：主人在面板上看得到整张清单，能加、改、标做完、删（写的人记成主人）；写错的整次不做并说明；他加了没做的，停着的干活线被叫醒', async (t) => {
+    const lines = makeAgent()
+    const s = await setup(t, {}, { lines })
+    t.after(() => lines.agent.stop())
+    await s.login()
+    assert.deepEqual((await s.call('GET', '/api/todo')).json, { available: true, counts: { open: 0, waiting: 0, done: 0 }, items: [] })
+    const added = await s.call('POST', '/api/todo', { add: [{ text: '修二号高炉', note: '不急' }, { text: '挖完北边的矿洞' }] })
+    assert.equal(added.status, 200)
+    assert.deepEqual([added.json.added, added.json.counts], [[1, 2], { open: 2, waiting: 0, done: 0 }])
+    assert.deepEqual(
+      added.json.items.map((i: { id: number; text: string; state: string; by: string; note?: string }) => [i.id, i.text, i.state, i.by, i.note ?? null]),
+      [
+        [1, '修二号高炉', 'open', 'owner', '不急'],
+        [2, '挖完北边的矿洞', 'open', 'owner', null],
+      ],
+    )
+    // 每一条带着模型在清单里看到的那一行
+    assert.match(added.json.items[0].line, /^- #1 not done: 修二号高炉 \(your owner on the panel, \d\d:\d\d\) — note: 不急$/)
+    // 干活线停着：清单上多了没做的，它被叫醒，看到是哪几件
+    await waitFor('the worker was woken by the list', () => lines.llm.requests.length >= 1)
+    assert.match(lines.llm.lastUserText(0), /工作清单上还有 2 件没做完、也没标成在等人：#1 修二号高炉、#2 挖完北边的矿洞/)
+    const changed = await s.call('POST', '/api/todo', { change: [{ id: 1, state: 'done' }, { id: 2, waitingFor: 'Steve 回来' }] })
+    assert.deepEqual([changed.status, changed.json.changed, changed.json.counts], [200, [1, 2], { open: 0, waiting: 1, done: 1 }])
+    assert.deepEqual(changed.json.items.map((i: { changedBy?: string; waitingFor?: string }) => [i.changedBy, i.waitingFor ?? null]), [['owner', null], ['owner', 'Steve 回来']])
+    // 写错的：整次不做，说清哪几处（和模型看到的是同一句英文）
+    const bad = await s.call('POST', '/api/todo', { change: [{ id: 2, state: 'open' }, { id: 9, state: 'done' }] })
+    assert.deepEqual([bad.status, bad.json.error], [400, { code: 'bad_request', message: '#9 is not on the list.' }])
+    assert.equal((await s.call('GET', '/api/todo')).json.items[1].state, 'waiting')
+    assert.deepEqual([(await s.call('POST', '/api/todo', { add: '修高炉' })).status, (await s.call('POST', '/api/todo', {})).status], [400, 400])
+    // 删一条
+    assert.deepEqual((await s.call('DELETE', '/api/todo', { id: 1 })).json, { removed: true })
+    assert.deepEqual((await s.call('DELETE', '/api/todo', { id: 1 })).json, { removed: false })
+    assert.deepEqual((await s.call('GET', '/api/todo')).json.items.map((i: { id: number }) => i.id), [2])
+    // 存在数据目录里，两条线用的是同一份
+    assert.deepEqual(lines.todo.list().map((i) => [i.id, i.state]), [[2, 'waiting']])
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(s.tmp.dir, 'todo.json'), 'utf8')).items.map((i: { id: number }) => i.id), [2])
   })
 
   it('基地的做法：主人在面板上看得到全部条目（每条带给人看的一行），能记一条、改一条、删一条——面板上写的算主人定的；写错的和工具一样记不进去并说明；存在数据目录里', async (t) => {

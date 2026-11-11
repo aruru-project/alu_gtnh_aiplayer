@@ -616,7 +616,8 @@ describe('agent 跑久了以后的历史', () => {
     // 调过一次以后：光提示词和工具清单就两万五千多 token，历史本身按字符估才两千多
     const one = h.history.get()
     assert.ok(historyTokens(one.summary, one.turns) < 2500)
-    assert.ok(h.agent.contextTokens('work') > 25_000 && h.agent.contextTokens('work') < 32_000, `context ${h.agent.contextTokens('work')}`)
+    // 上界 32,000 → 34,000：工具清单和提示词一路长了（工作清单的 todo、基地的做法……），现在约 32,400
+    assert.ok(h.agent.contextTokens('work') > 25_000 && h.agent.contextTokens('work') < 34_000, `context ${h.agent.contextTokens('work')}`)
     for (let i = 2; i <= 12; i++) {
       h.llm.enqueue(respond(i), respond(i))
       h.agent.handleEvent(taskEnded(`t${i}`, 'done'))

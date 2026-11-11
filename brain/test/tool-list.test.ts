@@ -88,7 +88,7 @@ const LOOKUPS = [
   'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'read_guide', 'task_status',
 ]
 // 记的：记忆、提醒、基地的做法、手册、意见簿。两条线都有（提醒到点叫醒的是定它的那条线；基地的做法主人在聊天里教的，对话线可以直接记）。
-const NOTES = ['remember', 'forget', 'set_reminder', 'base_methods', 'set_base_method', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
+const NOTES = ['remember', 'forget', 'set_reminder', 'base_methods', 'set_base_method', 'todo', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
 // 会让身体动、会改游戏里东西的：只有干活线有。
 const ACTING = [
   'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
@@ -233,7 +233,10 @@ describe('模型拿到的工具清单', () => {
   //   “当现成的”“同料时用哪种”和看一个基地那么大之后：干活线实际 53,133、上限 53,000 → 53,600；对话线实际 26,373、上限 26,200 → 26,800。
   //           多的是 set_base_method（+约 500：ready、use、over、noTools 四个参数和说明里的两句），find_in_storage、list_containers 的
   //           radius 说明写明最大到 160（各 +几十）。
-  for (const [line, ceiling] of [['work', 53_600], ['talk', 26_800]] as const) {
+  //   工作清单之后：干活线实际 54,386、上限 53,600 → 54,800；对话线实际 27,259、上限 26,800 → 27,600。
+  //           多的是 todo（约 890，两条线都有：清单两条线都要能写、能改）；另外约 370 是上一批之后加的 use_item 的 left、
+  //           use_control 的电路、total_materials 的 automated 这几个参数（那时没动上限，余量吃掉了）。
+  for (const [line, ceiling] of [['work', 54_800], ['talk', 27_600]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -249,9 +252,11 @@ describe('模型拿到的工具清单', () => {
     })
   }
 
-  it('对话线的清单明显比干活线的小：不到一半', () => {
+  // 原来是“不到一半”。两条线都有的（记忆、提醒、基地的做法、工作清单……）每加一个，两边一样长，比例就往一半上靠：
+  // 加了 todo 以后是 27,259 比 54,386（50.1%），放宽到 52%
+  it('对话线的清单明显比干活线的小：不到 52%', () => {
     const size = (line: LineName) => modelToolSpecs(LINE_TOOLS[line], { canSee: false, line }).reduce((n, spec) => n + JSON.stringify(spec).length, 0)
-    assert.ok(size('talk') * 2 < size('work'), `talk ${size('talk')}, work ${size('work')}`)
+    assert.ok(size('talk') < size('work') * 0.52, `talk ${size('talk')}, work ${size('work')}`)
   })
 })
 
