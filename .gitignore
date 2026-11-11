@@ -17,3 +17,5 @@ __pycache__/
 
 # panel screenshots taken while working on the panel
 /.shots/
+# where things are on this machine (server instance, client pack)
+/tools/local.env

@@ -5,7 +5,9 @@ set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TS="$ROOT/testserver"
-SOURCE=${AIPLAYER_SOURCE_INSTANCE:-/extra_data/gtnh_manager/instances/new-server}
+# Where things are on this machine: tools/local.env (not in git), or the environment.
+[[ -f $ROOT/tools/local.env ]] && { set -a; source "$ROOT/tools/local.env"; set +a; }
+SOURCE=${AIPLAYER_SOURCE_INSTANCE:-}
 GAME_PORT=10186
 RCON_PORT=25576
 BRIDGE_PORT=25591
@@ -23,6 +25,7 @@ running() { systemctl --user is-active --quiet "$UNIT"; }
 
 setup() {
     [[ ! -e $TS ]] || die "testserver/ already exists"
+    [[ -n $SOURCE ]] || die "say where your server instance is: AIPLAYER_SOURCE_INSTANCE=/path/to/instance in tools/local.env (it is only read)"
     [[ -d $SOURCE/mods ]] || die "source instance not found: $SOURCE"
     mkdir "$TS"
     # World data, logs and per-world caches stay behind; everything else is static pack content.

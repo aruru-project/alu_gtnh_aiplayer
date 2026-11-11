@@ -31,7 +31,24 @@ ASSETS = os.path.join(HOME, "assets")
 NATIVES = os.path.join(HOME, "natives")
 PIDFILE = os.path.join(HOME, "client.pid")
 LOG = os.path.join(HOME, "client.log")
-DEFAULT_PACK = "/extra_data/gtnh_manager/dist/GTNH-2.9.0-Aru-client.zip"
+
+
+def local_env():
+    """tools/local.env (not in git): where things are on this machine, as NAME=value lines."""
+    out = {}
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "local.env"), encoding="utf8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    name, value = line.split("=", 1)
+                    out[name.strip()] = value.strip().strip("'\"")
+    except OSError:
+        pass
+    return out
+
+
+DEFAULT_PACK = os.environ.get("AIPLAYER_CLIENT_PACK") or local_env().get("AIPLAYER_CLIENT_PACK") or ""
 PROXY = os.environ.get("AIPLAYER_PROXY", "http://127.0.0.1:7890")
 JAVA = os.environ.get("AIPLAYER_CLIENT_JAVA", "/usr/lib/jvm/java-25-openjdk-amd64/bin/java")
 ORDER = ["net.minecraft", "org.lwjgl3", "me.eigenraven.lwjgl3ify.forgepatches", "net.minecraftforge",
@@ -272,7 +289,10 @@ def main():
         return rest[rest.index(flag) + 1] if flag in rest else default
 
     if cmd == "setup":
-        setup(opt("--pack", DEFAULT_PACK))
+        pack = opt("--pack", DEFAULT_PACK)
+        if not pack:
+            raise SystemExit("say where your GTNH client pack is: --pack FILE.zip, or AIPLAYER_CLIENT_PACK=... in tools/local.env")
+        setup(pack)
     elif cmd == "start":
         defines = [rest[i + 1] for i, a in enumerate(rest) if a == "-D"]
         start(opt("--join"), opt("--name", "Exporter"), defines, opt("--memory", "8G"), opt("--lang", "zh_CN"))

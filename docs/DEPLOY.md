@@ -1,19 +1,36 @@
 # 部署到正式服
 
-正式服由 `/extra_data/gtnh_manager` 管理。下面的步骤照它的规矩来：附加 mod 放在 `overrides/`，在 `extras.json` 登记哈希，
-这样 `./gtnh upgrade` 的预检认得它，升级时会自动带上。
-
 **需要停一次游戏服务器**（装 mod 必须重启，大约一分钟，在线的人会掉线）。大脑服务的安装和以后的更新都不用停游戏。
+
+下面 `$SERVER` 是你的服务器目录（里面有 `mods/`、`config/`）。
 
 ## 一、装身体（mod）
 
 ```bash
-cd ~/workshop/alu_gtnh_aiplayer
 tools/gradle build
 JAR=$(ls -t mod/build/libs/aiplayer-*.jar | grep -vE -- '-(dev|sources)\.jar$' | head -1)
-M=/extra_data/gtnh_manager
 
-# 1. 放进管理目录并登记
+# 停服、放进 mods、启动
+cp "$JAR" "$SERVER/mods/aiplayer.jar"
+```
+
+启动日志里看到 `Bridge listening on 127.0.0.1:25590` 就是装好了。首次启动会生成：
+
+- `$SERVER/config/aiplayer/aiplayer.json`：配置（端口、允许的指令、天然方块和垫脚方块清单、默认是否无敌、`newBotCommands`）。
+  想让每个 bot 都用同一个皮肤，在里面写 `"newBotCommands": ["skin {name} set 某个正版用户名"]`，重启后对新建的 bot 生效。
+- `$SERVER/config/aiplayer/schematics/`：图纸目录，把 `.schematic` 放进去即可，不用重启。
+- `$SERVER/config/aiplayer/bridge-token.txt`：bridge 口令，只有属主可读。
+
+bridge 只监听本机，不需要开端口。
+
+升级整合包时记得把这个 jar 和 `config/aiplayer/` 带过去；每次升级前先在测试实例上重新编译、重新测一遍（它靠反射读 GregTech、ModularUI 等 mod 的内部，版本变了可能要跟着改）。
+
+<details>
+<summary>用自己的管理脚本管服务器的情况（我们的做法，仅作示例）</summary>
+
+我们的正式服由一套管理脚本管：附加 mod 放在它的 `overrides/`，在 `extras.json` 登记哈希，这样升级的预检认得它，升级时会自动带上。`$M` 是管理目录。
+
+```bash
 cp "$JAR" "$M/overrides/new-server/files/mods/aiplayer.jar"
 sha256sum "$M/overrides/new-server/files/mods/aiplayer.jar"
 ```
@@ -29,37 +46,29 @@ sha256sum "$M/overrides/new-server/files/mods/aiplayer.jar"
 }
 ```
 
-在 `$M/overrides/migration-policy.json` 的 `preserve_paths` 里加一行 `"config/aiplayer"`，升级时保留它的配置和 bridge 口令。
+在 `$M/overrides/migration-policy.json` 的 `preserve_paths` 里加一行 `"config/aiplayer"`，升级时保留它的配置和 bridge 口令。然后停服、把 jar 复制进实例的 `mods/`、启动：
 
 ```bash
-# 2. 停服、放进实例、启动（需要你确认可以停服）
 systemctl --user stop gtnh.service
 cp "$M/overrides/new-server/files/mods/aiplayer.jar" "$M/instances/new-server/mods/aiplayer.jar"
 systemctl --user start gtnh.service
 journalctl --user -u gtnh.service -f | grep -m1 'Bridge listening'
 ```
 
-看到 `Bridge listening on 127.0.0.1:25590` 就是装好了。首次启动会生成：
-
-- `instances/new-server/config/aiplayer/aiplayer.json`：配置（端口、允许的指令、天然方块和垫脚方块清单、默认是否无敌、`newBotCommands`）。
-  想让每个 bot 都用同一个皮肤，在里面写 `"newBotCommands": ["skin {name} set oyaxira"]`，重启后对新建的 bot 生效。
-- `instances/new-server/config/aiplayer/schematics/`：图纸目录，把 `.schematic` 放进去即可，不用重启。
-- `instances/new-server/config/aiplayer/bridge-token.txt`：bridge 口令，只有属主可读。
-
-bridge 只监听本机，不需要开端口。
+</details>
 
 ## 二、装大脑
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/workshop/alu_gtnh_aiplayer/brain/aiplayer-brain.service ~/.config/systemd/user/
+cp brain/aiplayer-brain.service ~/.config/systemd/user/      # 在仓库目录里执行
 ```
 
 编辑 `~/.config/systemd/user/aiplayer-brain.service`，把口令文件指向正式服：
 
 ```ini
 Environment=AIPLAYER_BRIDGE_PORT=25590
-Environment=AIPLAYER_BRIDGE_TOKEN_FILE=/extra_data/gtnh_manager/instances/new-server/config/aiplayer/bridge-token.txt
+Environment=AIPLAYER_BRIDGE_TOKEN_FILE=/path/to/your/server/config/aiplayer/bridge-token.txt
 ```
 
 模型接口需要走代理的话，把模板里代理那两行也打开。
