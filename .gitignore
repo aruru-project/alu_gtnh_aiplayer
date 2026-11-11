@@ -3,6 +3,8 @@
 # secrets and runtime state
 /brain/data/
 /brain/node_modules/
+# a worktree may borrow the main checkout's node_modules through a link
+/brain/node_modules
 # pack data generated from the client pack by tools/make-packdata.py (docs/PACKDATA.md)
 /brain/packdata/
 *.log
@@ -12,3 +14,6 @@
 __pycache__/
 # the copy of brain/ that tools/brain runs
 /.run/
+
+# panel screenshots taken while working on the panel
+/.shots/

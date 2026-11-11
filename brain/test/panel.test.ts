@@ -9,8 +9,11 @@ import { BridgeError } from '../src/bridge/protocol.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../src/llm/index.ts'
 import { LlmError } from '../src/llm/index.ts'
 import { DesignWorkspace, decodePng } from '../src/design/index.ts'
-import { StructureBook } from '../src/packdata/index.ts'
+import { itemLines, parseItemIcons } from '../src/packdata/icons.ts'
+import type { ItemIcons } from '../src/packdata/icons.ts'
+import { ItemTable, StructureBook } from '../src/packdata/index.ts'
 import type { TextureAtlas } from '../src/packdata/index.ts'
+import { PanelLive } from '../src/panel/live.ts'
 import { PanelServer } from '../src/panel/server.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
 import { ConfigStore, overridesFromEnv } from '../src/store/config.ts'
@@ -20,6 +23,7 @@ import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
 import { PictureStore } from '../src/store/pictures.ts'
 import { UsageStore } from '../src/store/usage.ts'
+import { useLocalNames } from '../src/tools/format.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame, chat, makeAgent, relays, reply, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
@@ -32,7 +36,7 @@ const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
  * lines：给了就接上真的两条线（agent-harness 的 makeAgent 造的：真的 Lines、两份历史、假的游戏和假的模型），
  * 不给就是只记下收到什么的桩。
  */
-async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness } = {}) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, env: NodeJS.ProcessEnv = {}, opts: { textures?: TextureAtlas; structures?: StructureBook; log?: ActivityLog; dir?: { dir: string; cleanup(): void }; lines?: AgentHarness; icons?: ItemIcons } = {}) {
   const tmp = opts.dir ?? (opts.lines ? { dir: opts.lines.dir, cleanup: opts.lines.cleanup } : tmpDir())
   const config = new ConfigStore(tmp.dir, overridesFromEnv(env))
   const game = opts.lines?.game ?? new FakeGame()
@@ -62,6 +66,8 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, env: No
     pictures,
     ...(opts.textures ? { textures: opts.textures } : {}),
     ...(opts.structures ? { structures: opts.structures } : {}),
+    // 物品图标：测试里不去找这台机器上的 packdata，给了才有
+    icons: opts.icons ?? false,
     bridge: new BridgeApi(game),
     bridgeStatus: () => ({ state: 'connected', address: '127.0.0.1:1' }),
     agent: opts.lines?.agent ?? {
@@ -134,7 +140,8 @@ describe('面板：鉴权', () => {
     assert.equal(page.status, 200)
     assert.match(page.text, /<title>AI 玩家/)
     assert.equal((await s.call('GET', '/app.js')).status, 200)
-    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log', '/api/log?before=5', '/api/status', '/api/runs', '/api/runs/records?id=r1', '/api/blueprints/read?name=x']) {
+    assert.equal((await s.call('GET', '/style.css')).status, 200)
+    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log', '/api/log?before=5', '/api/status', '/api/runs', '/api/runs/records?id=r1', '/api/blueprints/read?name=x', '/api/live', '/api/minimap', '/api/icons/sheet?n=0', '/api/items/names?q=minecraft:dirt/0']) {
       assert.equal((await s.call('GET', route)).status, 401, route)
     }
     assert.equal((await s.call('POST', '/api/command', { text: '回家' })).status, 401)
@@ -218,6 +225,28 @@ describe('面板：鉴权', () => {
       const res = await fetch(`${s.origin}${p}`)
       assert.equal(res.status, 404, p)
     }
+  })
+})
+
+describe('面板：页面', () => {
+  it('页面拆成了好几个脚本文件：从 app.js 起，每一个被 import 的文件都取得到（少一个整页就是白的）', async (t) => {
+    const s = await setup(t)
+    const seen = new Set<string>()
+    const todo = ['/app.js']
+    while (todo.length > 0) {
+      const file = todo.pop()!
+      if (seen.has(file)) continue
+      seen.add(file)
+      const res = await s.call('GET', file)
+      assert.equal(res.status, 200, file)
+      assert.match(res.headers.get('content-type') ?? '', /^text\/javascript/, file)
+      for (const m of res.text.matchAll(/from '\.\/([A-Za-z0-9._-]+\.js)'/g)) todo.push(`/${m[1]}`)
+    }
+    // 各页、时间线、物品栏、三维预览都在里面
+    for (const file of ['/page-now.js', '/page-chat.js', '/page-knowledge.js', '/page-build.js', '/page-settings.js', '/logmodel.js', '/items.js', '/viewer3d.js']) assert.ok(seen.has(file), file)
+    // 首页只引自己目录下的东西，不引外面的
+    const page = (await s.call('GET', '/')).text
+    assert.deepEqual([...page.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]).filter((u) => !u!.startsWith('/') && !u!.startsWith('data:')), [])
   })
 })
 
@@ -1237,6 +1266,202 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual(o.models, [{ providerId: o.provider.id, providerLabel: '主力', modelId: o.provider.modelId, label: 'gpt-x' }])
     assert.deepEqual(o.usage, { today: { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, dailyTokenLimit: 0 })
     assert.equal(o.agent.busy, false)
+  })
+})
+
+describe('面板：“现在”页的数据（游戏里的它）', () => {
+  /** 两样东西的物品表和图标图集：泥土是第 1 个图标；钢锭不在图集里。 */
+  function fixtureIcons(t: { after(fn: () => void): void }): { icons: ItemIcons; dir: string } {
+    const dir = tmpDir()
+    t.after(dir.cleanup)
+    const items = '{"id":"minecraft:stone","meta":0,"name":"石头"}\n{"id":"minecraft:dirt","meta":0,"name":"泥土"}\n'
+    fs.mkdirSync(path.join(dir.dir, 'icons'))
+    fs.writeFileSync(path.join(dir.dir, 'icons', 'icons-000.png'), 'not really a png')
+    const icons = parseItemIcons({ format: 1, generatedAt: 'v1', cell: 32, columns: 64, rows: 64, count: 2, files: ['icons-000.png'] }, path.join(dir.dir, 'icons'), itemLines(items))
+    return { icons, dir: dir.dir }
+  }
+
+  it('身上的东西：每一格是什么、多少个、耐久，名字用本地物品表的中文名（身体给的英文名留着备查），盔甲和手持的那一格', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    useLocalNames(new ItemTable([{ id: 'minecraft:dirt', meta: 0, name: '泥土', en: 'Dirt' }]))
+    t.after(() => useLocalNames(undefined))
+    s.game.handlers['bot.status'] = () => ({
+      name: 'Alu', online: true, dim: 0, pos: { x: 10.5, y: 64, z: -3.5 }, block: { x: 10, y: 64, z: -4 }, yaw: 90, pitch: 0, onGround: true, inWater: false,
+      health: 17, maxHealth: 20, food: 15, xpLevel: 7, heldSlot: 1, freeSlots: 34, settings: { invulnerable: true, hunger: false },
+      inventory: [
+        { slot: 1, id: 'TConstruct:pickaxe', meta: 0, count: 1, name: 'Steel Pickaxe', durability: 0.83 },
+        { slot: 9, id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' },
+      ],
+      armor: [null, null, null, { id: 'minecraft:iron_helmet', meta: 0, count: 1, name: 'Iron Helmet', durability: 0.5 }],
+    })
+    const live = (await s.call('GET', '/api/live')).json
+    assert.deepEqual([live.connected, live.online, live.name, live.health, live.maxHealth, live.food, live.xpLevel, live.heldSlot, live.freeSlots, live.yaw], [true, true, 'Alu', 17, 20, 15, 7, 1, 34, 90])
+    assert.deepEqual(live.block, { x: 10, y: 64, z: -4 })
+    assert.deepEqual(live.settings, { invulnerable: true, hunger: false })
+    const bySlot = Object.fromEntries(live.inventory.map((x: { slot: number; item: unknown }) => [x.slot, x.item]))
+    // 物品表里有的：中文名，英文名留着
+    assert.deepEqual([bySlot[9].name, bySlot[9].en, bySlot[9].count, bySlot[9].id, bySlot[9].meta], ['泥土', 'Dirt', 64, 'minecraft:dirt', 0])
+    // 物品表里没有的：身体给的名字
+    assert.deepEqual([bySlot[1].name, bySlot[1].en, bySlot[1].durability], ['Steel Pickaxe', undefined, 0.83])
+    // 盔甲四格照身体的顺序（3 是头盔）
+    assert.deepEqual(live.armor.map((a: { name: string } | null) => a?.name ?? null), [null, null, null, 'Iron Helmet'])
+  })
+
+  it('图标怎么画：图集里有它就指到第几个；没有图集时，方块用方块贴图或它的颜色，别的东西给一个由 id 定的颜色（标明不是真实的）', async (t) => {
+    const { icons } = fixtureIcons(t)
+    const atlas = tmpDir()
+    t.after(atlas.cleanup)
+    const s = await setup(t, {}, { icons, textures: { file: path.join(atlas.dir, 'atlas.png'), tile: 16, columns: 4, rows: 1, tiles: new Map([['grass_top', 2]]), version: 't1' } })
+    await s.login()
+    s.game.handlers['bot.status'] = () => ({
+      name: 'Alu', online: true, dim: 0, pos: { x: 0.5, y: 64, z: 0.5 }, block: { x: 0, y: 64, z: 0 },
+      inventory: [
+        { slot: 0, id: 'minecraft:dirt', meta: 0, count: 1, name: 'Dirt' },
+        { slot: 1, id: 'minecraft:grass', meta: 0, count: 1, name: 'Grass Block' },
+        { slot: 2, id: 'minecraft:wool', meta: 14, count: 1, name: 'Red Wool' },
+        { slot: 3, id: 'gregtech:gt.metaitem.01', meta: 11305, count: 1, name: 'Steel Ingot' },
+      ],
+    })
+    const live = (await s.call('GET', '/api/live')).json
+    const look = Object.fromEntries(live.inventory.map((x: { slot: number; item: { look: unknown } }) => [x.slot, x.item.look]))
+    assert.deepEqual(look[0], { icon: 1 })
+    // 草方块不在图集里，但方块贴图图集里有它顶面那张（灰的，要染色）
+    assert.equal(look[1].tex, 2)
+    assert.equal(look[1].tint.length, 3)
+    // 红羊毛：颜色表里的颜色
+    assert.deepEqual(look[2], { color: [151, 52, 49], known: true })
+    // 钢锭：什么都没有，颜色只是用来区分
+    assert.equal(look[3].known, false)
+    assert.equal(look[3].color.length, 3)
+    // 面板从哪取这两张图集、怎么切
+    assert.deepEqual(live.looks.icons, { cell: 32, columns: 64, rows: 64, sheets: ['/api/icons/sheet?n=0&v=v1'] })
+    assert.deepEqual(live.looks.textures, { url: '/api/textures/atlas.png?v=t1', tile: 16, columns: 4, rows: 1 })
+
+    const sheet = await s.call('GET', '/api/icons/sheet?n=0&v=v1')
+    assert.deepEqual([sheet.status, sheet.headers.get('content-type'), sheet.text], [200, 'image/png', 'not really a png'])
+    assert.equal((await s.call('GET', '/api/icons/sheet?n=5')).status, 404)
+
+    // 没有图集的大脑：泥土退到色块，图那个地址是 404
+    const bare = await setup(t)
+    await bare.login()
+    bare.game.handlers['bot.status'] = s.game.handlers['bot.status']!
+    const without = (await bare.call('GET', '/api/live')).json
+    assert.equal(without.looks.icons, null)
+    assert.equal(without.inventory[0].item.look.icon, undefined)
+    assert.equal((await bare.call('GET', '/api/icons/sheet?n=0')).status, 404)
+  })
+
+  it('图集在大脑运行期间被重新导出了：不再用旧的行号去指新的图（宁可没图也不能错位）', async (t) => {
+    const { icons, dir } = fixtureIcons(t)
+    const file = path.join(dir, 'icons', 'icons.json')
+    fs.writeFileSync(file, '{}')
+    icons.loadedMtimeMs = fs.statSync(file).mtimeMs
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    const game = new FakeGame()
+    const clock = { now: 1_000_000 }
+    const live = new PanelLive({ config: new ConfigStore(tmp.dir, {}), bridge: new BridgeApi(game), bridgeStatus: () => ({ state: 'connected', address: 'x' }), design: new DesignWorkspace({ dataDir: tmp.dir }), icons, now: () => clock.now })
+    assert.deepEqual(live.lookOf('minecraft:dirt', 0), { icon: 1 })
+    // 重新导出：说明文件换了
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 60_000))
+    clock.now += 10_000
+    assert.equal('icon' in live.lookOf('minecraft:dirt', 0), false)
+    assert.equal(live.iconSheet(0), undefined)
+    assert.equal(live.looksInfo().icons, null)
+  })
+
+  it('开着的界面的格子（哪些是它自己背包的、哪些是产物格）；别的玩家按远近排，带距离；有任务在跑看不了界面时当没开', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.handlers['server.info'] = () => ({ dayTime: 3000, isDay: true, raining: false, tps: 20, players: [
+      { name: 'Far', dim: 0, pos: { x: 110.5, y: 64, z: -3.5 } },
+      { name: 'Alu', dim: 0, pos: { x: 10.5, y: 64, z: -3.5 }, isBot: true },
+      { name: 'Nether', dim: -1, pos: { x: 0, y: 64, z: 0 } },
+      { name: 'Near', dim: 0, pos: { x: 13.5, y: 64, z: 0.5 } },
+    ] })
+    s.game.handlers['screen.look'] = () => ({ open: true, screen: 'ContainerChest', slotCount: 63, slots: [
+      { slot: 0, item: { id: 'minecraft:cobblestone', meta: 0, count: 64, name: 'Cobblestone' } },
+      { slot: 1, takesNothing: true },
+      { slot: 27, own: true, item: { id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' } },
+    ], cursor: { id: 'minecraft:torch', meta: 0, count: 3, name: 'Torch' },
+    // 界面上格子以外的东西（docs/PROTOCOL.md 的“界面上的控件”）
+    controls: [
+      { panel: 'machine', key: 'fluidAutoOutput:0', kind: 'switch', value: false },
+      { panel: 'machine', key: 'powerfail:0', kind: 'switch', value: true, readOnly: true },
+      { panel: 'machine', key: 'cover_panel_west', kind: 'panel', open: false },
+      { panel: 'machine', key: 'tank:3', kind: 'fluid', fluid: 'molten.steel', name: 'Molten Steel', amount: 288, capacity: 32000, fills: false, drains: true },
+      { panel: 'machine', key: 'tank:4', kind: 'fluid', capacity: 16000 },
+      { panel: 'machine', key: 'side', kind: 'choice', value: 'X', options: ['X', 'Y'] },
+      { kind: 'switch', value: true },
+    ] })
+    const live = (await s.call('GET', '/api/live')).json
+    assert.deepEqual(live.players.map((p: { name: string; dist: number | null }) => [p.name, p.dist]), [['Near', 5], ['Far', 100], ['Nether', null]])
+    assert.deepEqual([live.screen.name, live.screen.slotCount, live.screen.cursor.name, live.screen.cursor.count], ['ContainerChest', 63, 'Torch', 3])
+    assert.deepEqual(live.screen.slots.map((x: { slot: number; own?: boolean; takesNothing?: boolean; item?: { name: string } }) => [x.slot, x.own ?? false, x.takesNothing ?? false, x.item?.name ?? null]), [[0, false, false, 'Cobblestone'], [1, false, true, null], [27, true, false, 'Dirt']])
+    assert.deepEqual(live.world, { dayTime: 3000, isDay: true, raining: false, tps: 20 })
+    // 控件：开关的开和关、只读的、页签开没开、流体格里是什么多少（空的没有流体）、选项和能选的；没有名字的那个不要
+    assert.deepEqual(live.screen.controls, [
+      { key: 'fluidAutoOutput:0', name: 'fluidAutoOutput', kind: 'switch', panel: 'machine', value: false },
+      { key: 'powerfail:0', name: 'powerfail', kind: 'switch', panel: 'machine', value: true, readOnly: true },
+      { key: 'cover_panel_west', name: 'cover_panel_west', kind: 'panel', panel: 'machine', open: false },
+      { key: 'tank:3', name: 'tank', kind: 'fluid', panel: 'machine', fluid: { amount: 288, id: 'molten.steel', name: 'Molten Steel', capacity: 32000, fills: false, drains: true } },
+      { key: 'tank:4', name: 'tank', kind: 'fluid', panel: 'machine', fluid: { amount: 0, capacity: 16000 } },
+      { key: 'side', name: 'side', kind: 'choice', panel: 'machine', value: 'X', options: ['X', 'Y'] },
+    ])
+
+    // 身体说现在看不了（有任务在跑）：没有界面，别的照给
+    const busy = await setup(t)
+    await busy.login()
+    busy.game.handlers['screen.look'] = () => {
+      throw new BridgeError('busy', 'a task is running')
+    }
+    const during = (await busy.call('GET', '/api/live')).json
+    assert.deepEqual([during.online, during.screen], [true, null])
+  })
+
+  it('它不在线、没连上游戏时：照实说，不是一个报错', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.online = false
+    const offline = await s.call('GET', '/api/live')
+    assert.deepEqual([offline.status, offline.json.connected, offline.json.online], [200, true, false])
+    s.game.connected = false
+    await new Promise((r) => setTimeout(r, 750))
+    const down = await s.call('GET', '/api/live')
+    assert.deepEqual([down.status, down.json.online, typeof down.json.reason], [200, false, 'string'])
+  })
+
+  it('脚下的俯视图：它周围每一列地表是什么方块、多高，每种方块的名字和颜色，它自己和别的玩家在哪', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.handlers['world.scan'] = (p) => ({
+      x1: p.x1, z1: p.z1, x2: Number(p.x1) + 1, z2: Number(p.z1) + 1,
+      heights: [[64, 65], [63, -1]], tops: [[0, 0], [1, -1]], palette: ['minecraft:wool', 'minecraft:water'], liquidPalette: [1], stats: { unloaded: 1 },
+    })
+    const map = (await s.call('GET', '/api/minimap?radius=6')).json
+    // 以它脚下那一格（10, -4）为中心，半径 6
+    assert.deepEqual(s.game.callsOf('world.scan').map((p) => [p.x1, p.z1, p.x2, p.z2]), [[4, -10, 16, 2]])
+    assert.deepEqual([map.available, map.x1, map.z1, map.width, map.depth, map.unloaded], [true, 4, -10, 2, 2, 1])
+    // 一行行排：先 z 后 x
+    assert.deepEqual([map.heights, map.tops], [[64, 65, 63, -1], [0, 0, 1, -1]])
+    assert.deepEqual(map.palette[0], { id: 'minecraft:wool', name: '白色羊毛', color: [222, 222, 222], known: true })
+    assert.equal(map.palette[1].liquid, true)
+    assert.deepEqual([map.self.x, map.self.z], [10.5, -3.5])
+
+    s.game.online = false
+    await new Promise((r) => setTimeout(r, 2600))
+    const none = (await s.call('GET', '/api/minimap?radius=6')).json
+    assert.deepEqual([none.available, none.reason], [false, '它不在线'])
+  })
+
+  it('一批物品 id 换成中文名（对话页把工具参数里的物品写成名字用）：查不到的不回', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    useLocalNames(new ItemTable([{ id: 'minecraft:dirt', meta: 0, name: '泥土', en: 'Dirt' }, { id: 'gregtech:gt.metaitem.01', meta: 11305, name: '钢锭' }]))
+    t.after(() => useLocalNames(undefined))
+    const got = (await s.call('GET', `/api/items/names?q=${encodeURIComponent('minecraft:dirt/0,gregtech:gt.metaitem.01/11305,minecraft:dirt,nope:thing/3')}`)).json
+    assert.deepEqual(got, { names: { 'minecraft:dirt/0': '泥土', 'gregtech:gt.metaitem.01/11305': '钢锭' } })
   })
 })
 

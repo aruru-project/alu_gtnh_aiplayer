@@ -17,6 +17,7 @@ import type { ResumeState } from './bridge/client.ts'
 import { DesignWorkspace } from './design/index.ts'
 import { createClient, listRemoteModels, testConnection } from './llm/index.ts'
 import type { LlmClient } from './llm/index.ts'
+import { loadItemIcons } from './packdata/icons.ts'
 import { loadPackData } from './packdata/index.ts'
 import { useLocalNames } from './tools/format.ts'
 import { PanelServer } from './panel/server.ts'
@@ -140,6 +141,8 @@ async function main(): Promise<void> {
 
   // ── 本地资料（任务书、物品表）：启动时读一次；没有的部分，相关工具改问服务器 ──
   const packdata = loadPackData(path.resolve(BRAIN_ROOT, config.packdataDir()), (message) => info(`[packdata] ${message}`))
+  // 物品图标的图集（面板的物品栏用）：启动时核对一次它和物品表是不是同一次导出的，对不上就当没有
+  const itemIcons = loadItemIcons(packdata.dir, (message) => info(`[packdata] ${message}`))
   // ── 自己出设计：跑程序的沙箱、图纸草稿（drafts/）、主人传的图片（images/）──
   // 服务器回来的东西（背包、箱子、任务结果、事件）给模型看时，名字都用本地物品表里的中文名
   // 物品和流体都用游戏里的中文名（身体给的是英文）
@@ -306,6 +309,7 @@ async function main(): Promise<void> {
     pictures,
     ...(packdata.textures ? { textures: packdata.textures } : {}),
     ...(packdata.structures ? { structures: packdata.structures } : {}),
+    icons: itemIcons ?? false,
     bridge,
     bridgeStatus: () => bridgeClient.status(),
     agent,

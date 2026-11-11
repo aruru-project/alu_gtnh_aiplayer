@@ -36,6 +36,8 @@ import type { ManualStore } from '../store/manuals.ts'
 import type { MemoryStore } from '../store/memory.ts'
 import type { Reminder } from '../store/reminders.ts'
 import type { UsageStore } from '../store/usage.ts'
+import type { ItemIcons } from '../packdata/icons.ts'
+import { PanelLive } from './live.ts'
 import {
   LoginLimiter,
   SESSION_COOKIE,
@@ -68,6 +70,8 @@ export interface PanelDeps {
   textures?: TextureAtlas
   /** 多方块机器怎么搭（本地资料里的 structures.jsonl）。没提供时“多方块结构”一块说明没有这份资料。 */
   structures?: StructureBook
+  /** 物品图标的图集（本地资料里的 icons/）。false：没有；不给：面板自己到配置的 packdata 目录里找一次。没有时物品栏用替代的画法。 */
+  icons?: ItemIcons | false
   bridge: BridgeApi
   bridgeStatus(): BridgeStatus
   agent: {
@@ -224,11 +228,14 @@ export class PanelServer {
   private unsubscribeLog: (() => void) | undefined
   private heartbeat: NodeJS.Timeout | undefined
   private overviewCache: { at: number; data: unknown } | undefined
+  /** “现在”页的数据：身上的东西、开着的界面、附近的人、脚下的俯视图（live.ts）。 */
+  private readonly live: PanelLive
   /** 实时日志推过的最大的条目 id（比它小的再推来，是同一条的新样子）。 */
   private lastBroadcastId = 0
 
   constructor(deps: PanelDeps) {
     this.deps = deps
+    this.live = new PanelLive({ ...deps, now: () => this.now() })
     this.publicDir = deps.publicDir ?? path.join(import.meta.dirname, 'public')
     this.server = http.createServer((req, res) => {
       void this.handle(req, res)
@@ -389,6 +396,10 @@ export class PanelServer {
       this.feedbackExport(res, url)
       return
     }
+    if (route === '/icons/sheet' && method === 'GET') {
+      this.iconSheet(res, url)
+      return
+    }
 
     // 到这里会话和 Origin 都已经验过了，才开始读请求体；上传图纸的请求体比别的接口大
     const uploadsBlueprint = route === '/blueprints' && method === 'POST'
@@ -467,6 +478,12 @@ export class PanelServer {
     switch (key) {
       case 'GET /overview':
         return this.overview()
+      case 'GET /live':
+        return this.live.live()
+      case 'GET /minimap':
+        return this.live.minimap(url.searchParams.get('radius'))
+      case 'GET /items/names':
+        return this.live.itemNames(url.searchParams.get('q') ?? '')
       // 下面五个是面板要的数据（形状见 docs/BRAIN_SPEC.md 的“面板的数据接口”），实现在 data-api.ts
       case 'GET /log':
         return logPage(this.deps.log, url.searchParams)
@@ -1194,6 +1211,14 @@ export class PanelServer {
       /* 文件没了：当没有 */
     }
     if (!png) throw new HttpError(404, 'not_found', '没有方块贴图')
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'private, max-age=604800, immutable' })
+    res.end(png)
+  }
+
+  /** 物品图标图集的一张图，原样给。地址里带着版本，所以可以让浏览器一直留着。 */
+  private iconSheet(res: http.ServerResponse, url: URL): void {
+    const png = this.live.iconSheet(Number(url.searchParams.get('n') ?? 0))
+    if (!png) throw new HttpError(404, 'not_found', '没有这张物品图标')
     res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': 'private, max-age=604800, immutable' })
     res.end(png)
   }

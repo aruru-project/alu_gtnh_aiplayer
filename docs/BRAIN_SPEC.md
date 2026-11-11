@@ -181,13 +181,26 @@ interface ProviderConfig {
 - 默认监听 `127.0.0.1:28765`，地址和端口可配（环境变量和配置文件）。
 - 访问口令：首次启动随机生成，打印到标准输出并存入配置。登录后发 HttpOnly、SameSite=Strict 的会话 cookie。除登录外所有 API 需要会话，写操作校验 `Origin`。
 - **API key 只写不读**：接口永远不返回完整 key，只返回掩码（如 `sk-…abcd`）和“已设置”标记；提交空值表示不修改。
+- 界面围绕“这一个 AI 玩家”来组织（一个大脑 = 一个玩家），不是能管好几个玩家的样子。深色，中文；不引任何外部资源。
+- **常驻的状态区**（宽屏在左边，窄于 940 像素时在顶上）：
+  - 玩家卡：名字、在不在线、位置、血量和饱食度、上线 / 下线。
+  - “全部停下”：有东西在跑时是实心的警示色；点了以后说明停了什么。先调 `POST /api/work/stop`，后端没有这个接口（404）时退回“停例程 + 取消全部任务”。
+  - 每条线一张状态卡，照 `GET /api/status` 的 `agents` 数组画（现在一项 `main`；两条线时是 `talk`、`work`，见 `docs/TALK_WORK.md`）：模型的状态（空闲 / 正在想第几步、已几秒 / 在执行工具 / 接口故障）、这条线用的模型（卡上直接换）、第几轮第几步。管身体的那条线下面再挂两行：**例程**（哪个在跑、多久、调了多少次，可停）和**身体**（正在做的任务、进度条、排队的，可取消）；它提了问还没人回答（`waitingAnswer`）时有一块醒目的。
+  - “可能卡住了”是面板自己判断的：模型一步超过 90 秒、身体任务的进度 120 秒没动，标黄，悬停写着依据。
+  - 导航：现在 · 对话 · 知识 · 建造 · 设置。再下面是游戏连接和今日用量。
 - 页面：
-  - **概览**：bridge 连接状态、bot 状态（位置、血量、背包）、当前任务和队列（可取消）、当前模型和最近一次调用结果、今日用量。
-  - **对话**：实时日志（SSE）——聊天、模型文本、工具调用和结果（可折叠）、错误；一个输入框，以主人身份直接给它下指令。
-  - **模型**：服务商增删改、选当前、测试连接。
-  - **AI 玩家**：名字、别名、人设提示词（可恢复默认）、主人名单、唤醒方式、各项上限；上线/下线按钮；无敌和饥饿开关（透传 `bot.configure`）。
-  - **记忆**：查看、编辑、删除。
-- 布局清楚、朴素即可，不追求花哨；手机上也能看。
+  - **现在**：一句话的现状；正在跑的那一轮（起因、已经几步多久、上一步调了什么、现在这一步）；等回答的问题全文和“去回答”；例程的实时计数和正在等的那一步；身体任务的进度和排队；最近几步；一行输入框。右边是游戏里的它：心和鸡腿、位置朝向、**物品栏**（和游戏里一样的格子：盔甲、背包 9×3、快捷栏，手持的有白框，数量、耐久条，悬停或聚焦显示中文名、英文名、id/meta）、开着的界面（它的格子，和格子以外的控件：开关开没开、页签开没开、流体格里是什么多少；只读）、别的玩家（远近和方位）、脚下的俯视图（滚到看得见它、页面在前台时才取，10 秒一次）。
+  - **对话**：一条时间线分左右两道、一行行对齐。左边“说了什么”：玩家的话、它的话、主人在面板上说的（对话线自己的那几步也在这边，画得很省）。右边“干了什么”：一轮 → 模型的每一步（用时、token）→ 这一步调的工具（收着时是读得懂的一句：物品写中文名，位置写坐标；点开是参数和结果全文）；它写的程序的一次运行是一块汇总（跑着时实时更新，点开读每一步的明细）。两条线之间的往来（`relay`）是横跨两边的一条。一轮默认收成一行；干活线最新的一轮开着，对话线的只在它正跑着时开着（它的结果就是下面那句话）。三档：只看对话 / 加上模型的决策 / 全部（再加游戏事件和说明）。往上翻到头自动取更早的；不在底部时有“回到最新”；底部输入框（只有它看得到，不进游戏聊天）。窄于 760 像素时两道叠成一列。
+  - **知识**：记忆（查看、改、删、新增）· 手册（默认的、你改过的、你写的、它自己写的；改默认手册存的是你的一份，可以恢复默认）· 意见簿（按类别和状态筛、看详情、标已处理、导出）。导航上的数字是意见簿里没看过的条数。
+  - **建造**：草稿（三维预览和四种简图、材料、生成它的程序、发布到游戏、删除）· 图纸（服务器上的：上传、删除、看材料）· 图片（上传、删除）· 多方块结构（按名字搜，每一级的材料和三维预览）。
+  - **设置**：模型（每条线用哪个；服务商和它下面的模型的增删改、测试连接、从接口拉模型列表）· 玩家（上线 / 下线、无敌、会饿；名字、别名、主人名单、什么时候回应聊天；人设提示词）· 上限 · 游戏连接 · 面板口令 · 历史和提醒（清空对话历史、今日用量、删提醒）。
+- 前端是 `panel/public/` 下的一组 ES 模块，浏览器直接加载，没有构建步骤：
+  `app.js`（登录、框架、换页）、`side.js`（状态区）、`data.js`（定时取状态）、`logstore.js`（日志：SSE 加往上翻）、`logmodel.js`（**日志条目 → 时间线**，纯函数；条目长什么样只有它知道，新旧两种形状都认）、`logview.js`（把时间线画出来）、`items.js`（物品格子、心和鸡腿）、`names.js`（物品中文名）、`page-*.js`（五页）、`viewer3d.js`（三维预览）、`ui.js`（小工具）。
+- 窄窗口（游戏开在旁边）、键盘（都是真的按钮和表单控件；一组物品格子占一个 Tab 位，方向键在格子之间走）也能用。
+- 连不上大脑进程时：状态区顶上一条红的，页面上留着的旧样子调暗，各页写明没取到并给“重试”；连上以后自己恢复。
+- 看面板、截图用的两个脚本（不连真的游戏、不用真的模型，端口见各自文件头）：
+  - `node test/panel-dev.ts [--shape fake|real] [--lines 1|2] [--scene …]`：模拟身体 + 真的大脑（子进程）+ 一层代理。`real` 是大脑真实给的数据；`fake` 由代理顶替“它在干什么”那几个接口，可以把“正在想第 3 步”“例程跑到一半”“干活线在等回答”这些一闪而过的时刻摆住，`--lines 2` 是两条线的假数据。
+  - `node test/panel-shots.ts --plan '<步骤单>'`：自己起一个无头 Chrome（临时目录，经管道说 CDP，不占端口），照步骤单去点、去截图，并把页面里的报错打出来。
 
 ### 面板的数据接口
 
@@ -334,6 +347,38 @@ interface ProviderConfig {
 - 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
 
 **5. 图纸里有什么** `GET /api/blueprints/read?name=<名字>&draft=<0|1>&cells=<0|1>` → 和库函数 `read_blueprint` 的 `data` 同一个形状（见 `docs/SCRIPTS.md`）：`{ name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }] }`；`cells=1` 才带 `x y z sx sy sz palette cells`。`draft=1` 读它的草稿。没有这张图纸是 502（身体的原话），没有这张草稿是 404。
+
+**6. 游戏里的它** `GET /api/live`（“现在”页和状态区的玩家卡用，实现在 `panel/live.ts`）。只读；同一秒里问几次只问身体一次。
+
+```jsonc
+{ "time": 1731300000000, "name": "Alu", "connected": true, "online": true,
+  "dim": 0, "pos": { "x": -521.5, "y": 69, "z": 43.5 }, "block": { "x": -522, "y": 69, "z": 43 }, "yaw": -160, "pitch": 8,
+  "onGround": true, "inWater": false, "health": 17, "maxHealth": 20, "food": 15, "xpLevel": 7,
+  "heldSlot": 0, "freeSlots": 7, "settings": { "invulnerable": true, "hunger": false },
+  "inventory": [ { "slot": 0, "item": { "id": "TConstruct:pickaxe", "meta": 0, "count": 1, "name": "钢镐", "en": "Steel Pickaxe",
+                                         "durability": 0.83, "look": { "icon": 13038 } } } ],   // slot 0–8 快捷栏，9–35 背包
+  "armor": [ null, null, null, { "id": "minecraft:iron_helmet", "name": "铁头盔", "look": { "icon": 314 } } ],   // 0 靴子 … 3 头盔
+  "screen": { "name": "ContainerChisel", "slotCount": 97, "cursor": null,
+              "slots": [ { "slot": 0, "takesNothing": true, "item": { } }, { "slot": 62, "own": true, "item": { } } ],
+              "controls": [ { "panel": "basicmachine.…", "key": "fluidAutoOutput:0", "name": "fluidAutoOutput", "kind": "switch", "value": false },
+                            { "key": "cover_panel_west", "name": "cover_panel_west", "kind": "panel", "open": false },
+                            { "key": "auto_sync:tank:3", "name": "auto_sync", "kind": "fluid",
+                              "fluid": { "id": "molten.steel", "name": "熔融钢", "amount": 288, "capacity": 32000, "fills": false, "drains": true } } ] },   // 没开界面是 null
+  "players": [ { "name": "阿露", "isBot": false, "dim": 0, "dist": 6.4, "dx": 4, "dy": 0, "dz": -5 } ],   // 同一个维度的按远近排；别的维度 dist 是 null
+  "world": { "dayTime": 3000, "isDay": true, "raining": false, "tps": 20 },
+  "looks": { "icons": { "cell": 32, "columns": 64, "rows": 64, "sheets": [ "/api/icons/sheet?n=0&v=…" ] },   // 没有图集是 null
+             "textures": { "url": "/api/textures/atlas.png?v=…", "tile": 16, "columns": 64, "rows": 86 } } }
+```
+
+- `name` 是本地物品表的中文名，查不到是身体给的英文名，再没有是 id；`en` 是身体给的名字（和 `name` 不同时才有）。只靠附加数据区分的物品（匠魂、GregTech 的工具）名字以身体给的为准。
+- `look` 是这样东西的图标怎么画，按这个顺序找：`{ "icon": n }` 物品图标图集里的第 n 个（见 `docs/PACKDATA.md` 的“物品图标”）；`{ "tex": n, "tint"? }` 它是方块，方块贴图图集里的第 n 格；`{ "color": [r,g,b], "known": true }` 颜色表里的方块；`{ "color", "known": false }` 都不是，颜色由 id 算出来，只为了区分（面板画成色块加名字的头一个字）。
+- `screen.controls` 是界面上格子以外的东西（`docs/PROTOCOL.md` 的“界面上的控件”，只有 ModularUI 2 的界面有，别的是空数组）。`kind`：`switch`（`value` 是开没开）、`panel`（能再打开的一块面板、页签，`open` 是它现在开没开）、`fluid`（流体格，`fluid` 里是什么、多少 mB、能装多少、能不能倒进取出；空的没有 `id`）、`choice`（`value` 是选的哪个，`options` 是能选的）、`number` / `text` / `value`（`value` 是它现在的内容）、`button`、`other`。`name` 是 `key` 冒号前面那一段；`readOnly` 是只显示、玩家改不了的。最多给 80 个，再多时带 `controlsTotal`。面板只照着画，不操作。
+- 没连上游戏、它不在线时也是 200：`{ "connected", "online": false, "reason"? }`。有任务在跑时身体不让看界面，`screen` 是 `null`。
+- 物品图标图集的图：`GET /api/icons/sheet?n=<第几张>`（地址里带着版本，可以让浏览器一直留着）。大脑头一次用到时读 `icons/icons.json` 并核对 `count` 和 `itemsSha1`（对不上就当没有图标）；运行期间说明文件被换过（重新导出了）也当没有，直到重启——行号对不上了，宁可没图也不能错位。
+
+**7. 脚下的俯视图** `GET /api/minimap?radius=<4–31，默认 24>` → `{ available, x1, z1, width, depth, palette: [{ id, name, color, known, liquid? }], tops, heights, unloaded, self: { x, y, z, yaw }, players: [{ name, x, z, isBot }] }`。`tops` / `heights` 一行行排（下标 = z * width + x）：那一列地表是调色板里的第几种、多高（没有是 -1）。看不到时 `{ available: false, reason }`。
+
+**8. 物品的中文名** `GET /api/items/names?q=<逗号隔开的 id/meta，最多 200 个>` → `{ names: { "minecraft:dirt/0": "泥土" } }`，只回查得到的。
 
 ## 测试
 
