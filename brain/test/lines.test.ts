@@ -319,8 +319,16 @@ describe('叫停', () => {
     await h.agent.whenIdle()
     const thinking = held()
     h.llm.enqueue(reply('', [{ id: 'look', name: 'get_status' }]), thinking.script)
+    // 它查状态的那一步期间又来了一句带话：这句已经接进它正在想的第 2 步里了（它还没看到）
+    const status = h.game.handlers['bot.status']!
+    let asked = 0
+    h.game.handlers['bot.status'] = (p) => {
+      if (++asked === 2) h.agent.handleEvent(told('箱子看完顺手关上'))
+      return status(p)
+    }
     h.agent.handleEvent(told('顺便看看箱子里有什么'))
     await waitFor('the worker is thinking about step 2', thinking.started)
+    assert.match(h.llm.lastUserText(h.llm.requests.length - 1), /你做上一步的时候新到的[\s\S]*箱子看完顺手关上/)
     // 还有一件事刚到，排着没处理
     h.agent.handleEvent(told('再去挖点土'))
     const turn = h.agent.state('work').turn!.id
@@ -345,11 +353,11 @@ describe('叫停', () => {
     const result = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
     assert.equal(
       result.type === 'tool_result' ? result.content : '',
-      `Stopped. The worker was interrupted in turn ${turn} at step 2; the tool calls it had not yet made were not made. Routine r1 was stopped. 1 task(s) of the body were canceled (t1); what they had already done stays done. 1 event(s) the worker had not handled yet were set aside (it can still see them as background). The worker has been told it was stopped, with your reason and what was said to you this turn. It does nothing more until something new reaches it, such as a tell_worker.`,
+      `Stopped. The worker was interrupted in turn ${turn} at step 2; the tool calls it had not yet made were not made. Routine r1 was stopped. 1 task(s) of the body were canceled (t1); what they had already done stays done. 2 event(s) the worker had not handled yet were set aside (it can still see them as background). The worker has been told it was stopped, with your reason and what was said to you this turn. It does nothing more until something new reaches it, such as a tell_worker.`,
     )
     const relay = relays(h, 'stop')
     assert.deepEqual([relay.length, relay[0]!.agent, relay[0]!.relay], [1, 'talk', { type: 'stop', from: 'talk', to: 'work', quotes: 1 }])
-    assert.match(relay[0]!.text, new RegExp(`^对话线 → 干活线：停（主人让停）。打断了干活线的第 ${turn} 轮（第 2 步），停掉例程 r1，取消了 1 个身体任务，放下了 1 件它还没处理的事。$`))
+    assert.match(relay[0]!.text, new RegExp(`^对话线 → 干活线：停（主人让停）。打断了干活线的第 ${turn} 轮（第 2 步），停掉例程 r1，取消了 1 个身体任务，放下了 2 件它还没处理的事。$`))
     // 被打断的那一轮做过的一步留在它的历史里，写明停在这里；工具调用和结果仍然成对
     const turns = h.history.get().turns
     assertToolPairs(turns.flatMap((x) => x.messages))
@@ -365,7 +373,10 @@ describe('叫停', () => {
     assert.match(background, /你被叫停了（对话线叫的）：主人让停\n {2}身体的任务队列和例程都已经取消，你当时正在想的那一步被打断，还没处理的事也放下了。这条只是告诉你发生了什么，不需要为它做任何事；之后要做什么等新的交代。\n {2}当时的原话（[^\n]*\n {4}\[[\d:]+\] Steve 说：Alu 停！别走了/)
     assert.match(background, /被叫停时你的例程还在跑，已经一起停下/)
     assert.match(background, /对话线交给你的（这一句是它写的）：再去挖点土/)
-    assert.equal(todo(next).includes('再去挖点土'), false)
+    // 接进了被打断的那一步、它没来得及看到的那句也在背景里，没有被当成新的事重做
+    assert.match(background, /对话线交给你的（这一句是它写的）：箱子看完顺手关上/)
+    assert.equal(/再去挖点土|箱子看完顺手关上/.test(todo(next)), false)
+    assert.equal(JSON.stringify(h.history.get().turns.at(-2)).includes('箱子看完顺手关上'), false)
   })
 
   it('它一步都还没想完就被叫停：那件事不重做，留作背景；被叫停时它这一步里还没执行的工具不再执行', async (t) => {

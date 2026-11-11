@@ -355,6 +355,8 @@ export class Agent {
   private halting = false
   /** 正有一个工具在执行。 */
   private toolRunning = false
+  /** 已经接进正在想的这一步、模型还没看到的事有几件（被叫停时它们和排着的一样算“放下了”）。 */
+  private unseenArrivals = 0
   /** 例程是被总停止停掉的：它的结局只留作背景，不为它叫醒模型。 */
   private quietRoutineEnd = false
   /** 上一轮什么时候、怎么结束的。 */
@@ -753,6 +755,8 @@ export class Agent {
     for (const ev of dropped) this.pushBackground(ev)
     const turn = this.running && this.turnNow ? { id: this.turnNow.id, step: this.thinking?.step ?? this.turnNow.steps } : undefined
     const toolRunning = this.toolRunning
+    // 已经接进它正在想的这一步、它还没看到的事：这一步被打断，它们同样留作背景（runTurn 收尾时放过去）
+    const unseen = this.running ? this.unseenArrivals : 0
     let settled: Promise<void> = Promise.resolve()
     if (this.running) {
       this.halting = true
@@ -772,7 +776,7 @@ export class Agent {
     this.pushBackground(note)
     this.persist()
     this.notifyIdle()
-    return { ...(turn ? { turn } : {}), toolRunning, dropped: dropped.length, ...(routineId !== undefined ? { routine: routineId } : {}), ...(routineTask !== undefined ? { routineTask } : {}), settled }
+    return { ...(turn ? { turn } : {}), toolRunning, dropped: dropped.length + unseen, ...(routineId !== undefined ? { routine: routineId } : {}), ...(routineTask !== undefined ? { routineTask } : {}), settled }
   }
 
   /** 例程停下时发出去的那次“取消任务”已经发完（或者没有）。 */
@@ -866,6 +870,7 @@ export class Agent {
       this.running = false
       this.halting = false
       this.toolRunning = false
+      this.unseenArrivals = 0
       this.abort = undefined
       this.turnNow = undefined
       this.thinking = undefined
@@ -991,6 +996,7 @@ export class Agent {
       last.content.push(part)
       triggers.push(...events)
       unanswered = { events, part }
+      this.unseenArrivals = events.length
       this.turnSaid.push(...events.filter(isHumanInput))
       if (this.turnTrace) this.turnTrace.instruction += `\n${events.map((e) => eventLine(e, this.now())).join('\n')}`
       for (const ev of events) if (ev.type === 'task_ended' || ev.type === 'task_started') this.traceTask(ev.task)
@@ -1003,6 +1009,7 @@ export class Agent {
       if (!unanswered) return
       const { events, part } = unanswered
       unanswered = undefined
+      this.unseenArrivals = 0
       const last = turnMessages[turnMessages.length - 1]
       if (last && last.role === 'user') last.content = last.content.filter((p) => p !== part)
       for (const ev of events) {
@@ -1077,6 +1084,7 @@ export class Agent {
       steps++
       if (this.turnNow) this.turnNow.steps = steps
       unanswered = undefined
+      this.unseenArrivals = 0
 
       turnMessages.push(result.message)
       const text = textOf(result.message.content).trim()
