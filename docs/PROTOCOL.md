@@ -99,8 +99,11 @@ Container：
   {"panel":"…","key":"cover_panel_west","kind":"panel","open":false},                       // 能再打开的面板；打开后它的格子出现在 slots 里
   {"panel":"…","key":"auto_sync:…:3","kind":"fluid","fluid":"molten.steel","name":"Molten Steel","amount":288,"capacity":32000,"fills":false,"drains":true},
   {"panel":"…","key":"…","kind":"choice","value":"X","options":["X","Y"]},                  // 还有 number、text、button、value（只是显示）、other
+  {"panel":"basicmachine.assembler.tier.02","key":"auto_sync:basicmachine.assembler.tier.02:2","kind":"circuit","value":24,"range":"0 (none) or 1-24"},
 ]
 ```
+
+- `circuit` 是 GregTech 的编程电路设置（玩家点它弹出一个小窗口选号）：`value` 是现在的号，0 是没有。`screen.set {key, value}` 给 0–24 就设成那个号，和玩家在小窗口里点一样，不用电路物品。实测：进阶组装机 24 → 5 → 0 → 24。界面另外列着的 `ghostCircuitIndex`（只读文字）是从 0 数的序号，比号小 1。
 
 - `key` 可以写全（`fluidAutoOutput:0`），也可以只写冒号前的名字（不重名时）；`panel` 只在重名时需要。
 - 实测：流体提取机 `screen.press {key:"fluidAutoOutput"}` 之后，它罐里的 288 mB 熔融钢几秒内进了隔壁的固化器；固化器 `screen.press {key:"cover_panel_west"}` 之后格子从 40 个变成 49 个，多出来的 9 个就是西面覆盖板里的东西。
@@ -488,7 +491,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180, leave?=false}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
-| `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
+| `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -533,7 +536,9 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?}`。`slot` 是点击用�
   - `sneak:true` 是蹲着右键，有些东西蹲着用是另一个意思（比如穿到身上而不是打开）。
   - **点哪里**（只在给了 `on` 时有意义）：`side` 是 `down`/`up`/`north`/`south`/`west`/`east` 之一，指方块的哪个面；给了水平的面，它会先走到那个面的正前方（走不到就 `out_of_reach`）。不给 `side` 时点朝着它的那个面。`hit` 是点在方块里的哪一点，三个数各 0–1、从方块最低的角算起，和游戏自己发的一样；不给是那个面的正中间。只认正面、按点的位置分格子的方块（抽屉的每一格、面板上的按钮）靠这两个参数。
   - **连点**：`times` 是右键几下，`every` 是两下之间隔几 tick——就是玩家按住右键。手里的东西中途用光了，后面几下照样点（手里是空的）。中途打开了界面就不再点。例：手里拿着一组东西对抽屉正面 `times:2`，第二下是“双击”，身上所有同类的都放进去。
-  - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。
+  - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。对着方块点的，还有 `blockBefore`、`blockNow`（`注册名/meta`）：点之前和现在那一格是什么，方块变了、没了都看得出。
+  - 实测：凿子左键结构混凝土，凿子界面输入格里放着 /3 时那一格变成 /3；输入格空着时是同组下一种（/7 → /8）。
+  - **`left:true` 是左键**（要给 `on`）：按下马上松开，像玩家点一下。对按下有反应的东西照样反应（拿着凿子左键方块就是在原地凿成凿子里选好的样子；一碰就碎的方块会碎），要挖一会儿的方块不会被挖掉。空手左键要快捷栏里有空格（没有是 `inventory_full`）。结果里带 `left:true`。
 - **`process`**：
   - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。

@@ -39,6 +39,8 @@ function controlLine(c: ScreenControl): string {
       return `- ${c.key} [${c.kind}${fixed}]: ${shown(c.value)}`
     case 'button':
       return `- ${c.key} [button]`
+    case 'circuit':
+      return `- ${c.key} [programmed circuit]: ${c.value === 0 ? 'none' : shown(c.value)}; use_control with value 0 (none) or 1–24 picks one, as clicking a number in its window does`
     case 'value':
       return `- ${c.key} [shown value${c.type ? `, ${c.type}` : ''}]: ${shown(c.value)}`
     default:

@@ -21,7 +21,7 @@ import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 
 /**
- * A right-click, the way a player makes one: with an item in hand or with an empty hand, in the air (eat, drink,
+ * A right-click (or, with "left", a left-click on a block), the way a player makes one: with an item in hand or with an empty hand, in the air (eat, drink,
  * put on something worn, open what the item opens) or on a block, on the face and at the point of it the caller
  * chooses, once or several times in a row, sneaking or not. What that does is the item's and the block's
  * business; the task reports what changed, so that the caller can tell. This is the player's one general way of
@@ -38,6 +38,8 @@ public final class UseTask extends Task {
     private final ItemFilter item;
     private final int[] on;
     private final boolean sneak;
+    /** A left-click on the block: the attack button pressed and let go, as a player taps it. */
+    private final boolean left;
     /** The face to click, 0 down .. 5 east; -1 for the one turned towards the bot. */
     private final int side;
     /** Where on the block, each 0..1 from its lowest corner; null for the middle of the face. */
@@ -53,6 +55,8 @@ public final class UseTask extends Task {
     private String heldBefore;
     private boolean screen;
     private boolean wasSneaking;
+    /** The clicked block before the first click: id/meta. */
+    private String blockBefore;
 
     public UseTask(JsonObject params) {
         super("use", params);
@@ -63,6 +67,8 @@ public final class UseTask extends Task {
             throw new IllegalArgumentException("give item {id, meta?}, or on {x,y,z} to click a block with an empty hand, or both");
         }
         sneak = J.bool(params, "sneak", false);
+        left = J.bool(params, "left", false);
+        if (left && on == null) throw new IllegalArgumentException("a left click is on a block: give on {x,y,z}");
         side = side(params);
         JsonObject h = J.object(params, "hit");
         if (h == null) {
@@ -124,6 +130,19 @@ public final class UseTask extends Task {
             int face = side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2]);
             float[] at = hit != null ? hit : side >= 0 ? middle(face) : new float[] { 0.5F, 0.5F, 0.5F };
             Motion.face(p, on[0] + at[0], on[1] + at[1], on[2] + at[2]);
+            if (left) {
+                if (item == null && !Inventories.holdNothing(bot)) return false;
+                // Pressed and let go at once: whatever reacts to the press (a chisel carving the block, a note
+                // block, something that breaks at a touch) does; anything that takes digging is not dug.
+                bot.conn()
+                    .startDigging(on[0], on[1], on[2], face);
+                bot.conn()
+                    .abortDigging(on[0], on[1], on[2], face);
+                bot.conn()
+                    .swingArm();
+                clicks++;
+                return true;
+            }
             if (item == null) {
                 alu.aiplayer.act.ContainerSession.clickEmptyHanded(bot, on[0], on[1], on[2], face, at[0], at[1], at[2]);
                 clicks++;
@@ -186,6 +205,7 @@ public final class UseTask extends Task {
                 if (p.openContainer != p.inventoryContainer) bot.conn()
                     .closeWindow();
                 before = carried(p);
+                if (on != null) blockBefore = blockAt(p, on);
                 phase = "using it";
                 wasSneaking = p.isSneaking();
                 if (sneak) p.setSneaking(true);
@@ -196,7 +216,8 @@ public final class UseTask extends Task {
                     }
                 }
                 if (!click(p)) {
-                    fail("no_material", "the bot carries no such item");
+                    if (item == null) fail("inventory_full", "no empty hotbar slot to click with an empty hand");
+                    else fail("no_material", "the bot carries no such item");
                     return;
                 }
                 stage = 1;
@@ -233,6 +254,12 @@ public final class UseTask extends Task {
         }
     }
 
+    private static String blockAt(EntityPlayerMP p, int[] at) {
+        net.minecraft.world.World w = p.worldObj;
+        if (!w.blockExists(at[0], at[1], at[2])) return "?";
+        return Names.blockId(w.getBlock(at[0], at[1], at[2])) + "/" + w.getBlockMetadata(at[0], at[1], at[2]);
+    }
+
     private static Map<String, Integer> carried(EntityPlayerMP p) {
         Map<String, Integer> out = new LinkedHashMap<>();
         for (int i = 0; i < Inventories.CARRY_SLOTS; i++) {
@@ -263,6 +290,12 @@ public final class UseTask extends Task {
         o.addProperty("clicks", clicks);
         if (on != null && clicks > 0) {
             o.addProperty("side", SIDES[side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2])]);
+            if (left) o.addProperty("left", true);
+            // The block clicked, before and after: a block that changed or went away shows here.
+            if (blockBefore != null) {
+                o.addProperty("blockBefore", blockBefore);
+                o.addProperty("blockNow", blockAt(p, on));
+            }
         }
         o.add("gained", gained);
         o.add("lost", lost);

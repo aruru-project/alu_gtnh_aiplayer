@@ -1091,7 +1091,7 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, ...rest } = result
+  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, ...rest } = result
   const item = isObject(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
@@ -1099,11 +1099,25 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   const gone = kindList(lost)
   const list = (items: Record<string, unknown>[]): string => (items.length > 0 ? items.map((x) => kindText(x.count, x)).join(', ') : 'nothing')
   // 空手点方块时没有“用了什么”；对着方块点的写明点了几下、点的哪个面
-  const parts = [item === undefined && params?.on !== undefined ? 'right-clicked with an empty hand' : `used "${what}"`]
+  const button = left === true ? 'left-clicked' : 'right-clicked'
+  const parts = [item === undefined && params?.on !== undefined ? `${button} with an empty hand` : left === true ? `left-clicked holding "${what}"` : `used "${what}"`]
+  // 身体比左键旧：参数它不认，点的是右键
+  if (params?.left === true && left !== true) parts.push('this was a RIGHT click: the body on the game server is older than left clicks')
   if (typeof clicks === 'number' && (clicks !== 1 || typeof side === 'string')) parts.push(`${clicks} click(s)${typeof side === 'string' ? ` on the ${side} face` : ''}`)
+  // 点的那一格点之前、现在是什么：方块变了、被带走了，在这里看得出
+  const block = (v: unknown): string => {
+    const m = typeof v === 'string' ? /^(.+)\/(\d+)$/.exec(v) : null
+    if (!m) return String(v)
+    const name = nameOf({ id: m[1], meta: Number(m[2]) }, { block: true })
+    return `${name ? `${name} ` : ''}[${m[1]}/${m[2]}]`
+  }
+  const blockChanged = typeof blockBefore === 'string' && typeof blockNow === 'string' && blockBefore !== blockNow
+  if (typeof blockBefore === 'string' && typeof blockNow === 'string') {
+    parts.push(blockChanged ? `the block there was ${block(blockBefore)}, now ${block(blockNow)}` : `the block there is still ${block(blockNow)}`)
+  }
   parts.push(`gained: ${list(got)}`, `lost: ${list(gone)}`)
   if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
-  else if (got.length === 0 && gone.length === 0) parts.push('nothing visible changed in your inventory')
+  else if (got.length === 0 && gone.length === 0) parts.push(blockChanged ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)
   if (typeof food === 'number') parts.push(`food ${food}`)
   if (typeof freeSlots === 'number') parts.push(`freeSlots ${freeSlots}`)

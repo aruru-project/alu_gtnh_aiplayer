@@ -592,6 +592,34 @@ describe('任务类工具', () => {
     ])
   })
 
+  it('use_item 左键（主人那次：拿着凿子左键门框，原地凿出花纹）：身体收到 left；没给方块时如实说；结果里写着那一格从什么变成了什么，没变的也写明', async (t) => {
+    const s = setup(t)
+    await s.run('use_item', { id: 'chisel:chisel', on: { x: -556, y: 66, z: 123 }, left: true })
+    assert.deepEqual(s.game.callsOf('task.start').map((p) => p.task), [{ type: 'use', item: { id: 'chisel:chisel' }, on: { x: -556, y: 66, z: 123 }, left: true }])
+    assert.deepEqual(await s.run('use_item', { id: 'chisel:chisel', left: true }), { content: 'A left click is on a block: give the block as "on".', isError: true })
+    assert.equal(s.game.callsOf('task.start').length, 1)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        { id: 't3', type: 'use', state: 'done', finishedAt: 300, params: { type: 'use', item: { id: 'JABBA:mover' }, on: { x: 1, y: 64, z: 1 } }, result: { used: 'Dolly', clicks: 1, side: 'west', blockBefore: 'StorageDrawers:fullDrawers1/0', blockNow: 'minecraft:air/0', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 } },
+        { id: 't2', type: 'use', state: 'done', finishedAt: 200, params: { type: 'use', item: { id: 'chisel:chisel' }, on: { x: 2, y: 64, z: 2 }, left: true }, result: { used: 'Chisel', clicks: 1, side: 'up', left: true, blockBefore: 'minecraft:stone/0', blockNow: 'minecraft:stone/0', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 } },
+        { id: 't1', type: 'use', state: 'done', finishedAt: 100, params: { type: 'use', item: { id: 'chisel:chisel' }, on: { x: 3, y: 64, z: 3 }, left: true }, result: { used: 'Chisel', clicks: 1, side: 'north', left: true, blockBefore: 'chisel:concrete/0', blockNow: 'chisel:concrete/7', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 } },
+      ],
+    })
+    const older = (r: Record<string, unknown>) => ({ id: 't0', type: 'use', state: 'done', finishedAt: 50, params: { type: 'use', item: { id: 'chisel:chisel' }, on: { x: 3, y: 64, z: 3 }, left: true }, result: r })
+    const recent = s.game.handlers['task.list']!({}) as { recent: unknown[] }
+    s.game.handlers['task.list'] = () => ({ active: null, queue: [], recent: [...recent.recent, older({ used: 'Chisel', clicks: 1, side: 'up', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 })] })
+    const lines = (await s.run('task_status')).content.split('\n')
+    // 游戏服务器上的身体比左键旧：它不认 left，点的是右键
+    assert.equal(lines.at(-1), '- t0 use [done]; result: used "Chisel"; this was a RIGHT click: the body on the game server is older than left clicks; 1 click(s) on the up face; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30')
+    assert.deepEqual(lines.slice(-4, -1), [
+      '- t3 use [done]; result: used "Dolly"; 1 click(s) on the west face; the block there was [StorageDrawers:fullDrawers1/0], now [minecraft:air/0]; gained: nothing; lost: nothing; nothing changed in your inventory; health 20; food 20; freeSlots 30',
+      '- t2 use [done]; result: left-clicked holding "Chisel"; 1 click(s) on the up face; the block there is still [minecraft:stone/0]; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30',
+      '- t1 use [done]; result: left-clicked holding "Chisel"; 1 click(s) on the north face; the block there was [chisel:concrete/0], now [chisel:concrete/7]; gained: nothing; lost: nothing; nothing changed in your inventory; health 20; food 20; freeSlots 30',
+    ])
+  })
+
   it('挖东西的区域任务可以指定背包满了怎么办（overflow）；别的取值被拒绝', async (t) => {
     const s = setup(t)
     await s.run('clear_area', { x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave' })

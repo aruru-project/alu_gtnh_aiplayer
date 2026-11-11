@@ -451,8 +451,8 @@ export interface ScreenControl {
   panel?: string
   /** 它的名字，如 fluidAutoOutput:0；冒号前的那一段不重名时可以单独用。 */
   key: string
-  /** switch / number / text / choice / panel / fluid / button / value（只是显示）/ other。 */
-  kind: 'switch' | 'number' | 'text' | 'choice' | 'panel' | 'fluid' | 'button' | 'value' | 'other' | (string & {})
+  /** switch / number / text / choice / panel / fluid / button / circuit（GregTech 的编程电路设置，value 0 是没有）/ value（只是显示）/ other。 */
+  kind: 'switch' | 'number' | 'text' | 'choice' | 'panel' | 'fluid' | 'button' | 'circuit' | 'value' | 'other' | (string & {})
   /** 开关、数字、文字、选项现在的值。 */
   value?: unknown
   /** 选项：能选的那几个。 */

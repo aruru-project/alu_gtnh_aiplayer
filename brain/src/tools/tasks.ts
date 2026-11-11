@@ -480,7 +480,7 @@ export const giveItems: Tool = {
 export const useItem: Tool = {
   name: 'use_item',
   description:
-    'Right-click as a player does (task): holding an item you carry, in the air (eat, drink, wear it, open it) or on a block ("on"; you walk there first); without "id", with an empty hand on a block (a button, a lever). The result tells what changed: items gained and lost, health, food, and the clicks made. Details: inventory manual.',
+    'Right-click as a player does (task): holding an item you carry, in the air (eat, drink, wear it, open it) or on a block ("on"; you walk there first); without "id", with an empty hand on a block (a button, a lever). left: true makes it a left click on the block instead (a chisel carves the block in place). The result tells what changed: the block clicked before and now, items gained and lost, health, food, and the clicks made. Details: inventory manual.',
   inputSchema: obj({
     id: str('Item to hold. Omit for an empty hand (then "on" is needed).'),
     meta: int('Its meta. Omit to match any.', { min: 0 }),
@@ -490,13 +490,15 @@ export const useItem: Tool = {
     times: int('How many clicks in a row (default 1), like holding the button down.', { min: 1, max: 64 }),
     every: int('Ticks between the clicks (default 4).', { min: 1, max: 40 }),
     sneak: bool('true: sneak while using it; some items then do something else.'),
+    left: bool('true: a left click on the block "on" (pressed and let go; nothing that takes digging is dug).'),
     queue,
   }),
-  async run(ctx, i: { id?: string; meta?: number; on?: unknown; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; queue?: boolean }) {
+  async run(ctx, i: { id?: string; meta?: number; on?: unknown; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; left?: boolean; queue?: boolean }) {
+    if (i.left === true && i.on === undefined) return fail('A left click is on a block: give the block as "on".')
     if (i.id === undefined && i.on === undefined) return fail('Give "id" (an item you carry) to use it, or "on" (a block) to right-click that block with an empty hand, or both.')
     if (i.on === undefined && (i.side !== undefined || i.hit !== undefined)) return fail('"side" and "hit" say where on a block to click: give the block as "on".')
     const item = i.id === undefined ? undefined : i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }
-    return startTask(ctx, { type: 'use', item, on: i.on, side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak }, i.queue)
+    return startTask(ctx, { type: 'use', item, on: i.on, side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak, ...(i.left === true ? { left: true } : {}) }, i.queue)
   },
 }
 

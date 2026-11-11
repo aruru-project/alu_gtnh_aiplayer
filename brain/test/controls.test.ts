@@ -209,6 +209,32 @@ describe('界面上格子以外的控件', () => {
     assert.deepEqual(h.state, { autoOutput: false, coverOpen: false, mode: 'NONE', limit: 0, label: '' })
   })
 
+  it('编程电路设置（主人那次：process 带 leave 走开后组装机留着电路 1，想改回没有）：列成一个电路控件，现在是几号；设 0 是不要电路，身体收到的就是 0', async (t) => {
+    const h = setup(t)
+    let circuit = 1
+    const assembler = () => ({
+      open: true,
+      screen: 'ModularContainer',
+      slotCount: 48,
+      slots: [{ slot: 0 }, { slot: 1, takesNothing: true }],
+      controls: [
+        { panel: 'basicmachine.assembler.tier.03', key: 'powerSwitch:0', kind: 'switch', value: true },
+        { panel: 'basicmachine.assembler.tier.03', key: 'ghostCircuitIndex:0', kind: 'text', value: String(circuit), readOnly: true },
+        { panel: 'basicmachine.assembler.tier.03', key: 'item_slot:ghost_circuit:0', kind: 'circuit', value: circuit, range: '0 (none) or 1-24' },
+      ],
+    })
+    h.game.handlers['screen.open'] = assembler
+    h.game.handlers['screen.set'] = (p) => {
+      circuit = Number(p.value)
+      return assembler()
+    }
+    const opened = (await modelCalls(h, 'open_screen', { at: EXTRACTOR })).content.split('\n')
+    assert.ok(opened.includes('- item_slot:ghost_circuit:0 [programmed circuit]: 1; use_control with value 0 (none) or 1–24 picks one, as clicking a number in its window does'), opened.join('\n'))
+    const set = (await modelCalls(h, 'use_control', { key: 'item_slot:ghost_circuit:0', value: 0 })).content.split('\n')
+    assert.ok(set.includes('- item_slot:ghost_circuit:0 [programmed circuit]: none; use_control with value 0 (none) or 1–24 picks one, as clicking a number in its window does'), set.join('\n'))
+    assert.deepEqual(h.game.callsOf('screen.set'), [{ bot: 'Alu', key: 'item_slot:ghost_circuit:0', value: 0 }])
+  })
+
   it('没有界面开着就去按：告诉它先打开界面', async (t) => {
     const h = setup(t)
     h.game.handlers['screen.press'] = () => {

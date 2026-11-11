@@ -31,6 +31,7 @@
   - 不给 value 是按一下，和玩家点它是一回事：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格见下一条。right: true 是右键，shift: true 是按着 Shift。
   - 给 value 是设成那个值：开关 true / false，数字，文字，选项里的一个。
   - 名字可以只写冒号前面那一段（fluidAutoOutput:0 写成 fluidAutoOutput）；两个面板上有重名的时，再给 panel。
+- GregTech 机器、输入总线的编程电路设置列成 `[programmed circuit]`，值是现在设的号，none 是没有。`use_control` 给它 value（1–24，或 0 是不要电路）就设成那个号，和玩家在它的小窗口里点那个数一样，不用真的电路物品。process_items 带 leave 走开时留着的电路，想改回原来的，就是这样改。
 - 流体格（fluid slot）：玩家是鼠标上拿着装流体的容器（单元、桶）去点它。那一行写着它 gives to（能把里面的流体装进你鼠标上的空容器）、takes from（能收你鼠标上容器里的流体）。先 click_slot 点自己背包里的容器把它拿到鼠标上，再 use_control 点那个流体格，最后 click_slot 把容器放回背包。
 - **这改的是机器的设置**：和玩家在界面上点了那一下完全一样，不会自己恢复。改之前是什么值，结果里写着。
 - 例（开一台机器的流体自动输出）：流体提取机把钢板化成了熔融钢，流体留在它自己的罐里。`open_screen { at: { x: -527, y: 70, z: 41 } }`，controls 里有 `fluidAutoOutput:0 [switch]: off`；`use_control { key: "fluidAutoOutput" }` 之后那一行变成 on，几秒内罐里的流体被推到它输出面挨着的那台机器（隔壁固化器的罐里有了）。输出面朝哪边：机器存档数据里的 mFacing（inspect_block 带 detail），或者界面上 sideSelection_… 那几个面板。

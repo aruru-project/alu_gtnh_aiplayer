@@ -101,7 +101,30 @@ public final class Controls {
         return out;
     }
 
+    /** GregTech's programmed-circuit setting: a ghost slot the player picks a number for. */
+    private static boolean isCircuit(Object h) {
+        try {
+            h.getClass()
+                .getMethod("getGhostCircuitHandler");
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private static JsonObject describe(Object h) {
+        if (isCircuit(h)) {
+            JsonObject o = new JsonObject();
+            o.addProperty("kind", "circuit");
+            try {
+                int n = (Integer) call(call(h, "getGhostCircuitHandler"), "getCircuitConfig");
+                o.addProperty("value", n < 0 ? 0 : n);
+            } catch (Throwable t) {
+                o.addProperty("unreadable", true);
+            }
+            o.addProperty("range", "0 (none) or 1-24");
+            return o;
+        }
         // Item slots are the screen's slots already; the cursor is the bot's own hand.
         if (is(h, "value.sync.ItemSlotSH") || is(h, "value.sync.CursorSlotSyncHandler")) return null;
         JsonObject o = new JsonObject();
@@ -291,8 +314,17 @@ public final class Controls {
         Object h = find(c, panel, key);
         if (value == null || !value.isJsonPrimitive()) throw RpcException.badRequest("value must be true/false, a number or a text");
         try {
-            requireWritable(h, key);
             com.google.gson.JsonPrimitive v = value.getAsJsonPrimitive();
+            if (isCircuit(h)) {
+                // What picking a circuit in its little window sends: the number, or -1 for none.
+                int n = v.isNumber() ? v.getAsInt() : "none".equalsIgnoreCase(v.getAsString()) ? 0 : Integer.parseInt(v.getAsString().trim());
+                if (n < 0 || n > 24) throw RpcException.badRequest("a programmed circuit is 0 (none) or 1-24");
+                PacketBuffer buf = buffer();
+                buf.writeShort(n == 0 ? -1 : n);
+                send(h, 10, buf);
+                return;
+            }
+            requireWritable(h, key);
             if (is(h, "value.sync.EnumSyncValue")) {
                 Object[] all = ((Class<?>) call(h, "getEnumClass")).getEnumConstants();
                 Object pick = null;
