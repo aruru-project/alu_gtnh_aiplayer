@@ -59,6 +59,7 @@ export function withRetry(client: LlmClient, opts: RetryOptions = {}): LlmClient
           return await client.generate(req)
         } catch (e) {
           if (!(e instanceof LlmError) || !e.retryable || attempt >= maxAttempts) throw e
+          if (e.kind === 'timeout' && req.noRetryOnTimeout) throw e
           if (e.retryAfterMs !== undefined && e.retryAfterMs > maxRetryAfterMs) throw e
           const delayMs = retryDelayMs(attempt, e, opts)
           opts.onRetry?.({ attempt, delayMs, error: e })

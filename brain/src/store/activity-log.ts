@@ -65,8 +65,8 @@ export interface ActivityRun {
 
 /** 一次模型调用的账：第几步、用了多久、多少 token、怎么结束的。 */
 export interface ActivityModelCall {
-  /** thinking：还在想（只有 step、startedAt、purpose）；done：回来了；failed：出错了。 */
-  state: 'thinking' | 'done' | 'failed'
+  /** thinking：还在想（只有 step、startedAt、purpose）；done：回来了；failed：出错了；halted：想到一半被叫停了（全部停下打断的，不是出错）。 */
+  state: 'thinking' | 'done' | 'failed' | 'halted'
   /** turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）。 */
   purpose: 'turn' | 'compact'
   /** 这一轮的第几次模型调用（从 1 起）。 */
@@ -80,8 +80,8 @@ export interface ActivityModelCall {
   outputTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
-  /** 怎么结束的：要调工具 / 说完了 / 被输出上限截断 / 别的 / 出错。 */
-  stop?: 'tool_calls' | 'end' | 'truncated' | 'other' | 'error'
+  /** 怎么结束的：要调工具 / 说完了 / 被输出上限截断 / 别的 / 出错 / 被叫停。 */
+  stop?: 'tool_calls' | 'end' | 'truncated' | 'other' | 'error' | 'halted'
   /** 这一步模型要调几个工具。 */
   toolCalls?: number
   errorKind?: string

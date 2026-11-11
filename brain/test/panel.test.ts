@@ -1549,7 +1549,8 @@ describe('面板：两条线', () => {
     lines.llm.enqueue(reply('<analysis>先过一遍</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } }))
     const tried = await s.call('POST', '/api/history/compact', { line: 'work', dryRun: true })
     assert.equal(tried.status, 200)
-    const { inputChars, tokensBefore, tokensAfter, tidied, ...rest } = tried.json
+    const { inputChars, tokensBefore, tokensAfter, tidied, ms, ...rest } = tried.json
+    assert.ok(typeof ms === 'number' && ms >= 0 && ms < 5000, `ms ${ms}`)
     assert.deepEqual(rest, {
       line: 'work',
       dryRun: true,

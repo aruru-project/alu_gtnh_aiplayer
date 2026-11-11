@@ -330,7 +330,7 @@ async function main(): Promise<void> {
     info(`[panel] 访问口令在 ${config.file} 的 panel.password`)
   }
   info(`[store] 数据目录：${dataDir}`)
-  if (!config.lineProvider('work') || !config.lineProvider('talk')) info('[llm] 还没有配置模型服务，请到面板的“模型”页添加')
+  if (!config.lineProvider('work') || !config.lineProvider('talk')) info('[llm] 还没有配置模型服务，请到面板“设置”里的“模型”页添加')
   const b = config.bridgeSettings()
   if (b.token.length === 0 && b.tokenFile.length === 0) {
     info('[bridge] 还没配置 bridge 口令文件，暂时不连游戏。在面板的“设置”页填，或用环境变量 AIPLAYER_BRIDGE_TOKEN_FILE 指定')

@@ -7,7 +7,7 @@
 // 最近的一段（从最新往回数到阈值的四分之一，至少两轮）原样不动：它正在用。
 
 import { LlmError, textOf } from '../llm/index.ts'
-import type { LlmClient, Message } from '../llm/index.ts'
+import type { GenerateResult, LlmClient, Message } from '../llm/index.ts'
 import { LOG_KEEP_DAYS } from '../store/activity-log.ts'
 import type { SummaryRange, Turn } from '../store/history.ts'
 import { manualInText } from '../store/manuals.ts'
@@ -274,6 +274,8 @@ export const SUMMARY_SHARE_OF_THRESHOLD = 0.15
 const SUMMARY_MIN_CHARS = 300
 /** 写交接记录的那次调用，输出至少给这么多 token（草稿加正文）。模型配置里给得更多的用它自己的。 */
 export const SUMMARY_OUTPUT_TOKENS = 30_000
+/** 写交接记录的那次调用至少等这么久：看十几万字符、写一两万字，两分钟（普通调用的超时）不够。模型配置的超时更长的照配置。 */
+export const SUMMARY_TIMEOUT_MS = 20 * 60_000
 
 /** 这条线的交接记录上限（字符）。 */
 export function summaryCap(threshold: number, talk: boolean): number {
@@ -382,11 +384,12 @@ export function splitSummary(raw: string): { summary: string; analysis?: string 
   return { summary: summary.trim(), ...(analysis ? { analysis } : {}) }
 }
 
-/** 写交接记录一共花了多少：发出去多少字符的记录，接口报的 token。 */
+/** 写交接记录一共花了多少：发出去多少字符的记录，接口报的 token，等了多久。 */
 interface Spent {
   inputChars: number
   inputTokens: number
   outputTokens: number
+  ms: number
 }
 
 /**
@@ -404,13 +407,26 @@ async function summarizeSegment(
     (previousSummary.trim().length > 0 ? `【已有的交接记录】\n${previousSummary.trim()}\n\n` : '') +
     `【之后的经历${part && part.of > 1 ? `（一共 ${part.of} 段，这是第 ${part.n} 段）` : ''}】\n${transcript}\n\n先写 <analysis>，再在 <summary> 里写出合并后的完整交接记录。`
   opts.spent.inputChars += text.length
-  const result = await llm.generate({
-    system: summarySystem(opts.talk, opts.capChars),
-    messages: [{ role: 'user', content: [{ type: 'text', text }] }],
-    tools: [],
-    ...(opts.roomy ? { minOutputTokens: SUMMARY_OUTPUT_TOKENS } : {}),
-    ...(opts.signal ? { signal: opts.signal } : {}),
-  })
+  const started = performance.now()
+  let result: GenerateResult
+  try {
+    result = await llm.generate({
+      system: summarySystem(opts.talk, opts.capChars),
+      messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+      tools: [],
+      ...(opts.roomy ? { minOutputTokens: SUMMARY_OUTPUT_TOKENS } : {}),
+      // 它要写很久：超时放到二十分钟；真超时了不原样再试（同样的输入、同样的超时，结果一样），算这一段没写成
+      minTimeoutMs: SUMMARY_TIMEOUT_MS,
+      noRetryOnTimeout: true,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
+  } catch (e) {
+    const waited = Math.round(performance.now() - started)
+    opts.spent.ms += waited
+    if (e instanceof LlmError && e.kind === 'timeout') throw new Error(`timed out: the model did not finish writing the record after ${Math.round(waited / 1000)} s (${e.message}); it was not tried again`)
+    throw e
+  }
+  opts.spent.ms += Math.round(performance.now() - started)
   opts.spent.inputTokens += result.usage.inputTokens
   opts.spent.outputTokens += result.usage.outputTokens
   if (result.stopReason === 'max_tokens') throw new Error('the record was cut off by the output limit of the model (max_tokens), so it was not kept; raise the maximum output of this model')
@@ -440,7 +456,10 @@ export interface SummarizeResult {
   analysis: string[]
   /** 一共给它看了多少字符（已有的记录和各段经历）。 */
   inputChars: number
+  /** 写成了的那几次调用，接口报的输入、输出 token 合计。 */
   usage: { inputTokens: number; outputTokens: number }
+  /** 这几次调用一共等了多久（毫秒，没写成的也算）。 */
+  ms: number
 }
 
 /**
@@ -463,7 +482,7 @@ export async function summarize(llm: LlmClient, previousSummary: string, turns: 
   // 一轮被拆到几段里时，它的前几段折进去了、后面的没成：记录退回到这一轮开始之前的样子（不然下次重折，同一段会进去两遍）
   let atTurnBoundary = previousSummary
   const analysis: string[] = []
-  const spent: Spent = { inputChars: 0, inputTokens: 0, outputTokens: 0 }
+  const spent: Spent = { inputChars: 0, inputTokens: 0, outputTokens: 0, ms: 0 }
   const result = (error?: string): SummarizeResult => ({
     summary: error === undefined ? summary : atTurnBoundary,
     folded,
@@ -472,6 +491,7 @@ export async function summarize(llm: LlmClient, previousSummary: string, turns: 
     analysis,
     inputChars: spent.inputChars,
     usage: { inputTokens: spent.inputTokens, outputTokens: spent.outputTokens },
+    ms: spent.ms,
   })
   while (at < segments.length) {
     const seg = segments[at]!
@@ -546,9 +566,10 @@ export interface CompactResult {
   calls?: number
   /** 写记录前它打的草稿（每一段一份，按标签写了才有）。不存进历史。 */
   analysis?: string[]
-  /** 写记录时一共给模型看了多少字符，接口报的 token。 */
+  /** 写记录时一共给模型看了多少字符，接口报的 token（写成了的那几次的合计），一共等了多久（毫秒）。 */
   inputChars?: number
   usage?: { inputTokens: number; outputTokens: number }
+  ms?: number
   /** 交接记录的上限（字符）。 */
   capChars?: number
   /** 原样留着没动的最近那一段有几轮。 */
@@ -624,7 +645,7 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
   if (mode === 'auto' && old.reduce((n, t) => n + turnTokens(t), 0) * scale < opts.threshold * MIN_FOLD_SHARE) return tidiedOnly()
 
   const wrote = await summarize(opts.llm, summary, old, { signal: opts.signal, talk, segmentChars: opts.segmentChars, capChars })
-  const cost: Partial<CompactResult> = { calls: wrote.calls, capChars, inputChars: wrote.inputChars, usage: wrote.usage, ...(wrote.analysis.length > 0 ? { analysis: wrote.analysis } : {}) }
+  const cost: Partial<CompactResult> = { calls: wrote.calls, capChars, inputChars: wrote.inputChars, usage: wrote.usage, ms: wrote.ms, ...(wrote.analysis.length > 0 ? { analysis: wrote.analysis } : {}) }
   if (wrote.error === undefined) {
     return done('summarized', wrote.summary, current.slice(cut), { removedTurns: cut, folded: rangeOf(old)!, ...cost })
   }

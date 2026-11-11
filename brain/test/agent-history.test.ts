@@ -166,6 +166,8 @@ describe('历史压缩', () => {
     // 写记录的那次调用：不带工具；输出至少要给三万 token；提示词里是这条线的上限；给它看的是已有的记录和被换掉的轮
     const req = llm.requests[0]!
     assert.deepEqual([req.tools, req.minOutputTokens], [[], 30_000])
+    // 它要写很久：这次调用至少等二十分钟，超时了不原样重试
+    assert.deepEqual([req.minTimeoutMs, req.noRetryOnTimeout], [1_200_000, true])
     assert.match(req.system, /^你在替一个 Minecraft（GTNH 整合包）服务器里的 AI 玩家写“交接记录”。/)
     assert.match(req.system, /上限 1080 字，/)
     const text = shownTo(req)
@@ -189,6 +191,24 @@ describe('历史压缩', () => {
     const res = await compactHistory('旧记录', turns, { threshold: 2400, llm: cut })
     assert.deepEqual([res.action, res.summary, res.turns.length, res.calls], ['nothing', '旧记录', 12, 1])
     assert.match(res.error ?? '', /cut off by the output limit of the model \(max_tokens\)/)
+  })
+
+  it('写记录的那次调用超时了：只试这一次，这一段算没写成；原因里写明是超时、等了多久', async () => {
+    const turns = Array.from({ length: 12 }, (_, i) => turn(i + 1, 300))
+    let calls = 0
+    const slow: LlmClient = {
+      async generate() {
+        calls++
+        await new Promise((r) => setTimeout(r, 30))
+        throw new LlmError('timeout', 'no response within 1200000 ms')
+      },
+    }
+    const res = await compactHistory('旧记录', turns, { threshold: 2400, llm: slow })
+    assert.deepEqual([res.action, res.summary, res.turns.length, res.calls, calls], ['nothing', '旧记录', 12, 1, 1])
+    assert.match(res.error ?? '', /^timed out: the model did not finish writing the record after \d+ s \(no response within 1200000 ms\); it was not tried again$/)
+    // 等了多久也交回来（没写成的也算）
+    assert.ok(res.ms !== undefined && res.ms >= 25 && res.ms < 5000, `ms ${res.ms}`)
+    assert.deepEqual(res.usage, { inputTokens: 0, outputTokens: 0 })
   })
 
   it('给写记录的模型看的记录：它自己写的字、叫醒它的事全给；工具调用的参数留两千字符；工具结果是第一步之后的样子（两千字符加那句说明）', async () => {
@@ -435,7 +455,7 @@ function compactionLog(h: ReturnType<typeof makeAgent>): string[] {
   return h.log
     .recent(0, 500)
     .filter((e) => e.agent === 'work' && (e.kind === 'info' || e.kind === 'error') && /历史|交接记录|上下文/.test(e.text))
-    .map((e) => e.text.replace(/\d+ (字符|token)/g, 'N $1'))
+    .map((e) => e.text.replace(/\d+ (字符|token|秒)/g, 'N $1'))
 }
 
 describe('agent 跑久了以后的历史', () => {
@@ -482,10 +502,10 @@ describe('agent 跑久了以后的历史', () => {
     // 活动日志：先说为什么动、收拾了什么（历史从多少变成多少），再说换了哪几轮、记录多长、调了几次模型、上下文前后多大；草稿另记一条
     const log = h.log.recent(0, 500).filter((e) => e.agent === 'work' && e.kind === 'info' && /历史|交接记录/.test(e.text))
     assert.deepEqual(
-      log.map((e) => e.text.replace(/\d+ (字符|token)/g, 'N $1')),
+      log.map((e) => e.text.replace(/\d+ (字符|token|秒)/g, 'N $1')),
       [
         '历史超过了阈值（上下文约 N token），先收拾最近 2 轮以外的：拿掉了 6 段旧的状态快照（每轮开头那段“当前状态”）。历史从 N 字符变成 N 字符。',
-        `收拾完还是太长，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 2700），写它调了 1 次模型、给它看了 N 字符。上下文从约 N token 变成约 N token。`,
+        `收拾完还是太长，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 2700），写它调了 1 次模型、给它看了 N 字符、等了 N 秒。上下文从约 N token 变成约 N token。`,
         '写交接记录前它打的草稿（不存进历史）。',
       ],
     )
@@ -567,7 +587,7 @@ describe('agent 跑久了以后的历史', () => {
     assert.deepEqual(state.summaryOf, { from: ids[0], to: ids[16], turns: 17 })
     assert.deepEqual(compactionLog(h), [
       '历史超过了阈值（上下文约 N token），先收拾最近 2 轮以外的：拿掉了 17 段旧的状态快照（每轮开头那段“当前状态”）。历史从 N 字符变成 N 字符。',
-      `收拾完还是太长，把较早的 17 轮（第 ${ids[0]} 轮到第 ${ids[16]} 轮）换成了交接记录（N 字符，上限 9000），写它调了 2 次模型、给它看了 N 字符。上下文从约 N token 变成约 N token。`,
+      `收拾完还是太长，把较早的 17 轮（第 ${ids[0]} 轮到第 ${ids[16]} 轮）换成了交接记录（N 字符，上限 9000），写它调了 2 次模型、给它看了 N 字符、等了 N 秒。上下文从约 N token 变成约 N token。`,
     ])
   })
 
@@ -673,7 +693,7 @@ describe('agent 跑久了以后的历史', () => {
     assert.deepEqual(compactionLog(h).slice(0, 3), [
       '模型说上下文太长，先压缩历史再试一次。',
       '模型说上下文太长，先收拾最近 2 轮以外的：拿掉了 6 段旧的状态快照（每轮开头那段“当前状态”）。历史从 N 字符变成 N 字符。',
-      `收拾完还是太长，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 20000），写它调了 1 次模型、给它看了 N 字符。上下文从约 N token 变成约 N token。`,
+      `收拾完还是太长，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 20000），写它调了 1 次模型、给它看了 N 字符、等了 N 秒。上下文从约 N token 变成约 N token。`,
     ])
   })
 
@@ -708,9 +728,14 @@ describe('agent 跑久了以后的历史', () => {
     assert.deepEqual([before.turns.length, before.summary], [8, ''])
 
     // 试写：最近那段是阈值的四分之一（一千 token，两轮），其余六轮写成记录——历史一个字没动
-    h.llm.enqueue(reply('<analysis>草稿</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } }))
+    h.llm.enqueue(async () => {
+      await new Promise((r) => setTimeout(r, 40))
+      return reply('<analysis>草稿</analysis><summary>## 现在在做的事\n（无）</summary>', [], { usage: { inputTokens: 5000, outputTokens: 300 } })
+    })
     const tried = await h.agent.compactNow('work', { dryRun: true })
     assert.ok(tried.ok)
+    // 这次试写等了多久（模型四十毫秒才回）
+    assert.ok(tried.ms >= 35 && tried.ms < 5000, `ms ${tried.ms}`)
     assert.deepEqual(
       [tried.applied, tried.action, tried.summary, tried.analysis, tried.turns, tried.kept, tried.calls, tried.usage, tried.summaryChars, tried.capChars],
       [false, 'summarized', '## 现在在做的事\n（无）', '草稿', { from: ids[0], to: ids[5], count: 6 }, 2, 1, { inputTokens: 5000, outputTokens: 300 }, 13, 1800],
@@ -738,7 +763,7 @@ describe('agent 跑久了以后的历史', () => {
     assert.deepEqual([state.summary, state.turns.length, state.summaryOf], ['真压的记录', 3, { from: ids[0], to: ids[5], turns: 6 }])
     assert.deepEqual(compactionLog(h).slice(-2), [
       '面板上要求现在就压，先收拾最近 3 轮以外的：拿掉了 6 段旧的状态快照（每轮开头那段“当前状态”）。历史从 N 字符变成 N 字符。',
-      `收拾完，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 1800），写它调了 1 次模型、给它看了 N 字符。上下文从约 N token 变成约 N token。`,
+      `收拾完，把较早的 6 轮（第 ${ids[0]} 轮到第 ${ids[5]} 轮）换成了交接记录（N 字符，上限 1800），写它调了 1 次模型、给它看了 N 字符、等了 N 秒。上下文从约 N token 变成约 N token。`,
     ])
     // 试写的那两次也各记了一条，写明历史没动
     assert.equal(compactionLog(h).filter((text) => text.startsWith('面板上试写了一次交接记录（历史没动）：')).length, 2)

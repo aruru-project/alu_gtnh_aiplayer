@@ -187,6 +187,9 @@ describe('agent 的一轮决策', () => {
     // 这一刻落盘的状态里两句话就都在了：进程这时被强杀也不丢
     assert.deepEqual(h.talkPersisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
     await h.agent.stop()
+    // 大脑进程停下时中止的那次调用，日志里记的是“大脑在停”（和被叫停不是一回事）
+    const cut = h.log.recent(0, 100).filter((e) => e.kind === 'model_call' && e.agent === 'talk').at(-1)!
+    assert.deepEqual([cut.call!.state, cut.call!.errorKind, cut.call!.error, cut.isError], ['failed', 'aborted', '大脑在停，这次调用被中止了', true])
     // 正常停下以后，落盘的队列里两句话也都在
     assert.deepEqual(h.talkPersisted.state?.queue.map((e) => (e.type === 'chat' ? e.message : e.type)), ['Alu 去仓库', '顺便带点煤'])
 
@@ -926,7 +929,7 @@ describe('agent 的限制和故障处理', () => {
     h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 0)
-    assert.match(h.talk.lastUserText(2), /干活线出了状况（这句是程序替它报的）：干活线还没有可用的模型（面板的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。/)
+    assert.match(h.talk.lastUserText(2), /干活线出了状况（这句是程序替它报的）：干活线还没有可用的模型（面板“设置”里的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。/)
     assert.deepEqual(h.game.said, ['好', '我干活的那一半还没接上模型，去面板给它选一个。'])
   })
 

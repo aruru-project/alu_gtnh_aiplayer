@@ -69,6 +69,54 @@ describe('重试、用量回调、测试连接', () => {
     await createClient(openaiConfig(llm.openaiBaseUrl), { retry: false }).generate(REQ)
   })
 
+  it('超时照常重试；这次调用说了“超时不重试”（写交接记录的那种）就只请求一次，别的可重试的错它也照常重试', async () => {
+    // 模型的超时 60 毫秒，接口 400 毫秒才回：每次都超时
+    const slow = { text: 'too late', delayMs: 400 }
+    const client = (kind: 'openai' | 'anthropic') =>
+      createClient(kind === 'openai' ? openaiConfig(llm.openaiBaseUrl, { timeoutMs: 60 }) : anthropicConfig(llm.anthropicBaseUrl, { timeoutMs: 60 }), { retry: { baseDelayMs: 5, maxDelayMs: 10, maxAttempts: 3 } })
+    llm.enqueue(slow, slow, slow)
+    await assert.rejects(client('openai').generate(REQ), (e: unknown) => e instanceof LlmError && e.kind === 'timeout' && e.message === 'no response within 60 ms')
+    assert.equal(llm.requests.length, 3)
+
+    llm.requests.length = 0
+    llm.enqueue(slow, { text: 'never asked' })
+    await assert.rejects(client('anthropic').generate({ ...REQ, noRetryOnTimeout: true }), (e: unknown) => e instanceof LlmError && e.kind === 'timeout')
+    assert.equal(llm.requests.length, 1)
+
+    // 说了“超时不重试”的调用碰上过载，还是会重试
+    await new Promise((r) => setTimeout(r, 450))
+    llm.requests.length = 0
+    llm.clearScript()
+    llm.enqueue({ status: 529, errorType: 'overloaded_error' }, { text: 'ok now' })
+    const result = await client('anthropic').generate({ ...REQ, noRetryOnTimeout: true })
+    assert.deepEqual([result.message.content, llm.requests.length], [[{ type: 'text', text: 'ok now' }], 2])
+  })
+
+  it('这次调用要求“至少等这么久”（写交接记录的那种）：模型配置的超时比它短就用它，配置得更长的照配置；等得比 fetch 自己那五分钟还长时换成不设上限的连接器', async () => {
+    // 模型的超时 60 毫秒，接口 300 毫秒才回：平时超时；这次调用要求至少等 2 秒，就等到了
+    llm.enqueue({ text: 'slow but fine', delayMs: 300 })
+    const short = createClient(openaiConfig(llm.openaiBaseUrl, { timeoutMs: 60 }), { retry: { maxAttempts: 1 } })
+    assert.deepEqual((await short.generate({ ...REQ, minTimeoutMs: 2000 })).message.content, [{ type: 'text', text: 'slow but fine' }])
+    // 模型配置的 2 秒比这次要求的 60 毫秒长：照配置的等
+    llm.enqueue({ text: 'also fine', delayMs: 300 })
+    const long = createClient(anthropicConfig(llm.anthropicBaseUrl, { timeoutMs: 2000 }), { retry: { maxAttempts: 1 } })
+    assert.deepEqual((await long.generate({ ...REQ, minTimeoutMs: 60 })).message.content, [{ type: 'text', text: 'also fine' }])
+
+    // 看发出去的请求用的是哪个连接器：平时不带（用全局的，它等响应头只等五分钟）；要等二十分钟的带一个不设上限的
+    const seen: unknown[] = []
+    const spy: typeof fetch = (url, init) => {
+      seen.push((init as { dispatcher?: unknown } | undefined)?.dispatcher)
+      return fetch(url, init)
+    }
+    llm.enqueue({ text: 'a' }, { text: 'b' })
+    const watched = createClient(openaiConfig(llm.openaiBaseUrl), { fetch: spy })
+    await watched.generate(REQ)
+    await watched.generate({ ...REQ, minTimeoutMs: 20 * 60_000 })
+    assert.equal(seen[0], undefined)
+    const usual = (globalThis as unknown as Record<symbol, object>)[Symbol.for('undici.globalDispatcher.1')]!
+    assert.ok(typeof seen[1] === 'object' && seen[1] !== null && seen[1] !== usual && seen[1].constructor === usual.constructor, 'a dispatcher of its own, of the same kind as the global one')
+  })
+
   it('每次成功的调用都把用量交给回调；失败的尝试不计', async () => {
     llm.enqueue({ status: 500 }, { text: 'a', usage: { input: 300, output: 12 } })
     const records: UsageRecord[] = []

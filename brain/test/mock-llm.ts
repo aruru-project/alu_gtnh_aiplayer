@@ -495,7 +495,7 @@ if (import.meta.main) {
   const wantPort = Number(i !== -1 ? process.argv[i + 1] : (process.env.MOCK_LLM_PORT ?? MOCK_LLM_DEFAULT_PORT))
   checkMockPort(wantPort, '模拟模型服务')
   const port = await llm.start(wantPort)
-  console.log(`模拟模型服务在 127.0.0.1:${port} 监听。在面板的“模型”页添加：`)
+  console.log(`模拟模型服务在 127.0.0.1:${port} 监听。在面板“设置”里的“模型”页添加：`)
   console.log(`  OpenAI 兼容：   服务地址 ${llm.openaiBaseUrl}   key 随便填，模型名随便填`)
   console.log(`  Anthropic 兼容：服务地址 ${llm.anthropicBaseUrl}        key 随便填，模型名随便填`)
   console.log('它不是模型，只按几条固定规则回应：对话线只传话，干活线认得 平/跟/停/看看。两条线可以都选它。')

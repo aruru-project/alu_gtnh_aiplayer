@@ -144,10 +144,11 @@ export type CompactNowResult =
       turns: { from: number; to: number; count: number } | null
       /** 原样留着的有几轮。 */
       kept: number
-      /** 调了几次模型，一共给它看了多少字符，接口报的 token。 */
+      /** 调了几次模型，一共给它看了多少字符，接口报的 token（写成了的那几次的合计），一共等了多久（毫秒，没写成的也算）。 */
       calls: number
       inputChars: number
       usage: { inputTokens: number; outputTokens: number }
+      ms: number
       summaryChars: number
       /** 记录的上限（字符）。 */
       capChars?: number
@@ -254,6 +255,7 @@ export function modelCallText(call: ActivityModelCall): string {
   if (call.state === 'thinking') return `${what}：模型在想…`
   const seconds = `${((call.ms ?? 0) / 1000).toFixed(1)} 秒`
   if (call.state === 'failed') return `${what}：模型调用失败（${call.errorKind ?? 'unknown'}，${seconds}）：${call.error ?? ''}`
+  if (call.state === 'halted') return `${what}：想到一半被叫停了（${seconds}）`
   const cache = call.cacheReadTokens !== undefined && call.cacheReadTokens > 0 ? `（缓存命中 ${call.cacheReadTokens}）` : ''
   const how =
     call.stop === 'tool_calls' ? `要调 ${call.toolCalls ?? 0} 个工具` : call.stop === 'truncated' ? '被输出上限截断了' : call.stop === 'end' ? '说完了' : '结束了'
@@ -711,7 +713,7 @@ export class Agent {
   private routineEnded(view: RoutineView): void {
     this.deps.links?.outside?.()
     const text = describeRoutine(view, this.now())
-    this.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? '跑完了' : `停了：${view.endingText ?? view.ending ?? ''}`}`, detail: text, source: 'routine', runId: view.id, ...(view.run ? { run: view.run } : {}) })
+    this.log.add({ kind: view.status === 'done' ? 'info' : 'error', text: `例程 ${view.id}（${view.name}）${view.status === 'done' ? `跑完了：调了 ${view.calls} 次工具，开了 ${view.actions} 个任务` : `停了：${view.endingText ?? view.ending ?? ''}`}`, detail: text, source: 'routine', runId: view.id, ...(view.run ? { run: view.run } : {}) })
     if (this.quietRoutineEnd) {
       // 总停止停掉的：它停在哪留给模型以后看，不为这个叫醒它
       this.pushBackground({ type: 'notice', time: this.now(), wake: false, text: `被叫停时你的例程还在跑，已经一起停下（它做了的事不会撤销，正在做的那个任务取消了）：\n${text}` })
@@ -983,9 +985,9 @@ export class Agent {
     const modelName = this.deps.modelName?.()
     const canSee = this.deps.canSeeImages?.() === true
     if (!llm) {
-      this.log.add({ kind: 'error', text: `${talk ? '对话线' : '干活线'}还没有可用的模型服务，这些事没法处理。请到面板的“模型”页添加并选中一个。` })
+      this.log.add({ kind: 'error', text: `${talk ? '对话线' : '干活线'}还没有可用的模型服务，这些事没法处理。请到面板“设置”里的“模型”页添加并选中一个。` })
       if (!talk || humanTriggered) {
-        await this.trouble('no_model', '我还没接上模型，现在没法思考，得有人去面板配一下。', '干活线还没有可用的模型（面板的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。')
+        await this.trouble('no_model', '我还没接上模型，现在没法思考，得有人去面板配一下。', '干活线还没有可用的模型（面板“设置”里的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。')
       }
       giveBack()
       return
@@ -1407,7 +1409,9 @@ export class Agent {
       return result
     } catch (e) {
       const kind = e instanceof LlmError ? e.kind : 'unknown'
-      settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? '大脑在停，这次调用被中止了' : e instanceof Error ? e.message : String(e) })
+      // 被叫停打断的（全部停下）不是出错：照实写成被叫停。大脑进程要停时中止的还是记成中止
+      if (kind === 'aborted' && this.halting) settle({ state: 'halted', stop: 'halted' })
+      else settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? '大脑在停，这次调用被中止了' : e instanceof Error ? e.message : String(e) })
       if (kind !== 'aborted') {
         this.lastCall = {
           time: this.now(),
@@ -1510,7 +1514,7 @@ export class Agent {
       this.log.add({ kind: 'info', text: `${cause}，先收拾最近 ${res.recentTurns} 轮以外的：${did.join('，')}。历史从 ${t.charsBefore} 字符变成 ${t.charsAfter} 字符。` })
     }
     const first = res.tidied ? (why === 'panel' ? '收拾完' : '收拾完还是太长') : cause
-    const cost = res.calls !== undefined ? `写它调了 ${res.calls} 次模型${res.inputChars !== undefined ? `、给它看了 ${res.inputChars} 字符` : ''}` : ''
+    const cost = res.calls !== undefined ? `写它调了 ${res.calls} 次模型${res.inputChars !== undefined ? `、给它看了 ${res.inputChars} 字符` : ''}${res.ms !== undefined ? `、等了 ${Math.round(res.ms / 1000)} 秒` : ''}` : ''
     const now = `上下文从约 ${res.tokensBefore} token 变成约 ${res.tokensAfter} token`
     if (res.action === 'summarized' && res.folded) {
       const partly = res.error ? `；后面还有该换的没写成（${res.error}），留到下一轮再试` : ''
@@ -1572,6 +1576,7 @@ export class Agent {
       calls: res.calls ?? 0,
       inputChars: res.inputChars ?? 0,
       usage: res.usage ?? { inputTokens: 0, outputTokens: 0 },
+      ms: res.ms ?? 0,
       summaryChars: res.action === 'summarized' || res.action === 'dropped' ? res.summary.length : 0,
       ...(res.capChars !== undefined ? { capChars: res.capChars } : {}),
       tokensBefore: res.tokensBefore,
@@ -1585,7 +1590,7 @@ export class Agent {
       this.dryRun = abort
       try {
         const res = await compactHistory(h.summary, h.turns, { ...base, llm, signal: abort.signal })
-        const what = res.folded ? `第 ${res.folded.from} 轮到第 ${res.folded.to} 轮共 ${res.folded.turns} 轮 → ${res.summary.length} 字符，调了 ${res.calls ?? 0} 次模型` : `没有写成${res.error ? `（${res.error}）` : '：最近那一段以外没有可换的轮'}`
+        const what = res.folded ? `第 ${res.folded.from} 轮到第 ${res.folded.to} 轮共 ${res.folded.turns} 轮 → ${res.summary.length} 字符，调了 ${res.calls ?? 0} 次模型，等了 ${Math.round((res.ms ?? 0) / 1000)} 秒` : `没有写成${res.error ? `（${res.error}）` : '：最近那一段以外没有可换的轮'}`
         this.log.add({ kind: res.error ? 'error' : 'info', text: `面板上试写了一次交接记录（历史没动）：${what}。` })
         return view(res, false)
       } finally {

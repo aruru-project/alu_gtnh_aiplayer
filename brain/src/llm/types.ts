@@ -78,6 +78,10 @@ export interface GenerateRequest {
   maxOutputTokens?: number
   /** 这次调用的输出至少要给这么多 token：模型配置的上限比它小（或者没配）时用它，配置得更大的照配置。 */
   minOutputTokens?: number
+  /** 这次调用至少等这么久（毫秒）：模型配置的超时比它短（或者没配）时用它，配置得更长的照配置。写很长的东西的调用用。 */
+  minTimeoutMs?: number
+  /** 这次调用超时了不重试：同样的输入、同样的超时，再试结果一样。别的可重试的错照常重试。 */
+  noRetryOnTimeout?: boolean
   temperature?: number
   signal?: AbortSignal
 }

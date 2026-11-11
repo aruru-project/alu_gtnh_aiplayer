@@ -247,7 +247,7 @@ function detailsFold(agents, owner) {
           kv([
             ['哪一个', h('span', null, h('span', { class: 'mono', text: `${last.id} ` }), last.name || '（没有名字）')],
             ['结果', `${RUN_STATES[last.status] ?? last.status}${last.endedAt ? `，${when(last.endedAt)}` : ''}：调了 ${num(last.calls)} 次工具，开了 ${num(last.tasks)} 个任务${last.errors > 0 ? `，${last.errors} 次出错` : ''}`],
-            last.ending ? ['怎么结束的', last.ending] : null,
+            last.endingText || last.ending ? ['怎么结束的', last.endingText ?? last.ending] : null,
           ]),
         ]
       : null,

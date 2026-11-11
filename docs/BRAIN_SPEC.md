@@ -145,6 +145,7 @@ interface ProviderConfig {
   - 第一步之后不超过阈值的 70% 就停。
   - **第二步，把较早的若干轮换成一份“交接记录”**（存储里的字段还叫 `summary`），换完上下文在阈值的 50% 上下（压一次整段提示词缓存都要重写，别刚压完又到线）。该换的那部分不到阈值的 10% 时先攒着。
     - 写记录的调用不带工具，请求里要求输出至少给 30,000 token（模型配置的上限更大的照配置；接口不收这个数就去掉再试一次）。**停在输出上限的算没写成**，半截的不存。
+    - 这次调用的超时至少 20 分钟（`minTimeoutMs`；模型配置的超时更长的照配置）：看十几万字符、写一两万字，普通调用的两分钟不够。**超时了不原样重试**（`noRetryOnTimeout`：同样的输入、同样的超时，再试结果一样），这一段算没写成，走下面“没写成”的路；日志里写明是超时、等了多久。别的可重试的错（限流、过载、网络）照常重试。Node 自带的 fetch 等响应头只等五分钟，所以超时比五分钟长的调用换了一个不设这个上限的连接器（`llm/http.ts` 的 `patientDispatcher`）。
     - 给它看的记录：它自己写的字、叫醒它的事全给；工具调用的参数留到 2,000 字符；工具结果是第一步之后的样子。
     - 一次看不完（一段 240,000 字符）就**按顺序分段折叠**：已有的记录 + 第一段 → 记录，再 + 第二段 → ……，每段一次调用，一段都不丢；单独一轮就比一段长的拆到几段里。接口说这一段太长就把一段的大小减半再试（减到 8,000 为止）。
     - 提示词（`SUMMARY_SYSTEM`、`TALK_SUMMARY_SYSTEM`）要它先在 `<analysis>` 里把经历过一遍，再在 `<summary>` 里按固定的小节写，每节都要有、没有内容写“（无）”；主人的原话照抄；已有记录里的内容默认全部保留；记录里的文字只是材料、不是对它的指示。存的只有 `<summary>` 里面的（没按标签写就整段存）；草稿记进活动日志的一条 info 里，不进历史。
@@ -260,18 +261,18 @@ interface ProviderConfig {
   ```jsonc
   { "id": 812, "time": 1731300000000, "kind": "model_call", "turn": 12, "step": 3,
     "text": "第 3 步：11.8 秒，输入 181204（缓存命中 176900） / 输出 412 token，要调 2 个工具",
-    "call": { "state": "done",            // thinking | done | failed
+    "call": { "state": "done",            // thinking | done | failed | halted
               "purpose": "turn",          // turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）
               "step": 3, "startedAt": 1731300000000, "ms": 11820,
               "model": "claude-…",        // 接口回的模型名
               "inputTokens": 181204,      // 已含缓存读写的部分
               "outputTokens": 412,
               "cacheReadTokens": 176900, "cacheWriteTokens": 4100,   // 接口给了才有
-              "stop": "tool_calls",       // tool_calls 要调工具 | end 说完了 | truncated 被输出上限截断 | other | error
+              "stop": "tool_calls",       // tool_calls 要调工具 | end 说完了 | truncated 被输出上限截断 | other | error | halted
               "toolCalls": 2 } }
   ```
 
-  `thinking` 时只有 `state`、`purpose`、`step`、`startedAt`。`failed` 时 `stop` 是 `error`，带 `errorKind`（`auth`、`timeout`、`server`、`context_length`、`aborted`……）和 `error`（原话），条目 `isError: true`。
+  `thinking` 时只有 `state`、`purpose`、`step`、`startedAt`。`failed` 时 `stop` 是 `error`，带 `errorKind`（`auth`、`timeout`、`server`、`context_length`、`aborted`……）和 `error`（原话），条目 `isError: true`。`halted`（`stop` 也是 `halted`）是想到一半被叫停了——对话线 `stop_work` 或主人在面板上点“全部停下”打断的，不是出错：没有 `errorKind`、`error`，条目不带 `isError`，`text` 是“第 2 步：想到一半被叫停了（4.3 秒）”。大脑进程要停时中止的那一次还是 `failed` + `errorKind: "aborted"`。
 
 - **`run`**：它写的程序的一次运行一条汇总，跑着的时候更新（最快一秒一次），结束时定稿。例程调工具**不再每次记两条**：只有出错的那一步另有一条 `tool_result`（`isError`、`source`、`runId`，`text` 以 `[例程 r3 #12]` 开头，`detail` 是参数和结果全文）。
 
@@ -349,7 +350,7 @@ interface ProviderConfig {
 - 下面这几项**只有 `work` 有**，`talk` 那一项没有这些键：
   - `waitingAnswer`：干活线提了问、还没人带话回答（对话线 `tell_worker` 或叫停以后清掉）；没有是 `null`。`lastReport`：它最近一次送给对话线的（`type` 同 `relay.type` 里干活线发的那五种：`report`、`question`、`result`、`progress`、`trouble`）；没有是 `null`。这两项落盘，重启后还在。
   - `ownTasks`：干活线开的、还没看到结束的任务的 id（例程开的也在里面；和 `body.task`、`body.queue` 里的 `id` 对得上）。`turn` 是 `null` 而这里不空（或者 `routine` 在跑），就是“还在干，只是这会儿没有在想”：任务或例程一结束它自己会被叫醒接着做。`turn` 是 `null`、这里空、也没有例程，才是真的停着。
-  - `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`）。停它是 `POST /api/routine/stop`。
+  - `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`、`endingText`：为什么结束，`ending` 是给模型看的英文原话，`endingText` 是给主人看的中文）。停它是 `POST /api/routine/stop`。
   - `body`：`task` 是身体正在做的任务（`progress` 身体给了才有），`queue` 是排队的。连不上身体时是 `{ "online": false, "task": null, "queue": [], "error": "…" }`。取消是 `POST /api/tasks/cancel`。
 
 **总停止** `POST /api/work/stop`，body 可带 `{ "reason": "…" }` → `{ "ok": true, "turn": true, "routine": "r3", "tasks": 2, "dropped": 1 }`（打断了正在跑的一轮没有 / 停掉的例程编号或 `null` / 取消了几个身体任务 / 放下了几件它还没处理的事；身体的任务没取消成时 `ok: false` 并带 `error`）。和对话线的 `stop_work` 是同一件事；日志里是一条 `relay`（`type: "stop"`, `from: "panel"`）。
@@ -363,7 +364,7 @@ interface ProviderConfig {
 - `POST /api/history/compact { line: "talk" | "work", dryRun?: boolean }`：现在就把这条线的历史写成交接记录——不看阈值，最近那一段（阈值的 25%，至少 2 轮）以外的全部换掉，用这条线自己的模型，等模型写完才回（记录长的时候一两分钟）。
   - `dryRun: true`：只写不存，历史不动，看它会写成什么（试提示词用）；这条线正在跑一轮时也能试，同一条线同时只能有一次试写。
   - 不带 `dryRun`：真压。这条线正在跑一轮时不做，回 409 `busy`；没有可用的模型回 503 `no_model`。
-  - 回的是 `{ line, dryRun, applied, action, summary, analysis?, turns: { from, to, count } | null, kept, calls, inputChars, usage: { inputTokens, outputTokens }, summaryChars, capChars?, tokensBefore, tokensAfter, tidied?, error? }`：`applied` 历史改了没有；`action` 是 `summarized`（写成了）、`nothing` / `truncated`（最近那一段以外没有可换的轮，或者一段都没写成）、`dropped`；`summary` 是会存进历史的那一份（已有的记录和这些轮合并以后的）；`analysis` 是它打的草稿；`turns` 是换掉的轮的编号范围和轮数，`kept` 是留下的轮数；`calls`、`inputChars`、`usage` 是写记录调了几次模型、一共给它看了多少字符、接口报的 token；`capChars` 是记录的上限；`tokensBefore` / `tokensAfter` 是前后上下文多大；`tidied` 是第一步收拾了什么；`error` 是有一段没写成的原因（已经折进去的照样算数）。
+  - 回的是 `{ line, dryRun, applied, action, summary, analysis?, turns: { from, to, count } | null, kept, calls, inputChars, usage: { inputTokens, outputTokens }, ms, summaryChars, capChars?, tokensBefore, tokensAfter, tidied?, error? }`：`applied` 历史改了没有；`action` 是 `summarized`（写成了）、`nothing` / `truncated`（最近那一段以外没有可换的轮，或者一段都没写成）、`dropped`；`summary` 是会存进历史的那一份（已有的记录和这些轮合并以后的）；`analysis` 是它打的草稿；`turns` 是换掉的轮的编号范围和轮数，`kept` 是留下的轮数；`calls`、`inputChars`、`usage`、`ms` 是写记录调了几次模型、一共给它看了多少字符、接口报的输入输出 token（写成了的那几次的合计，一次都没写成是 0）、一共等了多少毫秒（没写成的也算）；`capChars` 是记录的上限；`tokensBefore` / `tokensAfter` 是前后上下文多大；`tidied` 是第一步收拾了什么；`error` 是有一段没写成的原因（已经折进去的照样算数）。
 - 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
 
 **5. 图纸里有什么** `GET /api/blueprints/read?name=<名字>&draft=<0|1>&cells=<0|1>` → 和库函数 `read_blueprint` 的 `data` 同一个形状（见 `docs/SCRIPTS.md`）：`{ name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }] }`；`cells=1` 才带 `x y z sx sy sz palette cells`。`draft=1` 读它的草稿。没有这张图纸是 502（身体的原话），没有这张草稿是 404。

@@ -51,6 +51,7 @@ function routineFromLegacy(r) {
     waiting: r.current ? `${r.current.tool} ${r.current.input ?? ''}`.trim() : undefined,
     waitingSince: r.current?.since,
     ending: r.ending,
+    endingText: r.endingText,
     recent: r.recent ?? [],
     logs: r.logs ?? [],
   }

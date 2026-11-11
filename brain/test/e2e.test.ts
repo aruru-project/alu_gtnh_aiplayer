@@ -1943,13 +1943,13 @@ it('端到端：面板拿到的数据——模型还在想时状态里看得出�
   llm.enqueue({ text: '', usage: { input: 400, output: 3 } })
   bridge.completeTask('Alu')
   const done = await until('the routine finished', (a) => a.lastRoutine?.status === 'done' && a.model.state === 'idle' && a.turn === null && a.model.lastCall?.inputTokens === 400)
-  assert.deepEqual([done.routine, done.lastRoutine.calls, done.lastRoutine.tasks, done.lastRoutine.errors, done.lastRoutine.ending, done.body.task], [null, 3, 1, 1, 'the program finished', null])
+  assert.deepEqual([done.routine, done.lastRoutine.calls, done.lastRoutine.tasks, done.lastRoutine.errors, done.lastRoutine.ending, done.lastRoutine.endingText, done.body.task], [null, 3, 1, 1, 'the program finished', '程序跑到头了', null])
   const later = (await call('GET', '/log')).json.entries as any[]
   const summary = later.filter((e) => e.kind === 'run')
   assert.deepEqual(summary.map((e) => [e.id, e.run.status, e.run.calls, e.run.tasks, e.run.errors, typeof e.run.endedAt]), [[summaryId, 'done', 3, 1, 1, 'number']])
   assert.match(summary[0].text, /^例程 r1（走一趟）：跑完了，调了 3 次工具，开了 1 个任务，1 次出错，\d+ 秒$/)
   const ended = later.filter((e) => e.runId === 'r1').at(-1)
-  assert.deepEqual([ended.kind, ended.source, ended.text, ended.run.status, ended.run.calls], ['info', 'routine', '例程 r1（走一趟）跑完了：the program finished', 'done', 3])
+  assert.deepEqual([ended.kind, ended.source, ended.text, ended.run.status, ended.run.calls], ['info', 'routine', '例程 r1（走一趟）跑完了：调了 3 次工具，开了 1 个任务', 'done', 3])
 
   // 5. 每一步的明细：按运行翻页读得到（参数、结果全文、用时、开的任务）
   const runs = (await call('GET', '/runs')).json.runs as any[]

@@ -346,6 +346,10 @@ describe('叫停', () => {
     assert.equal(h.game.callsOf('task.start').length, 1)
     // 干活线：正在进行的那次模型调用被打断，这一轮结束了，排着的那件事也没有开始
     assert.equal(thinking.aborted(), true)
+    // 日志里那一步照实写成被叫停，不算出错（“大脑在停”说的是进程要停，不是这回事）
+    const interrupted = h.log.recent(0, 500).filter((e) => e.kind === 'model_call' && e.agent === 'work' && e.turn === turn).at(-1)!
+    assert.deepEqual([interrupted.step, interrupted.call!.state, interrupted.call!.stop, interrupted.call!.errorKind, interrupted.call!.error, interrupted.isError === true], [2, 'halted', 'halted', undefined, undefined, false])
+    assert.match(interrupted.text, /^第 2 步：想到一半被叫停了（\d+\.\d 秒）$/)
     assert.deepEqual([h.agent.state('work').turn, h.agent.state('work').pending], [null, 0])
     assert.equal(h.llm.requests.length, workCalls)
     // 它不会因为“被叫停了”、例程的结局、任务被取消这几件事自己再想一轮

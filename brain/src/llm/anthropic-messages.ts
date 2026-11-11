@@ -9,7 +9,7 @@
 // 图片：工具结果里的图直接放在 tool_result 的内容里（文字块后面跟图片块）；user 消息里的图是普通的图片块。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, getJson, joinUrl, postJson } from './http.ts'
+import { asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -203,7 +203,7 @@ function createAnthropicClient(config: ProviderConfig, deps: AdapterDeps): LlmCl
           ...(config.extraHeaders ?? {}),
         },
         body: buildAnthropicBody(config, req),
-        timeoutMs: config.timeoutMs,
+        timeoutMs: requestTimeoutMs(config.timeoutMs, req.minTimeoutMs),
         signal: req.signal,
       })
       return parseAnthropicResponse(json, config)

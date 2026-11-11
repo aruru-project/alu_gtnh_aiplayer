@@ -62,6 +62,11 @@ log('deposited', put.ok)
 return moved
 `
 
+/** 活动日志里“例程结束了”的那几条（给主人看的）。 */
+function endings(h: { log: { recent(after: number, limit: number): { text: string }[] } }): string[] {
+  return h.log.recent(0, 500).map((e) => e.text).filter((text) => /^例程 r\d+（[^）]*）(跑完了|停了)/.test(text))
+}
+
 describe('例程', () => {
   it('程序一步步调工具：查询的直接拿到数据，开任务的等任务做完才往下走；做完把模型叫醒一次，带着每一步和它的日志', async (t) => {
     const h = setup(t)
@@ -97,6 +102,8 @@ describe('例程', () => {
     const woken = h.llm.lastUserText(afterStatus)
     assert.match(woken, /你启动的例程有结果了/)
     assert.match(woken, /Routine r1 \("整理抽屉"\) finished: the program finished\. 4 tool call\(s\), 3 task\(s\), \d+ s in all\.\nIt returned: 47\n/)
+    // 给主人看的那一条日志是中文的（给模型的那段英文在它的详情里）
+    assert.deepEqual(endings(h), ['例程 r1（整理抽屉）跑完了：调了 4 次工具，开了 3 个任务'])
     assert.match(woken, /- #2 withdraw_items .* → t1 withdraw \[done\] result=\{"moved":40\}/)
     assert.match(woken, /- #4 deposit_items \{"container":\{"x":9,"y":64,"z":9\}\} → t3 deposit \[done\] result=\{"moved":47\}/)
     assert.match(woken, /Its log \(last 2 line\(s\)\):\n {2}slots below 128: 2\n {2}deposited true/)
@@ -242,6 +249,7 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     await modelCalls(slow, 'start_routine', { code: `await tool('go_to', { x: 5, z: 5 }); return 'done'` })
     await waitFor('stopped at the time limit', () => slow.agent.status().routine?.status === 'limit')
     assert.match(slow.agent.status().routine!.ending!, /^it ran for 0 minutes, the time it was given$/)
+    assert.match(endings(slow)[0]!, /^例程 r1（.*）停了：跑满了给它的 0 分钟$/)
     // 它正等着的任务被取消了
     assert.deepEqual(slow.game.callsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
     await waitFor('the model was woken', () => /was STOPPED at a limit: it ran for/.test(slow.llm.lastUserText(slow.llm.requests.length - 1)))
@@ -250,11 +258,13 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     await modelCalls(busy, 'start_routine', { code: `await tool('get_status'); for (;;) {}` })
     await waitFor('stopped for computing too long', () => busy.agent.status().routine?.status === 'limit', 8000)
     assert.match(busy.agent.status().routine!.ending!, /^the program itself computed for more than 0\.3 s \(waiting for tools is not counted\)/)
+    assert.match(endings(busy)[0]!, /^例程 r1（.*）停了：程序自己算了超过 0\.3 秒（等工具的时间不算）$/)
 
     const broken = setup(t)
     await modelCalls(broken, 'start_routine', { code: `const x = await tool('get_status')\nx.data.nope.deeper` })
     await waitFor('failed', () => broken.agent.status().routine?.status === 'failed')
     assert.match(broken.agent.status().routine!.ending!, /^the program failed at line 2: TypeError: /)
+    assert.match(endings(broken)[0]!, /^例程 r1（.*）停了：程序出错了（第 2 行）：TypeError: /)
   })
 
   it('停：模型用 stop_routine、主人在面板上点停止、或者有人取消了它正在做的任务，例程都停下，它开的任务被取消', async (t) => {
@@ -286,6 +296,8 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     h.agent.handleEvent(taskEnded('t3', 'canceled', { type: 'goto' }))
     await waitFor('stopped because its task was canceled', () => h.agent.status().routine?.status === 'stopped')
     assert.equal(h.agent.status().routine!.ending, 'its task t3 (goto) was canceled by someone else')
+    // 给主人看的三条日志：各是怎么停的，中文
+    assert.deepEqual(endings(h).map((text) => text.replace(/^例程 r\d（[^）]*）/, '')), ['停了：它自己用 stop_routine 停的', '停了：主人在面板上停的', '停了：它开的任务 t3（goto）被别人取消了'])
     assert.equal(h.game.callsOf('task.start').length, 3)
   })
 

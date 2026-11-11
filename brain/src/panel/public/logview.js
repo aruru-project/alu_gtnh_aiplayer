@@ -15,7 +15,7 @@ const isOpen = (key, fallback) => openState.get(key) ?? fallback
 
 const RUN_STATES = { running: '在跑', done: '跑完了', failed: '出错停了', stopped: '被停掉了', limit: '到上限停了' }
 const RUN_TONES = { running: 'running', done: 'ok', failed: 'bad', stopped: 'warn', limit: 'warn' }
-const STOP_REASONS = { tool_calls: '要调工具', end: '说完了', truncated: '被输出上限截断', other: '别的原因停下', error: '出错' }
+const STOP_REASONS = { tool_calls: '要调工具', end: '说完了', truncated: '被输出上限截断', other: '别的原因停下', error: '出错', halted: '被叫停了' }
 
 /** 玩家名字的颜色：由名字定，同一个人总是同一种。 */
 function nameHue(name) {
@@ -189,7 +189,7 @@ function stepHead(step, live) {
       if (typeof call.ms === 'number') parts.push(h('span', { text: duration(call.ms) }))
       const tokens = tokensText(call.inputTokens, call.outputTokens, call.cacheReadTokens)
       if (tokens) parts.push(h('span', { text: tokens }))
-      if (call.state === 'failed' && call.errorKind === 'aborted') parts.push(h('span', { class: 'warn', title: call.error ?? '', text: '想到一半被打断了' }))
+      if (call.state === 'halted' || (call.state === 'failed' && call.errorKind === 'aborted')) parts.push(h('span', { class: 'warn', title: call.error ?? '', text: '想到一半被打断了' }))
       else if (call.state === 'failed') parts.push(h('span', { class: 'bad', text: `失败${call.errorKind ? `（${call.errorKind}）` : ''}：${call.error ?? ''}` }))
       else if (call.stop && call.stop !== 'tool_calls') parts.push(h('span', { class: call.stop === 'truncated' ? 'warn' : '', text: STOP_REASONS[call.stop] ?? call.stop }))
     }

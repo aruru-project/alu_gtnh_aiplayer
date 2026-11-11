@@ -4,6 +4,39 @@ import { LlmError, classifyHttpError, parseRetryAfter } from './errors.ts'
 
 export const DEFAULT_TIMEOUT_MS = 120_000
 
+/** 这次调用实际等多久：模型配置的超时（没配是默认的两分钟）；这次调用自己要求至少等更久的，用更久的那个。 */
+export function requestTimeoutMs(configured: number | undefined, atLeast: number | undefined): number {
+  const base = configured !== undefined && configured > 0 ? configured : DEFAULT_TIMEOUT_MS
+  return atLeast !== undefined ? Math.max(base, atLeast) : base
+}
+
+/** Node 自带的 fetch 等响应头、等下一段正文各只等这么久，到点就断（报成网络错误），不管我们自己的超时设了多长。 */
+const FETCH_OWN_WAIT_MS = 300_000
+
+let patient: object | null | undefined
+
+/**
+ * 一个不设“等响应头、等正文”上限的连接器：我们的超时比 fetch 自己那五分钟长的时候用它（写交接记录的那种调用，
+ * 模型写一两万字要好几分钟才回响应头），超时只由我们自己的计时管。
+ * 零依赖，不能 import undici：连接器的类拿的是 Node 全局那个的（全局的是带代理的那种时，新建的也带代理）。拿不到就不换，照旧。
+ */
+export function patientDispatcher(): object | undefined {
+  if (patient === undefined) {
+    patient = null
+    try {
+      const key = Symbol.for('undici.globalDispatcher.1')
+      const globals = globalThis as unknown as Record<symbol, { constructor?: new (opts: Record<string, unknown>) => object } | undefined>
+      // 进程里还没用过 fetch 时全局的连接器还没建：发一个不出门的请求让它建出来
+      if (globals[key] === undefined) void fetch('data:,').catch(() => {})
+      const Agent = globals[key]?.constructor
+      if (typeof Agent === 'function') patient = new Agent({ headersTimeout: 0, bodyTimeout: 0 })
+    } catch {
+      patient = null
+    }
+  }
+  return patient ?? undefined
+}
+
 export interface PostJsonOptions {
   fetch?: typeof fetch | undefined
   url: string
@@ -96,7 +129,8 @@ async function sendJson(method: 'GET' | 'POST', opts: PostJsonOptions): Promise<
     let res: Response
     let text: string
     try {
-      res = await doFetch(url, { method, headers, ...(payload !== undefined ? { body: payload } : {}), signal, redirect: 'manual' })
+      const dispatcher = timeoutMs > FETCH_OWN_WAIT_MS ? patientDispatcher() : undefined
+      res = await doFetch(url, { method, headers, ...(payload !== undefined ? { body: payload } : {}), signal, redirect: 'manual', ...(dispatcher ? { dispatcher } : {}) } as RequestInit)
       text = await res.text()
     } catch (e) {
       throw failure(e)

@@ -9,7 +9,7 @@
 // 每张图前面有一句“这是上面哪个工具结果的图”；tool 消息里留一句“图在下一条消息里”。
 
 import { LlmError } from './errors.ts'
-import { asNumber, asRecord, getJson, joinUrl, postJson } from './http.ts'
+import { asNumber, asRecord, getJson, joinUrl, postJson, requestTimeoutMs } from './http.ts'
 import { normalizeMessages } from './messages.ts'
 import type {
   Adapter,
@@ -241,7 +241,7 @@ function createOpenAiClient(config: ProviderConfig, deps: AdapterDeps): LlmClien
           ...(config.extraHeaders ?? {}),
         },
         body: buildOpenAiBody(config, req),
-        timeoutMs: config.timeoutMs,
+        timeoutMs: requestTimeoutMs(config.timeoutMs, req.minTimeoutMs),
         signal: req.signal,
       })
       return parseOpenAiResponse(json, config)
