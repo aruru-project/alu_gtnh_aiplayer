@@ -18,7 +18,7 @@ export type AgentEvent =
   | { type: 'player_leave'; time: number; player: string }
   | { type: 'server_stopping'; time: number }
   | { type: 'panel_command'; time: number; text: string }
-  | { type: 'reminder'; time: number; note: string }
+  | { type: 'reminder'; time: number; note: string; line?: 'talk' | 'work' }
   /** 大脑自己产生的通知（重连、上一轮中断等）。wake 决定它是否触发一轮决策。 */
   | { type: 'notice'; time: number; text: string; wake: boolean }
   // ── 两条线之间的往来（docs/TALK_WORK.md）──

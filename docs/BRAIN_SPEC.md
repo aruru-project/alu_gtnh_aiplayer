@@ -121,7 +121,7 @@ interface ProviderConfig {
 
 - **对话线**（`talk`）：听人说话、回话、查资料。**它写出来的文字就是它在公共聊天里说的话**——每一步的文字在那一步返回时就说出去（和工具调用同一步时先说再调），什么都不写就是不说；没有 `say` 工具。它没有任何会动身体的工具，要动手的事用 `tell_worker` 交给干活线。
 - **干活线**（`work`）：操作身体的只有它（任务、界面、例程、指令）。它不对玩家说话：中途用 `report` 汇报或提问（总是叫醒对话线）；一轮结束时留下的文字自动送给对话线——它真的停下来了（身体上没有它开的任务、没有例程在跑、没有刚到的事等它处理）才叫醒对话线，它只是在等自己的任务或例程结束时只作背景送达。
-- **事件怎么分**（`agent/lines.ts` 的 `lineOf`）：聊天、悄悄话、面板指令、提醒、玩家进出、干活线送来的话 → 对话线；任务开始和结束、受伤、系统消息、对话线交来的事 → 干活线；死亡、上线、下线两条线都收到（死亡两条线都叫醒，上线下线对两条线都只是背景）。
+- **事件怎么分**（`agent/lines.ts` 的 `lineOf`）：聊天、悄悄话、面板指令、玩家进出、干活线送来的话 → 对话线；提醒 → 定它的那条线（`reminders.json` 里每条记着 `line`，没有这一项的是对话线定的）；任务开始和结束、受伤、系统消息、对话线交来的事 → 干活线；死亡、上线、下线两条线都收到（死亡两条线都叫醒，上线下线对两条线都只是背景）。
 - **两条线之间**：`tell_worker`（这一轮里的人的原话连同站位和指向由程序原样附上）、`worker_status`、`stop_work`（一次调用取消身体的全部任务和例程、打断干活线正在进行的模型调用、放下它还没处理的事；它随后只在背景里看到“被叫停了”，不因此自己接着干）、`report`。对话线每一轮的“当前状态”里有干活线的现状：在想第几步、在等它自己开的哪个任务（类型、进度、已经多久）或例程、还是真的停着；并写着“任务或例程一结束它自己会被叫醒接着做”这个事实。话头在两条线之间连着倒了 12 次、中间没有任何外面的事时，之后的往来只作背景、不再互相叫醒（防空转）。
 - **共用**：bridge、本地资料、记忆、手册、意见簿、设计工作区、聊天记录、每日 token 上限（两条线合计）。
 
@@ -367,6 +367,13 @@ interface ProviderConfig {
   - 不带 `dryRun`：真压。这条线正在跑一轮时不做，回 409 `busy`；没有可用的模型回 503 `no_model`。
   - 回的是 `{ line, dryRun, applied, action, summary, analysis?, turns: { from, to, count } | null, kept, calls, inputChars, usage: { inputTokens, outputTokens }, ms, summaryChars, capChars?, tokensBefore, tokensAfter, tidied?, error? }`：`applied` 历史改了没有；`action` 是 `summarized`（写成了）、`nothing` / `truncated`（最近那一段以外没有可换的轮，或者一段都没写成）、`dropped`；`summary` 是会存进历史的那一份（已有的记录和这些轮合并以后的）；`analysis` 是它打的草稿；`turns` 是换掉的轮的编号范围和轮数，`kept` 是留下的轮数；`calls`、`inputChars`、`usage`、`ms` 是写记录调了几次模型、一共给它看了多少字符、接口报的输入输出 token（写成了的那几次的合计，一次都没写成是 0）、一共等了多少毫秒（没写成的也算）；`capChars` 是记录的上限；`tokensBefore` / `tokensAfter` 是前后上下文多大；`tidied` 是第一步收拾了什么；`error` 是有一段没写成的原因（已经折进去的照样算数）。
 - 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
+
+- **这个服务器**：`GET/PUT /api/bot` 的 `bot.environment = { name: string, rules: string }`（默认都是空；名字最多 40 字，规矩最多 4000 字，首尾空白去掉）。这个实例接的是哪个服务器（主人起的名字，如“测试服”“正式服”）和主人给这里写的规矩（自由文字）。它是这个实例的设置，不是它的记忆：“这里是测试服，材料随便用”这种话写在这里，不跟着记忆搬到别的服务器。`GET /api/status` 顶层带 `environment`。两样有一样不空时，两条线每一轮的系统提示词里多一节“这个服务器”（`agent/prompt.ts` 的 `environmentSection`，程序生成，在“你的记忆”前面）：名字、“这是主人给这个服务器写的设置，不是你记下来的”、规矩的原话；主人改了下一轮就是新的。
+- **自动上下线**（`agent/presence.ts`，默认关）：`GET/PUT /api/bot` 的 `bot.presence = { idleOffline: boolean, idleMinutes: number }`（默认 `false`、`5`；分钟数可以写小数，0.05–1440）。开着时：服务器上没有真人、它手上也没事，满 `idleMinutes` 分钟自己下线；有真人进服、主人从面板发指令、它定的提醒到点时再上来，那件事照常处理（进服的作背景，指令和提醒照常叫醒对话线）。
+  - “没事”= 两条线都没有在跑的一轮和排着的事、干活线没有盯着的任务、没有在跑的例程；到点下线前再问一遍身体（`server.info` 里还有没有真人、`task.list` 有没有任务和队列）。别的 bot 不算真人。
+  - `bot.awayIdle`（只读的状态，不是设置）：它现在是自动下线的。记在配置文件里，所以大脑重启后仍然是：连上游戏不把它叫出来；那时服务器上有真人才上来。`GET /api/status` 里干活线的 `body` 这时多一项 `awayIdle: true`。
+  - 主人手动点的下线（`POST /api/bot/despawn`）不是自动下线：`wantOnline` 变成 `false`，`awayIdle` 跟着没了，之后有人进服也不上来，直到主人手动上线。自动下线不改 `wantOnline`，也不算“被弄下线”。
+  - 自动上线、下线各记一条活动日志（为什么下、为什么上）。下线的请求发出去了、答复没回来（连接正好断了）时先当它下了；它其实还在线的话，下一次检查问过身体就改回来。
 
 **5. 图纸里有什么** `GET /api/blueprints/read?name=<名字>&draft=<0|1>&cells=<0|1>` → 和库函数 `read_blueprint` 的 `data` 同一个形状（见 `docs/SCRIPTS.md`）：`{ name, source, size: { x, y, z }, blocks, materials: [{ id, meta, name, count, item?, byHand? }] }`；`cells=1` 才带 `x y z sx sy sz palette cells`。`draft=1` 读它的草稿。没有这张图纸是 502（身体的原话），没有这张草稿是 404。
 

@@ -96,6 +96,21 @@ export interface PromptInput {
   manuals?: readonly ManualListing[]
   /** 读到了游戏内指南（packdata 的 guide.jsonl）时：一共几页。没读到就没有“游戏内指南”那一节。 */
   guide?: { pages: number }
+  /** 这个实例接的是哪个服务器：主人起的名字和他给这里写的规矩。两样都空时没有“这个服务器”那一节。 */
+  environment?: { name: string; rules: string }
+}
+
+/**
+ * “这个服务器”一节：这个实例接的是哪个服务器、主人给这里写的规矩。它是这个实例的设置，不是它的记忆——
+ * “这里是测试服，材料随便用”这种话写在这里，换一个服务器就是另一份，不会跟着记忆搬过去。两条线一样。
+ */
+export function environmentSection(environment: { name: string; rules: string }): string | undefined {
+  const name = environment.name.trim()
+  const rules = environment.rules.trim()
+  if (name.length === 0 && rules.length === 0) return undefined
+  const lines = ['# 这个服务器', `${name.length > 0 ? `你现在在的这个服务器，主人叫它「${name}」。` : ''}这一节是主人给这个服务器写的设置，不是你记下来的：换一个服务器会是另一份。`]
+  if (rules.length > 0) lines.push(`主人给这里写的规矩（他的原话）：\n${rules}`)
+  return lines.join('\n')
 }
 
 /**
@@ -145,6 +160,9 @@ export function buildSystemPrompt(input: PromptInput): string {
   } else {
     parts.push('# 主人\n没有设主人名单：服务器里的玩家都可以请你帮忙。控制面板发来的话来自服务器的主人，以他的为准。')
   }
+
+  const environment = input.environment ? environmentSection(input.environment) : undefined
+  if (environment !== undefined) parts.push(environment)
 
   parts.push(`# 你的记忆\n${input.memory.trim().length > 0 ? input.memory : '（还没有记下任何东西）'}`)
   return parts.join('\n\n')

@@ -712,6 +712,45 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.equal(s.cancels(), 1)
   })
 
+  it('自动上下线的设置在 /api/bot 里：默认关、5 分钟；能改，分钟数出了界就拉回来；它自动下线期间主人手动点了上线或下线，就不再算“自动下线中”', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    s.game.handlers['bot.spawn'] = () => ({ name: 'Alu', online: true })
+    s.game.handlers['bot.despawn'] = () => ({})
+    const shown = (await s.call('GET', '/api/bot')).json.bot
+    assert.deepEqual([shown.presence, shown.awayIdle], [{ idleOffline: false, idleMinutes: 5 }, false])
+    assert.deepEqual((await s.call('PUT', '/api/bot', { presence: { idleOffline: true, idleMinutes: 12.5 } })).json.bot.presence, { idleOffline: true, idleMinutes: 12.5 })
+    assert.deepEqual((await s.call('PUT', '/api/bot', { presence: { idleMinutes: 0 } })).json.bot.presence, { idleOffline: true, idleMinutes: 0.05 })
+    assert.deepEqual((await s.call('PUT', '/api/bot', { presence: { idleMinutes: 99999 } })).json.bot.presence, { idleOffline: true, idleMinutes: 1440 })
+    assert.deepEqual((await s.call('PUT', '/api/bot', { presence: { idleOffline: 'yes', idleMinutes: 'soon' } })).json.bot.presence, { idleOffline: false, idleMinutes: 5 })
+    // 自动下线中（主人要它在线，它自己下的）
+    const away = () => s.config.update((c) => void Object.assign(c.bot, { wantOnline: true, awayIdle: true }))
+    away()
+    s.game.online = false
+    assert.equal((await s.call('GET', '/api/status')).json.agents[1].body.awayIdle, true)
+    await s.call('POST', '/api/bot/despawn', {})
+    assert.deepEqual([s.config.get().bot.wantOnline, s.config.get().bot.awayIdle], [false, false])
+    assert.equal('awayIdle' in (await s.call('GET', '/api/status')).json.agents[1].body, false)
+    away()
+    await s.call('POST', '/api/bot/spawn', {})
+    assert.deepEqual([s.config.get().bot.wantOnline, s.config.get().bot.awayIdle], [true, false])
+  })
+
+  it('这个服务器叫什么、这里的规矩：在 /api/bot 里能看能改（存进配置），/api/status 里带着；名字最多 40 字、规矩最多 4000 字，多的截掉', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    assert.deepEqual((await s.call('GET', '/api/bot')).json.bot.environment, { name: '', rules: '' })
+    assert.deepEqual((await s.call('GET', '/api/status')).json.environment, { name: '', rules: '' })
+    const saved = await s.call('PUT', '/api/bot', { environment: { name: ' 正式服 ', rules: '动别人的东西之前先问我。\n' } })
+    assert.deepEqual(saved.json.bot.environment, { name: '正式服', rules: '动别人的东西之前先问我。' })
+    assert.deepEqual(s.config.get().bot.environment, { name: '正式服', rules: '动别人的东西之前先问我。' })
+    assert.deepEqual((await s.call('GET', '/api/status')).json.environment, { name: '正式服', rules: '动别人的东西之前先问我。' })
+    // 只改一样，另一样不动
+    assert.deepEqual((await s.call('PUT', '/api/bot', { environment: { rules: '' } })).json.bot.environment, { name: '正式服', rules: '' })
+    const long = (await s.call('PUT', '/api/bot', { environment: { name: '服'.repeat(50), rules: '规'.repeat(5000) } })).json.bot.environment
+    assert.deepEqual([long.name.length, long.rules.length], [40, 4000])
+  })
+
   it('游戏那边没连上时，操作给出看得懂的错误而不是 500', async (t) => {
     const s = await setup(t)
     await s.login()

@@ -1768,7 +1768,7 @@ it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 →
   assert.deepEqual(started[1], { type: 'process', machine: at(extruder), inputs: [stack(P.steelIngot, 36), stack(P.shaftShape, 1)], expect: [stack(P.shaft, 4)], leave: true, recipe: { ref: R.shaft, rounds: 4, ticks: 1280 } })
   // 压模机一轮 1280 tick（64 秒），离开那一刻第一轮转了 1 秒：这一轮还剩 63 秒，四轮一共还要 4×64−1 = 255 秒
   const left = seen.find((x) => /结果：put 37 item/.test(x))!
-  assert.match(left, /put 37 item\(s\) into the machine; it started, and the task ended there without waiting for it\. On this machine a round takes 1 min 4 s; the one running has about 1 min 3 s left, all 4 rounds about 4 min 15 s from now\. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy\./)
+  assert.match(left, /put 37 item\(s\) into the machine; it started, and the task ended there without waiting for it\. On this machine a round takes 1 min 4 s; the one running has about 1 min 3 s left, all 4 rounds about 4 min 15 s from now\. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give\./)
   assert.match(left, /withdraw_items with container \(18,64,-8\) takes the products \(a multiblock: from its output bus\), and with fromInputs: true what sits in its input slots; freeSlots \d+/)
   // 卷板机的电路设成了 1，没有恢复
   assert.match(seen.find((x) => /结果：put 2 item/.test(x))!, /a round takes 2\.8 s; the one running has about 1\.8 s left, all 2 rounds about 4\.6 s from now\..*Programmed circuit: now 1, it was 0 \(none\); it stays 1 until someone sets it again/)
@@ -1785,6 +1785,113 @@ it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 →
   const inventory = bridge.bots.get('Alu')!.inventory
   const has = (p: { id: string; meta: number }) => inventory.filter((i) => i.id === p.id && i.meta === p.meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual([has(P.shaft), has(P.shaftShape), has(P.steelPlate), has(P.steelIngot)], [4, 1, 2, 0])
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：自动上下线开着 → 服务器上没有真人、它也没事，过几秒自己下线（不算“被弄下线”）→ 主人在面板上发指令：它先上线，指令照常到对话线 → 办完又下线 → 大脑重启：它还是下线，不被叫出来 → 有真人进服：它上线 → 主人手动点下线后，再有人进服也不上来', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  bridge.players = []
+  const llm = new MockLlm()
+  llm.fallback = () => ({ text: '' })
+  const talk = relayTalk()
+  await bridge.start()
+  await llm.start()
+  await talk.start()
+  // 主人要它在线；自动上下线开着，没人没事 3 秒（0.05 分钟）就下线
+  const password = 'e2e-panel-password'
+  fs.writeFileSync(
+    path.join(tmp.dir, 'config.json'),
+    JSON.stringify({
+      providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }],
+      activeProviderId: 'mock',
+      bot: { name: 'Alu', wantOnline: true, presence: { idleOffline: true, idleMinutes: 0.05 }, environment: { name: '测试服', rules: '材料随便用。' } },
+      panel: { password },
+    }),
+    { mode: 0o600 },
+  )
+  let brain = startBrain(tmp.dir, bridge, { talk })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    await talk.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  const alu = () => bridge.bots.get('Alu')!
+  const saved = () => JSON.parse(fs.readFileSync(path.join(tmp.dir, 'config.json'), 'utf8')).bot as { wantOnline: boolean; awayIdle: boolean }
+  let origin = ''
+  let cookie = ''
+  const call = async (method: string, route: string, body?: unknown) => {
+    const res = await fetch(`${origin}/api${route}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    const json: any = await res.json().catch(() => undefined)
+    assert.equal(res.status, 200, `${method} ${route} → ${res.status} ${JSON.stringify(json)}${diag()}`)
+    return { json, headers: res.headers }
+  }
+  const panelUp = () => waitFor('the panel address', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(brain.output())?.[1], 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const logged = async (): Promise<string[]> => ((await call('GET', '/log')).json.entries as { text: string }[]).map((e) => e.text)
+  /** 活动日志里出现这一条为止（下线、上线的那一条是身体答应以后才记的）。 */
+  const untilLogged = async (text: string): Promise<string[]> => {
+    for (let i = 0; i < 100; i++) {
+      const all = await logged()
+      if (all.includes(text)) return all
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    return assert.fail(`the brain never logged: ${text}\n${(await logged()).join('\n')}${diag()}`)
+  }
+
+  // 1. 连上游戏，照主人的意思上线；没人、没事，几秒后自己下线
+  origin = (await panelUp())!
+  cookie = (await call('POST', '/login', { password })).headers.getSetCookie()[0]!.split(';')[0]!
+  await waitFor('it came online', () => alu().online, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('it went offline by itself', () => !alu().online, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const first = await untilLogged('Alu 自动下线了：服务器上没有真人，它手上也没有事，已经 0.05 分钟。有真人进服、主人在面板上发指令、或者它定的提醒到点，它会自己再上来。')
+  // 这是它自己下的：主人的选择还是“上线”，没有被当成“被人弄下线”
+  assert.deepEqual(saved(), { ...saved(), wantOnline: true, awayIdle: true })
+  assert.equal(first.some((x) => x.includes('被弄下线了')), false)
+  assert.equal((await call('GET', '/status')).json.agents[1].body.awayIdle, true)
+
+  // 2. 主人在面板上发指令：它先上线，指令照常到了对话线
+  await call('POST', '/command', { text: '看一眼仓库还剩多少钢锭' })
+  assert.equal(alu().online, true)
+  await waitFor('the command reached the talk line', () => talk.requests.some((r) => JSON.stringify(r.body.messages).includes('看一眼仓库还剩多少钢锭')), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await untilLogged('Alu 自动上线了：主人在面板上发了指令。')
+  // 设置里写的“这个服务器”在它这一轮的提示词里
+  assert.ok(talk.requests.some((r) => JSON.stringify(r.body).includes('主人叫它「测试服」') && JSON.stringify(r.body).includes('材料随便用。')))
+  // 事办完、还是没人：又下线
+  await waitFor('it went offline again', () => !alu().online, 20_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  assert.equal(saved().awayIdle, true)
+
+  // 3. 大脑重启：它正自动下线，连上游戏以后不把它叫出来
+  const spawns = bridge.requestsOf('bot.spawn').length
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+  brain = startBrain(tmp.dir, bridge, { talk })
+  origin = (await panelUp())!
+  await waitFor('brain reconnected', () => bridge.connectedClients === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await new Promise((r) => setTimeout(r, 1200))
+  cookie = (await call('POST', '/login', { password })).headers.getSetCookie()[0]!.split(';')[0]!
+  assert.deepEqual([alu().online, bridge.requestsOf('bot.spawn').length, saved().awayIdle], [false, spawns, true], (await logged()).join('\n'))
+
+  // 4. 有真人进服：它上线（它不在线时身体照样把进服的事告诉大脑）
+  bridge.playerJoin('Steve')
+  await waitFor('it came back for Steve', () => alu().online, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await untilLogged('Alu 自动上线了：Steve 进了服务器。')
+  assert.equal(saved().awayIdle, false)
+  // 人在的时候不下线
+  await new Promise((r) => setTimeout(r, 3600))
+  assert.equal(alu().online, true)
+
+  // 5. 主人手动点“下线”：之后人走了又来，它也不上来
+  await call('POST', '/bot/despawn', {})
+  assert.deepEqual([alu().online, saved().wantOnline, saved().awayIdle], [false, false, false])
+  bridge.playerLeave('Steve')
+  bridge.playerJoin('Steve')
+  await new Promise((r) => setTimeout(r, 1200))
+  assert.equal(alu().online, false)
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

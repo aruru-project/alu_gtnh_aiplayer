@@ -2,6 +2,12 @@
 // 重启时已经过点的会立刻触发。
 
 import type { Reminder, ReminderStore } from '../store/reminders.ts'
+import type { AgentEvent } from './events.ts'
+
+/** 到点的提醒变成给 agent 的事件：哪条线定的就到哪条线（没记是哪条线的，是对话线定的）。 */
+export function reminderEvent(r: Reminder, time: number): AgentEvent {
+  return { type: 'reminder', time, note: r.note, ...(r.line !== undefined ? { line: r.line } : {}) }
+}
 
 const MAX_TIMER_MS = 2_000_000_000 // setTimeout 的上限约 24.8 天
 
@@ -29,8 +35,8 @@ export class ReminderScheduler {
     this.timer = undefined
   }
 
-  add(dueAt: number, note: string): Reminder {
-    const r = this.store.add(dueAt, note, this.now())
+  add(dueAt: number, note: string, line?: 'talk' | 'work'): Reminder {
+    const r = this.store.add(dueAt, note, this.now(), line)
     if (this.started) this.arm()
     return r
   }

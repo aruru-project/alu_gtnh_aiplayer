@@ -231,6 +231,41 @@ describe('对话线把事交给干活线', () => {
     assert.match(h.talk.lastUserText(h.talk.requests.length - 1), /Nothing was attached: no one spoke to you this turn\./)
   })
 
+  it('干活线把料放进机器就走，给自己定了个提醒：到点叫醒的是干活线，带着它写的那句话，对话线不知道这回事；对话线定的照旧叫醒对话线；各自的状态里只列自己定的', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    // 干活线定一个 4 分钟的；对话线定一个 30 分钟的
+    h.llm.enqueue(reply('', [{ name: 'set_reminder', input: { minutes: 4, note: '去压模机取 4 根柄和模头' } }]), reply(''))
+    h.agent.handleEvent(told('压 4 根柄'))
+    await h.agent.whenIdle()
+    h.talk.enqueue(reply('', [{ name: 'set_reminder', input: { minutes: 30, note: '问问 Steve 柄够不够' } }]), reply(''))
+    h.agent.handleEvent(chat('Steve', 'Alu 半小时后问我一声'))
+    await h.agent.whenIdle()
+    assert.deepEqual(h.reminders.map((r) => [r.note, r.line, Math.round((r.dueAt - Date.now()) / 60_000)]), [['去压模机取 4 根柄和模头', 'work', 4], ['问问 Steve 柄够不够', 'talk', 30]])
+
+    // 干活线定的到点了
+    const [workBefore, talkBefore] = [h.llm.requests.length, h.talk.requests.length]
+    h.llm.enqueue(reply(''))
+    h.agent.handleEvent({ type: 'reminder', time: Date.now(), note: '去压模机取 4 根柄和模头', line: 'work' })
+    await h.agent.whenIdle()
+    assert.deepEqual([h.llm.requests.length - workBefore, h.talk.requests.length - talkBefore], [1, 0])
+    const woken = h.llm.lastUserText(workBefore)
+    assert.match(woken, /你给自己定的提醒到点了：去压模机取 4 根柄和模头/)
+    // 它的状态里列着它自己定的那一个，没有对话线的
+    assert.match(woken, /Pending reminders: \d 分钟后「去压模机取 4 根柄和模头」\n/)
+    assert.doesNotMatch(woken, /问问 Steve/)
+
+    // 对话线定的到点了：叫醒的是对话线，状态里列的是它自己的
+    h.talk.enqueue(reply(''))
+    h.agent.handleEvent({ type: 'reminder', time: Date.now(), note: '问问 Steve 柄够不够', line: 'talk' })
+    await h.agent.whenIdle()
+    assert.deepEqual([h.llm.requests.length - workBefore, h.talk.requests.length - talkBefore], [1, 1])
+    const talkWoken = h.talk.lastUserText(h.talk.requests.length - 1)
+    assert.match(talkWoken, /你给自己定的提醒到点了：问问 Steve 柄够不够/)
+    assert.match(talkWoken, /Pending reminders: \d+ 分钟后「问问 Steve 柄够不够」\n/)
+    assert.doesNotMatch(talkWoken, /去压模机取/)
+  })
+
   it('干活线正连着做一串事时主人说话：对话线只用一次模型调用就回了话，干活线那一轮不受影响，那句话也没有进它的上下文', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
@@ -828,8 +863,10 @@ describe('事件分给哪条线', () => {
         lineOf({ type: 'reminder', time: now, note: 'x' }),
         lineOf({ type: 'player_join', time: now, player: 'Bob' }),
         lineOf({ type: 'worker', time: now, kind: 'report', text: 'x' }),
+        // 提醒是哪条线定的就到哪条线
+        lineOf({ type: 'reminder', time: now, note: 'x', line: 'work' }),
       ],
-      ['talk', 'talk', 'talk', 'talk', 'talk', 'talk'],
+      ['talk', 'talk', 'talk', 'talk', 'talk', 'talk', 'work'],
     )
     assert.deepEqual(
       [

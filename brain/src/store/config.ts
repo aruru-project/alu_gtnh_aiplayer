@@ -54,6 +54,26 @@ export interface LimitsConfig {
   routineMaxMinutes: number
 }
 
+/** 自动上下线：服务器上没有真人、它手上也没事，过一阵自己下线；有真人进服、面板上发指令、提醒到点再上来。 */
+export interface PresenceConfig {
+  /** 开没开。默认关。 */
+  idleOffline: boolean
+  /** 没有真人、没有事，过多少分钟下线（可以写小数）。 */
+  idleMinutes: number
+}
+
+/**
+ * 这个实例接的是哪个服务器：主人起的名字（“测试服”“正式服”），和他给这里写的规矩（自由文字，可空）。
+ * 这是这个实例的设置，不是它的记忆：换一个服务器是另一份。每一轮的提示词里照实给它。
+ */
+export interface EnvironmentConfig {
+  name: string
+  rules: string
+}
+
+export const ENVIRONMENT_NAME_MAX_CHARS = 40
+export const ENVIRONMENT_RULES_MAX_CHARS = 4000
+
 export interface BotConfig {
   name: string
   aliases: string[]
@@ -65,6 +85,10 @@ export interface BotConfig {
   limits: LimitsConfig
   /** 面板上按了“上线”为 true，“下线”为 false。bridge 连上时据此决定要不要把 bot 叫出来。 */
   wantOnline: boolean
+  environment: EnvironmentConfig
+  presence: PresenceConfig
+  /** 它现在是自动下线的（presence.idleOffline 开着、没人没事时自己下的）。主人手动上线、下线都会清掉它。不是设置，是记下来的状态。 */
+  awayIdle: boolean
 }
 
 /** 一个服务商下面的一个模型，和跟着模型走的设置。 */
@@ -152,6 +176,11 @@ export const ROUTINE_MINUTES_LIMIT = 7 * 24 * 60
 /** 对话窗口默认 5 分钟：实测 60 秒太短，隔一分钟多、话里没带名字的句子它就不理了。 */
 export const DEFAULT_WAKE: WakeConfig = { mode: 'mention', conversationWindowSec: 300 }
 
+export const DEFAULT_PRESENCE: PresenceConfig = { idleOffline: false, idleMinutes: 5 }
+/** 自动下线最短、最长等多少分钟（最短 3 秒：给测试用的，平时没人会设这么短）。 */
+export const PRESENCE_MINUTES_MIN = 0.05
+export const PRESENCE_MINUTES_MAX = 24 * 60
+
 /** 配置文件现在的版本号。 */
 export const CONFIG_VERSION = 3
 
@@ -168,6 +197,9 @@ export function defaultConfig(): BrainConfig {
       wake: { ...DEFAULT_WAKE },
       limits: { ...DEFAULT_LIMITS },
       wantOnline: false,
+      environment: { name: '', rules: '' },
+      presence: { ...DEFAULT_PRESENCE },
+      awayIdle: false,
     },
     providers: [],
     activeProviderId: '',
@@ -188,6 +220,13 @@ function int(v: unknown, fallback: number, min: number, max: number): number {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
   if (typeof n !== 'number' || !Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+/** 和 int 一样，但留着小数。 */
+function num(v: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
+  if (typeof n !== 'number' || !Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
 }
 
 function strList(v: unknown, maxItems = 50): string[] {
@@ -352,6 +391,8 @@ export function normalizeConfig(raw: unknown): BrainConfig {
   const bot = isRecord(raw.bot) ? raw.bot : {}
   const wake = isRecord(bot.wake) ? bot.wake : {}
   const limits = isRecord(bot.limits) ? bot.limits : {}
+  const presence = isRecord(bot.presence) ? bot.presence : {}
+  const environment = isRecord(bot.environment) ? bot.environment : {}
 
   const providers: StoredProvider[] = []
   if (Array.isArray(raw.providers)) {
@@ -410,6 +451,16 @@ export function normalizeConfig(raw: unknown): BrainConfig {
         routineMaxMinutes: Math.max(int(limits.routineMaxMinutes, DEFAULT_LIMITS.routineMaxMinutes, 1, ROUTINE_MINUTES_LIMIT), int(limits.routineMinutes, DEFAULT_LIMITS.routineMinutes, 1, ROUTINE_MINUTES_LIMIT)),
       },
       wantOnline: bot.wantOnline === true,
+      environment: {
+        name: str(environment.name, '').trim().slice(0, ENVIRONMENT_NAME_MAX_CHARS),
+        rules: str(environment.rules, '').trim().slice(0, ENVIRONMENT_RULES_MAX_CHARS),
+      },
+      presence: {
+        idleOffline: presence.idleOffline === true,
+        idleMinutes: num(presence.idleMinutes, DEFAULT_PRESENCE.idleMinutes, PRESENCE_MINUTES_MIN, PRESENCE_MINUTES_MAX),
+      },
+      // 自动下线只在主人要它在线时才有意义
+      awayIdle: bot.awayIdle === true && bot.wantOnline === true,
     },
     providers,
     activeProviderId: activeProvider?.id ?? '',

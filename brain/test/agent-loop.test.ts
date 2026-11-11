@@ -666,7 +666,7 @@ describe('agent 的一轮决策', () => {
     const GT = 'gregtech:gt.metaitem.01'
     const lathe = { x: 16, y: 64, z: -4, name: 'Advanced Lathe', recipes: 'Lathe', tier: 'MV', inputSlots: 2, active: true, storedEU: 51200, inputVoltage: 128 }
     const note = 'the machine has started and the task ended without waiting for it. What it makes stays in it until it is taken out (withdraw with the machine as the container); what was put in and is not used up, such as a mould, stays in it too'
-    const howToTake = 'Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with container (16,64,-4) takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots'
+    const howToTake = 'Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with container (16,64,-4) takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots'
     // 测试服上实测过的那一趟：8 个钢锭进车床，任务 1.2 秒就结束。这台车床一轮 80 tick（4 秒），那一刻第一轮转了 24 tick：
     // 这一轮还剩 56 tick = 2.8 秒；8 轮一共 640 tick，还剩 616 tick ≈ 31 秒
     h.agent.handleEvent(

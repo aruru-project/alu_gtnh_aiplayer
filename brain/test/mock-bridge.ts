@@ -326,6 +326,18 @@ export class MockBridge {
   players: { name: string; uuid: string; dim: number; pos: { x: number; y: number; z: number } }[] = [
     { name: 'Steve', uuid: 'uuid-steve', dim: 0, pos: { x: 12.5, y: 64, z: 3.5 } },
   ]
+  /** 一个真人进了服务器（bot 在不在线，这个事件都照发）。 */
+  playerJoin(name: string): void {
+    if (!this.players.some((p) => p.name === name)) this.players.push({ name, uuid: `uuid-${name.toLowerCase()}`, dim: 0, pos: { x: 12.5, y: 64, z: 3.5 } })
+    this.emit('player.join', { player: name, uuid: `uuid-${name.toLowerCase()}` })
+  }
+
+  /** 一个真人离开了服务器。 */
+  playerLeave(name: string): void {
+    this.players = this.players.filter((p) => p.name !== name)
+    this.emit('player.leave', { player: name, uuid: `uuid-${name.toLowerCase()}` })
+  }
+
   containers: MockContainer[] = [
     {
       x: 12,

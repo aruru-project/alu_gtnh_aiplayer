@@ -189,7 +189,7 @@ export interface AgentHarness {
   settings: AgentSettings
   /** 对话线的设置。 */
   talkSettings: AgentSettings
-  reminders: { dueAt: number; note: string }[]
+  reminders: { dueAt: number; note: string; line?: 'talk' | 'work' }[]
   /** 干活线落盘的状态。 */
   persisted: { state: PersistedAgentState | undefined }
   /** 对话线落盘的状态，和两条线之间留着的事。 */
@@ -251,7 +251,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const log = new ActivityLog()
   const chatLog = new ChatLog(tmp.dir)
   const runLogs = new RunLogStore(tmp.dir, opts.runLogFullTextBytes !== undefined ? { fullTextBytes: opts.runLogFullTextBytes } : {})
-  const reminders: { dueAt: number; note: string }[] = []
+  const reminders: { dueAt: number; note: string; line?: 'talk' | 'work' }[] = []
   const persisted = opts.persisted ?? { state: undefined }
   const talkPersisted = opts.talkPersisted ?? { state: undefined }
   const links = opts.links ?? { state: undefined }
@@ -276,8 +276,8 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     memory,
     manuals,
     reminders: {
-      add: (dueAt, note) => {
-        reminders.push({ dueAt, note })
+      add: (dueAt, note, line) => {
+        reminders.push({ dueAt, note, ...(line !== undefined ? { line } : {}) })
         return { id: `r${reminders.length}`, dueAt }
       },
       list: () => reminders,

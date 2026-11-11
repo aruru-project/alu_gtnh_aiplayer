@@ -40,6 +40,8 @@ export interface AgentSettings {
   owners: string[]
   /** 主人自定义的说话风格（对话线用）；空字符串用默认。 */
   persona: string
+  /** 这个实例接的是哪个服务器：主人起的名字和他给这里写的规矩。 */
+  environment?: { name: string; rules: string }
   wakeMode: 'mention' | 'all'
   conversationWindowSec: number
   maxSteps: number
@@ -1004,7 +1006,8 @@ export class Agent {
     const signal = this.abort.signal
     const turnId = this.deps.history.newTurnId()
     // 提醒到点叫醒的是对话线，干活线的状态里不列
-    const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, talk ? this.deps.reminders.list() : [], startedAt)
+    // 状态里只列这条线自己定的提醒（到点叫醒的是定它的那条线）
+    const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, this.deps.reminders.list().filter((r) => (r.line ?? 'talk') === this.line), startedAt)
     if (snapshot.online !== undefined) this.shared.online = snapshot.online
     // 哪几本手册的原文现在还在历史里：压缩截掉了的、主人改过了的都不算，模型要用时会重新读
     const manuals = this.deps.manuals.list()
@@ -1033,6 +1036,7 @@ export class Agent {
       memory: this.deps.memory.render(),
       manuals,
       ...(this.deps.packdata?.guide ? { guide: { pages: this.deps.packdata.guide.size } } : {}),
+      ...(settings.environment ? { environment: settings.environment } : {}),
     })
     // 清单按这条线、这一轮用的模型给：看图的工具只发给能看图的模型；库函数不在清单里，在 run_program 说明后面的索引里
     const toolSpecs = modelToolSpecs(this.deps.tools, { canSee, line: this.line })

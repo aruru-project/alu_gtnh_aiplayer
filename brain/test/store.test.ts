@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, it } from 'node:test'
-import { ReminderScheduler } from '../src/agent/reminders.ts'
+import { lineOf } from '../src/agent/lines.ts'
+import { ReminderScheduler, reminderEvent } from '../src/agent/reminders.ts'
 import { ActivityLog } from '../src/store/activity-log.ts'
 import { ConfigStore, maskSecret, overridesFromEnv } from '../src/store/config.ts'
 import { ensureDir } from '../src/store/files.ts'
@@ -442,5 +443,31 @@ describe('提醒', () => {
     await waitFor('overdue reminder fired', () => fired.length === 1)
     assert.equal(fired[0]!.note, '重启期间到点的')
     assert.deepEqual(new ReminderStore(tmp.dir).list().map((r) => r.note), ['还没到点的'])
+  })
+
+  it('哪条线定的记在提醒上，重启不丢：到点时干活线定的交给干活线，对话线定的、还有以前没记是哪条线的交给对话线', async (t) => {
+    const tmp = tmpDir()
+    t.after(tmp.cleanup)
+    // 上一个进程里：干活线定了一个、对话线定了一个；还有一个是两条线都能定之前留下的（文件里没有 line 这一项）
+    const before = new ReminderScheduler(new ReminderStore(tmp.dir), () => undefined)
+    before.add(Date.now() - 3000, '去压模机取柄', 'work')
+    before.add(Date.now() - 2000, '问问 Steve', 'talk')
+    before.add(Date.now() - 1000, '以前留下的')
+    const fired: Reminder[] = []
+    const s = new ReminderScheduler(new ReminderStore(tmp.dir), (r) => fired.push(r))
+    s.start()
+    t.after(() => s.stop())
+    await waitFor('the three overdue reminders fired', () => fired.length === 3)
+    assert.deepEqual(
+      fired.map((r) => {
+        const event = reminderEvent(r, 1000)
+        return [r.note, lineOf(event), event]
+      }),
+      [
+        ['去压模机取柄', 'work', { type: 'reminder', time: 1000, note: '去压模机取柄', line: 'work' }],
+        ['问问 Steve', 'talk', { type: 'reminder', time: 1000, note: '问问 Steve', line: 'talk' }],
+        ['以前留下的', 'talk', { type: 'reminder', time: 1000, note: '以前留下的' }],
+      ],
+    )
   })
 })

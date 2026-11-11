@@ -19,6 +19,8 @@ export interface Snapshot {
 export interface PendingReminder {
   dueAt: number
   note: string
+  /** 哪条线定的（没有是对话线）。 */
+  line?: 'talk' | 'work'
 }
 
 function realTime(now: number): string {

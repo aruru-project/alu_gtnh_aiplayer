@@ -8,8 +8,9 @@ import path from 'node:path'
 import type { AgentSettings, PersistedAgentState } from './agent/agent.ts'
 import type { AgentEvent } from './agent/events.ts'
 import { Lines } from './agent/lines.ts'
+import { Presence } from './agent/presence.ts'
 import type { LinkState } from './agent/lines.ts'
-import { ReminderScheduler } from './agent/reminders.ts'
+import { ReminderScheduler, reminderEvent } from './agent/reminders.ts'
 import { BridgeApi } from './bridge/api.ts'
 import { BridgeClient } from './bridge/client.ts'
 import { readBridgeToken } from './bridge/token.ts'
@@ -38,6 +39,8 @@ import { UsageStore } from './store/usage.ts'
 import type { LineName } from './tools/index.ts'
 
 const VERSION = '0.1.0'
+/** 隔多久看一次该不该自动下线。 */
+const PRESENCE_TICK_MS = 1000
 const BRAIN_ROOT = path.resolve(import.meta.dirname, '..')
 
 function info(message: string): void {
@@ -51,6 +54,7 @@ function toAgentSettings(c: BrainConfig, line: LineName): AgentSettings {
     aliases: c.bot.aliases,
     owners: c.bot.owners,
     persona: c.bot.systemPrompt,
+    environment: c.bot.environment,
     wakeMode: c.bot.wake.mode,
     conversationWindowSec: c.bot.wake.conversationWindowSec,
     maxSteps: line === 'talk' ? c.bot.limits.talkMaxSteps : c.bot.limits.maxSteps,
@@ -199,8 +203,10 @@ async function main(): Promise<void> {
 
   // ── agent：对话线和干活线 ──
   let agent: Lines
+  let presence: Presence | undefined
   const reminders = new ReminderScheduler(reminderStore, (r) => {
-    agent.handleEvent({ type: 'reminder', time: Date.now(), note: r.note })
+    // 它是自动下线的话先让它上来，提醒照常叫醒
+    void (presence?.comeBack('它定的提醒到点了') ?? Promise.resolve()).finally(() => agent.handleEvent(reminderEvent(r, Date.now())))
   })
   agent = new Lines({
     settings: (line) => toAgentSettings(config.get(), line),
@@ -230,10 +236,28 @@ async function main(): Promise<void> {
     migrated,
   })
 
-  /** 面板上按过“上线”的 bot，连上游戏后要确保它在。 */
+  // 自动上下线（默认关）：没有真人、没有事，过一阵自己下线；有真人进服、面板上发指令、提醒到点再上来
+  presence = new Presence({
+    settings: () => {
+      const { bot } = config.get()
+      return { botName: bot.name, wantOnline: bot.wantOnline, enabled: bot.presence.idleOffline, idleMinutes: bot.presence.idleMinutes, away: bot.awayIdle }
+    },
+    setAway: (away) => {
+      if (config.get().bot.awayIdle !== away) config.update((c) => void (c.bot.awayIdle = away))
+    },
+    bridge,
+    connected: () => bridgeClient.status().state === 'connected',
+    online: () => agent.status().botOnline,
+    busy: () => agent.busy(),
+    log: (entry) => log.add(entry),
+  })
+  const presenceTimer = setInterval(() => void presence?.tick(), PRESENCE_TICK_MS)
+  presenceTimer.unref()
+
+  /** 面板上按过“上线”的 bot，连上游戏后要确保它在。它是自动下线的就不叫：等真人进服、指令或提醒。 */
   const ensureBotOnline = async (): Promise<void> => {
     const { name } = config.get().bot
-    if (!config.get().bot.wantOnline) return
+    if (!config.get().bot.wantOnline || config.get().bot.awayIdle) return
     try {
       const list = await bridge.botList()
       const online = (list.bots ?? []).some((b) => b.name.toLowerCase() === name.toLowerCase() && b.online)
@@ -253,22 +277,26 @@ async function main(): Promise<void> {
   bridgeClient.onEvent((event) => {
     if (event.event === 'server.stopping') serverStopping = true
     if (event.event === 'bot.despawned') {
-      const { name, wantOnline } = config.get().bot
+      const { name, wantOnline, awayIdle } = config.get().bot
       const mine = typeof event.data.bot === 'string' && event.data.bot.toLowerCase() === name.toLowerCase()
       const reason = typeof event.data.reason === 'string' ? event.data.reason : ''
-      if (mine && wantOnline && !serverStopping && reason !== 'server stopping') {
+      // 它自己自动下线的不算“被弄下线”
+      if (mine && wantOnline && !awayIdle && !serverStopping && reason !== 'server stopping') {
         config.update((c) => {
           c.bot.wantOnline = false
         })
         log.add({ kind: 'error', text: `${name} 被弄下线了（${reason || '原因不明'}）。它会一直保持下线，直到有人在面板上点“上线”。` })
       }
     }
+    presence?.onEvent(event)
     agent.handleBridgeEvent(event)
   })
   bridgeClient.onReady((ready) => {
     serverStopping = false
     log.add({ kind: 'info', text: `已连上游戏服务器（mod ${ready.hello.modVersion ?? '?'}）。` })
-    void ensureBotOnline().then(() => agent.onBridgeReady(ready))
+    void ensureBotOnline()
+      .then(() => agent.onBridgeReady(ready))
+      .then(() => presence?.onReady())
   })
   let wasConnected = false
   bridgeClient.onStatus((status) => {
@@ -277,6 +305,7 @@ async function main(): Promise<void> {
       return
     }
     agent.onBridgeDisconnected()
+    presence?.onDisconnected()
     if (wasConnected) {
       wasConnected = false
       log.add({ kind: 'error', text: `和游戏服务器的连接断了${status.lastError ? `（${status.lastError}）` : ''}，正在重连。` })
@@ -297,6 +326,7 @@ async function main(): Promise<void> {
 
   // ── 面板 ──
   const panel = new PanelServer({
+    comeBack: (reason) => presence?.comeBack(reason) ?? Promise.resolve(),
     config,
     memory,
     usage,

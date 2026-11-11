@@ -8,6 +8,8 @@ export interface Reminder {
   dueAt: number
   note: string
   createdAt: number
+  /** 哪条线定的：到点叫醒的是它。没有这一项的是对话线定的（两条线都能定之前留下的）。 */
+  line?: 'talk' | 'work'
 }
 
 export const MAX_REMINDERS = 50
@@ -28,6 +30,7 @@ export class ReminderStore {
             dueAt: r.dueAt,
             note: r.note,
             createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+            ...(r.line === 'work' || r.line === 'talk' ? { line: r.line } : {}),
           })
         }
       }
@@ -39,9 +42,9 @@ export class ReminderStore {
     return [...this.items].sort((a, b) => a.dueAt - b.dueAt)
   }
 
-  add(dueAt: number, note: string, now: number = Date.now()): Reminder {
+  add(dueAt: number, note: string, now: number = Date.now(), line?: 'talk' | 'work'): Reminder {
     if (this.items.length >= MAX_REMINDERS) throw new Error(`too many pending reminders (max ${MAX_REMINDERS})`)
-    const reminder: Reminder = { id: `r${this.nextId++}`, dueAt, note, createdAt: now }
+    const reminder: Reminder = { id: `r${this.nextId++}`, dueAt, note, createdAt: now, ...(line !== undefined ? { line } : {}) }
     this.items.push(reminder)
     this.save()
     return reminder

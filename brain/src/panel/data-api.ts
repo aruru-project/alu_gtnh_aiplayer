@@ -117,6 +117,10 @@ export interface StatusDeps {
   model(line: LineName): { provider: string; model: string; providerId: string; modelId: string } | undefined
   /** 这条线的历史有多长。 */
   history?(line: LineName): HistorySize | undefined
+  /** 它现在是不是自动下线的（没有真人、没有事，自己下的）。 */
+  awayIdle?(): boolean
+  /** 这个实例接的是哪个服务器（主人起的名字和写的规矩）。 */
+  environment?(): { name: string; rules: string }
 }
 
 /** 例程在状态里的样子：结构化的那几项，不带最近的调用和日志（那些在明细接口里）。 */
@@ -162,7 +166,9 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
     deps.agent.state?.(line) ?? { agent: line, model: { state: line === 'work' && status.busy ? 'tools' : 'idle' }, turn: null, pending: line === 'work' ? status.pending : 0, botOnline: status.botOnline }
   const work = stateOf('work')
   const routine = status.routine
-  const body: { online: boolean | null; task: unknown; queue: unknown[]; error?: string } = { online: work.botOnline ?? null, task: null, queue: [] }
+  const body: { online: boolean | null; task: unknown; queue: unknown[]; error?: string; awayIdle?: true } = { online: work.botOnline ?? null, task: null, queue: [] }
+  // 自动下线中：不在线是它自己下的，有真人进服、面板发指令、提醒到点会自己上来
+  if (deps.awayIdle?.() === true) body.awayIdle = true
   if (!deps.connected()) {
     body.online = false
     body.error = '没连上游戏里的身体'
@@ -190,6 +196,7 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
   const links = deps.agent.linkState?.() ?? {}
   return {
     time: now,
+    environment: deps.environment?.() ?? { name: '', rules: '' },
     agents: [
       line('talk', stateOf('talk')),
       {

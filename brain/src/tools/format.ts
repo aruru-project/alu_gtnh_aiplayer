@@ -1382,7 +1382,7 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
     line += '; the task ended there without waiting, and whether this machine started cannot be read (it is not a machine the body knows)'
     if (typeof batch.ticks === 'number' && batch.ticks > 0) line += `. By the recipe book a round takes ${ticksText(batch.ticks)}${rounds !== undefined && rounds > 1 ? `, ${rounds} rounds ${ticksText(rounds * batch.ticks)}` : ''}`
   }
-  line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
+  line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
   if (isObject(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`

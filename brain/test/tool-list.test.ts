@@ -87,8 +87,8 @@ const LOOKUPS = [
   'list_designs', 'view_image', 'view_draft',
   'find_item', 'find_recipes', 'find_in_storage', 'find_machines', 'find_quests', 'get_quest', 'read_guide', 'task_status',
 ]
-// 记的：记忆、手册、意见簿。两条线都有。
-const NOTES = ['remember', 'forget', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
+// 记的：记忆、提醒、手册、意见簿。两条线都有（提醒到点叫醒的是定它的那条线）。
+const NOTES = ['remember', 'forget', 'set_reminder', 'list_manuals', 'read_manual', 'write_manual', 'report_problem']
 // 会让身体动、会改游戏里东西的：只有干活线有。
 const ACTING = [
   'go_to', 'go_to_player', 'follow_player', 'go_home', 'run_command',
@@ -99,20 +99,20 @@ const ACTING = [
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
 const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
-const TALK_TOOLS_WITH_VISION = ['whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', 'set_reminder', ...NOTES]
+const TALK_TOOLS_WITH_VISION = ['whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', ...NOTES]
 const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
 const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
-  it('两条线各有各的清单：干活线有操作身体的全部和 report，没有对玩家说话的和提醒；对话线有悄悄话、交事和管干活线的三个、所有只查不动的、提醒，没有任何一个会动身体的，也没有 say', async (t) => {
+  it('两条线各有各的清单：干活线有操作身体的全部和 report，没有对玩家说话的；对话线有悄悄话、交事和管干活线的三个、所有只查不动的，没有任何一个会动身体的，也没有 say；记忆、提醒、手册两条线都有', async (t) => {
     const h = setup(t, { vision: true })
     const work = (await offered(h, 'work')).map((tool) => tool.name)
     const talk = (await offered(h, 'talk')).map((tool) => tool.name)
     assert.deepEqual([...work].sort(), [...WORK_TOOLS_WITH_VISION].sort())
     assert.deepEqual([...talk].sort(), [...TALK_TOOLS_WITH_VISION].sort())
     for (const name of ACTING) assert.equal(talk.includes(name), false, `the talk line must not be offered ${name}`)
-    for (const name of ['say', 'whisper', 'set_reminder', 'tell_worker', 'worker_status', 'stop_work']) assert.equal(work.includes(name), false, `the work line must not be offered ${name}`)
+    for (const name of ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work']) assert.equal(work.includes(name), false, `the work line must not be offered ${name}`)
     assert.equal(talk.includes('say'), false)
   })
 
@@ -145,9 +145,6 @@ describe('模型拿到的工具清单', () => {
     // 干活线调对话线的那几个，同样被告知不归它
     const mine = await lineCalls(h, 'work', 'tell_worker', { text: '去挖土' })
     assert.deepEqual([mine.isError, mine.content], [true, `Not done: "tell_worker" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`])
-    const later = await lineCalls(h, 'work', 'set_reminder', { minutes: 5, note: '看作物' })
-    assert.deepEqual([later.isError, later.content], [true, 'Not done: reminders belong to the talk line (a reminder wakes it, not you). report what should be looked at again and when.'])
-    assert.deepEqual(h.reminders, [])
   })
 
   it('能看图的模型：看图的三个工具都在；不能看图的模型：没有 view_area 和 view_image，view_draft 留着但只有出文字的那些参数', async (t) => {
@@ -227,7 +224,9 @@ describe('模型拿到的工具清单', () => {
   //           find_machines、find_structure 的 name 说明里写了中英文都认（各 +十来个字符）。
   //   加工“放下就走”之后：干活线实际 49,032、上限 49,000 → 49,400（+400）。多的是 process_items（+322）：说明里写明不带 leave 时
   //           这个任务从放料占着身体到取完产物、带了就放进去就走，和 leave 这个参数。对话线没变。
-  for (const [line, ceiling] of [['work', 49_400], ['talk', 23_000]] as const) {
+  //   干活线也能定提醒之后：干活线实际 49,572、上限 49,400 → 50,000（+600）。多的是 set_reminder 这一个工具（+540）：料放进机器就走以后，
+  //           它手上没别的活时这一轮一结束就没有东西叫它回来收，所以它得能给自己定个到点叫醒。对话线实际 22,812，只是说明多了半句。
+  for (const [line, ceiling] of [['work', 50_000], ['talk', 23_000]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

@@ -110,10 +110,12 @@ const MIGRATION_NOTE =
  */
 export function lineOf(ev: AgentEvent): LineName | 'both' {
   switch (ev.type) {
+    // 提醒：哪条线定的就叫醒哪条线
+    case 'reminder':
+      return ev.line ?? 'talk'
     case 'chat':
     case 'whisper':
     case 'panel_command':
-    case 'reminder':
     case 'player_join':
     case 'player_leave':
     case 'worker':
@@ -321,6 +323,12 @@ export class Lines {
   /** 现在就把一条线的历史写成交接记录（dryRun：只写不存）。 */
   compactNow(line: LineName, opts: { dryRun?: boolean } = {}): Promise<CompactNowResult> {
     return this[line].compactNow(opts)
+  }
+
+  /** 大脑这边现在有没有事：哪条线在跑一轮或排着事，干活线盯着任务，例程在跑。 */
+  busy(): boolean {
+    const work = this.work.status()
+    return !this.talk.idle() || !this.work.idle() || work.trackedTasks.length > 0 || work.routine?.status === 'running'
   }
 
   /** 两条线都没有在跑的一轮、也没有排着的事时兑现。测试用。 */

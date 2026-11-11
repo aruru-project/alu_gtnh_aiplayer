@@ -35,7 +35,7 @@ export const forget: Tool = {
 export const setReminder: Tool = {
   name: 'set_reminder',
   description:
-    'After the given minutes you are woken with the note, as an event of its own; it survives restarts. For looking at something again later: a long task, crops, a promise to a player.',
+    'After the given minutes you are woken with the note, as an event of its own (it wakes the line that set it); it survives restarts. For looking at something again later: a machine left running, crops, a promise to a player.',
   inputSchema: obj(
     {
       minutes: num('How many minutes from now (real time).', { min: 0.1, max: 10080 }),
@@ -45,7 +45,7 @@ export const setReminder: Tool = {
   ),
   async run(ctx, input: { minutes: number; note: string }) {
     try {
-      const r = ctx.reminders.add(ctx.now() + Math.round(input.minutes * 60_000), input.note.trim())
+      const r = ctx.reminders.add(ctx.now() + Math.round(input.minutes * 60_000), input.note.trim(), ctx.line)
       return `Reminder ${r.id} set for ${input.minutes} minute(s) from now.`
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e))

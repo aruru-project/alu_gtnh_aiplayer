@@ -133,6 +133,7 @@ export const WORK_TOOLS: readonly Tool[] = [
   cancelTask,
   remember,
   forget,
+  setReminder,
   listManuals,
   readManual,
   writeManual,
@@ -277,7 +278,7 @@ export function libraryFor(tools: readonly Tool[], view: ModelView): Tool[] {
 /** 对话线自己不出声的那个名字：它写的文字就是它说的话。 */
 const SAY = 'say'
 /** 只归对话线的：对玩家说话、提醒、管干活线。 */
-const TALK_ONLY: readonly string[] = [SAY, whisper.name, setReminder.name, tellWorker.name, workerStatus.name, stopWork.name]
+const TALK_ONLY: readonly string[] = [SAY, whisper.name, tellWorker.name, workerStatus.name, stopWork.name]
 
 /**
  * 这个名字是不是另一条线的事。是的话返回给模型的那句话（不执行）；不是返回 undefined（照常找、照常执行）。
@@ -295,7 +296,6 @@ export function otherLine(line: LineName, name: string): string | undefined {
   }
   if (!TALK_ONLY.includes(name)) return undefined
   if (name === SAY || name === whisper.name) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it with report {text} (or leave it as the text that ends your turn) and it decides what to say to whom.`
-  if (name === setReminder.name) return 'Not done: reminders belong to the talk line (a reminder wakes it, not you). report what should be looked at again and when.'
   return `Not done: "${name}" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`
 }
 

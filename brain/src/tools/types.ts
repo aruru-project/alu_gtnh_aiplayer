@@ -105,8 +105,8 @@ export interface ChatLogAccess {
 }
 
 export interface ReminderAccess {
-  /** 登记一个提醒，返回到点时间（epoch ms）。 */
-  add(dueAt: number, note: string): { id: string; dueAt: number }
+  /** 登记一个提醒，返回到点时间（epoch ms）。line 是哪条线定的：到点叫醒的是它（不给是对话线）。 */
+  add(dueAt: number, note: string, line?: 'talk' | 'work'): { id: string; dueAt: number }
 }
 
 /** 工具执行时通知上层的钩子。工具自己不做任何决定。 */

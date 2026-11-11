@@ -79,6 +79,8 @@ export interface PanelDeps {
   icons?: ItemIcons | false
   bridge: BridgeApi
   bridgeStatus(): BridgeStatus
+  /** 它是自动下线的话让它上来（agent/presence.ts）；不是的话什么都不做。 */
+  comeBack?(reason: string): Promise<void>
   agent: {
     handleEvent(ev: AgentEvent): void
     /** 干活线的状态（例程、盯着的任务在它那里）。 */
@@ -510,6 +512,8 @@ export class PanelServer {
               return active ? { provider: active.provider.label, model: active.model.name, providerId: active.provider.id, modelId: active.model.id } : undefined
             },
             history: (line) => this.historySize(line),
+            awayIdle: () => this.deps.config.get().bot.awayIdle,
+            environment: () => this.deps.config.get().bot.environment,
           },
           this.now(),
         )
@@ -743,10 +747,12 @@ export class PanelServer {
 
   // ── 对话 ──
 
-  private command(body: Record<string, unknown>): unknown {
+  private async command(body: Record<string, unknown>): Promise<unknown> {
     const text = typeof body.text === 'string' ? body.text.trim() : ''
     if (text.length === 0) throw new HttpError(400, 'bad_request', '指令不能为空')
     if (text.length > COMMAND_MAX_CHARS) throw new HttpError(400, 'bad_request', `指令太长（最多 ${COMMAND_MAX_CHARS} 字）`)
+    // 它是自动下线的话先让它上来，指令照常交给它
+    await this.deps.comeBack?.('主人在面板上发了指令')
     this.deps.agent.handleEvent({ type: 'panel_command', time: this.now(), text })
     return { ok: true }
   }
@@ -942,14 +948,18 @@ export class PanelServer {
       }
       if (isRecord(body.wake)) Object.assign(c.bot.wake, body.wake)
       if (isRecord(body.limits)) Object.assign(c.bot.limits, body.limits)
+      if (isRecord(body.presence)) Object.assign(c.bot.presence, body.presence)
+      if (isRecord(body.environment)) Object.assign(c.bot.environment, body.environment)
     })
     return { bot: next.bot, defaultPersona: DEFAULT_PERSONA }
   }
 
   private async spawn(): Promise<unknown> {
     const name = this.deps.config.get().bot.name
+    // 主人手动点的上线：不再算“自动下线中”
     this.deps.config.update((c) => {
       c.bot.wantOnline = true
+      c.bot.awayIdle = false
     })
     // 已经在线时身体会拒绝再 spawn（bad_request: bot is already online），所以先看一眼
     let status = await this.deps.bridge.botStatus(name).catch(() => undefined)
@@ -963,6 +973,7 @@ export class PanelServer {
 
   private async despawn(): Promise<unknown> {
     const name = this.deps.config.get().bot.name
+    // 主人手动点的下线：一直不上来，直到他手动上线。“自动下线中”跟着就没了（它只在主人要它在线时才算数，见 config 的 awayIdle）
     this.deps.config.update((c) => {
       c.bot.wantOnline = false
     })
