@@ -19,7 +19,8 @@ const KIND_GROUPS: Record<string, readonly ActivityKind[]> = {
   heard: ['chat', 'whisper', 'command'],
   tools: ['tool_call', 'tool_result'],
   relay: ['relay'],
-  thought: ['model_text'],
+  // 两条线写的字：干活线的，和对话线的（只给主人在面板上看）
+  thought: ['model_text', 'reply'],
   turns: ['turn'],
   events: ['event'],
   notes: ['info', 'error'],
@@ -68,7 +69,9 @@ function detailOf(e: ActivityEntry): { text: string; original?: number } | undef
 
 function headOf(e: ActivityEntry): string {
   const where = `${e.agent !== undefined ? ` ${e.agent}` : ''}${e.turn !== undefined ? ` turn ${e.turn}` : ''}${e.step !== undefined ? ` step ${e.step}` : ''}`
-  return `#${e.id} [${logStamp(e.time)}]${where} · ${e.kind}${e.who !== undefined ? ` ${e.who}` : ''}${e.isError ? ' (error)' : ''}:`
+  // 悄悄话发给谁另放在 to 里（text 只有原话）
+  const to = e.kind === 'say' && e.channel === 'whisper' ? ` (whisper to ${e.to ?? '?'})` : ''
+  return `#${e.id} [${logStamp(e.time)}]${where} · ${e.kind}${e.who !== undefined ? ` ${e.who}` : ''}${to}${e.isError ? ' (error)' : ''}:`
 }
 
 /** 一页里的一条：一行正文，有详细内容的再给个开头。 */

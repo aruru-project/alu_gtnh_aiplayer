@@ -40,7 +40,8 @@ describe('手册：提示词只列目录，要用时才读', () => {
     for (const line of ['talk', 'work'] as const) assert.ok(corePrompt(line, 'Alu').length <= 2400, `the ${line} core prompt is ${corePrompt(line, 'Alu').length} chars`)
     // 上限各加了 300：多了“基地的做法”那一节（空的时候三行，约 130 字），对话线另多两句事实（只写字不调工具这一轮就结束；要查很多步可以交给干活线，约 130 字）
     assert.ok(work.length < 3600, `the work system prompt is ${work.length} chars`)
-    assert.ok(talk.length < 3200, `the talk system prompt is ${talk.length} chars`)
+    // 对话线 3,200 → 3,300：多了“写的字只有主人在面板上看得到”“在游戏里说话用 say、whisper”“干活线也看不到你写的字”这几句事实（约 80 字），现在约 3,210
+    assert.ok(talk.length < 3300, `the talk system prompt is ${talk.length} chars`)
   })
 
   it('对话线的提示词里有两句事实：只写了字没调工具这一轮就到此为止；要查很多步的事可以交给干活线，两条线每轮各能走几步用的是设置里的数。干活线的提示词里没有这两句', async (t) => {
@@ -51,7 +52,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     await h.agent.whenIdle()
     const talk = h.talk.requests[0]!.system ?? ''
     const facts =
-      '- 这一步只写了字、没有同时调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。\n' +
+      '- 这一步只写了字、没有调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。\n' +
       '- 要查很多步的事两条线都查得了：你一轮最多 12 步，干活线一轮最多 80 步。交给它查，它查完会带话回来。\n'
     assert.ok(talk.includes(facts), talk.slice(0, 1800))
     assert.equal((h.llm.requests[0]!.system ?? '').includes('这一轮就到此为止'), false)
@@ -88,7 +89,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     assert.equal((h.llm.requests.at(-1)!.system ?? '').includes('# 这个服务器'), false)
   })
 
-  it('两条线的提示词：公共部分一样；对话线的最前面写着“你写出来的文字就是你说的话”，干活线的写着它操作身体、怎么汇报；谁也没有对方那一段', async (t) => {
+  it('两条线的提示词：公共部分一样；对话线的最前面写着它写的字谁看得到、在游戏里说话用什么，干活线的写着它操作身体、怎么汇报；谁也没有对方那一段', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
@@ -100,14 +101,22 @@ describe('手册：提示词只列目录，要用时才读', () => {
     assert.ok(work.startsWith(common) && talk.startsWith(common))
     assert.match(common, /对话线：听人说话、回话、查资料。它不操作身体。\n- 干活线：操作身体的只有它。它不对玩家说话。/)
     // 对话线自己的部分第一条就是这个事实
-    assert.ok(talk.slice(common.length).startsWith('\n\n# 你是对话线\n- **你写出来的文字就是你在公共聊天里说的话**：每一步写的字，那一步一结束就说出去；什么都不写就是不说。'))
+    assert.ok(
+      talk.slice(common.length).startsWith(
+        '\n\n# 你是对话线\n- **你写的字只有主人在面板上看得到**，游戏里没人看到。主人从面板跟你说话时，写字就是回他。\n' +
+          '- 在游戏里说话用 say（公共聊天，所有人都看到）或 whisper（只有那个人看到）。\n' +
+          '- 干活线也看不到你写的字：回它、交事给它、答它的问题，都用 tell_worker。\n',
+      ),
+    )
+    // “写的字就是说的话”这类说法一句都不剩
+    assert.equal(/写出来的文字就是|写的字就是|什么都不写就是不说/.test(talk), false)
     assert.match(talk, /你没有任何让身体动的工具/)
     assert.match(talk, /stop_work 一次让一切停下/)
     assert.equal(talk.includes('# 干活靠任务'), false)
     assert.ok(work.slice(common.length).startsWith('\n\n# 你是干活线\n- 你用工具操纵身体。跟玩家说话的是对话线'))
     assert.match(work, /一轮结束时留下的文字自动送给对话线/)
     // 两条线都被告知同一个事实（不是命令）：干活线开的任务、例程结束时它自己会接着做；它还在干时留的话只是背景，停下来了留的才叫醒对话线
-    assert.match(talk, /干活线开的任务、例程一结束，它自己会被叫醒接着做，不需要谁提醒；它还在干的时候留的话只作为背景给你。它停下来了，或者有话要说（汇报、提问），才会出现在“需要你处理的事”里。/)
+    assert.match(talk, /干活线开的任务、例程一结束，它自己会被叫醒接着做，不需要谁提醒；它还在干的时候留的话、中途的汇报只作为背景给你。它停下来了、或者提问，才会出现在“需要你处理的事”里。/)
     assert.match(work, /你开的任务或例程还没结束时留的话，只作为背景给它，不叫醒它；你停下来了（身体上没有你开的任务，也没有例程在跑）留的话才叫醒它。/)
     assert.match(work, /# 干活靠任务/)
     assert.equal(work.includes('# 说话风格'), false)
@@ -125,7 +134,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     const talk = h.talk.requests[0]!.system ?? ''
     assert.match(talk, /# 说话风格\n- 只说文言文，自称Alu。\n\n# 记/)
     assert.equal(talk.includes(DEFAULT_PERSONA.split('\n')[0]!), false, 'the default style is not mixed in')
-    assert.match(talk, /\*\*你写出来的文字就是你在公共聊天里说的话\*\*/)
+    assert.match(talk, /\*\*你写的字只有主人在面板上看得到\*\*/)
     assert.match(talk, /^# 手册$/m)
     assert.equal((h.llm.requests[0]!.system ?? '').includes('文言文'), false)
   })

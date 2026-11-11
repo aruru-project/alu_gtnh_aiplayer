@@ -593,13 +593,15 @@ export class Lines {
     const now = this.now()
     const line = firstLine(text)
     const progress = kind === 'progress'
-    // 出了状况是程序替它报的（本来就限频）、中途留的话不叫醒谁：都不算两条线之间的你来我往
-    const spinning = kind !== 'trouble' && !progress && this.spinning('work')
+    // 普通汇报和中途留的话一样只作背景：它们不等谁回话，对话线为它醒一次只会回一句“好，继续”
+    const quiet = progress || kind === 'report'
+    // 出了状况是程序替它报的（本来就限频）、只作背景的不叫醒谁：都不算两条线之间的你来我往
+    const spinning = kind !== 'trouble' && !quiet && this.spinning('work')
     this.deps.log.add({
       kind: 'relay',
       agent: 'work',
       ...at,
-      text: `干活线 → 对话线（${NOTE_WORD[kind]}${progress ? '，只作背景，没有叫醒它' : spinning ? '，只作背景，没有叫醒它' : ''}）：${line}`,
+      text: `干活线 → 对话线（${NOTE_WORD[kind]}${quiet || spinning ? '，只作背景，没有叫醒它' : ''}）：${line}`,
       ...(line !== text ? { detail: text } : {}),
       relay: { type: kind, from: 'work', to: 'talk', ...(progress && waiting !== undefined ? { waiting } : {}) },
       ...(kind === 'trouble' ? { isError: true } : {}),
@@ -607,6 +609,7 @@ export class Lines {
     this.saveLinks({ ...(kind === 'question' ? { waiting: { text, since: now } } : this.links.waiting ? { waiting: this.links.waiting } : {}), lastReport: { type: kind, text, time: now } })
     this.talk.handleEvent({ type: 'worker', time: now, kind, text, ...(progress && waiting !== undefined ? { waiting } : {}) }, spinning ? { background: true } : {})
     if (spinning) return `Sent, but it does not wake the talk line. ${SPINNING}`
+    if (kind === 'report') return 'Sent. It does not wake the talk line: it reads this the next time it is woken (someone speaks to it, you ask a question, you stop and leave a note). When you need an answer, send a question.'
     return kind === 'question'
       ? 'Sent to the talk line as a question. The answer comes back as a message from the talk line: at your next step if you are still working, or by waking you if your turn has ended. It can take a while when your owner has to be asked.'
       : 'Sent to the talk line.'

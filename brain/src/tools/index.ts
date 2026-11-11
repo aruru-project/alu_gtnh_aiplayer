@@ -18,7 +18,7 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { ToolSpec } from '../llm/index.ts'
 import { buildBlueprint, checkBlueprint, listBlueprints, readBlueprint } from './blueprint.ts'
-import { whisper } from './chat.ts'
+import { say, whisper } from './chat.ts'
 import { craftItem, findInStorage, findItem, findMachines, findRecipes, findUses, processItems } from './crafting.ts'
 import { totalMaterials } from './materials.ts'
 import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
@@ -146,10 +146,11 @@ export const WORK_TOOLS: readonly Tool[] = [
 ]
 
 /**
- * 对话线的工具：悄悄话（公共聊天不用工具，它写的文字就是它说的话）、交事和管干活线的三个、所有只查不动的、
+ * 对话线的工具：在游戏里说话的两个（say 公共聊天、whisper 悄悄话；它不调工具写的字只给主人在面板上看）、交事和管干活线的三个、所有只查不动的、
  * run_program（程序里也只能查）、记忆、提醒、手册、意见簿。没有任何会动身体的：那些事它用 tell_worker 交给干活线。
  */
 export const TALK_TOOLS: readonly Tool[] = [
+  say,
   whisper,
   tellWorker,
   workerStatus,
@@ -284,10 +285,8 @@ export function libraryFor(tools: readonly Tool[], view: ModelView): Tool[] {
   return [...library, ...tools.filter((t) => !listedFor(t, view))]
 }
 
-/** 对话线自己不出声的那个名字：它写的文字就是它说的话。 */
-const SAY = 'say'
-/** 只归对话线的：对玩家说话、提醒、管干活线。 */
-const TALK_ONLY: readonly string[] = [SAY, whisper.name, tellWorker.name, workerStatus.name, stopWork.name]
+/** 只归对话线的：在游戏里说话、管干活线。 */
+const TALK_ONLY: readonly string[] = [say.name, whisper.name, tellWorker.name, workerStatus.name, stopWork.name]
 
 /**
  * 这个名字是不是另一条线的事。是的话返回给模型的那句话（不执行）；不是返回 undefined（照常找、照常执行）。
@@ -296,7 +295,6 @@ const TALK_ONLY: readonly string[] = [SAY, whisper.name, tellWorker.name, worker
  */
 export function otherLine(line: LineName, name: string): string | undefined {
   if (line === 'talk') {
-    if (name === SAY) return 'There is no "say" on the talk line: the plain text you write is what you say in public chat. Write the words as text (whisper is for private messages).'
     if (TALK_TOOLS.some((t) => t.name === name) || QUERY_TOOLS.includes(name)) return undefined
     if ([...WORK_TOOLS, ...LIBRARY_TOOLS, ...LEGACY_TOOLS].some((t) => t.name === name)) {
       return `Not done: "${name}" acts with the body or changes something in the game, and only the worker line does that; the talk line has no tool that does. To have it done, hand it over with tell_worker (say what you want done; the worker has ${name}).`
@@ -304,7 +302,7 @@ export function otherLine(line: LineName, name: string): string | undefined {
     return undefined
   }
   if (!TALK_ONLY.includes(name)) return undefined
-  if (name === SAY || name === whisper.name) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it with report {text} (or leave it as the text that ends your turn) and it decides what to say to whom.`
+  if (name === say.name || name === whisper.name) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.`
   return `Not done: "${name}" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`
 }
 

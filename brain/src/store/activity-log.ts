@@ -9,11 +9,12 @@ import { localDateKey } from './usage.ts'
 export type ActivityKind =
   | 'chat' // 游戏里别人说的话
   | 'whisper' // 别人私聊 bot
-  | 'say' // bot 说的话（公共或私聊）
+  | 'say' // bot 在游戏里说的话（公共聊天或私聊）
+  | 'reply' // 对话线写的字：不进游戏，只给主人在面板上看（主人从面板说话，这就是回他的话）
   | 'command' // 面板发来的指令
   | 'event' // 其他游戏事件（任务结束、受伤、进出……）
   | 'turn' // 一轮决策开始/结束
-  | 'model_text' // 模型的文本输出（不进聊天）
+  | 'model_text' // 干活线写的字（不进聊天，也不给对话线看；一轮结束时留下的那段另外送给对话线）
   | 'tool_call'
   | 'tool_result'
   | 'error'
@@ -109,7 +110,11 @@ export interface ActivityEntry {
   agent?: string
   /** kind 是 relay 时：这次往来是什么、从谁到谁。 */
   relay?: ActivityRelay
-  /** kind 是 say 时：身体回的发送结果里有不寻常的（分了几行、截掉多少字、丢了几行）才带。 */
+  /** kind 是 say 时：说在哪——public 公共聊天（所有人都看到）、whisper 悄悄话（只有 to 看到）。 */
+  channel?: 'public' | 'whisper'
+  /** kind 是 say、channel 是 whisper 时：悄悄话发给谁（text 只放原话）。 */
+  to?: string
+  /** kind 是 say、channel 是 public 时：身体回的发送结果里有不寻常的（分了几行、截掉多少字、丢了几行）才带。 */
   sent?: ActivitySent
   /** 这一轮的第几次模型调用（从 1 起）：model_call、model_text 和模型直接调的工具都带，面板把工具挂在那一步下面。 */
   step?: number

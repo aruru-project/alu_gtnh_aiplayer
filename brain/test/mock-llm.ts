@@ -443,25 +443,24 @@ function thingsToHandle(text: string): string[] {
 /**
  * 只会传话的对话线（两条线的端到端场景里，要证明的是干活线怎么干活时用它）：
  * 有人说话 → 原样交给干活线（tell_worker），自己不出声；干活线送来的话（汇报、提问、做完留下的、出了状况）→ 说给人听。
- * whisperTo 给了就用悄悄话说给这个玩家，不给就在公共聊天里说（对话线写的文字就是它说的话）。
+ * whisperTo 给了就用悄悄话说给这个玩家，不给就用 say 在公共聊天里说（对话线不调工具写的字不进游戏）。
  */
 export function talkRelay(opts: { whisperTo?: string } = {}): Responder {
   return (req) => {
     if (!Array.isArray(req.body?.tools) || req.body.tools.length === 0) return { text: 'pong' }
     const { text } = lastUserTurn(req)
     const toolCalls: MockToolCall[] = []
-    const say: string[] = []
     for (const thing of thingsToHandle(text)) {
       const fromWorker = /^干活线(?:汇报：|提问（[^）]*）：|停下来了（[^）]*），它留下的话：|出了状况（[^）]*）：)([\s\S]*)$/.exec(thing)
       const said = /^(?:\S+(?:（另一个 bot）)? 说：|\S+ 私聊你：|主人通过控制面板对你说：)([^\n]*)/.exec(thing)
       if (fromWorker) {
         if (opts.whisperTo !== undefined) toolCalls.push({ name: 'whisper', input: { player: opts.whisperTo, message: fromWorker[1]! } })
-        else say.push(fromWorker[1]!)
+        else toolCalls.push({ name: 'say', input: { text: fromWorker[1]! } })
       } else if (said) {
         toolCalls.push({ name: 'tell_worker', input: { text: said[1]! } })
       }
     }
-    return { ...(say.length > 0 ? { text: say.join(' ') } : {}), ...(toolCalls.length > 0 ? { toolCalls } : {}) }
+    return toolCalls.length > 0 ? { toolCalls } : {}
   }
 }
 

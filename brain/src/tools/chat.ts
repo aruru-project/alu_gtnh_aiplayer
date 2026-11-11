@@ -67,7 +67,7 @@ export interface Spoken {
 }
 
 /**
- * 在公共聊天里说一段话（对话线写的文字、程序替它说的话都走这里）：去掉 markdown 记号，压成一行，交给身体。
+ * 在公共聊天里说一段话（对话线的 say、程序替它说的话都走这里）：去掉 markdown 记号，压成一行，交给身体。
  * 怎么分行、截没截由身体定，它的回话里有，照实带回去。身体不在线、bridge 断了时抛 BridgeError。
  */
 export async function speakInChat(bridge: BridgeApi, botName: string, text: string): Promise<Spoken> {
@@ -88,6 +88,37 @@ export function spokenTrouble(s: Spoken): string | undefined {
     ...(s.droppedLines > 0 ? [`最后 ${s.droppedLines} 行没发出去（你还有太多行聊天排着没发完）`] : []),
   ]
   return notes.length > 0 ? `这段话没有全部说出去：${notes.join('；')}。没说出去的可以之后再说。` : undefined
+}
+
+/**
+ * 对话线在公共聊天里说话：服务器里所有人都看得到。它不调工具写的字只给主人在面板上看，游戏里没人看到。
+ * 怎么分行、截没截、丢没丢由身体定，它的回话里有，照实写进结果。
+ */
+export const say: Tool = {
+  name: 'say',
+  description: `Say something in public chat: everyone on the server sees it. (Text you write without a tool is seen only by your owner on the control panel.) A chat line holds at most ${SAY_LINE_CHARS} characters: longer text goes out as several lines, about one a second, at most ${SAY_MAX_CHARS} characters at a time. Markdown marks are removed.`,
+  inputSchema: obj({ text: str('What to say.') }, ['text']),
+  async run(ctx, input: { text: string }) {
+    const spoken = await speakInChat(ctx.bridge, ctx.botName, input.text)
+    if (spoken.outcome === 'empty') return fail('Nothing was said: the text is empty once markdown marks are removed.')
+    if (spoken.outcome === 'unsent') {
+      return fail(`Nothing was said: its ${spoken.droppedLines} line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.`)
+    }
+    const said = spoken.cutChars > 0 ? spoken.text.slice(0, Math.max(0, spoken.text.length - spoken.cutChars)) : spoken.text
+    const odd = spoken.cutChars > 0 || spoken.droppedLines > 0
+    const note = spokenTrouble(spoken)
+    ctx.hooks.spoke?.({
+      kind: 'say',
+      text: said,
+      ...(odd ? { sent: { ...(spoken.lines !== undefined ? { lines: spoken.lines } : {}), ...(spoken.cutChars > 0 ? { cutChars: spoken.cutChars } : {}), ...(spoken.droppedLines > 0 ? { droppedLines: spoken.droppedLines } : {}) } } : {}),
+      ...(note !== undefined ? { note } : {}),
+    })
+    return [
+      spoken.lines !== undefined && spoken.lines > 1 ? `Said in public chat, as ${spoken.lines} lines of at most ${SAY_LINE_CHARS} characters, going out about one a second.` : 'Said in public chat.',
+      ...(spoken.cutChars > 0 ? [`The last ${spoken.cutChars} characters were cut off: one say holds at most ${SAY_MAX_CHARS}. Say the rest in another say.`] : []),
+      ...(spoken.droppedLines > 0 ? [`The last ${spoken.droppedLines} line(s) were not sent: too many chat lines of yours were still waiting to go out.`] : []),
+    ].join(' ')
+  },
 }
 
 export const whisper: Tool = {

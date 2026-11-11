@@ -49,11 +49,11 @@ export const stopWork: Tool = {
 export const report: Tool = {
   name: 'report',
   description:
-    'Tell the talk line (the line of you that speaks with players) something now, without ending your turn: progress worth hearing, a finding, a question. question: true says you are waiting for the answer; it comes back as a message from the talk line, which asks your owner when it cannot answer itself. The text you leave when a turn ends reaches it without a report: it wakes the talk line once you have stopped, and is only background for it while a task or routine of yours is still running.',
+    'Leave the talk line (the line of you that speaks with players) a note now, without ending your turn: progress, a finding. A plain note does not wake it: it reads it the next time it is woken, and when someone asks how things go. question: true wakes it at once, and says you are waiting for the answer; it comes back as a message from the talk line, which asks your owner when it cannot answer itself. What you leave when your turn ends wakes it too, once you have stopped.',
   inputSchema: obj(
     {
       text: str('What to tell it. It does not see your tool calls or their results: put in the names, numbers and places it needs.', { maxLength: REPORT_MAX_CHARS }),
-      question: bool('true: this is a question and you are waiting for the answer.'),
+      question: bool('true: a question you are waiting for the answer to; this wakes the talk line at once.'),
     },
     ['text'],
   ),

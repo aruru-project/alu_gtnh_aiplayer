@@ -113,8 +113,11 @@ export interface ReminderAccess {
 
 /** 工具执行时通知上层的钩子。工具自己不做任何决定。 */
 export interface ToolHooks {
-  /** bot 在公共聊天或私聊里说了话。 */
-  spoke?(info: { kind: 'say' | 'whisper'; to?: string; text: string }): void
+  /**
+   * bot 在公共聊天或私聊里说了话。text 是真的说出去了的；sent 是身体回的发送结果里不寻常的（分了几行、截掉多少字、丢了几行），
+   * note 是同一件事写成的一句话（记进日志）。
+   */
+  spoke?(info: { kind: 'say' | 'whisper'; to?: string; text: string; sent?: { lines?: number; cutChars?: number; droppedLines?: number }; note?: string }): void
   /** 成功启动（或排队）了一个任务。 */
   taskStarted?(task: TaskInfo): void
   /**

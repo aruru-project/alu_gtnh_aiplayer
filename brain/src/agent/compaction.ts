@@ -180,16 +180,25 @@ export const SEGMENT_MIN_CHARS = 8_000
 const TRANSCRIPT_ARGS_MAX_CHARS = 2000
 
 /**
- * 一轮排成给写交接记录的模型看的几行。它自己写的字、叫醒它的事全给；工具调用的参数和结果各留到两千字符
- * （结果在第一步里已经截到这么长了）。spoken：这是对话线的记录，它写的文字是它说出口的话，不是想法。
+ * 它写的字在记录里怎么标：干活线的是想法；对话线的只给主人在面板上看（在游戏里说的话是 say、whisper 的工具调用）。
+ * textSaidBefore：对话线在这个时刻以前的轮里，写的字就是在公共聊天里说出去的话（那时还没有 say）。
  */
-function transcriptLines(turn: Turn, spoken: boolean): string[] {
+function textLabel(turn: Turn, talk: boolean, textSaidBefore: number | undefined): string {
+  if (!talk) return '它的想法'
+  return textSaidBefore !== undefined && turn.startedAt < textSaidBefore ? '它在公共聊天里说的话' : '它写的字（只有主人在面板上看得到）'
+}
+
+/**
+ * 一轮排成给写交接记录的模型看的几行。它自己写的字、叫醒它的事全给；工具调用的参数和结果各留到两千字符
+ * （结果在第一步里已经截到这么长了）。label：它写的字标成什么（textLabel）。
+ */
+function transcriptLines(turn: Turn, label: string): string[] {
   const names = new Map<string, string>()
   const lines: string[] = []
   for (const m of turn.messages) {
     if (m.role === 'assistant') {
       for (const p of m.content) {
-        if (p.type === 'text') lines.push(`[${spoken ? '它说的话' : '它的想法'}] ${p.text}`)
+        if (p.type === 'text') lines.push(`[${label}] ${p.text}`)
         else if (p.type === 'tool_call') {
           names.set(p.id, p.name)
           lines.push(`[它调用工具] ${p.name} ${clipText(JSON.stringify(p.input ?? {}), TRANSCRIPT_ARGS_MAX_CHARS)}`)
@@ -219,7 +228,7 @@ export interface TranscriptSegment {
  * 一段尽量在轮的边界上切；单独一轮就比一段长的（一轮里调了上百次工具），把它拆到几段里，后面几段的标题写着“（续）”；
  * 单独一行就比一段长的，这一行也切开。什么都不丢：所有的段连起来就是全部要换掉的记录。
  */
-export function transcriptSegments(turns: readonly Turn[], maxChars: number = SEGMENT_MAX_CHARS, spoken = false): TranscriptSegment[] {
+export function transcriptSegments(turns: readonly Turn[], maxChars: number = SEGMENT_MAX_CHARS, talk = false, textSaidBefore?: number): TranscriptSegment[] {
   const segments: TranscriptSegment[] = []
   let lines: string[] = []
   let size = 0
@@ -233,7 +242,7 @@ export function transcriptSegments(turns: readonly Turn[], maxChars: number = SE
   turns.forEach((turn, index) => {
     const head = `=== 第 ${turn.id} 轮 ===`
     const again = `=== 第 ${turn.id} 轮（续）===`
-    const body = transcriptLines(turn, spoken)
+    const body = transcriptLines(turn, textLabel(turn, talk, textSaidBefore))
     const whole = head.length + body.reduce((n, line) => n + line.length + 1, 0) + 1
     // 这一轮放不进当前这一段：先把当前这一段收了
     if (size > 0 && size + whole > maxChars) flush()
@@ -263,8 +272,8 @@ export function transcriptSegments(turns: readonly Turn[], maxChars: number = SE
 }
 
 /** 若干轮排成一整段文字（不分段）。 */
-export function renderTranscript(turns: readonly Turn[], spoken = false): string {
-  return transcriptSegments(turns, Number.MAX_SAFE_INTEGER, spoken).map((seg) => seg.text).join('\n\n')
+export function renderTranscript(turns: readonly Turn[], talk = false, textSaidBefore?: number): string {
+  return transcriptSegments(turns, Number.MAX_SAFE_INTEGER, talk, textSaidBefore).map((seg) => seg.text).join('\n\n')
 }
 
 /** 交接记录最多写多少字符：干活线要留坐标、容器、查到的配方、没还原的东西；对话线留的是话和约定。 */
@@ -331,7 +340,7 @@ ${HOW_TO_WRITE('“主人交代的事和要求”“这一段结束时在做的�
 /** 对话线的历史怎么写成交接记录：它只跟人说话、查资料，动手的事交给干活线，所以要留的是话和约定。 */
 export const TALK_SUMMARY_SYSTEM = `你在替一个 Minecraft（GTNH 整合包）服务器里的 AI 玩家的“对话线”写“交接记录”。这个玩家长期在线，听主人的话；它的“对话线”只负责跟人说话和查资料，动手的事交给干活线去做。对话线的经历太长，放不进一次对话了，较早的一段要换成你写的这份记录——换掉以后那一段的原文它就看不到了，只能靠这份记录接着聊、接着管事。这份记录后面还接着它最近的经历的原文（没被换掉的那些轮），所以记录写到这一段结束时为止：这一段结束时的情况，不一定是它现在的情况。
 
-你会拿到【已有的交接记录】（之前压过才有）和【之后的经历】（按时间排的原始记录：它听到的话、它说的话、它查的东西、交给干活线的事、干活线的汇报和提问）。写出一份合并后的完整记录。
+你会拿到【已有的交接记录】（之前压过才有）和【之后的经历】（按时间排的原始记录：它听到的话、它在游戏里说的话（say、whisper 的调用）、它写的字（只有主人在面板上看得到；主人从面板说话时就是回他的话）、它查的东西、交给干活线的事、干活线的汇报和提问）。写出一份合并后的完整记录。
 
 ${HOW_TO_WRITE('“主人和别人交代的事、提的要求”“这一段结束时在聊的”“交给干活线的事”里还没有结果的、“干活线问过的、主人答过的”里还没有回答的、“答应过的事”', '“交给干活线的事”里早就有了结果的几条和“查到的结论”里最早的几条')}
 - 不用写：位置、背包、干活线此刻在干什么这类现在的状态（每一轮开头都会重新给它）；手册的内容和它记的笔记（它们不在这段经历里，一直都在）。
@@ -439,6 +448,8 @@ export interface SummarizeOptions {
   signal?: AbortSignal | undefined
   /** 这是对话线的历史。 */
   talk?: boolean
+  /** 对话线：这个时刻以前的轮里，它写的字是在公共聊天里说出去的话（transcriptSegments）。 */
+  textSaidBefore?: number | undefined
   /** 一段最多多少字符（默认 SEGMENT_MAX_CHARS）。 */
   segmentChars?: number | undefined
   /** 交接记录的上限（字符）。 */
@@ -471,7 +482,7 @@ export interface SummarizeResult {
 export async function summarize(llm: LlmClient, previousSummary: string, turns: readonly Turn[], opts: SummarizeOptions): Promise<SummarizeResult> {
   const talk = opts.talk === true
   let segmentChars = opts.segmentChars ?? SEGMENT_MAX_CHARS
-  let segments = transcriptSegments(turns, segmentChars, talk)
+  let segments = transcriptSegments(turns, segmentChars, talk, opts.textSaidBefore)
   let at = 0
   let written = 0
   let summary = previousSummary
@@ -504,7 +515,7 @@ export async function summarize(llm: LlmClient, previousSummary: string, turns: 
       if (kind === 'context_length' && segmentChars > SEGMENT_MIN_CHARS) {
         segmentChars = Math.max(SEGMENT_MIN_CHARS, Math.floor(segmentChars / 2))
         summary = atTurnBoundary
-        segments = transcriptSegments(turns.slice(folded), segmentChars, talk).map((s) => ({ ...s, turnsDone: s.turnsDone + folded }))
+        segments = transcriptSegments(turns.slice(folded), segmentChars, talk, opts.textSaidBefore).map((s) => ({ ...s, turnsDone: s.turnsDone + folded }))
         at = 0
         continue
       }
@@ -533,6 +544,8 @@ export interface CompactOptions {
   signal?: AbortSignal
   /** 这是对话线的历史：交接记录按“话和约定”来写。 */
   talk?: boolean
+  /** 对话线：这个时刻以前的轮里，它写的字是在公共聊天里说出去的话（那时还没有 say）。 */
+  textSaidBefore?: number | undefined
   /** 写交接记录的模型一次看多少字符的记录（默认 SEGMENT_MAX_CHARS）。 */
   segmentChars?: number
   /** 这条线最近一次模型调用的数，拿来校准大小；没有就整个按“字符 ÷ 3”。 */
@@ -644,7 +657,7 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
   // 该换的太少：先攒着，不值得为它重写一次整段缓存
   if (mode === 'auto' && old.reduce((n, t) => n + turnTokens(t), 0) * scale < opts.threshold * MIN_FOLD_SHARE) return tidiedOnly()
 
-  const wrote = await summarize(opts.llm, summary, old, { signal: opts.signal, talk, segmentChars: opts.segmentChars, capChars })
+  const wrote = await summarize(opts.llm, summary, old, { signal: opts.signal, talk, textSaidBefore: opts.textSaidBefore, segmentChars: opts.segmentChars, capChars })
   const cost: Partial<CompactResult> = { calls: wrote.calls, capChars, inputChars: wrote.inputChars, usage: wrote.usage, ms: wrote.ms, ...(wrote.analysis.length > 0 ? { analysis: wrote.analysis } : {}) }
   if (wrote.error === undefined) {
     return done('summarized', wrote.summary, current.slice(cut), { removedTurns: cut, folded: rangeOf(old)!, ...cost })

@@ -80,11 +80,31 @@ export async function buildSnapshot(
 /** 背景事件太多时只留最近的这么多条。 */
 export const BACKGROUND_SHOWN = 30
 
+/**
+ * 对话线每一轮消息的最后一句：这一轮是谁、在哪跟它说的，它写的字谁看得到。放在最后，离它下笔最近，小模型也不会弄错
+ * （它写的字不进游戏，只给主人在面板上看；在游戏里说话要用 say、whisper）。
+ */
+export function talkClosing(events: readonly AgentEvent[]): string {
+  const unique = (names: string[]): string[] => [...new Map(names.map((n) => [n.toLowerCase(), n])).values()]
+  const chatters = unique(events.flatMap((e) => (e.type === 'chat' ? [e.player] : [])))
+  const whisperers = unique(events.flatMap((e) => (e.type === 'whisper' ? [e.from] : [])))
+  const panel = events.some((e) => e.type === 'panel_command')
+  const them = (names: string[]): string => (names.length > 1 ? '他们' : '他')
+  const parts: string[] = []
+  if (chatters.length > 0) parts.push(`${chatters.join('、')} 是在游戏聊天里对你说的；要回${them(chatters)}得用 say（所有人都看到）或 whisper（只有那个人看到），只写字${them(chatters)}看不到。`)
+  if (whisperers.length > 0) parts.push(`${whisperers.join('、')} 是在游戏里悄悄对你说的；要回${them(whisperers)}得用 whisper 或 say，只写字${them(whisperers)}看不到。`)
+  if (panel) parts.push(parts.length > 0 ? '面板上那句是主人说的，你写的字他看得到。' : '这是主人在面板上说的，你写的字他看得到。')
+  if (parts.length === 0) parts.push('这一轮没有人跟你说话。你写的字只有主人在面板上看得到，游戏里的人看不到；要在游戏里说话用 say 或 whisper。')
+  return `[谁在跟你说话] ${parts.join(' ')}`
+}
+
+/** closing：放在最后的一句（对话线的 talkClosing）。 */
 export function composeTurnMessage(
   triggers: readonly AgentEvent[],
   background: readonly AgentEvent[],
   snapshot: string,
   now: number,
+  closing?: string,
 ): string {
   const parts: string[] = []
   parts.push(`[需要你处理的事]\n${triggers.map((e) => eventLine(e, now)).join('\n')}`)
@@ -96,6 +116,7 @@ export function composeTurnMessage(
     )
   }
   parts.push(`[当前状态]\n${snapshot}`)
+  if (closing !== undefined) parts.push(closing)
   return parts.join('\n\n')
 }
 
@@ -103,8 +124,8 @@ export function composeTurnMessage(
  * 一轮进行到一半时新到的事（有人说话、任务结束、例程有结果……本来会另开一轮的那些）：接在刚凑齐的工具结果后面，
  * 这一轮就让模型看到。格式和开头的“需要你处理的事”一样（说话的带着他站在哪、指着什么）。
  */
-export function composeArrivals(events: readonly AgentEvent[], now: number): string {
-  return `[需要你处理的事（你做上一步的时候新到的）]\n${events.map((e) => eventLine(e, now)).join('\n')}`
+export function composeArrivals(events: readonly AgentEvent[], now: number, closing?: string): string {
+  return `[需要你处理的事（你做上一步的时候新到的）]\n${events.map((e) => eventLine(e, now)).join('\n')}${closing !== undefined ? `\n\n${closing}` : ''}`
 }
 
 /**

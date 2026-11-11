@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
 import type { GenerateResult } from '../src/llm/index.ts'
-import { assertToolPairs, chat, llmDown, makeAgent, relays, reply, sentToTalk, taskEnded, told } from './agent-harness.ts'
+import { assertToolPairs, chat, llmDown, makeAgent, relays, reply, says, sentToTalk, taskEnded, told } from './agent-harness.ts'
 import { sleep, waitFor } from './helpers.ts'
 
 // 这里测的是一条线自己的一轮怎么走（收事件、调模型、执行工具、落历史、出故障怎么办），大多用干活线：
@@ -146,19 +146,19 @@ describe('agent 的一轮决策', () => {
       if (++asked === 2) h.agent.handleEvent({ ...chat('Steve', '等等，先说铁有多少'), speaker: { block: { x: 12, y: 64, z: 3 }, facing: 'north' } })
       return status(p)
     }
-    h.talk.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), reply('来了'))
+    h.talk.enqueue(reply('', [{ id: 'c1', name: 'get_status' }]), says('来了'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 你身上有多少土'))
-    await waitFor('the turn ended', () => h.talk.requests.length === 2)
+    await waitFor('the turn ended', () => h.talk.requests.length === 3)
     await h.agent.whenIdle()
 
     // 第 2 次模型请求：上一步的工具结果后面跟着那句话，带着他站在哪
     const second = h.talk.requests[1]!.messages.at(-1)!
     assert.deepEqual(second.content.map((p) => p.type), ['tool_result', 'text'])
     const arrived = second.content[1]!
-    assert.match(arrived.type === 'text' ? arrived.text : '', /^\[需要你处理的事（你做上一步的时候新到的）\]\n\[[\d:]+\] Steve 说：等等，先说铁有多少\n {2}（Steve 站在 \(12,64,3\) 面朝北，没有指着什么方块）$/)
-    // 一共就这一轮（两次模型调用），那句话没有再触发新的一轮
+    assert.match(arrived.type === 'text' ? arrived.text : '', /^\[需要你处理的事（你做上一步的时候新到的）\]\n\[[\d:]+\] Steve 说：等等，先说铁有多少\n {2}（Steve 站在 \(12,64,3\) 面朝北，没有指着什么方块）\n\n\[谁在跟你说话\] Steve 是在游戏聊天里对你说的；/)
+    // 一共就这一轮（三次模型调用），那句话没有再触发新的一轮
     await sleep(30)
-    assert.equal(h.talk.requests.length, 2)
+    assert.equal(h.talk.requests.length, 3)
     assert.deepEqual(h.game.said, ['来了'])
     // 给模型的全部内容里这句话只出现一次；历史里也只有一份
     const everything = JSON.stringify(h.talk.requests[1]!.messages)
@@ -831,10 +831,10 @@ describe('agent 的一轮决策', () => {
 })
 
 describe('agent 的限制和故障处理', () => {
-  it('对话线的模型接口坏了：程序替它在聊天里只说一次，过一会儿自动重试，恢复后把原来的话处理掉', async (t) => {
+  it('对话线的模型接口坏了（游戏里有人叫它）：程序替它在聊天里只说一次，过一会儿自动重试，恢复后把原来的话处理掉', async (t) => {
     const h = makeAgent({ timing: { retryDelaysMs: [30, 30, 30] } })
     t.after(h.cleanup)
-    h.talk.enqueue(llmDown(), llmDown(), reply('我回来了，这就去。'))
+    h.talk.enqueue(llmDown(), llmDown(), says('我回来了，这就去。'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 去挖点土'))
 
     await waitFor('outage visible', () => h.agent.statusOf('talk').outage?.failures === 2)
@@ -979,7 +979,7 @@ describe('agent 的限制和故障处理', () => {
   it('只有干活线没配模型：交给它的事没法处理，对话线被告知“身体不会动”，由它跟主人说', async (t) => {
     const h = makeAgent({ noModel: 'work' })
     t.after(h.cleanup)
-    h.talk.enqueue(reply('好', [{ name: 'tell_worker', input: { text: '去仓库' } }]), reply(''), reply('我干活的那一半还没接上模型，去面板给它选一个。'))
+    h.talk.enqueue(says('好', [{ name: 'tell_worker', input: { text: '去仓库' } }]), reply(''), says('我干活的那一半还没接上模型，去面板给它选一个。'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 去仓库'))
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 0)

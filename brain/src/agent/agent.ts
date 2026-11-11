@@ -2,7 +2,7 @@
 // 这一层不直接发 HTTP（走 LlmClient），不直接读写 socket（走 BridgeApi）。
 //
 // 一个 bot 有两个 Agent 实例，在同一个进程里各跑各的（docs/TALK_WORK.md）：对话线（talk）听人说话、回话、查资料，
-// 它写的文字就是它在公共聊天里说的话，没有任何会动身体的工具；干活线（work）操作身体，不对玩家说话，
+// 在游戏里说话用 say、whisper（它不调工具写的字不进游戏，只给主人在面板上看），没有任何会动身体的工具；干活线（work）操作身体，不对玩家说话，
 // 一轮结束时留下的文字送给对话线。两条线各有历史、压缩、状态、模型、事件队列和步数上限；
 // 谁收哪些事件、两条线之间怎么往来由 agent/lines.ts 接上（deps.links）。
 
@@ -16,7 +16,7 @@ import type { TodoAccess } from '../tools/todo.ts'
 import type { FeedbackContext, FeedbackStore, FeedbackTask, FeedbackToolCall } from '../store/feedback.ts'
 import type { ChatLog } from '../store/chat-log.ts'
 import type { HistoryStore } from '../store/history.ts'
-import { speakInChat, spokenTrouble } from '../tools/chat.ts'
+import { speakInChat } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
@@ -24,7 +24,7 @@ import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, bridg
 import type { LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
 import type { CompactResult, ContextGauge } from './compaction.ts'
-import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext } from './context.ts'
+import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext, talkClosing } from './context.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, eventLine, isHumanInput } from './events.ts'
 import type { AgentEvent, SaidEvent, WorkerNote } from './events.ts'
@@ -92,6 +92,13 @@ export interface PersistedAgentState {
   endedSeen: string[]
   /** 已经决定要处理、但还没处理完的事件（进程重启后接着处理）。 */
   queue: AgentEvent[]
+  /**
+   * 对话线：从这个时刻（epoch ms）起，它写的字不再说进游戏（只给主人在面板上看）；更早的轮里写的字是在公共聊天里说出去的。
+   * 没有这一项的是那以前的数据。
+   */
+  textNotSaidSince?: number
+  /** 对话线：“写的字不再说进游戏”这件事已经告诉过它了（历史里有那以前的轮时，要在下一轮告诉它一次）。 */
+  textNotSaidTold?: boolean
 }
 
 /**
@@ -334,8 +341,12 @@ const ABOUT_CHARS = 100
 /** 一轮里最近几步工具调用留着给 worker_status 看，每个结果留多长。 */
 const PEEK_STEPS_KEPT = 8
 const PEEK_RESULT_CHARS = 600
-/** 对话线这一步写了字又调了工具：工具结果后面附这一句。 */
-export const SAID_NOTE = '[系统] 你这一步写的字已经在公共聊天里说出去了，大家都看到了。'
+/**
+ * 对话线：大脑升级成“写的字不进游戏、说话用 say”以后，历史里还有那以前的轮（那时写的字就是在公共聊天里说的话）。
+ * 下一轮作为背景告诉它一次。
+ */
+export const TEXT_NOT_SAID_NOTE =
+  '[系统] 大脑升级了：从现在起，你写的字不再说进游戏聊天，只有主人在面板上看得到。要在游戏里说话，用 say（所有人都看到）或 whisper（只有那个人看到）。历史里在这之前的那些轮，那时写的字就是在公共聊天里说出去的话。'
 
 const NOT_WOKEN_NOTES: Partial<Record<WakeDecision['reason'], string>> = {
   not_addressed: '没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内。',
@@ -404,7 +415,11 @@ export class Agent {
   /** 盯着的任务各是什么类型（给人看的；重启后不记得，只剩 id）。 */
   private trackedTypes = new Map<string, string>()
   private endedSeen: string[] = []
+  /** 这一轮它在游戏里说了话（say、whisper）。 */
   private turnSpoke = false
+  /** 对话线：从什么时候起写的字不再说进游戏；这件事告诉过它没有（PersistedAgentState 里同名的两项）。 */
+  private textNotSaidSince: number | undefined
+  private textNotSaidTold = true
   /** 这一轮里的人说的话（开头的和中途接进来的）：交事、叫停时原样附给干活线。 */
   private turnSaid: SaidEvent[] = []
   /** 其中已经随这一轮的某次交事附过的。 */
@@ -505,6 +520,16 @@ export class Agent {
         })
       : undefined
     const saved = deps.persist?.load()
+    if (this.line === 'talk') {
+      this.textNotSaidSince = saved?.textNotSaidSince ?? this.now()
+      if (saved?.textNotSaidSince !== undefined) this.textNotSaidTold = saved.textNotSaidTold !== false
+      else {
+        // 那以前的数据：历史里有那时的轮（写的字就是说出去的话），就在下一轮告诉它一次
+        const h = deps.history.get()
+        this.textNotSaidTold = h.turns.length === 0 && h.summary.length === 0
+        if (!this.textNotSaidTold) this.log.add({ kind: 'info', text: '大脑升级：从这次启动起，对话线写的字不再说进游戏聊天，只在面板上给主人看；在游戏里说话用 say、whisper。它的下一轮会告诉它一次。' })
+      }
+    }
     if (saved) {
       this.tracked = new Set(saved.tracked)
       this.endedSeen = saved.endedSeen.slice(-ENDED_SEEN_MAX)
@@ -614,6 +639,7 @@ export class Agent {
       if (decision.reason === 'failure_streak') {
         void this.trouble(
           'failure_streak',
+          false,
           '我这边任务连着失败好几次了，先停下，等人来看看。',
           `身体的任务已经接连失败 ${this.failureStreak} 次，干活线不再为任务失败自动醒来（免得一直空转）。最近一次：${firstLine(describeEvent(ev), 300)}。带话给它（tell_worker）它会接着处理。`,
         )
@@ -984,8 +1010,9 @@ export class Agent {
     this.inFlight = triggers
     const talk = this.line === 'talk'
     const links = this.deps.links
-    // 这一轮开头有没有人跟它说话（模型用不了时，对话线要不要在聊天里说一声）
+    // 这一轮开头有没有人跟它说话（模型用不了时，对话线要不要说一声）；是不是游戏里的人（那一声要不要在游戏里说）
     const humanTriggered = triggers.some(isHumanInput)
+    const fromGame = (): boolean => triggers.some((e) => e.type === 'chat' || e.type === 'whisper')
     this.turnSaid = triggers.filter(isHumanInput)
     this.turnSaidSent.clear()
     this.turnSteps = []
@@ -1009,7 +1036,7 @@ export class Agent {
     if (!llm) {
       this.log.add({ kind: 'error', text: `${talk ? '对话线' : '干活线'}还没有可用的模型服务，这些事没法处理。请到面板“设置”里的“模型”页添加并选中一个。` })
       if (!talk || humanTriggered) {
-        await this.trouble('no_model', '我还没接上模型，现在没法思考，得有人去面板配一下。', '干活线还没有可用的模型（面板“设置”里的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。')
+        await this.trouble('no_model', fromGame(), '我还没接上模型，现在没法思考，得有人去面板配一下。', '干活线还没有可用的模型（面板“设置”里的“模型”页里没有给它选上），交给它的事没有处理，身体不会动。')
       }
       giveBack()
       return
@@ -1017,7 +1044,7 @@ export class Agent {
     if (this.overBudget(settings)) {
       this.log.add({ kind: 'error', text: `今天的 token 用量已到上限（${settings.dailyTokenLimit}，两条线合计），这些事没有处理。` })
       // 干活线不另外报：额度是两条线合计的，对话线这时也想不了
-      if (talk && humanTriggered) await this.trouble('budget', '我今天的模型额度用完了，明天再说，或者让主人去面板调一下上限。', '')
+      if (talk && humanTriggered) await this.trouble('budget', fromGame(), '我今天的模型额度用完了，明天再说，或者让主人去面板调一下上限。', '')
       giveBack()
       return
     }
@@ -1035,7 +1062,10 @@ export class Agent {
     // 对话线每一轮都看得到干活线现在在干什么：不用调工具就答得出“你在干嘛”
     const workerLine = talk ? await links?.workerLine?.(startedAt) : undefined
     const stateText = [snapshot.text, workerLine, manualLine].filter((part) => part !== undefined && part.length > 0).join('\n')
-    const userText = composeTurnMessage(triggers, background, stateText, startedAt)
+    // 对话线：大脑升级以后头一轮，背景里告诉它写的字不再说进游戏（只告诉一次，见 textNotSaidTold）
+    const shownBackground: AgentEvent[] = talk && !this.textNotSaidTold ? [{ type: 'notice', time: startedAt, wake: false, text: TEXT_NOT_SAID_NOTE }, ...background] : background
+    // 对话线：消息最后一句写明这一轮是谁、在哪跟它说的，它写的字谁看得到（离它下笔最近）
+    const userText = composeTurnMessage(triggers, shownBackground, stateText, startedAt, talk ? talkClosing(triggers) : undefined)
     const turnMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: userText }] }]
     this.log.add({
       kind: 'turn',
@@ -1087,7 +1117,7 @@ export class Agent {
       const last = turnMessages[turnMessages.length - 1]
       if (this.pending.length === 0 || !last || last.role !== 'user') return
       const events = this.pending.splice(0)
-      const part: TextPart = { type: 'text', text: composeArrivals(events, this.now()) }
+      const part: TextPart = { type: 'text', text: composeArrivals(events, this.now(), talk && events.some(isHumanInput) ? talkClosing(events) : undefined) }
       last.content.push(part)
       triggers.push(...events)
       unanswered = { events, part }
@@ -1157,7 +1187,7 @@ export class Agent {
           prior = this.priorMessages()
           continue
         }
-        await this.onModelFailure(e)
+        await this.onModelFailure(e, fromGame())
         this.lastTurn = { id: turnId, endedAt: this.now(), steps, how: 'failed' }
         if (steps === 0) {
           requeue()
@@ -1178,23 +1208,21 @@ export class Agent {
       }
       steps++
       if (this.turnNow) this.turnNow.steps = steps
+      if (!this.textNotSaidTold) {
+        this.textNotSaidTold = true
+        this.persist()
+      }
       unanswered = undefined
       this.unseenArrivals = 0
 
       turnMessages.push(result.message)
       const text = textOf(result.message.content).trim()
       const calls = result.message.content.filter((p) => p.type === 'tool_call')
-      // 对话线写的文字就是它说的话：这一步一回来就说出去（和工具调用同一步时先说再调）。干活线的文字只进日志。
-      let unsaid: string | undefined
-      let said: string | undefined
-      if (text.length > 0) {
-        if (talk) ({ trouble: unsaid, said } = await this.speak(text, turnId, steps))
-        else this.log.add({ kind: 'model_text', turn: turnId, step: steps, text })
-      }
+      // 写的字不进游戏：对话线的只给主人在面板上看（主人从面板说话，这就是回他的话；在游戏里说话用 say、whisper），
+      // 干活线的只进日志（一轮结束时留下的那段另外送给对话线）
+      if (text.length > 0) this.log.add(talk ? { kind: 'reply', turn: turnId, step: steps, who: settings.botName, text } : { kind: 'model_text', turn: turnId, step: steps, text })
       if (calls.length === 0) {
         finalText = text
-        // 这一轮到此结束，没有地方再接一句话：没说全的事留给它下一轮看到
-        if (unsaid !== undefined) this.pushBackground({ type: 'notice', time: this.now(), wake: false, text: `上一轮最后你写的那段话：${unsaid}` })
         break
       }
 
@@ -1261,11 +1289,6 @@ export class Agent {
         if (canSee && images.length > 0) part.images = images.map((image) => ({ label: image.label, mediaType: image.mediaType, data: image.data.toString('base64') }))
         results.push(part)
       }
-      // 这一步写的字已经在公共聊天里说出去了：接在工具结果后面照实说一句（它在等工具结果，容易以为那段字还没说、再写一遍）。
-      // 那段字就在它上面那条消息里，这里不再复述一遍
-      if (said !== undefined) results.push({ type: 'text', text: SAID_NOTE })
-      // 这一步写的话没说全：接在工具结果后面告诉它
-      if (unsaid !== undefined) results.push({ type: 'text', text: `[系统] 你这一步写的那段话：${unsaid}` })
       turnMessages.push({ role: 'user', content: results })
 
       if (signal.aborted) {
@@ -1313,50 +1336,6 @@ export class Agent {
       this.turnEnded = { id: turnId, triggers }
     }
     await this.maybeCompact(this.compactor(llm, turnId), settings, signal)
-  }
-
-  /**
-   * 对话线：把这一步写的文字在公共聊天里说出去（去掉 markdown 记号、压成一行）。发出去的结果照实记进日志。
-   * 返回：said 是真的说出去了的那段话（一行）；trouble 是要让模型知道的不寻常之处（没说出去、截了尾、丢了几行）。
-   */
-  private async speak(text: string, turn: number, step: number): Promise<{ said?: string; trouble?: string }> {
-    const botName = this.deps.settings().botName
-    const notSaid = (why: string): void => {
-      this.log.add({ kind: 'model_text', turn, step, text })
-      this.log.add({ kind: 'error', turn, step, text: `它写的这段话没有说出去：${why}` })
-    }
-    try {
-      const spoken = await speakInChat(this.deps.bridge, botName, text)
-      if (spoken.outcome === 'empty') {
-        // 只有记号、清理完什么都不剩：没有可说的
-        this.log.add({ kind: 'model_text', turn, step, text })
-        return {}
-      }
-      const trouble = spokenTrouble(spoken)
-      if (spoken.outcome === 'unsent') {
-        notSaid(trouble ?? '')
-        return trouble !== undefined ? { trouble } : {}
-      }
-      this.turnSpoke = true
-      const odd = spoken.cutChars > 0 || spoken.droppedLines > 0
-      this.log.add({
-        kind: 'say',
-        turn,
-        step,
-        who: botName,
-        text: spoken.text,
-        ...(trouble !== undefined ? { detail: trouble } : {}),
-        ...(odd ? { sent: { ...(spoken.lines !== undefined ? { lines: spoken.lines } : {}), ...(spoken.cutChars > 0 ? { cutChars: spoken.cutChars } : {}), ...(spoken.droppedLines > 0 ? { droppedLines: spoken.droppedLines } : {}) } } : {}),
-      })
-      const said = spoken.cutChars > 0 ? spoken.text.slice(0, Math.max(0, spoken.text.length - spoken.cutChars)) : spoken.text
-      this.deps.chatLog?.add({ time: this.now(), kind: 'said', who: botName, text: said })
-      return { said, ...(trouble !== undefined ? { trouble } : {}) }
-    } catch (e) {
-      const why = e instanceof BridgeError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)
-      notSaid(why)
-      const hint = e instanceof BridgeError ? bridgeHint(e.code, e.message) : undefined
-      return { trouble: `这段话没有说出去（${why}${hint !== undefined ? `；${hint}` : ''}）。` }
-    }
   }
 
   /**
@@ -1459,8 +1438,8 @@ export class Agent {
     }
   }
 
-  /** 模型接口（在调用层自己的重试用尽之后）还是失败：停止硬试，过一阵再来；在聊天里说一次。 */
-  private async onModelFailure(e: LlmError): Promise<void> {
+  /** 模型接口（在调用层自己的重试用尽之后）还是失败：停止硬试，过一阵再来；说一次（inGame：这一轮是游戏里的人叫醒的）。 */
+  private async onModelFailure(e: LlmError, inGame: boolean): Promise<void> {
     const now = this.now()
     this.llmFailures++
     if (this.llmFailures === 1) this.outageSince = now
@@ -1485,6 +1464,7 @@ export class Agent {
       this.outageAnnounced = true
       await this.trouble(
         'model_down',
+        inGame,
         e.retryable ? '我这边模型接口连不上了，先歇一会儿，好了再继续。' : '我的模型接口配置好像有问题，得有人去面板看看。',
         `干活线的模型接口出错了（${this.lastFailureText}），它手上的事停在半路。${Math.round(delay / 1000)} 秒后自动再试，恢复后它会接着处理；${e.retryable ? '一直不好的话得有人去面板看看。' : '这种错重试多半没用，得有人去面板看看它的模型配置。'}`,
       )
@@ -1492,23 +1472,29 @@ export class Agent {
   }
 
   /**
-   * 这条线自己出了状况、事情没法处理时让人知道。同一种状况限频。
-   * 对话线：程序替它在公共聊天里说一句（说不出去就算了）。干活线不对玩家说话：告诉对话线，由它决定怎么跟人说。
+   * 这条线自己出了状况、事情没法处理时让人知道。同一种状况限频（在游戏里说的和只写在面板上的各算各的）。
+   * 对话线：这一轮是游戏里的人叫醒的（inGame），程序替它在公共聊天里说一句（说不出去就算了）；不是的话只写在面板上，
+   * 和它自己写的字一样（主人从面板说话时，这就是回他）。干活线不对玩家说话：告诉对话线，由它决定怎么跟人说。
    */
-  private async trouble(key: string, inChat: string, toTalk: string): Promise<void> {
+  private async trouble(key: string, inGame: boolean, inChat: string, toTalk: string): Promise<void> {
     const now = this.now()
-    const last = this.lastAnnounce.get(key)
+    const throttle = this.line === 'talk' ? `${key}:${inGame ? 'game' : 'panel'}` : key
+    const last = this.lastAnnounce.get(throttle)
     if (last !== undefined && now - last < this.timing.announceIntervalMs) return
-    this.lastAnnounce.set(key, now)
+    this.lastAnnounce.set(throttle, now)
     if (this.line === 'work') {
       this.deps.links?.toTalk?.('trouble', toTalk, {})
       return
     }
     const botName = this.deps.settings().botName
+    if (!inGame) {
+      this.log.add({ kind: 'reply', who: botName, text: inChat, detail: '这句话是程序替它说的，不是模型说的。这一轮不是游戏里的人叫醒的，所以只写在面板上、没在游戏里说' })
+      return
+    }
     try {
       const spoken = await speakInChat(this.deps.bridge, botName, inChat)
       if (spoken.outcome !== 'sent') return
-      this.log.add({ kind: 'say', who: botName, text: spoken.text, detail: '这句话是程序替它说的，不是模型说的' })
+      this.log.add({ kind: 'say', channel: 'public', who: botName, text: spoken.text, detail: '这句话是程序替它说的，不是模型说的' })
       this.deps.chatLog?.add({ time: now, kind: 'said', who: botName, text: spoken.text })
     } catch {
       /* bot 不在线或 bridge 没连上 */
@@ -1526,8 +1512,8 @@ export class Agent {
     return contextTokens(h.summary, h.turns, this.gauge)
   }
 
-  private compactOptions(settings: AgentSettings): { threshold: number; talk: boolean; gauge: ContextGauge | undefined } {
-    return { threshold: settings.historyTokenThreshold, talk: this.line === 'talk', gauge: this.gauge }
+  private compactOptions(settings: AgentSettings): { threshold: number; talk: boolean; gauge: ContextGauge | undefined; textSaidBefore?: number } {
+    return { threshold: settings.historyTokenThreshold, talk: this.line === 'talk', gauge: this.gauge, ...(this.textNotSaidSince !== undefined ? { textSaidBefore: this.textNotSaidSince } : {}) }
   }
 
   private async maybeCompact(llm: LlmClient, settings: AgentSettings, signal: AbortSignal): Promise<void> {
@@ -1785,7 +1771,11 @@ export class Agent {
             kind: 'say',
             ...this.turnAt(),
             who: botName,
-            text: info.kind === 'whisper' ? `（私聊 ${info.to ?? '?'}）${info.text}` : info.text,
+            text: info.text,
+            channel: info.kind === 'whisper' ? 'whisper' : 'public',
+            ...(info.kind === 'whisper' && info.to !== undefined ? { to: info.to } : {}),
+            ...(info.note !== undefined ? { detail: info.note } : {}),
+            ...(info.sent !== undefined ? { sent: info.sent } : {}),
           })
           this.deps.chatLog?.add({ time: this.now(), kind: info.kind === 'whisper' ? 'whispered' : 'said', who: botName, text: info.text, ...(info.to !== undefined ? { to: info.to } : {}) })
         },
@@ -1871,6 +1861,7 @@ export class Agent {
         tracked: [...this.tracked],
         endedSeen: this.endedSeen,
         queue: [...this.inFlight, ...this.pending],
+        ...(this.textNotSaidSince !== undefined ? { textNotSaidSince: this.textNotSaidSince, textNotSaidTold: this.textNotSaidTold } : {}),
       })
     } catch (e) {
       console.error('[agent] 保存状态失败：', e instanceof Error ? e.message : e)

@@ -82,7 +82,14 @@ function parseAgentState(raw: unknown): PersistedAgentState {
   const queue = Array.isArray(raw.queue)
     ? raw.queue.filter((e): e is AgentEvent => isRecord(e) && typeof e.type === 'string' && typeof e.time === 'number')
     : []
-  return { tracked: strings(raw.tracked), endedSeen: strings(raw.endedSeen), queue }
+  return {
+    tracked: strings(raw.tracked),
+    endedSeen: strings(raw.endedSeen),
+    queue,
+    // 对话线：从什么时候起写的字不再说进游戏，这件事告诉过它没有
+    ...(typeof raw.textNotSaidSince === 'number' ? { textNotSaidSince: raw.textNotSaidSince } : {}),
+    ...(typeof raw.textNotSaidTold === 'boolean' ? { textNotSaidTold: raw.textNotSaidTold } : {}),
+  }
 }
 
 function parseLinkState(raw: unknown): LinkState {

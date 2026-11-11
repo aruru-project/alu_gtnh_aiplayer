@@ -2,15 +2,15 @@
 // 入口是整个 agent（h.agent）：事件像真实运行时那样进来，两条线各有一个按脚本回应的假模型（h.talk、h.llm），
 // 游戏是按方法名应答的假服务器。设计稿最后“实现时要验证的”每一条在这里都有一条对应的测试。
 
-import { SAID_NOTE } from '../src/agent/agent.ts'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { VOLLEY_MAX, lineOf } from '../src/agent/lines.ts'
+import { TEXT_NOT_SAID_NOTE } from '../src/agent/agent.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
 import type { GenerateRequest, GenerateResult } from '../src/llm/index.ts'
-import { assertToolPairs, chat, lineCalls, llmDown, makeAgent, relays, reply, sentToTalk, taskEnded, told } from './agent-harness.ts'
+import { assertToolPairs, chat, lineCalls, llmDown, makeAgent, relays, reply, says, sentToTalk, taskEnded, told } from './agent-harness.ts'
 import type { AgentHarness } from './agent-harness.ts'
 import { sleep, tmpDir, waitFor } from './helpers.ts'
 
@@ -41,124 +41,249 @@ function todo(text: string): string {
   return text.split('\n\n[')[0] ?? ''
 }
 
-describe('对话线说话：它写的文字就是它说的话', () => {
-  it('每一步写的字，那一步一回来就在公共聊天里说出去（先说，再调这一步的工具）；什么都不写的那一步不说；一句话只说一次', async (t) => {
+describe('对话线说话：写的字只给主人在面板上看，在游戏里说话用 say、whisper', () => {
+  /** 一轮开头那条消息的最后一句（[谁在跟你说话]）。 */
+  const closing = (text: string): string => text.split('\n\n').at(-1)!
+
+  it('被面板叫醒：它写的字就是回主人，日志里是一条 reply（不是 say），游戏里一个字都没说；最后一句写着这是主人在面板上说的', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.talk.enqueue(
-      reply('我看一下', [{ name: 'get_status' }]),
-      reply('', [{ name: 'get_player_position', input: { player: 'Steve' } }]),
-      reply('身上有 64 个泥土', [{ name: 'remember', input: { key: '问过', text: 'Steve 问过背包' } }]),
-      reply('还要别的吗'),
-    )
+    h.talk.enqueue(reply('我看一下', [{ name: 'get_status' }]), reply('身上有 64 个泥土'))
+    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '你身上有什么' })
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.said, [])
+    assert.deepEqual(h.game.callsOf('bot.command'), [])
+    const log = h.log.recent(0, 200)
+    assert.deepEqual(log.filter((e) => e.kind === 'reply').map((e) => [e.agent, e.step, e.who, e.text]), [['talk', 1, 'Alu', '我看一下'], ['talk', 2, 'Alu', '身上有 64 个泥土']])
+    assert.deepEqual(log.filter((e) => e.kind === 'say' || e.kind === 'model_text'), [])
+    assert.equal(closing(h.talk.lastUserText(0)), '[谁在跟你说话] 这是主人在面板上说的，你写的字他看得到。')
+    // 写了字又调工具的那一步，工具结果后面没有别的话（不再有“已经说出去了”）
+    assert.deepEqual(h.talk.requests[1]!.messages.at(-1)!.content.map((p) => p.type), ['tool_result'])
+    // 聊天记录里只有主人在面板上那句：它写的字不是在游戏里说的
+    assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.text]), [['panel', '你身上有什么']])
+  })
+
+  it('被游戏聊天叫醒、用 say 回：在公共聊天里说了（先说，再调同一步的别的工具），日志里是 say、channel public，进了聊天记录；最后一句写着要用 say 或 whisper 回', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.talk.enqueue(says('我看一下', [{ name: 'get_status' }]), says('身上有 64 个泥土'))
     h.agent.handleEvent(chat('Steve', 'Alu 你身上有什么'))
     await h.agent.whenIdle()
-
-    assert.deepEqual(h.game.said, ['我看一下', '身上有 64 个泥土', '还要别的吗'])
-    assert.equal(h.talk.requests.length, 4)
-    // “我看一下”在它那一步的工具（get_status → bot.status）之前就说出去了：主人不用等它查完
+    assert.deepEqual(h.game.said, ['我看一下', '身上有 64 个泥土'])
     const order = h.game.calls.map((c) => c.method)
-    const firstSay = order.indexOf('bot.chat')
-    assert.ok(firstSay >= 0 && firstSay < order.lastIndexOf('bot.status'), `said before the tool of the same step ran: ${order.join(' ')}`)
-    // 日志里每一句是一条 say，标着是对话线、第几轮第几步；没有另记一条 model_text
+    assert.ok(order.indexOf('bot.chat') < order.lastIndexOf('bot.status'), `said before the other tool of the same step ran: ${order.join(' ')}`)
     const said = h.log.recent(0, 200).filter((e) => e.kind === 'say')
-    assert.deepEqual(said.map((e) => [e.agent, e.step, e.text]), [['talk', 1, '我看一下'], ['talk', 3, '身上有 64 个泥土'], ['talk', 4, '还要别的吗']])
-    assert.equal(new Set(said.map((e) => e.turn)).size, 1)
-    assert.equal(h.log.recent(0, 200).filter((e) => e.kind === 'model_text').length, 0)
-    // 它说过的话留在它自己的历史里（下一轮它知道自己说过什么），也进了聊天记录
-    assert.equal(JSON.stringify(h.talkHistory.get().turns).split('身上有 64 个泥土').length - 1, 1)
-    // 写了字又调了工具的那两步：工具结果后面照实说一句“这一步写的字已经说出去了”（不复述那段字）；什么都没写的那一步没有
-    const after = (n: number) => (h.talk.requests[n]!.messages.at(-1)!.content as { type: string; text?: string }[]).filter((p) => p.type === 'text').map((p) => p.text)
-    assert.deepEqual([after(1), after(2), after(3)], [[SAID_NOTE], [], [SAID_NOTE]])
-    assert.equal(SAID_NOTE, '[系统] 你这一步写的字已经在公共聊天里说出去了，大家都看到了。')
+    assert.deepEqual(said.map((e) => [e.agent, e.step, e.who, e.channel, e.to, e.text]), [['talk', 1, 'Alu', 'public', undefined, '我看一下'], ['talk', 2, 'Alu', 'public', undefined, '身上有 64 个泥土']])
+    assert.equal(h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result' && p.content.startsWith('Said'))?.type, 'tool_result')
+    assert.equal(closing(h.talk.lastUserText(0)), '[谁在跟你说话] Steve 是在游戏聊天里对你说的；要回他得用 say（所有人都看到）或 whisper（只有那个人看到），只写字他看不到。')
     assert.deepEqual(h.chatLog.recent().lines.map((l) => [l.kind, l.who, l.text]), [
       ['chat', 'Steve', 'Alu 你身上有什么'],
       ['said', 'Alu', '我看一下'],
       ['said', 'Alu', '身上有 64 个泥土'],
-      ['said', 'Alu', '还要别的吗'],
     ])
   })
 
-  it('一轮做到一半模型接口出错、之后重试：已经说出去的话不会再说一遍', async (t) => {
+  it('被游戏聊天叫醒却只写了字：游戏里没说；日志里看得出它只写了字（一条 reply，没有 say）', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.talk.enqueue(reply('我查一下', [{ name: 'get_status' }]), llmDown(), reply('查到了，64 个泥土'))
+    h.talk.enqueue(reply('身上有 64 个泥土'))
     h.agent.handleEvent(chat('Steve', 'Alu 你身上有什么'))
     await h.agent.whenIdle()
-    // 中间那一句是程序替它说的“接口连不上了”
-    assert.deepEqual(h.game.said.filter((s) => !s.includes('模型接口')), ['我查一下', '查到了，64 个泥土'])
-    assert.equal(h.game.said.length, 3)
+    assert.deepEqual(h.game.said, [])
+    assert.deepEqual(h.log.recent(0, 200).filter((e) => e.kind === 'reply' || e.kind === 'say').map((e) => [e.kind, e.text]), [['reply', '身上有 64 个泥土']])
+    assert.deepEqual(h.chatLog.recent().lines.map((l) => l.kind), ['chat'])
   })
 
-  it('模型说上下文超长、压缩历史后重试同一步：这一步的话只说一次', async (t) => {
+  it('几个人一起叫醒它：游戏里说的、悄悄说的、面板上说的各写一句；没有人说话的一轮（干活线停下来了）写着游戏里的人看不到它写的字', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.talk.enqueue(reply('先看看', [{ name: 'get_status' }]), llmDown('context_length'), reply('看完了'))
-    h.agent.handleEvent(chat('Steve', 'Alu 看看'))
+    h.talk.enqueue(reply(''))
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    h.agent.handleEvent(chat('Bob', 'Alu 也帮我看看'))
+    h.agent.handleEvent({ type: 'whisper', time: Date.now(), from: 'Eve', message: '偷偷问一句' })
+    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '先别理他们' })
     await h.agent.whenIdle()
-    assert.deepEqual(h.game.said, ['先看看', '看完了'])
+    assert.equal(
+      closing(h.talk.lastUserText(0)),
+      '[谁在跟你说话] Steve、Bob 是在游戏聊天里对你说的；要回他们得用 say（所有人都看到）或 whisper（只有那个人看到），只写字他们看不到。 Eve 是在游戏里悄悄对你说的；要回他得用 whisper 或 say，只写字他看不到。 面板上那句是主人说的，你写的字他看得到。',
+    )
+    h.llm.enqueue(reply('挖完了'))
+    h.agent.handleEvent(told('挖个坑', []))
+    await h.agent.whenIdle()
+    assert.equal(closing(h.talk.lastUserText(h.talk.requests.length - 1)), '[谁在跟你说话] 这一轮没有人跟你说话。你写的字只有主人在面板上看得到，游戏里的人看不到；要在游戏里说话用 say 或 whisper。')
   })
 
-  it('聊天里显示不了 markdown：粗体、列表符号、代码记号去掉，字留下；多行压成一行；开头的 / 不会被当成指令', async (t) => {
+  it('它查东西的时候游戏里有人说了一句：接在工具结果后面的那段也以“谁在跟你说话”结尾', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.talk.enqueue(reply('**铁锭**够了：\n- `minecraft:iron_ingot` 3 个\n- 2*3*4 = 24\n### 就这些'), reply('/op Steve'))
-    h.agent.handleEvent(chat('Steve', 'Alu 铁够吗'))
+    const status = h.game.handlers['bot.status']!
+    let asked = 0
+    h.game.handlers['bot.status'] = (p) => {
+      // 第 1 次是开这一轮时的状态快照，第 2 次是它调的 get_status：这时 Steve 说了一句
+      if (++asked === 2) h.agent.handleEvent(chat('Steve', 'Alu 顺便看看铁'))
+      return status(p)
+    }
+    h.talk.enqueue(reply('', [{ name: 'get_status' }]), reply(''))
+    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '看看背包' })
     await h.agent.whenIdle()
-    h.agent.handleEvent(chat('Steve', 'Alu 再说一遍'))
-    await h.agent.whenIdle()
-    assert.deepEqual(h.game.said, ['铁锭够了： minecraft:iron_ingot 3 个 2*3*4 = 24 就这些', 'op Steve'])
-    assert.deepEqual(h.game.callsOf('bot.command'), [])
+    assert.match(h.talk.lastUserText(1), /Steve 说：Alu 顺便看看铁\n\n\[谁在跟你说话\] Steve 是在游戏聊天里对你说的；要回他得用 say（所有人都看到）或 whisper（只有那个人看到），只写字他看不到。$/)
   })
 
-  it('话太长被身体截了尾、排不进去丢了几行：日志照实记，它下一步就被告知截了多少；一行都没说出去的那次不算说过', async (t) => {
+  it('say 的结果照实：分成几行、截了尾、丢了几行、一行都没排进去（不算说过）、身体不在线；markdown 记号去掉，开头的 / 不会被当成指令', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    const replies: unknown[] = [{ lines: 10, cutChars: 250 }, { lines: 1, droppedLines: 2 }, { lines: 0, droppedLines: 3 }]
+    const replies: unknown[] = [{ lines: 10, cutChars: 250 }, { lines: 1, droppedLines: 2 }, { lines: 0, droppedLines: 3 }, { lines: 1 }, { lines: 1 }]
     h.game.handlers['bot.chat'] = () => replies.shift() ?? {}
-    h.talk.enqueue(reply('长'.repeat(1250), [{ id: 'c1', name: 'get_status' }]), reply('第二段'.repeat(100), [{ id: 'c2', name: 'get_status' }]), reply('第三段'), reply(''))
-    h.agent.handleEvent(chat('Steve', 'Alu 把配方链全说一遍'))
-    await h.agent.whenIdle()
-
-    // 同一步有工具调用时：说明接在工具结果后面，这一轮里就知道
-    assert.match(h.talk.lastUserText(1), /\[系统\] 你这一步写的那段话：这段话没有全部说出去：最后 250 个字被截掉了（一次最多说 1000 字，每 100 字一行，这次发成了 10 行）。没说出去的可以之后再说。$/)
-    assert.match(h.talk.lastUserText(2), /\[系统\] 你这一步写的那段话：这段话没有全部说出去：最后 2 行没发出去（你还有太多行聊天排着没发完）。/)
+    assert.deepEqual(await lineCalls(h, 'talk', 'say', { text: '长'.repeat(1250) }), {
+      content: 'Said in public chat, as 10 lines of at most 100 characters, going out about one a second. The last 250 characters were cut off: one say holds at most 1000. Say the rest in another say.',
+      isError: false,
+    })
+    assert.deepEqual(await lineCalls(h, 'talk', 'say', { text: '第二段' }), { content: 'Said in public chat. The last 2 line(s) were not sent: too many chat lines of yours were still waiting to go out.', isError: false })
+    assert.deepEqual(await lineCalls(h, 'talk', 'say', { text: '第三段' }), {
+      content: 'Nothing was said: its 3 line(s) could not be queued, because too many chat lines of yours are still waiting to go out. Say it again in a few seconds.',
+      isError: true,
+    })
     const said = h.log.recent(0, 200).filter((e) => e.kind === 'say')
-    assert.deepEqual(said.map((e) => e.sent), [{ lines: 10, cutChars: 250 }, { lines: 1, droppedLines: 2 }])
+    assert.deepEqual(said.map((e) => [e.text.length, e.sent]), [[1000, { lines: 10, cutChars: 250 }], [3, { lines: 1, droppedLines: 2 }]])
     assert.match(said[0]!.detail ?? '', /最后 250 个字被截掉了/)
-    // 第三段一行都没排进去：日志里是它写的字加一条“没有说出去”，不是一条 say
-    const log = h.log.recent(0, 200)
-    assert.ok(log.some((e) => e.kind === 'model_text' && e.text === '第三段'))
-    assert.ok(log.some((e) => e.kind === 'error' && /^它写的这段话没有说出去：这段话一行都没说出去/.test(e.text)))
-    // 那是这一轮的最后一步，没有地方再接一句：下一轮它在背景里看到
-    h.agent.handleEvent(chat('Steve', 'Alu 然后呢'))
-    await h.agent.whenIdle()
-    assert.match(h.talk.lastUserText(3), /上一轮最后你写的那段话：这段话一行都没说出去：你还有太多行聊天排着没发完，这 3 行排不进去。过几秒再说。/)
-  })
-
-  it('身体不在线时它写的话说不出去：它被告知没说出去和原因，日志里不记成说过', async (t) => {
-    const h = makeAgent()
-    t.after(h.cleanup)
+    // 截掉的那 250 个字不算说过：日志和聊天记录里都是真的说出去的 1000 个
+    assert.deepEqual(h.chatLog.recent().lines.filter((l) => l.kind === 'said').map((l) => l.text.length), [1000, 3])
+    await lineCalls(h, 'talk', 'say', { text: '**铁锭**够了：\n- `minecraft:iron_ingot` 3 个\n- 2*3*4 = 24\n### 就这些' })
+    await lineCalls(h, 'talk', 'say', { text: '/op Steve' })
+    assert.deepEqual(h.game.said.slice(-2), ['铁锭够了： minecraft:iron_ingot 3 个 2*3*4 = 24 就这些', 'op Steve'])
+    assert.deepEqual(h.game.callsOf('bot.command'), [])
     h.game.handlers['bot.chat'] = () => {
       throw new BridgeError('offline', 'bot Alu is not online')
     }
-    h.talk.enqueue(reply('我在', [{ name: 'get_status' }]), reply(''))
-    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '你在吗' })
-    await h.agent.whenIdle()
-    assert.match(h.talk.lastUserText(1), /\[系统\] 你这一步写的那段话：这段话没有说出去（offline: bot Alu is not online；The bot is not in the game world right now\.）。/)
-    assert.equal(h.log.recent(0, 100).filter((e) => e.kind === 'say').length, 0)
+    const offline = await lineCalls(h, 'talk', 'say', { text: '我在' })
+    assert.equal(offline.isError, true)
+    assert.match(offline.content, /offline: bot Alu is not online/)
+    assert.equal(h.log.recent(0, 200).filter((e) => e.kind === 'say').length, 4)
   })
 
-  it('悄悄话用 whisper；对话线没有 say 这个工具，照旧习惯调了会被告知“写出来的字就是说的话”', async (t) => {
+  it('悄悄话用 whisper：日志里是 say、channel whisper，text 只有原话，发给谁在 to 里；干活线调 say、whisper 都不归它', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.game.handlers['bot.command'] = () => ({ output: ['You whisper to Steve: 箱子在 30 64 30'] })
     assert.deepEqual(await lineCalls(h, 'talk', 'whisper', { player: 'Steve', message: '箱子在 30 64 30' }), { content: 'Whisper sent.', isError: false })
     assert.deepEqual(h.game.callsOf('bot.command'), [{ bot: 'Alu', command: 'tell Steve 箱子在 30 64 30' }])
-    const said = await lineCalls(h, 'talk', 'say', { message: '在的' })
-    assert.deepEqual(said, { content: 'There is no "say" on the talk line: the plain text you write is what you say in public chat. Write the words as text (whisper is for private messages).', isError: true })
-    assert.deepEqual(h.game.said, [])
+    const said = h.log.recent(0, 200).filter((e) => e.kind === 'say')
+    assert.deepEqual(said.map((e) => [e.channel, e.to, e.text]), [['whisper', 'Steve', '箱子在 30 64 30']])
     assert.ok(h.chatLog.recent().lines.some((l) => l.kind === 'whispered' && l.to === 'Steve' && l.text === '箱子在 30 64 30'))
+    assert.deepEqual(h.game.said, [])
+    // 翻自己的日志时看得出是悄悄话、发给谁
+    assert.match((await lineCalls(h, 'talk', 'read_log', { kinds: ['said'] })).content, /· say Alu \(whisper to Steve\): 箱子在 30 64 30/)
+    const notMine = 'Not done: "say" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.'
+    assert.deepEqual(await lineCalls(h, 'work', 'say', { text: '石砖不够' }), { content: notMine, isError: true })
+    assert.deepEqual(h.game.said, [])
+  })
+
+  it('不会自己叫醒自己、两个 bot 不会互相套娃：它 say 出去的话回到大脑不叫醒它；另一个 bot 叫它的名字不叫醒它；有人进服、离开只作背景', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.talk.enqueue(says('在的'))
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    await h.agent.whenIdle()
+    const calls = h.talk.requests.length
+    // 身体把它自己说的那句当成聊天推回来
+    h.agent.handleBridgeEvent({ seq: 1, time: Date.now(), event: 'chat', data: { player: 'Alu', message: '在的' } })
+    // 另一个 bot 在公共聊天里叫它
+    h.agent.handleBridgeEvent({ seq: 2, time: Date.now(), event: 'chat', data: { player: 'Robo', message: 'Alu 你好呀', isBot: true } })
+    h.agent.handleBridgeEvent({ seq: 3, time: Date.now(), event: 'player.join', data: { player: 'Bob' } })
+    h.agent.handleBridgeEvent({ seq: 4, time: Date.now(), event: 'player.leave', data: { player: 'Bob' } })
+    await sleep(100)
+    await h.agent.whenIdle()
+    assert.equal(h.talk.requests.length, calls)
+    assert.equal(h.llm.requests.length, 0)
+    // 下一轮它在背景里看到这几件（自己说的那句不重复出现）
+    h.agent.handleEvent(chat('Steve', 'Alu 刚才谁来了'))
+    await h.agent.whenIdle()
+    const background = h.talk.lastUserText(h.talk.requests.length - 1).split('[最近发生的事')[1]?.split('[当前状态]')[0] ?? ''
+    assert.match(background, /Robo（另一个 bot） 说：Alu 你好呀/)
+    assert.match(background, /Bob 进入了服务器[\s\S]*Bob 离开了服务器/)
+    assert.equal(background.includes('在的'), false)
+  })
+
+  it('程序替它说的那句（模型接口出错）：这一轮是面板上叫醒的只写在面板上（reply），游戏里的人叫醒的才在游戏里说（say、channel public）；两处各自限频', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.talk.enqueue(llmDown())
+    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '你在吗' })
+    await waitFor('the outage was noted', () => h.log.recent(0, 200).some((e) => e.kind === 'reply'))
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.said, [])
+    const written = h.log.recent(0, 200).find((e) => e.kind === 'reply')!
+    assert.deepEqual([written.agent, written.text, written.detail], ['talk', '我这边模型接口连不上了，先歇一会儿，好了再继续。', '这句话是程序替它说的，不是模型说的。这一轮不是游戏里的人叫醒的，所以只写在面板上、没在游戏里说'])
+    // 接口好了一会儿又坏了，这回是游戏里的人叫醒的：面板上那句不挡着它在游戏里说（限频各算各的）
+    h.talk.enqueue(llmDown())
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗'))
+    await waitFor('said in the game', () => h.game.said.length === 1)
+    await h.agent.whenIdle()
+    assert.deepEqual(h.game.said, ['我这边模型接口连不上了，先歇一会儿，好了再继续。'])
+    const said = h.log.recent(0, 200).filter((e) => e.kind === 'say')
+    assert.deepEqual(said.map((e) => [e.agent, e.channel, e.detail]), [['talk', 'public', '这句话是程序替它说的，不是模型说的']])
+    assert.deepEqual(h.chatLog.recent().lines.filter((l) => l.kind === 'said').map((l) => l.text), ['我这边模型接口连不上了，先歇一会儿，好了再继续。'])
+  })
+
+  it('大脑升级以后头一回：历史里有以前的轮（那时写的字就是说出去的话），对话线下一轮在背景里被告知一次；之后、重启以后都不再说；写交接记录时以前那些字标成说出去的话', async (t) => {
+    const h = makeAgent({ talkSettings: { historyTokenThreshold: 3000 } })
+    t.after(h.cleanup)
+    await h.agent.stop()
+    // 以前的数据：对话线的历史里有一轮，那时它写的字是在公共聊天里说的；状态里没有“从什么时候起写的字不说进游戏”
+    h.talkHistory.appendTurn({
+      id: h.talkHistory.newTurnId(),
+      startedAt: Date.now() - 3_600_000,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: '[需要你处理的事]\n[10:00:00] Steve 说：Alu 在吗' }] },
+        { role: 'assistant', content: [{ type: 'text', text: `在的在的${'。'.repeat(4000)}` }] },
+      ],
+    })
+    h.talkPersisted.state = { tracked: [], endedSeen: [], queue: [] }
+    const again = h.restart()
+    t.after(() => again.agent.stop())
+    assert.ok(again.log.recent(0, 50).some((e) => e.kind === 'info' && e.text.startsWith('大脑升级：从这次启动起，对话线写的字不再说进游戏聊天')))
+    const summaries: string[] = []
+    again.talk.auto = (_seen, req) => {
+      if (req.tools.length > 0) return reply(`写给主人看的：${'字'.repeat(4000)}`)
+      summaries.push(req.messages.map((m) => m.content.map((p) => (p.type === 'text' ? p.text : '')).join('')).join('\n'))
+      return reply('记录')
+    }
+    again.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '在吗' })
+    await again.agent.whenIdle()
+    const background = (n: number) => again.talk.lastUserText(n).split('[最近发生的事')[1]?.split('[当前状态]')[0] ?? ''
+    assert.ok(background(0).includes(TEXT_NOT_SAID_NOTE))
+    assert.equal(again.talkPersisted.state?.textNotSaidTold, true)
+    again.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '还在吗' })
+    await again.agent.whenIdle()
+    assert.equal(background(again.talk.requests.filter((r) => r.tools.length > 0).length - 1).includes('大脑升级了'), false)
+    // 写交接记录时：以前那一轮的字是“在公共聊天里说的话”，升级以后的是“写的字”
+    for (const words of ['再说一句', '又一句', '最后一句']) {
+      again.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: words })
+      await again.agent.whenIdle()
+    }
+    assert.ok(summaries.length >= 2, 'the talk history was summarised')
+    assert.match(summaries.join('\n'), /\[它在公共聊天里说的话\] 在的在的/)
+    assert.match(summaries.join('\n'), /\[它写的字（只有主人在面板上看得到）\] 写给主人看的/)
+    assert.equal(/\[它在公共聊天里说的话\] 写给主人看的/.test(summaries.join('\n')), false)
+    // 再重启：不再告诉它，也不再记那条日志
+    await again.agent.stop()
+    const third = h.restart()
+    t.after(() => third.agent.stop())
+    assert.equal(third.log.recent(0, 50).some((e) => e.text.startsWith('大脑升级：从这次启动起，对话线写的字')), false)
+    const before = third.talk.requests.length
+    third.talk.auto = undefined
+    third.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '在吗' })
+    await third.agent.whenIdle()
+    assert.equal(third.talk.lastUserText(before).includes('大脑升级了'), false)
+  })
+
+  it('没有以前的数据（头一回启动）：不说大脑升级了', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    h.agent.handleEvent({ type: 'panel_command', time: Date.now(), text: '在吗' })
+    await h.agent.whenIdle()
+    assert.equal(h.talk.lastUserText(0).includes('大脑升级了'), false)
+    assert.equal(h.log.recent(0, 50).some((e) => e.text.startsWith('大脑升级：从这次启动起，对话线写的字')), false)
   })
 })
 
@@ -167,7 +292,7 @@ describe('对话线把事交给干活线', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     // 对话线的转述故意不带坐标、说得含糊：干活线要靠原样附上的那句话知道是哪个
-    h.talk.enqueue(reply('好，我去拆。', [{ id: 'tell', name: 'tell_worker', input: { text: '把主人指的那个东西拆掉' } }]), reply(''))
+    h.talk.enqueue(says('好，我去拆。', [{ id: 'tell', name: 'tell_worker', input: { text: '把主人指的那个东西拆掉' } }]), reply(''))
     const at = Date.now()
     h.agent.handleEvent({ ...chat('Steve', 'Alu 把这个拆了', at), speaker: POINTING })
     await h.agent.whenIdle()
@@ -188,7 +313,7 @@ describe('对话线把事交给干活线', () => {
       ].join('\n'),
     )
     // 对话线从工具结果里知道交出去了、附了什么
-    const result = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    const result = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result' && p.toolCallId === 'tell')!
     assert.equal(
       result.type === 'tool_result' ? result.content : '',
       'Handed to the worker. The worker was idle and starts on it now. Attached as they were said: 1 line(s) from the people who woke you this turn, with where they stood and what they pointed at. When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it. What it reports or asks, and what it leaves when it has stopped, come to you as events.',
@@ -281,13 +406,13 @@ describe('对话线把事交给干活线', () => {
     await waitFor('the worker is thinking about step 2', thinking.started)
     const turn = h.agent.state('work').turn!.id
 
-    h.talk.enqueue(reply('35 个空格'))
+    h.talk.enqueue(says('35 个空格'))
     const asked = Date.now()
     h.agent.handleEvent(chat('Steve', 'Alu 你身上还有几个空格'))
     await waitFor('the talk line answered', () => h.game.said.length === 1)
-    // 回话的这一刻干活线还在想同一步：它没有被打断，也没有东西排到它那里
+    // 回话的这一刻干活线还在想同一步：它没有被打断，也没有东西排到它那里。话是对话线第一次模型调用里说的
     assert.deepEqual(h.game.said, ['35 个空格'])
-    assert.equal(h.talk.requests.length, 1)
+    assert.deepEqual(h.log.recent(0, 200).filter((e) => e.kind === 'say').map((e) => [e.agent, e.step]), [['talk', 1]])
     assert.ok(Date.now() - asked < 1000)
     const work = h.agent.state('work')
     assert.deepEqual([work.model.state, work.turn!.id, work.model.step, work.pending], ['thinking', turn, 2, 0])
@@ -499,10 +624,10 @@ describe('干活线汇报和提问', () => {
     // 两条线来回好几趟，谁先谁后不写死：两个假模型都按“这一步看到了什么”来回。
     // 对话线：主人的话 → 应一声并交出去；“放哪个箱子”它自己知道，直接带话答；“用不用车床”它答不了，问主人；主人答了再带话。
     h.talk.auto = (seen) => {
-      if (/Steve 说：Alu 行，用车床/.test(seen)) return reply('好', [{ name: 'tell_worker', input: { text: '主人同意用车床' } }])
-      if (/干活线提问[^\n]*模头/.test(seen)) return reply('模头（杆）没库存也没配方，改用车床做钢杆行吗？')
+      if (/Steve 说：Alu 行，用车床/.test(seen)) return says('好', [{ name: 'tell_worker', input: { text: '主人同意用车床' } }])
+      if (/干活线提问[^\n]*模头/.test(seen)) return says('模头（杆）没库存也没配方，改用车床做钢杆行吗？')
       if (/干活线提问[^\n]*放哪个箱子/.test(seen)) return reply('', [{ name: 'tell_worker', input: { text: '放 (30,64,30) 的箱子，记忆里写着那是成品箱' } }])
-      if (/Steve 说：Alu 做一个直升机桨叶/.test(seen)) return reply('好，我去做。', [{ name: 'tell_worker', input: { text: '做一个直升机桨叶' } }])
+      if (/Steve 说：Alu 做一个直升机桨叶/.test(seen)) return says('好，我去做。', [{ name: 'tell_worker', input: { text: '做一个直升机桨叶' } }])
       return undefined
     }
     // 干活线：领了事先问放哪；知道放哪以后查到模头没有，再问；主人同意用车床以后动身
@@ -523,8 +648,8 @@ describe('干活线汇报和提问', () => {
     // 第一个问题对话线自己答了：带话里写明这次没有附原话（不是主人说的，是它自己的决定）
     assert.ok(talkSaw.some((text) => /干活线提问（它在等回答，用 tell_worker 带话给它）：做好的桨叶放哪个箱子？/.test(text)))
     assert.ok(workSaw.some((text) => /对话线交给你的（这一句是它写的）：放 \(30,64,30\) 的箱子，记忆里写着那是成品箱\n {2}（这次没有附原话：对话线这一轮不是被谁说的话叫醒的，是它自己的决定。）/.test(text)))
-    // 第二个问题它答不了：问了主人（写出来的字就是说的话），干活线这时在等回答、没有动身
-    assert.deepEqual(h.game.said, ['好，我去做。', '模头（杆）没库存也没配方，改用车床做钢杆行吗？'])
+    // 第二个问题它答不了：在游戏里问了主人（say），干活线这时在等回答、没有动身
+    assert.deepEqual(h.game.said.slice(0, 2), ['好，我去做。', '模头（杆）没库存也没配方，改用车床做钢杆行吗？'])
     assert.equal(h.agent.linkState().waiting?.text.startsWith('模头（杆）没有库存也没有配方。'), true)
     assert.equal(h.game.callsOf('task.start').length, 0)
     assert.equal(h.agent.state('work').turn, null)
@@ -545,7 +670,9 @@ describe('干活线汇报和提问', () => {
     assert.deepEqual(relays(h).map((e) => `${e.relay!.from}:${e.relay!.type}:${e.relay!.quotes ?? ''}`), ['talk:tell:1', 'work:question:', 'talk:tell:0', 'work:question:', 'talk:tell:1'])
   })
 
-  it('中途汇报不结束干活线这一轮；一轮结束留下的文字自动送到；它直接调 say 会被告知这不归它', async (t) => {
+  // 正式服上的事（2026-11-12 夜里）：干活线每铺一片地板就 report 两次，每次都把对话线叫醒，它就在公共聊天里回一句“好，继续。”“累计 1153 格。”，
+  // 五分钟里每半分钟说一句。普通汇报不等谁回话，只作背景；要回话的带 question
+  it('中途的普通汇报不结束干活线这一轮，也不叫醒对话线（它下次醒来在背景里看到）；一轮结束留下的文字才叫醒它；干活线直接调 say 会被告知这不归它', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(
@@ -557,23 +684,28 @@ describe('干活线汇报和提问', () => {
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 3)
     assert.deepEqual(sentToTalk(h), ['箱子里只有 25 块石砖，还差 15 块，我先去挖。', '挖够了，40 块石砖都在箱子里。'])
-    assert.deepEqual(relays(h).map((e) => [e.agent, e.relay!.type, e.step]), [['work', 'report', 1], ['work', 'result', 3]])
+    assert.deepEqual(relays(h).map((e) => [e.agent, e.relay!.type, e.step, e.text]), [
+      ['work', 'report', 1, '干活线 → 对话线（汇报，只作背景，没有叫醒它）：箱子里只有 25 块石砖，还差 15 块，我先去挖。'],
+      ['work', 'result', 3, '干活线 → 对话线（停下来了，留下的话）：挖够了，40 块石砖都在箱子里。'],
+    ])
     const results = h.llm.requests[1]!.messages.at(-1)!.content.filter((p) => p.type === 'tool_result')
     assert.deepEqual(results.map((r) => [r.content, r.isError ?? false]), [
-      ['Sent to the talk line.', false],
-      ['Not done: "say" is not yours. The worker line does not speak to players; the talk line does. Tell it with report {text} (or leave it as the text that ends your turn) and it decides what to say to whom.', true],
+      ['Sent. It does not wake the talk line: it reads this the next time it is woken (someone speaks to it, you ask a question, you stop and leave a note). When you need an answer, send a question.', false],
+      ['Not done: "say" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.', true],
     ])
     assert.deepEqual(h.game.said, [])
-    // 对话线看到的两件事
-    const seen = h.talk.requests.map((_, n) => todo(h.talk.lastUserText(n))).join('\n')
-    assert.match(seen, /干活线汇报：箱子里只有 25 块石砖，还差 15 块，我先去挖。/)
-    assert.match(seen, /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：挖够了，40 块石砖都在箱子里。/)
+    // 对话线只醒了一次（干活线停下来了）：汇报在背景里，留下的话在“需要你处理的事”里
+    assert.equal(h.talk.requests.length, 1)
+    const opening = h.talk.lastUserText(0)
+    assert.match(todo(opening), /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：挖够了，40 块石砖都在箱子里。/)
+    assert.equal(todo(opening).includes('还差 15 块'), false)
+    assert.match(opening.split('[最近发生的事')[1] ?? '', /干活线汇报：箱子里只有 25 块石砖，还差 15 块，我先去挖。/)
   })
 
   it('干活线能读最近的聊天记录（只读）：更早那句带着指向的话它自己查得到', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    h.talk.enqueue(reply('哪个？是你指着的那个箱子吗'))
+    h.talk.enqueue(says('哪个？是你指着的那个箱子吗'))
     h.agent.handleEvent({ ...chat('Steve', 'Alu 把这个拆了', Date.now() - 60_000), speaker: POINTING })
     await h.agent.whenIdle()
     h.agent.handleEvent(chat('Bob', '今天挖到钻石了'))
@@ -617,7 +749,7 @@ describe('干活线还在干的时候留下的话', () => {
     const DUST = { id: 'gregtech:gt.metaitem.01', meta: 2032 }
 
     // 1. 主人交代 → 对话线应一声并交出去 → 干活线开了取料任务，留一句话，这一轮结束
-    h.talk.enqueue(reply('好，我去拿。', [{ id: 'tell', name: 'tell_worker', input: { text: '从箱子里拿 8 个铁粉，再放回去 3 个' } }]), reply(''))
+    h.talk.enqueue(says('好，我去拿。', [{ id: 'tell', name: 'tell_worker', input: { text: '从箱子里拿 8 个铁粉，再放回去 3 个' } }]), reply(''))
     h.llm.enqueue(reply('', [{ name: 'withdraw_items', input: { container: CHEST, items: [{ ...DUST, count: 8 }] } }]), reply('正在从箱子取 8 个铁粉；取到后会放回 3 个'))
     h.agent.handleEvent(chat('Steve', 'Alu 拿 8 个铁粉再放回 3 个'))
     await h.agent.whenIdle()
@@ -627,17 +759,17 @@ describe('干活线还在干的时候留下的话', () => {
     assert.equal(h.talk.requests.length, 2, 'the talk line is not woken by what the worker leaves while its task runs')
     assert.equal(h.llm.requests.length, 2)
     // 交事的结果里写着这个事实：干活线的任务结束时它自己会接着做
-    const told1 = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    const told1 = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result' && p.toolCallId === 'tell')!
     assert.match(told1.type === 'tool_result' ? told1.content : '', / When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it\. What it reports or asks, and what it leaves when it has stopped, come to you as events\.$/)
 
     // 2. 这时主人问到哪了：对话线从状态里就看得出干活线在等哪个任务、跑了多久、到哪了、任务结束后它自己会接着做
-    h.talk.enqueue(reply('在取铁粉，取了 3/8'))
+    h.talk.enqueue(says('在取铁粉，取了 3/8'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 到哪一步了'))
     await h.agent.whenIdle()
     const asked = h.talk.lastUserText(2)
     assert.match(
       asked,
-      /\n干活线：还在干，这会儿没有在想——在等它自己开的任务结束。任务一结束（做完、失败或被取消）它自己会被叫醒接着做，不需要提醒。\n {2}它开的任务 t1（withdraw）：在跑，进度 3\/8，已经跑了 1[23] 秒。\n {2}它最近一次送来的（还在干，中途留下的话，\d+ 秒前）：正在从箱子取 8 个铁粉；取到后会放回 3 个$/,
+      /\n干活线：还在干，这会儿没有在想——在等它自己开的任务结束。任务一结束（做完、失败或被取消）它自己会被叫醒接着做，不需要提醒。\n {2}它开的任务 t1（withdraw）：在跑，进度 3\/8，已经跑了 1[23] 秒。\n {2}它最近一次送来的（还在干，中途留下的话，\d+ 秒前）：正在从箱子取 8 个铁粉；取到后会放回 3 个\n\n\[谁在跟你说话\] /,
     )
     assert.match(asked.slice(asked.indexOf('[最近发生的事')), /干活线还在干（在等它开的任务结束：t1（withdraw）），这是它中途留下的话：正在从箱子取 8 个铁粉；取到后会放回 3 个/)
     assert.equal(todo(asked).includes('干活线'), false)
@@ -648,43 +780,52 @@ describe('干活线还在干的时候留下的话', () => {
     await h.agent.whenIdle()
     await sleep(40)
     assert.deepEqual(h.game.callsOf('task.start').map((p) => (p.task as { type: string }).type), ['withdraw', 'deposit'])
-    assert.equal(h.talk.requests.length, 3)
+    assert.equal(h.talk.requests.length, 4)
 
     // 4. 放回的任务也结束：这回它停下来了，留下的话叫醒对话线，对话线说给主人
     h.llm.enqueue(reply('拿了 8 个铁粉，放回 3 个，身上留 5 个。'))
-    h.talk.enqueue(reply('弄好啦，身上留了 5 个铁粉'))
+    h.talk.enqueue(says('弄好啦，身上留了 5 个铁粉'), reply(''))
     body.finish('t2', { moved: 3 })
     await h.agent.whenIdle()
     assert.deepEqual(h.game.said, ['好，我去拿。', '在取铁粉，取了 3/8', '弄好啦，身上留了 5 个铁粉'])
-    const done = h.talk.lastUserText(3)
+    const done = h.talk.lastUserText(4)
     assert.match(todo(done), /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：拿了 8 个铁粉，放回 3 个，身上留 5 个。/)
     assert.match(done.slice(done.indexOf('[最近发生的事')), /干活线还在干（在等它开的任务结束：t2（deposit）），这是它中途留下的话：取到了，正在放回 3 个/)
     assert.match(done, /\n干活线：空闲，没有在想（上一轮（第 \d+ 轮）\d+ 秒前结束）；身体上没有它开的任务，也没有例程在跑。\n/)
     // 整件事：对话线只带了一次话；干活线三轮（领事、取完、放完），没有一轮是被催出来的
     assert.deepEqual(relays(h).map((e) => e.relay!.type), ['tell', 'progress', 'progress', 'result'])
-    assert.deepEqual([h.talk.requests.length, h.llm.requests.length, h.history.get().turns.length], [4, 5, 3])
+    assert.deepEqual([h.talk.requests.length, h.llm.requests.length, h.history.get().turns.length], [6, 5, 3])
     // 面板的状态里，最近一次送来的话是哪一种看得出来
     assert.deepEqual([h.agent.linkState().lastReport?.type, h.agent.linkState().lastReport?.text], ['result', '拿了 8 个铁粉，放回 3 个，身上留 5 个。'])
   })
 
-  it('它主动汇报和提问照旧叫醒对话线，哪怕它的任务还在跑；worker_status 写明它在等自己开的哪个任务', async (t) => {
+  it('它的任务还在跑时：普通汇报不叫醒对话线，提问叫醒；worker_status 写明它在等自己开的哪个任务', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     withTasks(h)
     h.llm.enqueue(reply('', [{ name: 'go_to', input: { x: 30, y: 64, z: 30 } }, { name: 'report', input: { text: '路上有岩浆，我绕着走' } }]), reply(''))
-    h.talk.enqueue(reply('它说路上有岩浆，绕着走'), reply('', [{ id: 'ws', name: 'worker_status' }]), reply('还在路上'))
     h.agent.handleEvent(told('去 30 64 30'))
     await h.agent.whenIdle()
     assert.deepEqual(relays(h).map((e) => e.relay!.type), ['report'])
-    assert.deepEqual(h.game.said, ['它说路上有岩浆，绕着走'])
+    assert.equal(h.talk.requests.length, 0)
 
+    h.talk.enqueue(reply('', [{ id: 'ws', name: 'worker_status' }]), says('还在路上'))
     h.agent.handleEvent(chat('Steve', 'Alu 走到哪了'))
     await h.agent.whenIdle()
-    const status = h.talk.requests[2]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    // 它醒来时那句汇报在背景里
+    assert.match(h.talk.lastUserText(0).split('[最近发生的事')[1] ?? '', /干活线汇报：路上有岩浆，我绕着走/)
+    const status = h.talk.requests[1]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
     assert.match(
       status.type === 'tool_result' ? status.content : '',
       /^Worker: still at work, not thinking right now: it is waiting for the task\(s\) it started to end\. Its last turn \(\d+\) ended \d+ s ago after 2 step\(s\)\. When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it\.\nStarted by the worker and not ended yet:\n- its task t1 \(goto\): running, 3\/8, for 1[23] s\nBody: on task t1 goto \[running\] 3\/8\./,
     )
+    // 任务还在跑，它提了个问：叫醒对话线
+    const before = h.talk.requests.length
+    h.llm.enqueue(reply('', [{ name: 'report', input: { text: '岩浆那边要不要垫石头？', question: true } }]), reply(''))
+    h.agent.handleEvent(told('绕不过去就说一声', []))
+    await waitFor('the question woke the talk line', () => h.talk.requests.length > before)
+    await h.agent.whenIdle()
+    assert.match(todo(h.talk.lastUserText(before)), /干活线提问（它在等回答，用 tell_worker 带话给它）：岩浆那边要不要垫石头？/)
   })
 
   it('它的例程还在后台跑、或者还有刚到的事等它处理时留的话，同样只作背景，写明它在等什么', async (t) => {
@@ -754,17 +895,17 @@ describe('两条线互相叫醒', () => {
     assert.match(h.llm.lastUserText(6).slice(h.llm.lastUserText(6).indexOf('[最近发生的事')), /对话线交给你的（这一句是它写的）：收到，辛苦了/)
   })
 
-  it('正常的你来我往不算空转：中间有任务结束就从头数；干活线一轮里连着汇报几次只算一次', async (t) => {
+  it('正常的你来我往不算空转：中间有任务结束就从头数；干活线一轮里的普通汇报不叫醒对话线，也不算往来', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
-    // 干活线每领一件事就开一个任务；任务结束后留一句话；对话线每次都再交一件
+    // 干活线每领一件事就开一个任务；任务结束后留一句话停下；对话线每次都再交一件
     let n = 0
     h.llm.auto = (seen) => {
-      if (/Task t\d+ \(goto\) started|Sent to the talk line/.test(seen)) return undefined
-      if (/任务 t\d+（goto）完成了/.test(seen)) return reply('', [{ name: 'report', input: { text: '到了' } }, { name: 'report', input: { text: '路上没事' } }])
+      if (/Task t\d+ \(goto\) started/.test(seen)) return undefined
+      if (/任务 t\d+（goto）完成了/.test(seen)) return reply('到了，路上没事')
       return /对话线交给你的/.test(seen) ? reply('', [{ name: 'go_to', input: { x: ++n, y: 64, z: 0 } }]) : undefined
     }
-    h.talk.auto = (seen) => (/干活线汇报：路上没事/.test(seen) && n < 10 ? reply('', [{ name: 'tell_worker', input: { text: `去下一个点 ${n + 1}` } }]) : undefined)
+    h.talk.auto = (seen) => (/干活线停下来了[^\n]*到了，路上没事/.test(seen) && n < 10 ? reply('', [{ name: 'tell_worker', input: { text: `去下一个点 ${n + 1}` } }]) : undefined)
     h.agent.handleEvent(told('去第一个点', []))
     for (let i = 1; i <= 10; i++) {
       await waitFor(`task ${i} started`, () => h.game.callsOf('task.start').length === i)
@@ -777,48 +918,63 @@ describe('两条线互相叫醒', () => {
     assert.equal(relays(h).some((e) => e.text.includes('只作背景')), false)
     assert.equal(h.log.recent(0, 500).some((e) => e.kind === 'error'), false)
 
-    // 干活线一轮里一口气汇报了十五次（中间没有外面的事）：话头只换了一次手，每一条都照常送到
+    // 干活线一轮里一口气汇报了十五次（中间没有外面的事）：每一条都送到、只作背景，对话线一次都没被叫醒，也不算两条线的往来
     h.llm.auto = undefined
     h.talk.auto = undefined
+    const talkBefore = h.talk.requests.length
     h.llm.enqueue(reply('', Array.from({ length: 15 }, (_, i) => ({ name: 'report', input: { text: `第 ${i + 1} 箱看完了` } }))), reply(''))
     h.agent.handleEvent(told('把十五个箱子挨个看一遍', []))
     await h.agent.whenIdle()
-    assert.equal(relays(h, 'report').filter((e) => e.text.includes('箱看完了')).length, 15)
-    assert.equal(relays(h).some((e) => e.text.includes('只作背景')), false)
-    assert.match(h.talk.requests.map((_, i) => h.talk.lastUserText(i)).join('\n'), /干活线汇报：第 15 箱看完了/)
+    const reports = relays(h, 'report').filter((e) => e.text.includes('箱看完了'))
+    assert.equal(reports.length, 15)
+    assert.ok(reports.every((e) => e.text.startsWith('干活线 → 对话线（汇报，只作背景，没有叫醒它）')))
+    assert.equal(h.talk.requests.length, talkBefore)
+    assert.equal(h.log.recent(0, 500).some((e) => e.kind === 'error'), false)
+    // 对话线下次醒来，在背景里看得到
+    h.agent.handleEvent(chat('Steve', 'Alu 箱子看得怎么样'))
+    await h.agent.whenIdle()
+    assert.match(h.talk.lastUserText(talkBefore), /干活线汇报：第 15 箱看完了/)
   })
 })
 
 describe('对话窗口', () => {
-  it('它主动说了话（干活线做完了，它来告诉人）以后，最近跟它说过话的人接一句不用再叫名字', async (t) => {
+  it('它在游戏里说了话（干活线做完了，它 say 告诉人）以后，最近跟它说过话的人接一句不用再叫名字；只写了字（只在面板上）不算', async (t) => {
     const h = makeAgent({ settings: { conversationWindowSec: 0.25 } })
     t.after(h.cleanup)
-    h.talk.enqueue(reply('好'))
+    h.talk.enqueue(says('好'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 去拿点铁'))
     await h.agent.whenIdle()
     // 过了对话窗口：不带名字的话不再叫醒它
     await sleep(320)
     h.agent.handleEvent(chat('Steve', '今天天气不错'))
     await sleep(30)
-    assert.equal(h.talk.requests.length, 1)
+    assert.equal(h.talk.requests.length, 2)
 
     // 干活线做完了，对话线说“拿到了”；Steve 紧接着回一句，不带名字
-    h.talk.enqueue(reply('铁拿到了，放哪？'), reply('好'))
+    h.talk.enqueue(says('铁拿到了，放哪？'), reply(''), reply(''))
     h.agent.handleEvent({ type: 'worker', time: Date.now(), kind: 'result', text: '拿到 3 个铁锭' })
     await h.agent.whenIdle()
     assert.deepEqual(h.game.said, ['好', '铁拿到了，放哪？'])
     h.agent.handleEvent(chat('Steve', '放箱子里'))
     await h.agent.whenIdle()
-    assert.equal(h.talk.requests.length, 3)
-    assert.match(todo(h.talk.lastUserText(2)), /Steve 说：放箱子里/)
+    assert.equal(h.talk.requests.length, 5)
+    assert.match(todo(h.talk.lastUserText(4)), /Steve 说：放箱子里/)
     // 别人接话不算：没跟它说过话的人照旧要叫名字
     await sleep(320)
-    h.talk.enqueue(reply('都放好了'))
+    h.talk.enqueue(says('都放好了'), reply(''))
     h.agent.handleEvent({ type: 'worker', time: Date.now(), kind: 'result', text: '放好了' })
     await h.agent.whenIdle()
     h.agent.handleEvent(chat('Bob', '放哪了'))
     await sleep(30)
-    assert.equal(h.talk.requests.length, 4)
+    assert.equal(h.talk.requests.length, 7)
+    // 干活线又做完一件，对话线只写了字（游戏里没人看到）：Steve 不带名字的话不叫醒它
+    await sleep(320)
+    h.talk.enqueue(reply('又放好了一箱'))
+    h.agent.handleEvent({ type: 'worker', time: Date.now(), kind: 'result', text: '又放好了' })
+    await h.agent.whenIdle()
+    h.agent.handleEvent(chat('Steve', '辛苦了'))
+    await sleep(30)
+    assert.equal(h.talk.requests.length, 8)
   })
 })
 
@@ -827,7 +983,7 @@ describe('主人问“你在干嘛”', () => {
     const h = makeAgent()
     t.after(h.cleanup)
     // 干活线空闲时
-    h.talk.enqueue(reply('闲着呢'))
+    h.talk.enqueue(says('闲着呢'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
     await h.agent.whenIdle()
     assert.match(h.talk.lastUserText(0), /\[当前状态\]\n[\s\S]*\n干活线：空闲，没有在想（大脑启动以后它还没有做过事）；身体上没有它开的任务，也没有例程在跑。/)
@@ -840,13 +996,13 @@ describe('主人问“你在干嘛”', () => {
     await waitFor('the worker is thinking about step 2', thinking.started)
     const turn = h.agent.state('work').turn!.id
 
-    h.talk.enqueue(reply('', [{ id: 'ws', name: 'worker_status', input: { detail: true } }]), reply('在搬圆石，搬了 3/8'))
+    h.talk.enqueue(reply('', [{ id: 'ws', name: 'worker_status', input: { detail: true } }]), says('在搬圆石，搬了 3/8'), reply(''))
     h.agent.handleEvent(chat('Steve', 'Alu 现在呢'))
     await waitFor('the talk line answered', () => h.game.said.length === 2)
     // 不调工具就看得到的那一行
-    assert.match(h.talk.lastUserText(1), new RegExp(`干活线：在忙。第 ${turn} 轮（\\d+ 秒前开始，起因：对话线交给你的（这一句是它写的）：把圆石搬到箱子里），已经想完 1 步，正在想第 2 步。`))
+    assert.match(h.talk.lastUserText(2), new RegExp(`干活线：在忙。第 ${turn} 轮（\\d+ 秒前开始，起因：对话线交给你的（这一句是它写的）：把圆石搬到箱子里），已经想完 1 步，正在想第 2 步。`))
     // 细节
-    const detail = h.talk.requests[2]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
+    const detail = h.talk.requests[3]!.messages.at(-1)!.content.find((p) => p.type === 'tool_result')!
     const text = detail.type === 'tool_result' ? detail.content : ''
     assert.match(text, new RegExp(`^Worker: busy\\. Turn ${turn}, started \\d+ s ago; 1 of at most 16 steps done, now thinking about step 2 for \\d+ s\\.\\nWhat started the turn: 对话线交给你的（这一句是它写的）：把圆石搬到箱子里\\nIts last 1 tool call\\(s\\) this turn:\\n- step 1: get_status \\{\\} → Alu: online in overworld`))
     assert.match(text, /\nBody: on task t7 haul \[running\] 3\/8\.\nQueued: t8 craft\.\nRoutine: none\.$/)
@@ -970,7 +1126,8 @@ describe('两条线各有各的上下文', () => {
     assert.match(summaries[0]!.system, /^你在替一个 Minecraft（GTNH 整合包）服务器里的 AI 玩家的“对话线”写“交接记录”。/)
     assert.match(summaries[0]!.system, /上限 900 字，/)
     for (const section of ['## 主人和别人交代的事、提的要求', '## 这一段结束时在聊的', '## 交给干活线的事', '## 干活线问过的、主人答过的', '## 答应过的事', '## 查到的结论', '## 人']) assert.ok(summaries[0]!.system.includes(`\n${section}\n`), section)
-    assert.match(summaries[0]!.messages[0]!.content.map((p) => (p.type === 'text' ? p.text : '')).join(''), /\[它说的话\] 第 0 句/)
+    // 它写的字标明只有主人在面板上看得到（游戏里说的话是 say、whisper 的调用）
+    assert.match(summaries[0]!.messages[0]!.content.map((p) => (p.type === 'text' ? p.text : '')).join(''), /\[它写的字（只有主人在面板上看得到）\] 第 0 句/)
     assert.equal(h.talkHistory.get().summary, '主人要 3 个铁锭，已经交给干活线，还没结果。')
     assert.equal(h.history.get().summary, '')
   })

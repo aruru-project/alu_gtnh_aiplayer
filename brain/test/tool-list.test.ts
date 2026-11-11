@@ -99,13 +99,13 @@ const ACTING = [
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
 const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
-const TALK_TOOLS_WITH_VISION = ['whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', ...NOTES]
+const TALK_TOOLS_WITH_VISION = ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', ...NOTES]
 const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
 const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
-  it('两条线各有各的清单：干活线有操作身体的全部和 report，没有对玩家说话的；对话线有悄悄话、交事和管干活线的三个、所有只查不动的，没有任何一个会动身体的，也没有 say；记忆、提醒、手册两条线都有', async (t) => {
+  it('两条线各有各的清单：干活线有操作身体的全部和 report，没有对玩家说话的；对话线有在游戏里说话的两个（say、whisper）、交事和管干活线的三个、所有只查不动的，没有任何一个会动身体的；记忆、提醒、手册两条线都有', async (t) => {
     const h = setup(t, { vision: true })
     const work = (await offered(h, 'work')).map((tool) => tool.name)
     const talk = (await offered(h, 'talk')).map((tool) => tool.name)
@@ -113,7 +113,7 @@ describe('模型拿到的工具清单', () => {
     assert.deepEqual([...talk].sort(), [...TALK_TOOLS_WITH_VISION].sort())
     for (const name of ACTING) assert.equal(talk.includes(name), false, `the talk line must not be offered ${name}`)
     for (const name of ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work']) assert.equal(work.includes(name), false, `the work line must not be offered ${name}`)
-    assert.equal(talk.includes('say'), false)
+    assert.equal(talk.includes('say'), true)
   })
 
   it('对话线直接调了会动身体的名字（工具、库函数、旧名字）：不执行，如实告诉它这归干活线、用 tell_worker 交过去；程序里调也一样；只查不动的照常执行', async (t) => {
@@ -236,7 +236,9 @@ describe('模型拿到的工具清单', () => {
   //   工作清单之后：干活线实际 54,386、上限 53,600 → 54,800；对话线实际 27,259、上限 26,800 → 27,600。
   //           多的是 todo（约 890，两条线都有：清单两条线都要能写、能改）；另外约 370 是上一批之后加的 use_item 的 left、
   //           use_control 的电路、total_materials 的 automated 这几个参数（那时没动上限，余量吃掉了）。
-  for (const [line, ceiling] of [['work', 54_800], ['talk', 27_600]] as const) {
+  //   公屏说话和对话线写的字分开之后：对话线实际 27,717、上限 27,600 → 28,200。多的是 say（约 460：它在公共聊天里说话的那个工具，
+  //           说明里写着它不调工具写的字只给主人在面板上看）；干活线的 report 说明改写了（普通汇报不叫醒对话线），54,392，没过上限。
+  for (const [line, ceiling] of [['work', 54_800], ['talk', 28_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -351,7 +353,7 @@ describe('库函数：不在清单里，在程序里调', () => {
 
     // 对话线：列的是它自己的工具和只查不动的库函数
     const talk = (await lineCalls(setup(t, { vision: false }), 'talk', 'fly_to_the_moon')).content
-    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials, view_area, view_image\.$/)
+    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(talk, /haul_items|go_to|start_routine/)
   })
 
@@ -524,7 +526,7 @@ describe('用 run_command 发悄悄话', () => {
     assert.deepEqual(h.game.callsOf('bot.command').map((p) => p.command), ['tell Steve 东西放你箱子里了', 'msg Herobrine 在吗'])
     assert.deepEqual(h.game.said, [])
     // 面板的对话日志里这句话记成它说的，标着是干活线
-    assert.deepEqual(h.log.recent(0, 80).filter((e) => e.kind === 'say').map((e) => [e.agent, e.text]), [['work', '（私聊 Steve）东西放你箱子里了']])
+    assert.deepEqual(h.log.recent(0, 80).filter((e) => e.kind === 'say').map((e) => [e.agent, e.channel, e.to, e.text]), [['work', 'whisper', 'Steve', '东西放你箱子里了']])
     assert.deepEqual(h.chatLog.recent().lines.filter((l) => l.kind === 'whispered').map((l) => [l.to, l.text]), [['Steve', '东西放你箱子里了']])
   })
 })

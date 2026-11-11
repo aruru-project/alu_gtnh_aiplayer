@@ -108,6 +108,11 @@ export function reply(text: string, calls: { name: string; input?: unknown; id?:
   }
 }
 
+/** 对话线在公共聊天里说一句（say），同一步里还可以调别的工具。它不调工具写的字不进游戏。 */
+export function says(text: string, calls: { name: string; input?: unknown; id?: string }[] = [], extra: Partial<GenerateResult> = {}): GenerateResult {
+  return reply('', [{ name: 'say', input: { text } }, ...calls], extra)
+}
+
 /**
  * 按脚本回应的假模型。脚本用完后一律回空文本（结束这一轮）；给了 auto 的话脚本用完后由它按请求的内容回
  * （两条线来回几趟、谁先谁后不好写死顺序的场景用：看它这一步看到了什么，决定回什么）。

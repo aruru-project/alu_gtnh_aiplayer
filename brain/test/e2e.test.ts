@@ -132,7 +132,7 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   assert.equal(bridge.bots.get('Alu')?.online, true)
 
   // 5. 游戏里有人叫它干活：对话线一步里应一声、把事交出去；干活线启动任务
-  talk.enqueue({ text: '好，我来平。', toolCalls: [{ name: 'tell_worker', input: { text: '把 (0,0)-(15,15) 平到 y=64，挖出来的放 (20,64,0) 的箱子' } }] }, { text: '' })
+  talk.enqueue({ toolCalls: [{ name: 'say', input: { text: '好，我来平。' } }, { name: 'tell_worker', input: { text: '把 (0,0)-(15,15) 平到 y=64，挖出来的放 (20,64,0) 的箱子' } }] }, { text: '' })
   llm.enqueue({ toolCalls: [{ name: 'flatten_area', input: { x1: 0, z1: 0, x2: 15, z2: 15, y: 64, dropoff: [{ x: 20, y: 64, z: 0 }] } }] }, { text: '' })
   bridge.chat('Steve', 'Alu 把 0,0 到 15,15 这块平到 64')
   const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
@@ -150,7 +150,7 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   assert.match(talkSaw, /Steve 说：Alu 把 0,0 到 15,15 这块平到 64/)
   assert.match(talkSaw, /干活线：空闲，没有在想（大脑启动以后它还没有做过事）；身体上没有它开的任务，也没有例程在跑。/)
   const talkTools = (talkTurn.body.tools as { name: string }[]).map((x) => x.name)
-  assert.ok(talkTools.includes('tell_worker') && talkTools.includes('find_recipes') && !talkTools.includes('flatten_area') && !talkTools.includes('say'), talkTools.join(' '))
+  assert.ok(talkTools.includes('tell_worker') && talkTools.includes('find_recipes') && !talkTools.includes('flatten_area') && talkTools.includes('say'), talkTools.join(' '))
   // 干活线第一次看到的是交来的事（对话线写的一句，和主人的原话）和当前状态；它的清单里有平地的，没有对玩家说话的
   const firstTurn = llm.requests[1]!
   assert.equal(firstTurn.api, 'openai')
@@ -167,9 +167,9 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   const second = await call('POST', '/providers', { kind: 'anthropic-messages', label: '模拟 Anthropic', baseUrl: llm.anthropicBaseUrl, apiKey: 'sk-ant-e2e-key-0002', model: 'claude-e2e' })
   await call('POST', '/models/use', { providerId: second.json.provider.id, modelId: second.json.provider.models[0].id, line: 'work' })
 
-  // 7. 任务结束 → 只有干活线被叫醒 → 它汇报 → 对话线把话说出去
-  llm.enqueue({ thinking: { thinking: '任务完成了，告诉对话线。', signature: 'sig-e2e' }, toolCalls: [{ name: 'report', input: { text: '平好了：挖了 37 格、填了 4 格。' } }] }, { text: '' })
-  talk.enqueue({ text: '平好了。' })
+  // 7. 任务结束 → 只有干活线被叫醒 → 它汇报（只作背景）、停下来留一句话 → 这句话叫醒对话线，它在游戏里说
+  llm.enqueue({ thinking: { thinking: '任务完成了，告诉对话线。', signature: 'sig-e2e' }, toolCalls: [{ name: 'report', input: { text: '平好了：挖了 37 格、填了 4 格。' } }] }, { text: '都做完了。' })
+  talk.enqueue({ toolCalls: [{ name: 'say', input: { text: '平好了。' } }] }, { text: '' })
   bridge.finishTask('Alu', { result: { dug: 37, placed: 4, skipped: [] } })
   await waitFor('bot reported back', () => bridge.chatLog.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual(bridge.chatLog[1], { bot: 'Alu', message: '平好了。' })
@@ -188,14 +188,15 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   // 带思考的工具循环：思考块在下一次请求里原样回传
   const followUp = llm.requests[4]!.body.messages.at(-2)
   assert.deepEqual(followUp.content[0], { type: 'thinking', thinking: '任务完成了，告诉对话线。', signature: 'sig-e2e' })
-  // 对话线是被干活线的汇报叫醒的；任务结束这件事本身没有到它那里；它那边一直是对话用的那家接口
-  await waitFor('the talk line finished', () => talk.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  const reported = JSON.stringify(talk.requests[2]!.body.messages.at(-1))
-  assert.match(reported, /干活线汇报：平好了：挖了 37 格、填了 4 格。/)
+  // 对话线是被干活线停下来留的话叫醒的，汇报在背景里；任务结束这件事本身没有到它那里；它那边一直是对话用的那家接口
+  await waitFor('the talk line finished', () => talk.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const reported = JSON.parse(JSON.stringify(talk.requests[2]!.body.messages.at(-1).content.map((b: { text?: string }) => b.text ?? '').join('\n'))) as string
+  assert.match(reported, /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：都做完了。/)
+  assert.match(reported.split('[最近发生的事')[1] ?? '', /干活线汇报：平好了：挖了 37 格、填了 4 格。/)
   assert.equal(talk.requests.some((r) => /任务 t1（flatten）完成了/.test(JSON.stringify(r.body.messages))), false)
   assert.ok(talk.requests.every((r) => r.api === 'anthropic' && r.body.model === 'claude-talk'))
 
-  // 8. 面板上看得到整个过程（每条带着是哪条线的），两条线之间的往来各是一条 relay；用量记了账（1 次测试连接 + 干活线 4 次 + 对话线 3 次）
+  // 8. 面板上看得到整个过程（每条带着是哪条线的），两条线之间的往来各是一条 relay；用量记了账（1 次测试连接 + 干活线 4 次 + 对话线 4 次）
   type LogEntry = { kind: string; who?: string; text: string; agent?: string; relay?: { type: string; from: string; to: string; quotes?: number } }
   const fetchLog = async (): Promise<LogEntry[]> => (await call('GET', '/log')).json.entries
   // 聊天发出去以后大脑才把这句记进日志：等它记完
@@ -214,9 +215,10 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   assert.deepEqual(log.filter((e) => e.kind === 'relay').map((e) => [e.agent, e.relay]), [
     ['talk', { type: 'tell', from: 'talk', to: 'work', quotes: 1 }],
     ['work', { type: 'report', from: 'work', to: 'talk' }],
+    ['work', { type: 'result', from: 'work', to: 'talk' }],
   ])
   const overview = (await call('GET', '/overview')).json
-  assert.equal(overview.usage.today.calls, 8)
+  assert.equal(overview.usage.today.calls, 9)
   assert.deepEqual([overview.provider.kind, overview.lineModels.talk.label], ['anthropic-messages', '对话用的'])
   assert.deepEqual([overview.agent.lastCall.ok, overview.talk.lastCall.ok], [true, true])
   assert.equal(JSON.stringify(overview).includes('sk-ant-e2e-key-0002'), false)
@@ -320,7 +322,7 @@ it('端到端：大脑进程重启后，重启期间结束的任务照样把它�
   bridge.finishTask('Alu', { error: { code: 'unreachable', message: 'no path to 30,64,30' } })
 
   // 重新启动：续传把错过的事件补回来，模型被叫醒处理这次失败
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '过不去，路被挡住了。' } }] }, { text: '' })
+  llm.enqueue({ text: '过不去，路被挡住了。' })
   brain = startBrain(tmp.dir, bridge, { talk })
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual(bridge.commandLog[0], { bot: 'Alu', command: 'tell Steve 过不去，路被挡住了。' })
@@ -407,7 +409,7 @@ it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比（
   assert.match(checked, /- 1× minecraft:chest\/3 \\"Chest\\" \(it holds contents or settings\)/)
 
   // 4. 任务做完能做的部分后以 no_material 失败：它被叫醒，看到还缺什么，告诉主人
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '还差 15 块石砖，箱子得你自己放。' } }] }, { text: '' })
+  llm.enqueue({ text: '还差 15 块石砖，箱子得你自己放。' })
   bridge.completeTask('Alu')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   const woken = JSON.stringify(llm.requests[3]!.body.messages.at(-1))
@@ -499,14 +501,14 @@ it('端到端：主人只给目标（做一个 Copter Blades）→ 它查物品�
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft')
 
   // 3. 合成做完：被叫醒，看到做出了什么，告诉主人
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '桨叶做好了。' } }] }, { text: '' })
+  llm.enqueue({ text: '桨叶做好了。' })
   bridge.completeTask('Alu')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.match(seen(5), /任务 t2（craft）完成了。 结果：crafted 1× adventurebackpack:backpackComponent\/6 \\"Copter Blades\\", freeSlots \d+/)
-  // 取料那次结束没有再叫醒它一次：一共就是“目标那一轮 5 次 + 合成做完那一轮 2 次”
-  await waitFor('the last turn finished', () => llm.requests.length >= 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  // 取料那次结束没有再叫醒它一次：一共就是“目标那一轮 5 次 + 合成做完那一轮 1 次”（它停下来留的话就是告诉主人的）
+  await waitFor('the last turn finished', () => llm.requests.length >= 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   await sleep(150)
-  assert.equal(llm.requests.length, 7)
+  assert.equal(llm.requests.length, 6)
   // 背包里：成品在，轴和螺丝用掉了，螺丝刀还在
   const carried = (id: string, meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === id && i.meta === meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual(
@@ -607,7 +609,7 @@ it('端到端：大脑带着本地配方册启动，主人指着箱子说“做�
   assert.equal(bridge.bots.get('Alu')?.task?.type, 'craft', `the craft task is running after the withdraw${diag()}`)
 
   // 3. 合成做完：它被叫醒，结果里的东西叫的是中文名
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '直升机桨叶做好了。' } }] }, { text: '' })
+  llm.enqueue({ text: '直升机桨叶做好了。' })
   bridge.completeTask('Alu')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('直升机桨叶做好了')), 10_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
   const ended = llm.requests.map((_, n) => seen(n)).find((text) => /（craft）完成了/.test(text))!
@@ -673,12 +675,11 @@ it('端到端：主人在面板写了一本手册，然后问“任务书下一�
     { toolCalls: [{ name: 'read_manual', input: { name: 'quests' } }] },
     { toolCalls: [{ name: 'find_quests', input: { state: 'available' } }] },
     { toolCalls: [{ name: 'get_quest', input: { id: '4a' } }] },
-    { toolCalls: [{ name: 'report', input: { text: '能做的有 3 个，最近的是做个直升机背包交任务。' } }] },
-    { text: '' },
+    { text: '能做的有 3 个，最近的是做个直升机背包交任务。' },
   )
   bridge.whisper('Alu', 'Steve', '任务书下一步做什么')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('turn finished', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
 
   // 提示词里只有手册目录：默认的和主人刚写的；正文没塞进去
@@ -744,12 +745,11 @@ it('端到端：大脑带着本地任务书资料启动，主人问“任务书�
   llm.enqueue(
     { toolCalls: [{ name: 'find_quests', input: { state: 'available' } }] },
     { toolCalls: [{ name: 'get_quest', input: { id: '4a' } }] },
-    { toolCalls: [{ name: 'report', input: { text: '能做的有 6 个，比如“飞向天空”：做个直升机背包。' } }] },
-    { text: '' },
+    { text: '能做的有 6 个，比如“飞向天空”：做个直升机背包。' },
   )
   bridge.whisper('Alu', 'Steve', '任务书下一步做什么')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
 
   // 能做的 6 个是按前置和 Steve 做完的 1、2 算出来的；任务名、章节名是中文
@@ -831,12 +831,11 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   llm.enqueue(
     { toolCalls: [{ name: 'list_images', input: {} }] },
     { toolCalls: [{ name: 'run_program', input: { code: program } }] },
-    { toolCalls: [{ name: 'report', input: { text: '画好了：3×3 的红心，要 6 块红色羊毛，立在 40 65 40。你去面板图纸页看看草稿，行我就盖。' } }] },
-    { text: '' },
+    { text: '画好了：3×3 的红心，要 6 块红色羊毛，立在 40 65 40。你去面板图纸页看看草稿，行我就盖。' },
   )
   bridge.whisper('Alu', 'Steve', '把我传的 heart 那张图做成像素画，竖着立起来')
   await waitFor('brain asked Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('first turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('first turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   const seen = (n: number) => JSON.stringify(llm.requests[n]!.body.messages.at(-1))
   // 提示词里指了路：手册目录里有 design
   assert.match(JSON.stringify(llm.requests[0]!.body.messages[0]), /- design：[^\\]+/)
@@ -862,7 +861,7 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   bridge.whisper('Alu', 'Steve', '可以，盖吧')
   const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'heart-art', x: 40, y: 65, z: 40 }, mode: 'replace' })
-  await waitFor('second turn finished', () => llm.requests.length === 8, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('second turn finished', () => llm.requests.length === 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   // 身体收到的图纸，照它的读法就是那个红心
   const blueprint = bridge.blueprints.get('heart-art')
   assert.ok(blueprint && !('error' in blueprint), diag())
@@ -870,9 +869,9 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   assert.deepEqual(blueprint.kinds.map((k) => `${k.id}/${k.meta}`), ['minecraft:air/0', 'minecraft:wool/14'])
   // 最下面一层（y=0）是尖，最上面一层（y=2）是两个角
   assert.deepEqual([...blueprint.cells], [0, 1, 0, 1, 1, 1, 1, 0, 1])
-  assert.match(seen(5), /Published draft \\"heart-art\\" as blueprint \\"heart-art\\" on the server \(3×3×1, 6 blocks\)/)
+  assert.match(seen(4), /Published draft \\"heart-art\\" as blueprint \\"heart-art\\" on the server \(3×3×1, 6 blocks\)/)
   // 对比的结果：6 块红色羊毛都还要放
-  assert.match(seen(6), /- 6× minecraft:wool\/14/)
+  assert.match(seen(5), /- 6× minecraft:wool\/14/)
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())
@@ -917,12 +916,11 @@ it('端到端：它干活时往意见簿里记了一条 → 主人在面板上�
         },
       ],
     },
-    { toolCalls: [{ name: 'report', input: { text: '我分不出哪本是时运，你自己来拿一下' } }] },
-    { text: '' },
+    { text: '我分不出哪本是时运，你自己来拿一下' },
   )
   bridge.whisper('Alu', 'Steve', '把箱子里那本时运书给我')
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
 
   // 主人打开面板：导航上有个 1，意见簿里是这一条
   const res = await fetch(`${origin}/api/login`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'preset-password-for-e2e' }) })
@@ -999,9 +997,9 @@ it('端到端：两条线各用各的模型，主人在面板上只换了干活�
   cookie = (await call('POST', '/login', { password: 'preset-password-for-e2e' })).headers.getSetCookie()[0]!.split(';')[0]!
 
   // 1. 第一轮：对话线用的是它自己那家接口（只传话的那个），干活线用的是选中的 gpt-fast 和它的输出上限
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '在' } }] }, { text: '' })
+  llm.enqueue({ text: '在' })
   bridge.whisper('Alu', 'Steve', '在吗')
-  await waitFor('first turn finished', () => llm.requests.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('first turn finished', () => llm.requests.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual([llm.requests[0]!.body.model, llm.requests[0]!.body.max_tokens, llm.requests[0]!.body.reasoning_effort], ['gpt-fast', 1111, undefined])
   await waitFor('the talk line passed the answer on', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
 
@@ -1016,17 +1014,17 @@ it('端到端：两条线各用各的模型，主人在面板上只换了干活�
   assert.deepEqual([after.provider.model, after.provider.modelLabel, after.lineModels.talk.model], ['gpt-think', '思考版', 'talk-e2e'])
 
   // 3. 大脑没重启；下一轮发出去的请求用的就是新模型和它自己的设置（输出上限的字段名、思考参数）
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '还在' } }] }, { text: '' })
+  llm.enqueue({ text: '还在' })
   bridge.whisper('Alu', 'Steve', '还在吗')
-  await waitFor('second turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  const second = llm.requests[2]!.body
+  await waitFor('second turn finished', () => llm.requests.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const second = llm.requests[1]!.body
   assert.deepEqual([second.model, second.max_completion_tokens, second.max_tokens, second.reasoning_effort], ['gpt-think', 2222, undefined, 'high'])
-  assert.equal(llm.requests[2]!.headers.authorization, 'Bearer sk-e2e-switch-key-0003')
+  assert.equal(llm.requests[1]!.headers.authorization, 'Bearer sk-e2e-switch-key-0003')
 
   // 对话线从头到尾用的是它自己的模型，一次都没有发到干活线那家接口去
   await waitFor('the talk line passed the second answer on', () => bridge.commandLog.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.ok(talk.requests.length >= 4 && talk.requests.every((r) => r.body.model === 'talk-e2e'))
-  assert.equal(llm.requests.length, 4)
+  assert.equal(llm.requests.length, 2)
 
   // 4. 日志里每一轮写着是哪条线、用的是哪个服务商的哪个模型，换模型也记了一笔
   const entries = (await call('GET', '/log')).json.entries as { kind: string; text: string; agent?: string }[]
@@ -1035,7 +1033,7 @@ it('端到端：两条线各用各的模型，主人在面板上只换了干活�
   turnStart('talk', /^第 \d+ 轮开始（talk \/ talk-e2e）：Steve 私聊你：在吗/)
   turnStart('work', /^第 \d+ 轮开始（模拟接口 \/ gpt-fast）：对话线交给你的（这一句是它写的）：在吗/)
   turnStart('work', /^第 \d+ 轮开始（模拟接口 \/ 思考版）：对话线交给你的（这一句是它写的）：还在吗/)
-  turnStart('talk', /^第 \d+ 轮开始（talk \/ talk-e2e）：干活线汇报：还在/)
+  turnStart('talk', /^第 \d+ 轮开始（talk \/ talk-e2e）：干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：还在/)
   assert.ok(log.includes('在面板上把干活线的模型换成了 模拟接口 / 思考版，下一轮起生效。'))
 
   // 5. 添加模型时可以问接口它有哪些：用的是存着的 key
@@ -1099,9 +1097,9 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   /** 让它看一眼周围，等这一轮跑完；返回这一轮发给模型的请求。 */
   const look = async (words: string, input: Record<string, unknown>) => {
     const before = llm.requests.length
-    llm.enqueue({ toolCalls: [{ name: 'view_area', input }] }, { toolCalls: [{ name: 'report', input: { text: '看到了' } }] }, { text: '' })
+    llm.enqueue({ toolCalls: [{ name: 'view_area', input }] }, { text: '看到了' })
     bridge.whisper('Alu', 'Steve', words)
-    await waitFor(`turn "${words}" finished`, () => llm.requests.length === before + 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+    await waitFor(`turn "${words}" finished`, () => llm.requests.length === before + 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
     return llm.requests.slice(before)
   }
 
@@ -1110,7 +1108,7 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   assert.deepEqual(llm.rejected, [], diag())
   // bot 站在 (10, 64, -4)：四周各 6 格，脚下 3 层，往上 8 层
   assert.deepEqual(bridge.requestsOf('world.blocks'), [{ x1: 4, z1: -10, x2: 16, z2: 2, y1: 61, y2: 72, dim: 0 }])
-  assert.deepEqual(first.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  assert.deepEqual(first.map((r) => imagesInRequest(r).length), [0, 1])
   const sent = imagesInRequest(first[1]!)[0]!
   assert.equal(sent.mediaType, 'image/png')
   assert.ok(isPng(sent.bytes) && sent.bytes.length > 1000)
@@ -1127,7 +1125,7 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   // 2. 下一轮：之前那张图不再发，原处是一句占位文字；这一轮新要的图照常发
   const second = await look('再从上面看看', { radius: 6, view: 'top' })
   assert.deepEqual(llm.rejected, [], diag())
-  assert.deepEqual(second.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  assert.deepEqual(second.map((r) => imagesInRequest(r).length), [0, 1])
   assert.equal(JSON.stringify(second[0]!.body).includes(sent.bytes.toString('base64').slice(0, 300)), false)
   assert.match(JSON.stringify(second[0]!.body), /\[picture seen earlier, no longer attached: iso view from the southeast corner of the world at x 4\.\.16, y 61\.\.72, z -10\.\.2\./)
 
@@ -1148,7 +1146,7 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   const blind = await look('现在呢', { radius: 6 })
   assert.deepEqual(['view_area', 'view_image', 'view_draft'].map((name) => namesIn(blind[0]!).includes(name)), [false, false, true])
   assert.deepEqual(llm.rejected, [], diag())
-  assert.deepEqual(blind.map((r) => [r.api, imagesInRequest(r).length]), [['openai', 0], ['openai', 0], ['openai', 0]])
+  assert.deepEqual(blind.map((r) => [r.api, imagesInRequest(r).length]), [['openai', 0], ['openai', 0]])
   const words = blind[1]!.body.messages.at(-1)
   assert.equal(words.role, 'tool')
   assert.match(words.content, /^No picture is attached: the model you are running on cannot see pictures/)
@@ -1158,7 +1156,7 @@ it('端到端：主人让它看看周围 → 它要一张简图 → 能看图的
   assert.equal((await call('POST', '/models/use', { providerId: 'oa', modelId: 'eyes' })).status, 200)
   const again = await look('再看一眼', { radius: 6, view: 'side', from: 'south' })
   assert.deepEqual(llm.rejected, [], diag())
-  assert.deepEqual(again.map((r) => imagesInRequest(r).length), [0, 1, 1])
+  assert.deepEqual(again.map((r) => imagesInRequest(r).length), [0, 1])
   const tail = again[1]!.body.messages.slice(-2)
   assert.deepEqual([tail[0].role, tail[1].role, tail[1].content.map((part: { type: string }) => part.type)], ['tool', 'user', ['text', 'image_url']])
   assert.match(tail[0].content, /\[The picture is in the next message\.\]$/)
@@ -1235,17 +1233,16 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
     // 再拿这两根钢杆去没电的组装机试一下：开不了工。任务当场失败，这个消息它紧接着就看到（赶上这一轮的哪一步算哪一步，
     // 赶不上就是为它再醒一次），它告诉主人
     { toolCalls: [{ name: 'process_items', input: { machine: { x: assembler.x, y: assembler.y, z: assembler.z }, inputs: [{ id: GT, meta: 23305, count: 2 }] } }] },
-    { toolCalls: [{ name: 'report', input: { text: '钢杆车好了两根；组装机没电，开不了。' } }] },
-    { text: '' },
   )
-  llm.fallback = () => ({ text: '' })
+  // 看到组装机那个任务失败了，它停下来留一句话（这句话叫醒对话线，由它告诉主人）；任务还在跑时留的话只作背景
+  llm.fallback = (req) => (JSON.stringify(req.body.messages.at(-1)).includes('任务 t3（process）失败了') ? { text: '钢杆车好了两根；组装机没电，开不了。' } : { text: '' })
   bridge.completeTask('Alu')
   await waitFor('second process task ended', () => bridge.bots.get('Alu')?.recent.some((x) => x.id === 't3'), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.match(seen(4), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
 
   // 3. 没电的机器：任务以 invalid 失败，它看到机器状态，告诉主人
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  await waitFor('the turn finished', () => llm.requests.length >= 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('the turn finished', () => llm.requests.length >= 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   // 失败的消息只到干活线，而且只出现一次：接在它某一步的工具结果后面，或者这一轮已经结束、为它再醒一次
   const newest = (): string[] => llm.requests.map((_, n) => seen(n)).filter((text) => /任务 t3（process）失败了/.test(text))
   await waitFor('the failure reached the worker', () => newest().length > 0, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
@@ -1319,7 +1316,7 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
     { text: '' },
   )
   // 2. 例程跑完把它叫醒：告诉主人
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '搬完了，两样。' } }] }, { text: '' })
+  llm.enqueue({ text: '搬完了，两样。' })
   bridge.whisper('Alu', 'Steve', '把抽屉管理器管着的、不到 128 个的东西都搬到这个箱子里')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('搬完了，两样。')), 20_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
 
@@ -1349,7 +1346,7 @@ it('端到端：主人指着一个箱子说“把抽屉管理器管着的、不�
       { type: 'deposit', container: CHEST, items: [{ id: 'gregtech:gt.metaitem.01', meta: 11305 }] },
     ],
   )
-  await waitFor('second turn finished', () => llm.requests.length === 6, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('second turn finished', () => llm.requests.length === 5, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   const woken = seen(4)
   assert.match(woken, /你启动的例程有结果了/)
   assert.match(woken, /Routine r1 \("整理抽屉"\) finished: the program finished\. 5 tool call\(s\), 4 task\(s\), \d+ s in all\.\nIt returned: 搬完 2 格\n/)
@@ -1401,8 +1398,7 @@ it('端到端：主人指着一个装了 102 种东西的压缩箱问“里面�
   llm.enqueue(
     { toolCalls: [{ name: 'list_containers', input: {} }] },
     { toolCalls: [{ name: 'list_containers', input: { at: BIG, radius: 0 } }] },
-    { toolCalls: [{ name: 'report', input: { text: '一共 102 种，最多的是 Thing 0（200 个）。' } }] },
-    { text: '' },
+    { text: '一共 102 种，最多的是 Thing 0（200 个）。' },
   )
   bridge.whisper('Alu', 'Steve', '那个压缩箱里都有什么')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('一共 102 种')), 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
@@ -1508,8 +1504,7 @@ it('端到端：主人说“做一个小背包，做好后把圆石放进去” 
   llm.enqueue(
     { toolCalls: [{ name: 'use_item', input: BAG }] },
     { toolCalls: [{ name: 'deposit_items', input: { bag: BAG, items: [{ id: 'minecraft:cobblestone', count: 64 }] } }] },
-    { toolCalls: [{ name: 'report', input: { text: '小背包做好了，圆石放进去了。' } }] },
-    { text: '' },
+    { text: '小背包做好了，圆石放进去了。' },
   )
   bridge.completeTask('Alu')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('小背包做好了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))
@@ -1593,15 +1588,15 @@ it('端到端：例程在后台跑的时候，主人在面板概览页看得到�
   )
 
   // 3. 主人点“停止例程”：例程停下，它正在做的任务被取消；它被叫醒，知道是主人停的
-  llm.enqueue({ toolCalls: [{ name: 'report', input: { text: '好，不走了。' } }] }, { text: '' })
+  llm.enqueue({ text: '好，不走了。' })
   assert.deepEqual((await call('POST', '/routine/stop', {})).json, { stopped: true })
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('好，不走了。')), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual(bridge.requestsOf('task.cancel'), [{ bot: 'Alu', id: 't1' }])
   assert.equal(bridge.bots.get('Alu')?.task, null)
-  await waitFor('wake turn finished', () => llm.requests.length === 4, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  await waitFor('wake turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.match(seen(2), /你启动的例程有结果了/)
   assert.match(seen(2), /Routine r1 \("走一趟"\) was STOPPED: your owner stopped it on the control panel\. 1 tool call\(s\), 1 task\(s\)/)
-  // 被取消的那个任务只是背景，没有另外再把它叫醒一轮（上面等到的就是一共四次模型调用）
+  // 被取消的那个任务只是背景，没有另外再把它叫醒一轮（上面等到的就是一共三次模型调用）
   assert.match(seen(2), /\[最近发生的事（只是背景，不需要回应）\]\n\[[\d:]+\] 任务 t1（goto）被取消了。/)
   const after = (await call('GET', '/overview')).json.agent.routine
   assert.deepEqual([after.status, after.ending], ['stopped', 'your owner stopped it on the control panel'])
@@ -1641,11 +1636,13 @@ it('端到端：主人说“做一个直升机桨叶” → 它自己一层层�
 
   // 模型：没有谁替它排好路线。它一层层查（查做法 → 查库存 → 缺的再查做法），每一步看了结果再决定下一步。
   // 脚本按顺序写着“看到什么 → 做什么”；看到的不是下一条等着的，就什么都不做。
-  const call = (name: string, input: unknown) => ({ toolCalls: [{ name, input }] })
-  const say = (message: string) => call('report', { text: message })
+  type Step = { toolCalls?: { name: string; input: unknown }[]; text?: string }
+  const call = (name: string, input: unknown): Step => ({ toolCalls: [{ name, input }] })
+  // 告诉主人：停下来留一句话（这句话叫醒对话线；普通汇报不叫醒它）；要回话的作为提问送过去
+  const say = (message: string): Step => ({ text: message })
   const ask = (message: string) => call('report', { text: message, question: true })
   const done = /任务 \w+（\w+）完成了/
-  const script: [RegExp, ReturnType<typeof call>][] = [
+  const script: [RegExp, Step][] = [
     [/Steve 私聊你：做一个直升机桨叶/, call('find_recipes', P.blades)],
     // 桨叶：4 精炼铁柄 + 3 钢螺丝 + 钢齿轮，要螺丝刀 → 这几样库存里有没有
     [/^直升机桨叶 \[/, call('find_in_storage', { items: [P.shaft, P.steelScrew, P.steelGear, { ore: 'craftingToolScrewdriver' }] })],
@@ -1737,9 +1734,10 @@ it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 →
   const bender = bridge.machines.find((m) => m.name === 'Basic Bending Machine')!
   const CHEST_AT = at(bridge.containers[0]!)
 
-  const call = (name: string, input: unknown) => ({ toolCalls: [{ name, input }] })
+  type Step = { toolCalls?: { name: string; input: unknown }[]; text?: string }
+  const call = (name: string, input: unknown): Step => ({ toolCalls: [{ name, input }] })
   const done = /任务 \w+（withdraw）完成了/
-  const script: [RegExp, ReturnType<typeof call>][] = [
+  const script: [RegExp, Step][] = [
     [/Steve 私聊你：压 4 根精炼铁柄/, call('withdraw_items', { container: CHEST_AT, items: [stack(P.steelIngot, 38), stack(P.shaftShape, 1)] })],
     [done, call('process_items', { machine: at(extruder), recipe: R.shaft, rounds: 4, leave: true })],
     // 压模机那边放下就走了：趁它转，去卷板机压两块钢板
@@ -1747,7 +1745,7 @@ it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 →
     [/任务 \w+（process）完成了。 结果：put 2 item/, call('withdraw_items', { container: at(bender), items: [stack(P.steelPlate, 2)] })],
     [done, call('withdraw_items', { container: at(extruder), items: [stack(P.shaft, 4)] })],
     [done, call('withdraw_items', { container: at(extruder), items: [stack(P.shaftShape, 1)], fromInputs: true })],
-    [done, call('report', { text: '4 根柄和 2 块钢板都取回来了。' })],
+    [done, { text: '4 根柄和 2 块钢板都取回来了。' }],
   ]
   const seen: string[] = []
   let next = 0
@@ -1946,7 +1944,8 @@ it('端到端：主人让它用旁边的熔炉（身体不认识的机器）烧�
     return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
   }
   const seen: string[] = []
-  const say = (message: string) => ({ toolCalls: [{ name: 'report', input: { text: message } }] })
+  // 告诉主人：停下来时留一句话（这句话叫醒对话线；普通汇报不叫醒它）
+  const say = (message: string) => ({ text: message })
   const smelt = { name: 'process_items', input: { machine: FURNACE, recipe: R.furnaceSteel, rounds: 2 } }
   llm.fallback = (req) => {
     const text = lastText(req)
@@ -2274,7 +2273,7 @@ it('端到端：带着只有一条线时留下的数据目录启动 → 配置�
   assert.equal(fs.statSync(path.join(tmp.dir, 'config.json.v2.bak')).mode & 0o777, 0o600)
   // 对话线用的是新的默认说话风格，不是那段旧人设
   const talkSystem = JSON.stringify(llm.requests.filter(isTalkLine)[0]!.body.system)
-  assert.ok(talkSystem.includes('你写出来的文字就是你在公共聊天里说的话') && !talkSystem.includes('玩家只能看到你用 say 说的话'))
+  assert.ok(talkSystem.includes('你写的字只有主人在面板上看得到') && !talkSystem.includes('玩家只能看到你用 say 说的话'))
 
   // 3. 日志里两件事都说了；状态里两条线各有各的历史
   const log = ((await call('GET', '/log')).json.entries as { kind: string; text: string }[]).map((e) => e.text)
@@ -2345,8 +2344,7 @@ it('端到端：主人说模具在流体固化器的覆盖板里 → 它搜库�
     // 取的容器照搜到的那一行写
     { toolCalls: [{ name: 'withdraw_items', input: { container: { ...SOLIDIFIER, side: 'west', sneak: true }, items: [{ id: GT, meta: 32322, count: 1 }] } }] },
     { toolCalls: [{ name: 'inspect_block', input: SOLIDIFIER }, { name: 'inspect_block', input: { ...SOLIDIFIER, detail: true } }] },
-    { toolCalls: [{ name: 'report', input: { text: '模具拿到了。' } }] },
-    { text: '' },
+    { text: '模具拿到了。' },
   )
   bridge.whisper('Alu', 'Steve', '模具（环）在流体固化器的覆盖板里，拿出来')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('模具拿到了')), 15_000).catch((e) => assert.fail(`${e.message}\n${llm.requests.map((_, n) => seen(n)).join('\n---\n')}${diag()}`))
@@ -2423,8 +2421,7 @@ it('端到端：钢板在流体提取机里化成了熔融钢，隔壁的固化�
     { toolCalls: [{ name: 'open_screen', input: { at: EXTRACTOR } }] },
     { toolCalls: [{ name: 'use_control', input: { key: 'fluidAutoOutput' } }] },
     { toolCalls: [{ name: 'close_screen', input: {} }, { name: 'inspect_block', input: SOLIDIFIER }] },
-    { toolCalls: [{ name: 'report', input: { text: '熔融钢已经到固化器了。' } }] },
-    { text: '' },
+    { text: '熔融钢已经到固化器了。' },
   )
   bridge.completeTask('Alu')
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('熔融钢已经到固化器了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))

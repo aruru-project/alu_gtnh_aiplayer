@@ -1,6 +1,6 @@
 // 对着真实 mod 的联调：模拟模型服务（按脚本回应）+ 真实启动的大脑进程 + 测试服的 bridge（127.0.0.1:25591）。
 // 两条线各接一个模拟模型服务：脚本写的是干活线（它操作身体）；对话线接的是只传话的那个（mock-llm.ts 的 talkRelay）——
-// 面板和悄悄话发来的话它原样交给干活线，干活线汇报的话它在公共聊天里说出去。
+// 面板和悄悄话发来的话它原样交给干活线，干活线停下来留的话、提问它用 say 在公共聊天里说出去（脚本里干活线做完一件事就停下留一句话）。
 //
 //   npm run live:testserver                       跑不需要重启服务器的场景（约 2 分钟）
 //   npm run live:testserver -- --restart-server   最后再加一场“测试服重启”（多花 1–2 分钟，期间测试服不可用）
@@ -419,9 +419,8 @@ async function main(): Promise<number> {
           assert.ok(m, `probe_block 的结果：${text.slice(-400)}`)
           probe = m[0].replace('\n', ' / ')
           assert.match(text, /Could not join\. The server replied: Team 'no_such_team_xyz' not found!/, 'team join 的真实回显')
-          return { toolCalls: [{ name: 'report', input: { text: `家设好了，叫 ${HOME}。` } }] }
+          return { text: `家设好了，叫 ${HOME}。` }
         },
-        { text: '' },
       )
       await command(`把你现在站的地方设成家，名字叫 ${HOME}`)
       await botSaid(mark, /家设好了/)
@@ -453,7 +452,6 @@ async function main(): Promise<number> {
           return {
             thinking: { thinking: `这块地大多在 y=${chosenY}，就平到这个高度。`, signature: 'sig-live' },
             toolCalls: [
-              { name: 'report', input: { text: `好，我把这一小块平到 y=${chosenY}。` } },
               { name: 'flatten_area', input: { x1: area.x1, z1: area.z1, x2: area.x2, z2: area.z2, y: chosenY } },
             ],
           }
@@ -468,12 +466,10 @@ async function main(): Promise<number> {
           const m = /任务 (t\w+)（flatten）完成了。 结果：(\{.*\})/.exec(text)
           assert.ok(m, `被叫醒时看到任务结果：${text.slice(0, 400)}`)
           const result = JSON.parse(m[2]!)
-          return { toolCalls: [{ name: 'report', input: { text: `平好了，挖了 ${result.removed} 块，填了 ${result.placed} 块。` } }] }
+          return { text: `平好了，挖了 ${result.removed} 块，填了 ${result.placed} 块。` }
         },
-        { text: '' },
       )
       await command(`把 x ${area.x1}..${area.x2}、z ${area.z1}..${area.z2} 这一小块地平一下，高度你自己看着定。`)
-      await botSaid(mark, /平到 y=/)
       const task = await taskEnd(mark, 'flatten', 180_000)
       assert.equal(task.state, 'done', `flatten 的结局：${JSON.stringify(task.error ?? task.result)}`)
       const report = await botSaid(mark, /平好了，挖了 \d+ 块/)
@@ -534,9 +530,8 @@ async function main(): Promise<number> {
             { text: '' },
             (t3) => {
               assert.match(t3, /任务 t\w+（fill）完成了。 结果：\{"removed":0,"placed":4/, `被叫醒时看到 fill 的结果：${t3.slice(0, 300)}`)
-              return { toolCalls: [{ name: 'report', input: { text: '清掉又填回去了，东西也都拿回来了。' } }] }
+              return { text: '清掉又填回去了，东西也都拿回来了。' }
             },
-            { text: '' },
           ]
           // 后面几步现在才知道要不要多取一次，所以在这里接着排
           if (extraA.length > 0) {
@@ -602,9 +597,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（home）完成了。 结果：\{"dim":0,"block":\{/, `被叫醒时看到结果：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '到家了。' } }] }
+          return { text: '到家了。' }
         },
-        { text: '' },
       )
       await command(`回 ${HOME}`)
       const task = await taskEnd(mark, 'home', 30_000)
@@ -646,9 +640,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（withdraw）完成了。 结果：\{"moved":\d+/, `被叫醒时看到 withdraw 的结果：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '存进去又取回来了，数量没变。' } }] }
+          return { text: '存进去又取回来了，数量没变。' }
         },
-        { text: '' },
       )
       const sent = await rcon(`tell ${BOT} 把 ${amount} 个 ${itemId} 存进箱子`)
       assert.equal(sent.code, 0, `RCON tell：${sent.out}`)
@@ -690,9 +683,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, new RegExp(`任务 t\\w+（haul）完成了。 结果：\\{"moved":${stock.count},"trips":\\d+`), `被叫醒时看到第二趟 haul 的结果：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '搬过去又搬回来了。' } }] }
+          return { text: '搬过去又搬回来了。' }
         },
-        { text: '' },
       )
       await command(`把箱子 (${A.x},${A.y},${A.z}) 里的 ${stock.id} 全搬到 (${B.x},${B.y},${B.z})，再搬回来`)
       const first = await taskEnd(mark, 'haul', 120_000)
@@ -729,9 +721,8 @@ async function main(): Promise<number> {
           assert.ok(m, `被叫醒时看到失败原因：${text.slice(0, 400)}`)
           const detail = JSON.parse(m[2]!)
           const what = detail.item?.id ?? detail.items?.[0]?.id ?? '东西'
-          return { toolCalls: [{ name: 'report', input: { text: `放不了：我没有 ${what}，还差 ${detail.missing} 个。` } }] }
+          return { text: `放不了：我没有 ${what}，还差 ${detail.missing} 个。` }
         },
-        { text: '' },
       )
       await command(`在 (${spot.x},${spot.y},${spot.z}) 放一个钻石块`)
       const task = await taskEnd(mark, 'fill', 60_000)
@@ -749,9 +740,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（home）失败了：invalid — Unknown Home: 'no_such_home_xyz'!/, `被叫醒时看到失败原因：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '没有叫 no_such_home_xyz 的家。' } }] }
+          return { text: '没有叫 no_such_home_xyz 的家。' }
         },
-        { text: '' },
       )
       await command('回 no_such_home_xyz')
       const task = await taskEnd(mark, 'home', 30_000)
@@ -772,9 +762,8 @@ async function main(): Promise<number> {
           assert.ok(m, `被叫醒时看到结果：${text.slice(0, 300)}`)
           const result = JSON.parse(m[1]!)
           assert.equal(result.moved, 0)
-          return { toolCalls: [{ name: 'report', input: { text: `箱子里没有钻石，缺 ${result.missing[0].count} 个。` } }] }
+          return { text: `箱子里没有钻石，缺 ${result.missing[0].count} 个。` }
         },
-        { text: '' },
       )
       await command('从箱子里拿 2 个钻石')
       const task = await taskEnd(mark, 'withdraw', 60_000)
@@ -792,9 +781,8 @@ async function main(): Promise<number> {
         (text) => {
           const hits = text.match(/任务 t\w+（goto）失败了：unreachable — that is 5000 blocks away and the bot walks at most \d+; teleport closer first/g) ?? []
           assert.equal(hits.length, 1, `被叫醒时看到一次“太远”的失败：${text.slice(0, 400)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '太远了走不过去，得先传送到附近。' } }] }
+          return { text: '太远了走不过去，得先传送到附近。' }
         },
-        { text: '' },
       )
       await command(`走到 x=${here.x + 5000} z=${here.z}`)
       const task = await taskEnd(mark, 'goto', 30_000)
@@ -836,7 +824,6 @@ async function main(): Promise<number> {
           assert.equal(detail.block, 'minecraft:stone')
           return {
             toolCalls: [
-              { name: 'report', input: { text: `挖不动 ${detail.block}，我手里没有匠魂镐。` } },
               { name: 'withdraw_items', input: { container: B, items: [pick] } },
             ],
           }
@@ -844,9 +831,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（withdraw）完成了。 结果：\{"moved":1/, `镐取回来了：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '镐拿回来了。' } }] }
+          return { text: '镐拿回来了。' }
         },
-        { text: '' },
       )
       try {
         await command(`把镐存进箱子 (${B.x},${B.y},${B.z})，然后去挖 (${stone.x},${stone.y},${stone.z}) 那块石头`)
@@ -889,9 +875,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（collect）完成了。 结果：\{"pickedUpStacks":\d+/, `被叫醒时看到 collect 的结果：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '地上的东西捡起来了。' } }] }
+          return { text: '地上的东西捡起来了。' }
         },
-        { text: '' },
       )
       await command('把你旁边地上的东西捡起来')
       const task = await taskEnd(mark, 'collect', 60_000)
@@ -928,9 +913,8 @@ async function main(): Promise<number> {
         { text: '' },
         (text) => {
           assert.match(text, /任务 t\w+（home）完成了/, `传送回家：${text.slice(0, 200)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '东西送到了，我回来了。' } }] }
+          return { text: '东西送到了，我回来了。' }
         },
-        { text: '' },
       )
       await command(`给 ${OTHER} 送 3 个雪球，然后回家`)
       const give = await taskEnd(mark, 'give', 180_000)
@@ -959,9 +943,8 @@ async function main(): Promise<number> {
         { toolCalls: [{ name: 'cancel_task', input: {} }] },
         (text) => {
           assert.match(text, /Canceled 1 task\(s\): t\w+\./, `cancel_task 的结果：${text.slice(0, 200)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '不跟了。' } }] }
+          return { text: '不跟了。' }
         },
-        { text: '' },
       )
       await command('别跟了')
       await botSaid(mark, /不跟了/)
@@ -991,9 +974,8 @@ async function main(): Promise<number> {
       script(
         (text) => {
           assert.match(text, new RegExp(`任务 ${task.id}（goto）${task.state === 'done' ? '完成了' : '失败了'}`), `重启后被叫醒时看到任务结局：${text.slice(0, 300)}`)
-          return { toolCalls: [{ name: 'report', input: { text: '我回来了，刚才那段路走完了。' } }] }
+          return { text: '我回来了，刚才那段路走完了。' }
         },
-        { text: '' },
       )
       const mark2 = events.length
       brain = await startBrain(dataDir, password)
@@ -1049,8 +1031,8 @@ async function main(): Promise<number> {
         const mark = events.length
         script({ toolCalls: [{ name: 'get_status', input: {} }] }, (text) => {
           assert.match(text, new RegExp(`${BOT}: online in overworld`))
-          return { toolCalls: [{ name: 'report', input: { text: '服务器重启后我还在。' } }] }
-        }, { text: '' })
+          return { text: '服务器重启后我还在。' }
+        })
         await command('服务器刚重启过，你还好吗')
         await botSaid(mark, /服务器重启后我还在/, 30_000)
       })
