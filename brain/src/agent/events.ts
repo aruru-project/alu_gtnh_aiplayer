@@ -30,13 +30,18 @@ export type AgentEvent =
   /** 干活线被叫停了（对话线的 stop_work，或主人在面板上按的总停止）。只是告诉它发生了什么，不叫醒它。 */
   | { type: 'halted'; time: number; by: 'talk' | 'panel'; reason: string; said: SaidEvent[] }
   /**
-   * 干活线送给对话线的：中途汇报、提问（在等回答）、一轮结束留下的文字、它出了状况（程序替它报的：模型接口故障、到步数上限……）。
+   * 干活线送给对话线的：中途汇报、提问（在等回答）、它停下来时留下的文字、它还在干（在等自己的任务或例程）时一轮结束留下的文字、
+   * 它出了状况（程序替它报的：模型接口故障、到步数上限……）。waiting：progress 时它还在等什么（程序写的一句）。
    */
-  | { type: 'worker'; time: number; kind: WorkerNote; text: string }
+  | { type: 'worker'; time: number; kind: WorkerNote; text: string; waiting?: string }
 
 /** 人说的话：聊天、悄悄话、面板上发来的。交事和叫停时原样附给干活线的就是这些。 */
 export type SaidEvent = Extract<AgentEvent, { type: 'chat' | 'whisper' | 'panel_command' }>
-export type WorkerNote = 'report' | 'question' | 'result' | 'trouble'
+/**
+ * result：干活线停下来了（身体上没有它开的任务、没有例程在跑、也没有等它处理的事），这是它留下的话——叫醒对话线。
+ * progress：它一轮结束留了话，但它的事还没完（它开的任务或例程还在跑，结束时它自己会被叫醒接着做）——只作背景，不叫醒对话线。
+ */
+export type WorkerNote = 'report' | 'question' | 'result' | 'progress' | 'trouble'
 
 function s(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
@@ -206,14 +211,15 @@ export function describeEvent(ev: AgentEvent): string {
         saidBlock(ev.said, '')
       )
     case 'worker':
+      if (ev.kind === 'progress') return `干活线还在干（${ev.waiting ?? '它的事还没完'}），这是它中途留下的话：${ev.text}`
       return `${WORKER_NOTE_HEAD[ev.kind]}${ev.text}`
   }
 }
 
-const WORKER_NOTE_HEAD: Record<WorkerNote, string> = {
+const WORKER_NOTE_HEAD: Record<Exclude<WorkerNote, 'progress'>, string> = {
   report: '干活线汇报：',
   question: '干活线提问（它在等回答，用 tell_worker 带话给它）：',
-  result: '干活线这一轮做完了，它留下的话：',
+  result: '干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：',
   trouble: '干活线出了状况（这句是程序替它报的）：',
 }
 

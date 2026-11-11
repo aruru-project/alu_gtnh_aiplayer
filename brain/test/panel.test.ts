@@ -1269,6 +1269,8 @@ describe('面板：两条线', () => {
     assert.deepEqual([work.waitingAnswer.text, work.lastReport.type, work.lastReport.text], ['放哪个箱子？', 'question', '放哪个箱子？'])
     assert.equal(typeof work.waitingAnswer.since, 'number')
     assert.deepEqual([work.routine, work.lastRoutine, work.body.online, work.body.task.id, work.body.task.progress], [null, null, true, 't7', { done: 3, total: 8 }])
+    // 它自己开的、还没结束的任务：这一刻没有（身体上那个 t7 不是它开的）
+    assert.deepEqual(work.ownTasks, [])
     assert.deepEqual([work.history.turns, work.history.threshold], [0, 24000])
     // 日志条目带着是哪条线的；两条线之间的往来是 kind: relay；轮的编号两条线不重
     const log = (await s.call('GET', '/api/log')).json.entries as { kind: string; agent?: string; turn?: number; relay?: { type: string; from: string; to: string }; text: string }[]
@@ -1348,6 +1350,8 @@ describe('面板：两条线', () => {
     lines.agent.handleEvent(told('过去'))
     await waitFor('the worker is thinking about step 2', () => lines.llm.requests.length === 2)
     const turn = lines.agent.state('work').turn!.id
+    // 状态里看得出它开了一个还没结束的任务
+    assert.deepEqual((await s.call('GET', '/api/status')).json.agents[1].ownTasks, ['t1'])
 
     assert.equal((await s.call('POST', '/api/work/stop', { reason: '走错了' }, { origin: 'https://evil.example' })).status, 403)
     const res = await s.call('POST', '/api/work/stop', { reason: '走错了' })
@@ -1358,6 +1362,8 @@ describe('面板：两条线', () => {
     assert.equal(lines.agent.state('work').turn, null)
     await new Promise((r) => setTimeout(r, 50))
     assert.equal(lines.llm.requests.length, 2)
+    // 停了以后它不是“在等自己的任务”，是真的停着
+    assert.deepEqual((await s.call('GET', '/api/status')).json.agents[1].ownTasks, [])
     assert.equal(lines.log.recent(0, 100).some((e) => e.kind === 'error'), false)
     const relay = relays(lines, 'stop')
     assert.deepEqual([relay.length, relay[0]!.agent, relay[0]!.relay, relay[0]!.text], [1, undefined, { type: 'stop', from: 'panel', to: 'work', quotes: 0 }, `面板 → 干活线：停（走错了）。打断了干活线的第 ${turn} 轮（第 2 步），取消了 1 个身体任务。`])

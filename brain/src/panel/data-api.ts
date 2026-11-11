@@ -169,6 +169,9 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
         // 它提了问、还没人带话回答；它最近一次送给对话线的话
         waitingAnswer: links.waiting ?? null,
         lastReport: links.lastReport ?? null,
+        // 它开的、还没看到结束的任务（例程开的也在里面）。没有在跑的一轮、这里却不空（或者例程在跑），就是“还在干，在等自己的任务”：
+        // 任务一结束它自己会被叫醒接着做
+        ownTasks: status.trackedTasks,
         routine: routine && routine.status === 'running' ? routineState(routine) : null,
         lastRoutine: routine && routine.status !== 'running' ? routineState(routine) : null,
         body,

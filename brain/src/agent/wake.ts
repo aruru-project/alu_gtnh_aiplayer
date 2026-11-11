@@ -140,8 +140,9 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
     // 两条线之间的往来：交来的事、汇报和提问都要处理；“被叫停了”只是让它知道，不为它另想一轮
     case 'told':
       return yes('told')
+    // 干活线还在等自己的任务或例程时留下的话只作背景：任务结束时它自己会接着做，不用对话线为这句话想一轮
     case 'worker':
-      return yes('worker')
+      return ev.kind === 'progress' ? no('background') : yes('worker')
     case 'halted':
       return no('background')
     case 'task_started':

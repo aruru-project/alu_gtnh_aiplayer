@@ -10,7 +10,7 @@ import { sleep, waitFor } from './helpers.ts'
 // 事情是对话线交来的（told），它操作身体。两条线之间怎么往来、对话线怎么说话在 lines.test.ts。
 
 describe('agent 的一轮决策', () => {
-  it('对话线交来一件事：干活线启动任务，工具结果回给模型，模型不再调工具时这一轮结束；它留下的文字送给对话线，不说出口', async (t) => {
+  it('对话线交来一件事：干活线启动任务，工具结果回给模型，模型不再调工具时这一轮结束；它留下的文字不说出口——任务还在跑时留的只作背景送给对话线、不叫醒它，停下来了留的才叫醒', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.llm.enqueue(
@@ -45,9 +45,21 @@ describe('agent 的一轮决策', () => {
     )
     assert.match(h.llm.lastUserText(1), /Task t1 \(flatten\) started/)
     assert.equal(h.history.get().turns.length, 1)
-    // 它一轮结束时留下的文字送给了对话线（对话线被叫醒看到它）
-    assert.deepEqual(sentToTalk(h), ['开始平了，等任务结束。'])
-    assert.match(h.talk.lastUserText(0), /干活线这一轮做完了，它留下的话：开始平了，等任务结束。/)
+    // 它一轮结束时留下的文字送给了对话线。它开的任务还在跑（任务一结束它自己会被叫醒）：这句话只作背景，对话线没有为它醒
+    assert.deepEqual(relays(h).map((e) => [e.relay, e.text]), [[{ type: 'progress', from: 'work', to: 'talk', waiting: '在等它开的任务结束：t1（flatten）' }, '干活线 → 对话线（还在干，中途留下的话，只作背景，没有叫醒它）：开始平了，等任务结束。']])
+    await sleep(30)
+    assert.equal(h.talk.requests.length, 0)
+
+    // 任务做完，它自己被叫醒，这回它停下来了：留下的话叫醒对话线；之前那句在对话线的背景里
+    h.llm.enqueue(reply('平好了。'))
+    h.agent.handleEvent(taskEnded('t1', 'done', { result: { dug: 37 } }))
+    await h.agent.whenIdle()
+    assert.deepEqual(relays(h).map((e) => e.relay!.type), ['progress', 'result'])
+    assert.equal(h.talk.requests.length, 1)
+    const seen = h.talk.lastUserText(0)
+    assert.match(seen.split('\n\n[')[0]!, /干活线停下来了（身体上没有它开的任务，也没有例程在跑），它留下的话：平好了。/)
+    assert.match(seen.slice(seen.indexOf('[最近发生的事')), /干活线还在干（在等它开的任务结束：t1（flatten）），这是它中途留下的话：开始平了，等任务结束。/)
+    assert.deepEqual(sentToTalk(h).at(-1), '平好了。')
   })
 
   it('背包里杂物再多，状态快照里也一定列出手里的工具', async (t) => {

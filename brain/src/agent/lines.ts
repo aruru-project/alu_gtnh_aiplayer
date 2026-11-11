@@ -9,7 +9,7 @@
 
 import type { BridgeApi } from '../bridge/api.ts'
 import { BridgeError } from '../bridge/protocol.ts'
-import type { BridgeEvent } from '../bridge/protocol.ts'
+import type { BridgeEvent, TaskList } from '../bridge/protocol.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { LlmClient } from '../llm/index.ts'
 import type { PackData } from '../packdata/index.ts'
@@ -99,7 +99,9 @@ const HALT_SETTLE_MS = 3000
  */
 export const VOLLEY_MAX = 12
 const SPINNING = `The two lines have now woken each other ${VOLLEY_MAX} times in a row with no one speaking and nothing happening in the game (no task or routine ending), so the program has stopped waking them for each other. This message is there as background when something else wakes the other line; a player speaking, or a task ending, puts things back to normal.`
-const NOTE_WORD: Record<WorkerNote, string> = { report: '汇报', question: '提问', result: '做完留下的话', trouble: '出了状况' }
+const NOTE_WORD: Record<WorkerNote, string> = { report: '汇报', question: '提问', result: '停下来了，留下的话', progress: '还在干，中途留下的话', trouble: '出了状况' }
+/** 干活线自己会接着做：对话线交事的结果里、状态里都写着这个事实，它就不必回头去催。 */
+const SELF_WAKE = 'When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it.'
 const MIGRATION_NOTE =
   '大脑升级过：从现在起“跟人说话”和“操作身体干活”分成了两条线，你是干活线。这之前的历史是升级前留下的，那时只有一条线，所以里面有你用 say、whisper 直接对玩家说话的记录。现在对玩家说话的是对话线：你要让人知道的事用 report，或者留在一轮结束时的文字里。'
 
@@ -198,7 +200,7 @@ export class Lines {
       settings: () => deps.settings('work'),
       tools: LINE_TOOLS.work,
       history: deps.histories.work,
-      links: { toTalk: (kind, text, at) => this.toTalk(kind, text, at), outside: () => this.outside() },
+      links: { toTalk: (kind, text, at, waiting) => this.toTalk(kind, text, at, waiting), outside: () => this.outside() },
     })
     this.talk = new Agent({
       ...common,
@@ -358,6 +360,7 @@ export class Lines {
       relay: { type: 'tell', from: 'talk', to: 'work', quotes: said.length },
     })
     const before = this.work.state()
+    const beforePeek = this.work.peek()
     const waiting = this.links.waiting
     // 带的话到了：它不再是“在等回答”（是不是答了它的问题由它自己看）
     if (waiting) this.saveLinks({ ...this.links, waiting: undefined })
@@ -367,14 +370,16 @@ export class Lines {
       ? `The worker's model interface is failing (${before.model.outage.lastError}); it takes this up when the interface works again.`
       : before.turn
         ? `The worker is in the middle of turn ${before.turn.id} (${before.turn.steps} step(s) done); it sees this at its next step.`
-        : 'The worker was idle and starts on it now.'
+        : beforePeek.trackedTasks.length > 0 || beforePeek.routine?.status === 'running'
+          ? `The worker was not thinking (it is waiting for ${beforePeek.routine?.status === 'running' ? `its routine ${beforePeek.routine.id}` : `its task ${beforePeek.trackedTasks.join(', ')}`} to end) and takes this up now.`
+          : 'The worker was idle and starts on it now.'
     const quotes =
       said.length > 0
         ? `Attached as they were said: ${said.length} line(s) from the people who woke you this turn, with where they stood and what they pointed at.`
         : saidBefore
           ? 'What was said to you this turn went with your earlier tell_worker; it was not attached again.'
           : 'Nothing was attached: no one spoke to you this turn.'
-    return `Handed to the worker. ${when} ${quotes}${waiting ? ' It was waiting for an answer from you; this is what it gets.' : ''} What it reports, asks or leaves at the end of its turn comes to you as an event.`
+    return `Handed to the worker. ${when} ${quotes}${waiting ? ' It was waiting for an answer from you; this is what it gets.' : ''} ${SELF_WAKE} What it reports or asks, and what it leaves when it has stopped, come to you as events.`
   }
 
   /**
@@ -443,23 +448,28 @@ export class Lines {
 
   // ── 干活线 → 对话线 ──
 
-  /** 干活线的汇报、提问、一轮结束留下的话、出了状况：记一条往来，交给对话线。 */
-  private toTalk(kind: WorkerNote, text: string, at: TurnAt): string {
+  /**
+   * 干活线的汇报、提问、一轮结束留下的话、出了状况：记一条往来，交给对话线。
+   * progress（它一轮结束留了话，但它开的任务或例程还在跑）只作背景，不叫醒对话线：那些任务结束时干活线自己会接着做，
+   * 对话线为这句话醒一次只会以为它停在半路、回头来催。waiting 是它还在等什么。
+   */
+  private toTalk(kind: WorkerNote, text: string, at: TurnAt, waiting?: string): string {
     const now = this.now()
     const line = firstLine(text)
-    // 出了状况是程序替它报的（本来就限频），不算两条线之间的你来我往
-    const spinning = kind !== 'trouble' && this.spinning('work')
+    const progress = kind === 'progress'
+    // 出了状况是程序替它报的（本来就限频）、中途留的话不叫醒谁：都不算两条线之间的你来我往
+    const spinning = kind !== 'trouble' && !progress && this.spinning('work')
     this.deps.log.add({
       kind: 'relay',
       agent: 'work',
       ...at,
-      text: `干活线 → 对话线（${NOTE_WORD[kind]}${spinning ? '，只作背景，没有叫醒它' : ''}）：${line}`,
+      text: `干活线 → 对话线（${NOTE_WORD[kind]}${progress ? '，只作背景，没有叫醒它' : spinning ? '，只作背景，没有叫醒它' : ''}）：${line}`,
       ...(line !== text ? { detail: text } : {}),
-      relay: { type: kind, from: 'work', to: 'talk' },
+      relay: { type: kind, from: 'work', to: 'talk', ...(progress && waiting !== undefined ? { waiting } : {}) },
       ...(kind === 'trouble' ? { isError: true } : {}),
     })
     this.saveLinks({ ...(kind === 'question' ? { waiting: { text, since: now } } : this.links.waiting ? { waiting: this.links.waiting } : {}), lastReport: { type: kind, text, time: now } })
-    this.talk.handleEvent({ type: 'worker', time: now, kind, text }, spinning ? { background: true } : {})
+    this.talk.handleEvent({ type: 'worker', time: now, kind, text, ...(progress && waiting !== undefined ? { waiting } : {}) }, spinning ? { background: true } : {})
     if (spinning) return `Sent, but it does not wake the talk line. ${SPINNING}`
     return kind === 'question'
       ? 'Sent to the talk line as a question. The answer comes back as a message from the talk line: at your next step if you are still working, or by waking you if your turn has ended. It can take a while when your owner has to be asked.'
@@ -477,24 +487,73 @@ export class Lines {
 
   // ── 干活线现在在干什么 ──
 
-  /** 对话线每一轮的“当前状态”里讲干活线的那几行：不用调工具就答得出“你在干嘛”。 */
-  private workerLine(now: number): string {
+  /**
+   * 干活线开的、还没结束的任务现在各是什么样（一行一个）：在跑的带着进度和已经跑了多久，排队的写明还没开始。
+   * 要问一次身体的任务列表；问不到时只有编号和类型。
+   */
+  private async ownTasks(peek: LinePeek, now: number): Promise<{ zh: string[]; en: string[] }> {
+    if (peek.trackedTasks.length === 0) return { zh: [], en: [] }
+    let list: TaskList | undefined
+    try {
+      list = await this.deps.bridge.taskList(this.deps.settings('work').botName)
+    } catch {
+      list = undefined
+    }
+    const zh: string[] = []
+    const en: string[] = []
+    for (const id of peek.trackedTasks) {
+      const known = peek.taskTypes[id]
+      const active = list?.active?.id === id ? list.active : undefined
+      const queued = (list?.queue ?? []).find((t) => t.id === id)
+      const type = active?.type ?? queued?.type ?? known
+      const name = `${id}${type ? `（${type}）` : ''}`
+      const nameEn = `${id}${type ? ` (${type})` : ''}`
+      if (!list) {
+        zh.push(`它开的任务 ${name}：还没结束（身体的任务列表现在读不到）。`)
+        en.push(`its task ${nameEn}: not ended yet (the body's task list cannot be read right now)`)
+      } else if (active) {
+        const p = active.progress
+        const done = p && typeof p.done === 'number' && typeof p.total === 'number' ? `${p.done}/${p.total}` : undefined
+        const seconds = active.startedAt !== undefined ? Math.max(0, Math.round((now - active.startedAt) / 1000)) : undefined
+        zh.push(`它开的任务 ${name}：在跑${done ? `，进度 ${done}` : ''}${p?.phase ? `（${p.phase}）` : ''}${seconds !== undefined ? `，已经跑了 ${seconds} 秒` : ''}。`)
+        en.push(`its task ${nameEn}: running${done ? `, ${done}` : ''}${p?.phase ? ` (${p.phase})` : ''}${seconds !== undefined ? `, for ${seconds} s` : ''}`)
+      } else if (queued) {
+        zh.push(`它开的任务 ${name}：排着队，还没开始。`)
+        en.push(`its task ${nameEn}: queued, not started yet`)
+      } else {
+        zh.push(`它开的任务 ${name}：还没看到结束，身体的任务列表里已经没有它（结束的消息多半马上就到）。`)
+        en.push(`its task ${nameEn}: its end has not been seen yet, though the body no longer lists it (the event is probably about to arrive)`)
+      }
+    }
+    return { zh, en }
+  }
+
+  /**
+   * 对话线每一轮的“当前状态”里讲干活线的那几行：不用调工具就答得出“你在干嘛”，也不必去催——
+   * 它在想、在等自己开的任务或例程（那些一结束它自己会被叫醒接着做）、还是真的停着，写得清清楚楚。
+   */
+  private async workerLine(now: number): Promise<string> {
     const peek = this.work.peek()
     const { state } = peek
+    const routine = peek.routine?.status === 'running' ? peek.routine : undefined
+    const own = (await this.ownTasks(peek, now)).zh
     const lines: string[] = []
     if (state.turn) {
       const doing = state.model.state === 'thinking' ? `正在想第 ${state.model.step ?? state.turn.steps + 1} 步` : `正在执行第 ${state.turn.steps} 步要的工具`
       lines.push(`干活线：在忙。第 ${state.turn.id} 轮（${ago(now, state.turn.startedAt)}开始，起因：${state.turn.about}），已经想完 ${state.turn.steps} 步，${doing}。`)
     } else if (state.model.outage) {
       lines.push(`干活线：模型接口故障（连着失败 ${state.model.outage.failures} 次：${firstLine(state.model.outage.lastError, 160)}），${state.pending > 0 ? `有 ${state.pending} 件事等着，` : ''}过一会儿自动再试。`)
+    } else if (own.length > 0 || routine) {
+      // 它没有在想，但它的事没完：在等自己开的任务或例程。那些一结束它自己会被叫醒，这是事实，写给对话线看
+      lines.push(`干活线：还在干，这会儿没有在想——在等它自己开的${own.length > 0 ? '任务' : '例程'}结束。${own.length > 0 ? '任务' : '例程'}一结束（做完、失败或被取消）它自己会被叫醒接着做，不需要提醒。${state.pending > 0 ? `有 ${state.pending} 件事刚到，它马上开始想。` : ''}`)
     } else {
       const last = peek.lastTurn
       const how = last ? `上一轮（第 ${last.id} 轮）${ago(now, last.endedAt)}${last.how === 'halted' ? '被叫停' : last.how === 'limit' ? '到步数上限被截断' : last.how === 'failed' ? '因为模型接口出错中断' : '结束'}` : '大脑启动以后它还没有做过事'
-      lines.push(`干活线：空闲，没有在想（${how}）。${state.pending > 0 ? `有 ${state.pending} 件事刚到，马上开始。` : ''}`)
+      lines.push(`干活线：空闲，没有在想（${how}）；身体上没有它开的任务，也没有例程在跑。${state.pending > 0 ? `有 ${state.pending} 件事刚到，马上开始。` : ''}`)
     }
     if (state.turn && state.pending > 0) lines.push(`  还有 ${state.pending} 件新到的事它下一步会看到。`)
-    const routine = peek.routine
-    if (routine?.status === 'running') {
+    for (const line of own) lines.push(`  ${line}`)
+    if (routine) {
       lines.push(`  例程 ${routine.id}（${routine.name}）在后台跑：已调 ${routine.calls} 次工具，开了 ${routine.actions} 个任务，${ago(now, routine.startedAt)}开始。`)
     }
     if (this.links.waiting) lines.push(`  它在等你回答（${ago(now, this.links.waiting.since)}问的）：${shown(this.links.waiting.text, 300)}`)
@@ -518,10 +577,12 @@ export class Lines {
       }
     } else {
       const last = peek.lastTurn
-      out.push(
-        `Worker: idle, not thinking.${last ? ` Its last turn (${last.id}) ${last.how === 'halted' ? 'was stopped' : last.how === 'limit' ? 'was cut at the step limit' : last.how === 'failed' ? 'broke off on a model interface error' : 'ended'} ${agoEn(now, last.endedAt)} after ${last.steps} step(s).` : ' It has not done anything since the brain started.'}`,
-      )
+      const ended = last ? ` Its last turn (${last.id}) ${last.how === 'halted' ? 'was stopped' : last.how === 'limit' ? 'was cut at the step limit' : last.how === 'failed' ? 'broke off on a model interface error' : 'ended'} ${agoEn(now, last.endedAt)} after ${last.steps} step(s).` : ' It has not done anything since the brain started.'
+      const going = peek.trackedTasks.length > 0 || peek.routine?.status === 'running'
+      out.push(going ? `Worker: still at work, not thinking right now: it is waiting for ${peek.trackedTasks.length > 0 ? 'the task(s)' : 'the routine'} it started to end.${ended} ${SELF_WAKE}` : `Worker: idle, not thinking; no task of its own is on the body and no routine is running.${ended}`)
     }
+    const own = (await this.ownTasks(peek, now)).en
+    if (own.length > 0) out.push(`Started by the worker and not ended yet:\n${own.map((line) => `- ${line}`).join('\n')}`)
     if (state.model.outage) out.push(`Its model interface is failing (${state.model.outage.failures} failure(s) in a row, last: ${state.model.outage.lastError}); the next try is in ${Math.max(0, Math.round((state.model.outage.nextRetryAt - now) / 1000))} s.`)
     if (state.pending > 0) out.push(`${state.pending} event(s) are waiting for it${state.turn ? ' (it sees them at its next step)' : ''}.`)
     try {

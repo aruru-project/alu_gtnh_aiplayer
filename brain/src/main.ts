@@ -82,7 +82,7 @@ function parseLinkState(raw: unknown): LinkState {
   const out: LinkState = {}
   if (isRecord(raw.waiting) && typeof raw.waiting.text === 'string' && typeof raw.waiting.since === 'number') out.waiting = { text: raw.waiting.text, since: raw.waiting.since }
   const r = raw.lastReport
-  if (isRecord(r) && typeof r.text === 'string' && typeof r.time === 'number' && (r.type === 'report' || r.type === 'question' || r.type === 'result' || r.type === 'trouble')) {
+  if (isRecord(r) && typeof r.text === 'string' && typeof r.time === 'number' && (r.type === 'report' || r.type === 'question' || r.type === 'result' || r.type === 'progress' || r.type === 'trouble')) {
     out.lastReport = { type: r.type, text: r.text, time: r.time }
   }
   return out

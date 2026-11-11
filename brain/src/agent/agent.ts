@@ -119,10 +119,10 @@ export interface LineLinks {
   tell?(text: string, said: SaidEvent[], saidBefore: boolean, at: TurnAt): string
   workerStatus?(detail: boolean): Promise<string>
   stopWork?(reason: string, said: SaidEvent[], at: TurnAt): Promise<string>
-  /** “当前状态”里讲干活线现状的那几行。 */
-  workerLine?(now: number): string
-  /** 干活线送给对话线：汇报、提问、一轮结束留下的话、出了状况。 */
-  toTalk?(kind: WorkerNote, text: string, at: TurnAt): string
+  /** “当前状态”里讲干活线现状的那几行（要问一次身体的任务列表，所以是异步的）。 */
+  workerLine?(now: number): Promise<string>
+  /** 干活线送给对话线：汇报、提问、一轮结束留下的话、出了状况。waiting：progress 时它还在等什么（一句话）。 */
+  toTalk?(kind: WorkerNote, text: string, at: TurnAt, waiting?: string): string
   /** 这条线上发生了一件“外面的事”（不是另一条线引起的）：例程有了结局。两条线之间“连着往来了几次”从头数。 */
   outside?(): void
 }
@@ -151,7 +151,9 @@ export interface LinePeek {
   /** 上一轮什么时候、怎么结束的。 */
   lastTurn?: { id: number; endedAt: number; steps: number; how: 'ended' | 'halted' | 'failed' | 'limit' }
   routine?: RoutineView
+  /** 它自己直接开的、还没看到结束的任务（例程开的不在这里：例程在跑就说明了）；知道类型的带着类型。 */
   trackedTasks: string[]
+  taskTypes: Record<string, string>
 }
 
 export interface AgentDeps {
@@ -347,6 +349,8 @@ export class Agent {
   private selfCanceled: string[] = []
   private failureStreak = 0
   private tracked = new Set<string>()
+  /** 盯着的任务各是什么类型（给人看的；重启后不记得，只剩 id）。 */
+  private trackedTypes = new Map<string, string>()
   private endedSeen: string[] = []
   private turnSpoke = false
   /** 这一轮里的人说的话（开头的和中途接进来的）：交事、叫停时原样附给干活线。 */
@@ -498,6 +502,7 @@ export class Agent {
         this.endedSeen.push(key)
         if (this.endedSeen.length > ENDED_SEEN_MAX) this.endedSeen.splice(0, this.endedSeen.length - ENDED_SEEN_MAX)
         this.tracked.delete(ev.task.id)
+        this.trackedTypes.delete(ev.task.id)
         this.persist()
         this.routine.taskEnded(ev.task)
       }
@@ -512,8 +517,12 @@ export class Agent {
       this.endedSeen.push(key)
       if (this.endedSeen.length > ENDED_SEEN_MAX) this.endedSeen.splice(0, this.endedSeen.length - ENDED_SEEN_MAX)
       this.tracked.delete(ev.task.id)
+      this.trackedTypes.delete(ev.task.id)
       if (ev.task.state === 'failed') this.failureStreak++
       else if (ev.task.state === 'done') this.failureStreak = 0
+    } else if (ev.type === 'task_started') {
+      // 重启后只记得盯着哪些任务的 id：它开始跑的时候把类型补上（给对话线看“在等哪个任务”用）
+      if (this.tracked.has(ev.task.id)) this.trackedTypes.set(ev.task.id, ev.task.type)
     } else if (ev.type === 'spawned') {
       this.shared.online = true
       // 上线时服务器发的一串欢迎语对模型没用，从背景里拿掉。
@@ -605,6 +614,7 @@ export class Agent {
           this.handleEvent({ type: 'task_ended', time: ended.finishedAt ?? this.now(), task: ended })
         } else {
           this.tracked.delete(id)
+          this.trackedTypes.delete(id)
           this.handleEvent({
             type: 'notice',
             time: this.now(),
@@ -643,6 +653,14 @@ export class Agent {
   private cancelEnd(ids: readonly string[]): void {
     this.cancelsInFlight = Math.max(0, this.cancelsInFlight - 1)
     this.selfCanceled.push(...ids)
+    // 身体在响应里说取消了的任务，不再是“它开的、还没结束的”（对应的事件一般已经先到了；这里是它万一没到时的保底，
+    // 不然“它还在等自己的任务”会一直成立）
+    let dropped = false
+    for (const id of ids) {
+      dropped = this.tracked.delete(id) || dropped
+      this.trackedTypes.delete(id)
+    }
+    if (dropped) this.persist()
     if (this.selfCanceled.length > SELF_CANCELED_KEPT) this.selfCanceled.splice(0, this.selfCanceled.length - SELF_CANCELED_KEPT)
   }
 
@@ -748,7 +766,9 @@ export class Agent {
   /** 这条线现在在干什么，细到这一轮最近几步（worker_status、对话线状态里讲干活线的那几行用）。 */
   peek(): LinePeek {
     const routine = this.routine?.view()
-    return { state: this.state(), steps: [...this.turnSteps], ...(this.lastTurn ? { lastTurn: this.lastTurn } : {}), ...(routine ? { routine } : {}), trackedTasks: [...this.tracked] }
+    const own = [...this.tracked].filter((id) => !(this.routine?.owns(id) ?? false))
+    const taskTypes = Object.fromEntries(own.flatMap((id) => (this.trackedTypes.has(id) ? [[id, this.trackedTypes.get(id)!]] : [])))
+    return { state: this.state(), steps: [...this.turnSteps], ...(this.lastTurn ? { lastTurn: this.lastTurn } : {}), ...(routine ? { routine } : {}), trackedTasks: own, taskTypes }
   }
 
   /**
@@ -950,7 +970,7 @@ export class Agent {
     const manuals = this.deps.manuals.list()
     const manualLine = manualStatusLine(manuals, manualsInContext(this.priorMessages(), manuals), this.line)
     // 对话线每一轮都看得到干活线现在在干什么：不用调工具就答得出“你在干嘛”
-    const workerLine = talk ? links?.workerLine?.(startedAt) : undefined
+    const workerLine = talk ? await links?.workerLine?.(startedAt) : undefined
     const stateText = [snapshot.text, workerLine, manualLine].filter((part) => part !== undefined && part.length > 0).join('\n')
     const userText = composeTurnMessage(triggers, background, stateText, startedAt)
     const turnMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: userText }] }]
@@ -1208,11 +1228,15 @@ export class Agent {
     this.log.add({ kind: 'turn', turn: turnId, text: `第 ${turnId} 轮结束（调了 ${steps} 次模型${modelName ? `，${modelName}` : ''}）` })
     this.turnNow = undefined
     // 干活线不对玩家说话：这一轮留下的文字送给对话线，由它决定怎么跟人说。到步数上限被截断的也让对话线知道。
+    // 它停下来了（身体上没有它开的任务、没有例程、也没有等它处理的事）才叫醒对话线；它只是在等自己的任务或例程结束时
+    // （那时它自己会被叫醒接着做），这句话只作背景送过去——不然对话线会以为它停在半路，回头来催，两条线互相叫醒个没完。
     if (!talk) {
       if (hitLimit) {
         links?.toTalk?.('trouble', `干活线这一轮到了每轮 ${settings.maxSteps} 步的上限，被截断了，手上的事可能没做完。之后有任务结束之类的事叫醒它时它会接着想；要它现在就继续，带话给它（tell_worker）。`, { turn: turnId, step: steps })
       } else if (finalText.length > 0) {
-        links?.toTalk?.('result', finalText, { turn: turnId, step: steps })
+        const waiting = this.stillGoing()
+        if (waiting !== undefined) links?.toTalk?.('progress', finalText, { turn: turnId, step: steps }, waiting)
+        else links?.toTalk?.('result', finalText, { turn: turnId, step: steps })
       }
     }
     await this.maybeCompact(this.compactor(llm, turnId), settings, signal)
@@ -1259,6 +1283,20 @@ export class Agent {
       const hint = e instanceof BridgeError ? bridgeHint(e.code, e.message) : undefined
       return `这段话没有说出去（${why}${hint !== undefined ? `；${hint}` : ''}）。`
     }
+  }
+
+  /**
+   * 这条线的事是不是还没完：它开的任务还没结束、它的例程还在跑、或者还有刚到的事等它处理——这几样结束或到了，它自己会被叫醒接着做。
+   * 还没完时返回它在等什么（给对话线看的一句话）；真的停下来了返回 undefined。
+   */
+  private stillGoing(): string | undefined {
+    const parts: string[] = []
+    const routine = this.routine?.isRunning() ? this.routine.view() : undefined
+    const own = [...this.tracked].filter((id) => !(this.routine?.owns(id) ?? false))
+    if (own.length > 0) parts.push(`在等它开的任务结束：${own.map((id) => `${id}${this.trackedTypes.has(id) ? `（${this.trackedTypes.get(id)}）` : ''}`).join('、')}`)
+    if (routine) parts.push(`它的例程 ${routine.id}（${routine.name}）在后台跑`)
+    if (this.pending.length > 0) parts.push(`还有 ${this.pending.length} 件刚到的事等它处理`)
+    return parts.length > 0 ? parts.join('；') : undefined
   }
 
   /** 压缩历史用的模型：和一轮里的调用走同一条路，这样它也有一条 model_call 日志、也算进“正在想”。 */
@@ -1562,6 +1600,7 @@ export class Agent {
           // 任务一开就结束时，结束的事件可能抢在这里之前已经处理过了：那就不用再盯着它
           if ((task.state === 'running' || task.state === 'queued') && !this.endedSeen.includes(task.id)) {
             this.tracked.add(task.id)
+            if (task.type !== undefined) this.trackedTypes.set(task.id, task.type)
             this.persist()
           }
         },

@@ -452,7 +452,7 @@ export function talkRelay(opts: { whisperTo?: string } = {}): Responder {
     const toolCalls: MockToolCall[] = []
     const say: string[] = []
     for (const thing of thingsToHandle(text)) {
-      const fromWorker = /^干活线(?:汇报：|提问（[^）]*）：|这一轮做完了，它留下的话：|出了状况（[^）]*）：)([\s\S]*)$/.exec(thing)
+      const fromWorker = /^干活线(?:汇报：|提问（[^）]*）：|停下来了（[^）]*），它留下的话：|出了状况（[^）]*）：)([\s\S]*)$/.exec(thing)
       const said = /^(?:\S+(?:（另一个 bot）)? 说：|\S+ 私聊你：|主人通过控制面板对你说：)([^\n]*)/.exec(thing)
       if (fromWorker) {
         if (opts.whisperTo !== undefined) toolCalls.push({ name: 'whisper', input: { player: opts.whisperTo, message: fromWorker[1]! } })
