@@ -919,7 +919,7 @@ export class PanelServer {
 
   private updateBot(body: Record<string, unknown>): unknown {
     if (body.name !== undefined && (typeof body.name !== 'string' || !isValidPlayerName(body.name.trim()))) {
-      throw new HttpError(400, 'bad_request', '名字必须是 1–16 位的字母、数字或下划线（Minecraft 玩家名的规则）')
+      throw new HttpError(400, 'bad_request', '名字是 1–16 个字符，不能有空格、斜杠和 §（不开正版验证的服务器上可以是中文）')
     }
     if (body.systemPrompt !== undefined && typeof body.systemPrompt !== 'string') {
       throw new HttpError(400, 'bad_request', '人设提示词必须是文本')

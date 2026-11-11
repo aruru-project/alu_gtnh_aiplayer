@@ -211,9 +211,9 @@ function stringMap(v: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-/** Minecraft 玩家名：1–16 位字母、数字、下划线。 */
+/** 玩家名：1–16 个字符，不能有空白、斜杠、反斜杠和 §。不开正版验证的服务器上可以是中文，和身体（mod）认的是同一条规则。 */
 export function isValidPlayerName(name: string): boolean {
-  return /^[A-Za-z0-9_]{1,16}$/.test(name)
+  return /^[^\s/\\§]{1,16}$/u.test(name)
 }
 
 /** 适配器的开关里，哪些是跟着服务商走的（其余的跟着模型）。 */
