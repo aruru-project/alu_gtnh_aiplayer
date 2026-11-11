@@ -287,9 +287,31 @@ public final class ContainerSession {
                 return Status.WORKING;
             }
             default:
-                if (++wait >= 2) return Status.DONE;
+                if (++wait >= 2) {
+                    keep();
+                    return Status.DONE;
+                }
                 return Status.WORKING;
         }
+    }
+
+    /**
+     * Has the world save what was changed at this block. A block is saved only when something marks it as changed,
+     * and not everything that holds items does so itself (the item-holder cover on a GregTech machine does not):
+     * what was put there would then be gone after a restart, while the bot's inventory was saved without it.
+     */
+    private void keep() {
+        if (opener == null && bot.online()) markChanged(bot.player().worldObj, x, y, z);
+    }
+
+    public static void markChanged(World w, int x, int y, int z) {
+        try {
+            if (!w.blockExists(x, y, z)) return;
+            TileEntity te = w.getTileEntity(x, y, z);
+            if (te != null) te.markDirty();
+            w.getChunkFromBlockCoords(x, z)
+                .setChunkModified();
+        } catch (Throwable ignored) {}
     }
 
     // ---- drawers ------------------------------------------------------------------------------------------------
@@ -611,6 +633,7 @@ public final class ContainerSession {
     public void abort() {
         if (bot.online() && bot.player().openContainer != bot.player().inventoryContainer) bot.conn()
             .closeWindow();
+        keep();
     }
 
     private Status fail(String code, String message) {
