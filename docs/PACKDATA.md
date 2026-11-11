@@ -676,6 +676,8 @@ tools/make-packdata.py textures \
 
 **做法规划**（`brain/src/tools/planner.ts`）曾经拿这本配方册替模型把整棵树走完、挑好每一步；它已经不是给模型的工具了（原因见 `brain/README.md` 的“做一样东西”），代码留着。现在模型自己一层层查，要算总原料时用库函数 `total_materials`（只做乘法，路线由模型给）。
 
+**走树和算数**在 `brain/src/tools/material-tree.ts`：每样东西用哪条配方（或者不做、要现成的）由调用的人给的选择函数定，它只管把树走完、把数算对——材料件按矿辞名算同一样东西（每样东西有个稳定的键：`ore:plateSteel`、`id/meta`、`fluid:molten.steel`……）、选定的配方要用到树上在它上面的东西时这样东西当原料并记下是哪条配方绕回去的、不消耗的模具和工具整棵树只算一个、流体按 mB、一轮出几个按轮数往上取整、有概率才出的产物不算。现在用它的只有 `total_materials`（选择函数是“只用点了名的那几条”）。
+
 **认机器。** 配方页的 `machines`（做这类配方的机器，作为物品的 id + meta）除了和 `world.machines` 里的 GregTech 机器比对，还用来认身体读不懂状态的机器：`world.containers` 里方块 id 对得上的容器（同一个 id 下有好几种机器时再按英文名对）就是一台别的 mod 的机器或熔炉，可以照玩家的办法用。见 `brain/README.md` 的“机器：身体读得懂的，和照配方册认的”。
 
 **交给身体。**
