@@ -32,7 +32,9 @@ npm start                 # 等于 node --disable-sigusr1 src/main.ts
 
 口令文件是游戏服务器目录下的 `config/aiplayer/bridge-token.txt`，mod 首次启动时生成。配了但读不到、或者连不上时，大脑照常运行并自己重试，面板上写明原因。
 
-**开发时连测试服**（端口 25591，口令文件在 `../testserver/`）用现成的入口：
+**连测试服长期跑着**用仓库根目录的 `tools/brain`（`deploy`、`start`、`stop`、`status`、`log`）：它把某个提交的 `brain/` 复制一份到 `.run/brain/`，作为 systemd 用户服务 `aiplayer-brain-test` 运行，数据仍在 `brain/data/testserver/`。这样它不随启动它的终端退出，也不会在重启时带上工作区里改到一半的代码。
+
+**开发时在前台直接跑工作区的源码**（端口 25591，口令文件在 `../testserver/`；和上面那个不能同时开，面板端口相同）：
 
 ```sh
 npm run dev:testserver

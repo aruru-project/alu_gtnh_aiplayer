@@ -10,3 +10,5 @@
 # our own copy of the game client, only used to export NEI data
 /client/
 __pycache__/
+# the copy of brain/ that tools/brain runs
+/.run/

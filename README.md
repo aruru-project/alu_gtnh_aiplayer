@@ -44,11 +44,14 @@ tools/bridge.py call task.start '{"bot":"Alu","task":{"type":"goto","x":-44,"z":
 tools/bridge.py listen             # 看事件
 tools/testserver rcon list
 tools/testserver stop
+tools/brain deploy                 # 让连着测试服的大脑跑仓库里当前这个提交；之后 start / stop / status / log
 
 tools/client setup                 # 我们自己的一份游戏客户端（不走启动器），只用来导出资料
 tools/export-packdata              # 从客户端里的 NEI 导出物品表、配方册、方块颜色，约 10 分钟
 tools/make-packdata.py quests …    # 从客户端包里取任务书（中文）和方块贴图
 ```
+
+测试服和连着它的大脑各是一个 systemd 用户服务（`aiplayer-testserver`、`aiplayer-brain-test`，由上面两个脚本临时建立，不随开机启动），不挂在启动它们的那个终端或程序下面，那边退出、重启都不影响它们。大脑跑的是 `.run/brain/` 里某个提交的一份副本，不是工作区里正在改的源码：改完、提交之后 `tools/brain deploy` 才换上新版本；`tools/brain status` 会写明现在跑的是哪个提交、仓库里有没有更新的。
 
 物品、配方、任务书这些不会变的资料放在大脑这边（`brain/packdata/`，见 [docs/PACKDATA.md](docs/PACKDATA.md)），每个整合包版本生成一次；身体只回答实时的事。
 

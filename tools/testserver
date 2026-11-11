@@ -13,8 +13,13 @@ MEMORY=${AIPLAYER_TEST_MEMORY:-6G}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-pid() { [[ -f $TS/.pid ]] && cat "$TS/.pid" || true; }
-running() { local p; p=$(pid); [[ -n $p ]] && kill -0 "$p" 2>/dev/null; }
+# The server runs as its own systemd user unit, not as a child of whatever shell started it: a process left
+# behind by a shell belongs to that shell's service and is killed with it (an agent host restarting took the
+# server down that way, without a save).
+UNIT=aiplayer-testserver
+
+pid() { local p; p=$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || true); [[ -n $p && $p != 0 ]] && echo "$p" || true; }
+running() { systemctl --user is-active --quiet "$UNIT"; }
 
 setup() {
     [[ ! -e $TS ]] || die "testserver/ already exists"
@@ -60,9 +65,15 @@ start() {
     cd "$TS"
     mkdir -p logs
     : >console.log
-    setsid nohup java "-Xms$MEMORY" "-Xmx$MEMORY" -Dfml.readTimeout=180 -Dfml.queryResult=confirm \
-        @java9args.txt -jar lwjgl3ify-forgePatches.jar nogui >console.log 2>&1 </dev/null &
-    echo $! >.pid
+    rm -f .pid
+    systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+    # SIGTERM makes the server save and stop; it gets two minutes for that before systemd kills it.
+    systemd-run --user --quiet --collect --unit="$UNIT" --description="GTNH AI player test server" \
+        --working-directory="$TS" --setenv=LANG="${LANG:-en_US.UTF-8}" \
+        -p StandardOutput="append:$TS/console.log" -p StandardError="append:$TS/console.log" \
+        -p TimeoutStopSec=120 \
+        "$(command -v java)" "-Xms$MEMORY" "-Xmx$MEMORY" -Dfml.readTimeout=180 -Dfml.queryResult=confirm \
+        @java9args.txt -jar lwjgl3ify-forgePatches.jar nogui
     local waited=0 limit=${1:-600}
     while ((waited < limit)); do
         # "Done" comes before the mods' own start-up work; with the mod installed the server is only usable
@@ -79,12 +90,11 @@ start() {
 }
 
 stop() {
-    running || { echo "not running"; rm -f "$TS/.pid"; return; }
-    "$ROOT/tools/rcon.py" --port "$RCON_PORT" --password-file "$TS/.rcon-password" stop >/dev/null 2>&1 || kill "$(pid)" || true
+    running || { echo "not running"; return; }
+    "$ROOT/tools/rcon.py" --port "$RCON_PORT" --password-file "$TS/.rcon-password" stop >/dev/null 2>&1 || true
     local waited=0
     while running && ((waited < 90)); do sleep 1; waited=$((waited + 1)); done
-    if running; then kill -9 "$(pid)"; echo "killed after timeout"; else echo "stopped"; fi
-    rm -f "$TS/.pid"
+    if running; then systemctl --user stop "$UNIT"; echo "stopped by systemd after timeout"; else echo "stopped"; fi
 }
 
 case ${1:-help} in

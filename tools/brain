@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Run the brain that drives the test instance (testserver/), as its own systemd user unit.
+#
+# Two things this is for:
+# - The brain must not be a child of the shell that started it. A process left behind by a shell belongs to
+#   that shell's service and is killed with it (an agent host restarting took the brain down that way).
+# - It runs a copy of brain/ as it was at a commit (.run/brain), not the working tree. The tree is edited
+#   while the brain runs, and a restart must not pick up half-made changes. "deploy" is how a new version
+#   gets to run.
+#
+# Its data (settings with the API keys, memory, history) stays in brain/data/testserver, and the pack data
+# in brain/packdata; neither is part of the copy. The live server's brain is a separate, permanent unit:
+# brain/aiplayer-brain.service and docs/DEPLOY.md.
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+UNIT=aiplayer-brain-test
+RUN="$ROOT/.run/brain"
+DATA="$ROOT/brain/data/testserver"
+LOG="$ROOT/brain/data/dev-testserver.log"
+NODE=${AIPLAYER_NODE:-$HOME/.nvm/versions/node/v24.22.1/bin/node}
+BRIDGE_PORT=25591
+PANEL_PORT=28765
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+running() { systemctl --user is-active --quiet "$UNIT"; }
+pid() { systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || true; }
+deployed() { [[ -f $RUN/VERSION ]] && cat "$RUN/VERSION" || true; }
+describe() { git -C "$ROOT" log -1 --format='%h %s' "$1" 2>/dev/null | cut -c1-110; }
+
+start() {
+    [[ -f $RUN/src/main.ts ]] || die "nothing is deployed yet: tools/brain deploy"
+    [[ -x $NODE ]] || die "node not found at $NODE (set AIPLAYER_NODE)"
+    running && die "already running (pid $(pid))"
+    mkdir -p "$DATA"
+    systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+    # An optional brain/data/testserver/service.env holds what only this machine needs, such as
+    # NODE_USE_ENV_PROXY=1 and HTTPS_PROXY=… when the model's endpoint is behind a proxy.
+    systemd-run --user --quiet --collect --unit="$UNIT" --description="GTNH AI player brain (test instance)" \
+        --working-directory="$RUN" \
+        --setenv=PATH="$(dirname "$NODE"):/usr/local/bin:/usr/bin:/bin" \
+        --setenv=LANG="${LANG:-en_US.UTF-8}" \
+        --setenv=AIPLAYER_PANEL_HOST=0.0.0.0 --setenv=AIPLAYER_PANEL_PORT="$PANEL_PORT" \
+        --setenv=AIPLAYER_DATA_DIR="$DATA" --setenv=AIPLAYER_PACKDATA="$ROOT/brain/packdata" \
+        --setenv=AIPLAYER_BRIDGE_PORT="$BRIDGE_PORT" \
+        --setenv=AIPLAYER_BRIDGE_TOKEN_FILE="$ROOT/testserver/config/aiplayer/bridge-token.txt" \
+        -p EnvironmentFile="-$DATA/service.env" \
+        -p StandardOutput="append:$LOG" -p StandardError="append:$LOG" \
+        -p Restart=on-failure -p RestartSec=5 -p TimeoutStopSec=15 -p UMask=0077 -p NoNewPrivileges=yes \
+        "$NODE" --disable-sigusr1 src/main.ts
+    local waited=0
+    while ((waited < 30)); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$PANEL_PORT") 2>/dev/null; then
+            printf 'started (pid %s), running %s\npanel: http://%s:%s/\n' "$(pid)" "$(describe "$(deployed)")" \
+                "$(hostname -I 2>/dev/null | awk '{print $1}')" "$PANEL_PORT"
+            return
+        fi
+        running || { tail -n 20 "$LOG"; die "the brain exited while starting"; }
+        sleep 1; waited=$((waited + 1))
+    done
+    die "the panel is not answering after 30 s (still running, see tools/brain log)"
+}
+
+stop() {
+    running || { echo "not running"; return; }
+    systemctl --user stop "$UNIT"
+    echo "stopped"
+}
+
+# Puts brain/ as it is at a commit (HEAD when none is given) in place of the running copy, and restarts.
+deploy() {
+    local commit tmp
+    commit=$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}") || die "no such commit: ${1:-HEAD}"
+    mkdir -p "$ROOT/.run"
+    tmp=$(mktemp -d "$ROOT/.run/brain.XXXXXX")
+    git -C "$ROOT" archive "$commit" brain | tar -x -C "$tmp"
+    printf '%s\n' "$commit" >"$tmp/brain/VERSION"
+    stop >/dev/null
+    rm -rf "$RUN"
+    mv "$tmp/brain" "$RUN"
+    rmdir "$tmp"
+    start
+}
+
+status() {
+    local v; v=$(deployed)
+    if running; then echo "running (pid $(pid))"; else echo "stopped"; fi
+    if [[ -z $v ]]; then echo "nothing deployed"; return; fi
+    echo "deployed: $(describe "$v")"
+    local ahead; ahead=$(git -C "$ROOT" rev-list --count "$v..HEAD" -- brain 2>/dev/null || echo 0)
+    ((ahead == 0)) || echo "the repository has $ahead newer commit(s) to brain/ that are not running: tools/brain deploy"
+}
+
+case ${1:-help} in
+    deploy) shift; deploy "$@" ;;
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    status) status ;;
+    log) exec tail -n "${2:-40}" "$LOG" ;;
+    *) echo "usage: tools/brain deploy [commit]|start|stop|restart|status|log [n]" ;;
+esac
