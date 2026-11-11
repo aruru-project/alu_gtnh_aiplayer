@@ -211,7 +211,7 @@ describe('凿子的组', () => {
   it('没有这份资料（carving.jsonl 不在）时：一切照旧，查做法不提凿子，程序里查组是空的', async (t) => {
     const h = setup(t, { carving: false })
     assert.equal(h.loaded.some((line) => line.includes('凿子')), false)
-    assert.equal((await modelCalls(h, 'find_recipes', { id: 'chisel:nucrete', meta: 3 })).content, 'No recipe makes 结构混凝土 [chisel:nucrete/3]: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). The library function find_uses shows what it is used for.')
+    assert.equal((await modelCalls(h, 'find_recipes', { id: 'chisel:nucrete', meta: 3 })).content, "The recipe book has no recipe that makes 结构混凝土 [chisel:nucrete/3] (the recipe book is what this client's NEI shows, exported). The library function find_uses shows what it is used for.")
     assert.deepEqual(await program(h, `return [data.available(), data.chiselGroups(), data.chiselGroupsOf('chisel:nucrete', 3)]`), [['items'], [], []])
     const sum = await program(h, `const r = await tool('total_materials', { id: 'chisel:nucrete', meta: 3, chisel: [{ id: 'chisel:nucrete', meta: 3, from: { id: 'chisel:nucrete' } }] }); return [r.ok, r.text]`)
     assert.deepEqual(sum, [false, 'There is no chisel data on this brain (carving.jsonl), so a chisel step cannot be checked.'])

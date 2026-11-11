@@ -22,6 +22,9 @@ const NOW = 1_800_000_000_000
 const LISTED = "Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:"
 const FACTS_ONLY =
   '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.'
+/** 游戏标成“NEI 里显示用”的配方后面带的标记是什么意思：结果里说一次。 */
+const NEI_DISPLAY =
+  '[NEI display]: the game marks these recipes as shown in NEI for display — the machine finds what to make its own way, not by matching this exact line (a cutting machine shows one line per coolant). They are what a player sees in NEI for the thing, and process_items can try them like any other.'
 const PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17305 }
 const HAMMER = { id: 'gregtech:gt.metatool.01', meta: 12 }
 
@@ -57,16 +60,18 @@ function setup(t: { after(fn: () => void): void }, opts: { inventory?: { id: str
 }
 
 describe('配方册：读进来', () => {
-  it('启动时读一遍建索引：只是示意的配方哪里都查不到，坏行跳过并说明，编号就是行号', (t) => {
+  it('启动时读一遍建索引：游戏标成“NEI 里显示用”的配方照常进索引、照常读得到（带着这个标记），日志里说有几条；坏行跳过并说明，编号就是行号', (t) => {
     const s = setup(t)
-    assert.ok(s.lines.includes('物品表：50 种物品。'), s.lines.join('\n'))
+    assert.ok(s.lines.includes('物品表：52 种物品。'), s.lines.join('\n'))
     const loaded = s.lines.find((l) => l.startsWith('配方册：'))!
-    assert.match(loaded, /^配方册：28 条配方、11 个配方页，做得出 12 种物品（读了 \d+ 毫秒；另有 1 条只是示意的不列；1 行认不出来，跳过了）。$/)
+    assert.match(loaded, /^配方册：30 条配方、11 个配方页，做得出 13 种物品（读了 \d+ 毫秒；其中 2 条游戏标成了“NEI 里显示用的”，照常查得到；1 行认不出来，跳过了）。$/)
     const book = s.packdata.recipes!
     assert.equal(book.size, RECIPE_LINES.length)
-    // 钢板：0–4 这五条做它；第 5 条是 fake 的，不在里面
-    assert.deepEqual([...book.makesOf(PLATE.id, PLATE.meta)], [0, 1, 2, 3, 4])
-    assert.equal(book.get(5), undefined)
+    // 钢板：0–5 这六条做它；第 5 条（板材切割机）是游戏标了 fake 的，一样在里面
+    assert.deepEqual([...book.makesOf(PLATE.id, PLATE.meta)], [0, 1, 2, 3, 4, 5])
+    assert.deepEqual([book.get(5)?.fake, book.get(5)?.handler.name, book.get(5)?.fin, book.get(0)?.fake], [true, '板材切割机', [{ f: 'water', name: '水', mb: 52 }], undefined])
+    // 钢块能拿来做什么：也查得到那一条
+    assert.deepEqual([...book.usesOf('gregtech:gt.blockmetal6', 13)], [5])
     assert.equal(book.get(26), undefined)
     assert.equal(book.get(999), undefined)
     const hammered = book.get(2)!
@@ -92,7 +97,8 @@ describe('find_item：找物品', () => {
     assert.equal(zh[0], '"钢板" matches 3 item(s), most alike first.')
     // 正好叫“钢板”的在最前；“钢板标牌”以它开头，排在“玄钢板”前面
     assert.deepEqual(zh.slice(1).map((l) => l.split(':')[0]), ['- 钢板 [gregtech', '- 钢板标牌 [demo', '- 玄钢板 [gregtech'])
-    assert.equal(zh[1], '- 钢板 [gregtech:gt.metaitem.01/17305]: 5 recipe(s) make it; used in 3; ore names: plateSteel')
+    // 做钢板的六条里有一条是板材切割机的（游戏标成“NEI 里显示用的”）：照常算数
+    assert.equal(zh[1], '- 钢板 [gregtech:gt.metaitem.01/17305]: 6 recipe(s) make it; used in 3; ore names: plateSteel')
     // 拿英文搜：结果里带上英文名
     const en = await s.run('find_item', { query: 'steel plate' })
     assert.match(en.content, /^"steel plate" matches 2 item\(s\), most alike first\.\n- 钢板 \[gregtech:gt\.metaitem\.01\/17305\] \(Steel Plate\): /)
@@ -120,12 +126,12 @@ describe('find_item：找物品', () => {
 })
 
 describe('find_recipes：查做法', () => {
-  it('先按加工方式汇总：每种几条、每个成品耗多少料、电压和时长、要不要电路和模具；照配方册的先后列，不排好坏；重复的合并，示意的不列', async (t) => {
+  it('先按加工方式汇总：每种几条、每个成品耗多少料、电压和时长、要不要电路和模具；照配方册的先后列，不排好坏；重复的合并；游戏标成“NEI 里显示用”的照常列、带着标记，那是什么意思在末尾说一次', async (t) => {
     const s = setup(t)
     const res = await s.run('find_recipes', PLATE)
     assert.equal(res.isError, undefined, res.content)
     assert.deepEqual(res.content.split('\n'), [
-      '钢板 [gregtech:gt.metaitem.01/17305] can be made 4 way(s), 4 recipe(s) in all (1 exact duplicate(s) in the book are merged). ' + LISTED,
+      '钢板 [gregtech:gt.metaitem.01/17305] can be made 5 way(s), 5 recipe(s) in all (1 exact duplicate(s) in the book are merged). ' + LISTED,
       // 卷板机：1 锭出 1 板，附近那台有电
       '1. 卷板机 — 1 recipe(s); CAN RUN NOW on 基础卷板机 at (16,64,-4) LV',
       '   #0: 1× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs programmed circuit 1 → 1× 钢板 — LV (24 EU/t), 2.8 s',
@@ -138,6 +144,10 @@ describe('find_recipes：查做法', () => {
       '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (worn, not used up) → 1× 钢板 — needs a crafting table (3x3)',
       '4. 合金炉 — 1 recipe(s); no such machine within 112 blocks',
       '   #4: 2× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs 模具（板） [gregtech:gt.metaitem.01/32301] (stays in the machine, not used up) → 1× 钢板 — LV (30 EU/t), 5.6 s',
+      // 板材切割机：游戏把这一页的配方都标成“NEI 里显示用的”。它照常列出来，行尾带着标记
+      '5. 板材切割机 — 1 recipe(s); no such machine within 112 blocks',
+      '   #5: 1× 钢块 [gregtech:gt.blockmetal6/13] + 52 mB 水 (fluid) → 9× 钢板 (per 钢板: 0.11 钢块 + 5.78 mB 水) — LV (30 EU/t), 56 s [NEI display]',
+      NEI_DISPLAY,
       FACTS_ONLY,
     ])
     // 看了一眼基地里的机器和工作台。基地常常比身体一次查询的范围大（仓库在这头，高炉在那头）：
@@ -146,8 +156,42 @@ describe('find_recipes：查做法', () => {
     assert.deepEqual(s.game.callsOf('world.machines'), around(48).map((at) => ({ ...at, radius: 64, limit: 60 })))
     // 身体自己会去找的四种合成台都认
     assert.deepEqual(s.game.callsOf('world.find'), around(40).map((at) => ({ ...at, blocks: ['minecraft:crafting_table', 'TConstruct:CraftingStation', 'TConstruct:CraftingSlab', 'Natura:Natura.workbench'], radius: 48, limit: 4 })))
-    // 板材切割机那条是 fake 的
-    assert.ok(!res.content.includes('板材切割机') && !res.content.includes('#5'))
+  })
+
+  it('主人问“钻石板够不够材料做”，它查钻石板的做法：配方册里只有板材切割机那一条（游戏标成“NEI 里显示用的”），照样给出来——1 钻石块 + 720 mB 水出 9 个；照这个编号能开机器；钻石块能做什么也查得到它', async (t) => {
+    const s = setup(t)
+    const DIAMOND_PLATE = { id: 'gregtech:gt.metaitem.01', meta: 17500 }
+    const res = await s.run('find_recipes', DIAMOND_PLATE)
+    assert.equal(res.isError, undefined, res.content)
+    assert.deepEqual(res.content.split('\n'), [
+      '钻石板 [gregtech:gt.metaitem.01/17500] can be made 1 way(s), 1 recipe(s) in all. ' + LISTED,
+      '1. 板材切割机 — 1 recipe(s); no such machine within 112 blocks',
+      '   #30: 1× 钻石块 [minecraft:diamond_block] + 720 mB 水 (fluid) → 9× 钻石板 (per 钻石板: 0.11 钻石块 + 80 mB 水) — LV (30 EU/t), 648 s [NEI display]',
+      NEI_DISPLAY,
+      FACTS_ONLY,
+    ])
+    // 一条条看的时候也在，同样带着标记和那句话
+    assert.deepEqual((await s.run('find_recipes', { ...DIAMOND_PLATE, way: '板材切割机' })).content.split('\n'), [
+      '钻石板 [gregtech:gt.metaitem.01/17500]: 1 recipe(s).',
+      '#30: 1× 钻石块 [minecraft:diamond_block] (you carry 0) + 720 mB 水 (fluid) → 9× 钻石板 (per 钻石板: 0.11 钻石块 + 80 mB 水) — LV (30 EU/t), 648 s [NEI display]',
+      NEI_DISPLAY,
+      'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).',
+    ])
+    // 找物品时的“几条配方做它”把它算上了
+    assert.equal((await s.run('find_item', { query: '钻石板' })).content.split('\n')[1], '- 钻石板 [gregtech:gt.metaitem.01/17500]: 1 recipe(s) make it; used in none; ore names: plateDiamond')
+    // 照这条配方的编号开机器：不因为它带着标记就不让试
+    const started = await s.run('process_items', { machine: { x: 30, y: 64, z: 0 }, recipe: 30, rounds: 2 })
+    assert.equal(started.isError, undefined, started.content)
+    assert.match(started.content, / This recipe also takes 1440 mB 水 in all, from inside the machine/)
+    assert.deepEqual([s.lastTask().inputs, s.lastTask().expect], [[{ id: 'minecraft:diamond_block', meta: 0, count: 2 }], [{ id: 'gregtech:gt.metaitem.01', meta: 17500, count: 18 }]])
+    // 钻石块能拿来做什么：这一条，数据里写着这个事实
+    const uses = await s.run('find_uses', { id: 'minecraft:diamond_block', way: '板材切割机' })
+    assert.deepEqual(uses.content.split('\n'), [
+      'Recipes that use 钻石块 [minecraft:diamond_block]: 1 recipe(s).',
+      '#30: 1× 钻石块 [minecraft:diamond_block] + 720 mB 水 (fluid) → 9× 钻石板 — LV (30 EU/t), 648 s [NEI display]',
+      NEI_DISPLAY,
+    ])
+    assert.equal((uses.data as { recipes: { fake?: boolean }[] }).recipes[0]!.fake, true)
   })
 
   it('手工配方和机器配方都做得了时：不替它排先后，两边每个成品耗多少都写着（手工搅粉出 2 个，搅拌机同样的料出 3 个）', async (t) => {
@@ -212,7 +256,8 @@ describe('find_recipes：查做法', () => {
     const offline = (await s.run('find_recipes', PLATE)).content.split('\n')
     assert.equal(offline[1], '(Which machines and crafting tables are around you could not be checked: disconnected: bridge is not connected to the game server.)')
     assert.equal(offline[2], '1. 卷板机 — 1 recipe(s); machine recipe')
-    assert.equal(offline.length, 11)
+    // 五种做法各两行（那种做法、它的一条配方），加开头两行、“NEI 里显示用的”那一句、末尾一句
+    assert.equal(offline.length, 14)
   })
 
   it('同一种东西有两个 id（玄钢锭）：查哪个都给出做法，说明它们可以互换', async (t) => {
@@ -260,11 +305,12 @@ describe('find_recipes：查做法', () => {
   it('问得不对时说清楚：没有这种方式（列出有哪些）、筛完一条不剩、物品不存在、它没有配方', async (t) => {
     const s = setup(t)
     const way = await s.run('find_recipes', { ...PLATE, way: '车床' })
-    assert.deepEqual([way.isError, way.content], [true, '钢板 [gregtech:gt.metaitem.01/17305] is not made by any way matching "车床". Its ways: "卷板机" (1), "锻造锤" (1), "有序合成" (1), "合金炉" (1).'])
-    assert.equal((await s.run('find_recipes', { ...PLATE, contains: '铜' })).content, 'No recipe for 钢板 [gregtech:gt.metaitem.01/17305] with an ingredient containing "铜" (4 recipe(s) before the "contains" filter; 4 in all). Try another word: part of an ingredient\'s Chinese or English name, id or ore name.')
+    assert.deepEqual([way.isError, way.content], [true, '钢板 [gregtech:gt.metaitem.01/17305] is not made by any way matching "车床". Its ways: "卷板机" (1), "锻造锤" (1), "有序合成" (1), "合金炉" (1), "板材切割机" (1).'])
+    assert.equal((await s.run('find_recipes', { ...PLATE, contains: '铜' })).content, 'No recipe for 钢板 [gregtech:gt.metaitem.01/17305] with an ingredient containing "铜" (5 recipe(s) before the "contains" filter; 5 in all). Try another word: part of an ingredient\'s Chinese or English name, id or ore name.')
     const unknown = await s.run('find_recipes', { id: 'gregtech:gt.metaitem.01', meta: 99999 })
     assert.deepEqual([unknown.isError, unknown.content], [true, 'No item gregtech:gt.metaitem.01/99999 is known. Get the exact id and meta with find_item (many GregTech items share one id and differ only in meta).'])
-    assert.match((await s.run('find_recipes', { id: 'Backpack:tannedLeather' })).content, /^No recipe makes 鞣制皮革 \[Backpack:tannedLeather\]: it is not crafted or processed from anything in the recipe book/)
+    // 配方册里没有它的配方：只陈述这一点（配方册是这个客户端的 NEI 导出来的），不替它担保“这东西做不出来”
+    assert.equal((await s.run('find_recipes', { id: 'Backpack:tannedLeather' })).content, "The recipe book has no recipe that makes 鞣制皮革 [Backpack:tannedLeather] (the recipe book is what this client's NEI shows, exported). The library function find_uses shows what it is used for.")
   })
 })
 
@@ -354,7 +400,9 @@ describe('craft_item：照配方册里的配方手工合成', () => {
     }
     await refused({ recipe: 0 }, 'Recipe #0 is a "卷板机" recipe, not hand crafting: run it on a machine with process_items.')
     await refused({ recipe: 24 }, 'Recipe #24 is a "烧制" recipe, not hand crafting: run it on a machine with process_items.')
-    await refused({ recipe: 5 }, 'There is no recipe #5. Take the number from find_recipes (numbers change when the recipe book is re-exported).')
+    // 游戏标成“NEI 里显示用”的那条也是一条配方：它是机器配方
+    await refused({ recipe: 5 }, 'Recipe #5 is a "板材切割机" recipe, not hand crafting: run it on a machine with process_items.')
+    await refused({ recipe: 26 }, 'There is no recipe #26. Take the number from find_recipes (numbers change when the recipe book is re-exported).')
     await refused({}, 'Give "recipe": the # number of a hand-crafting recipe from find_recipes.')
     await refused({ recipe: 10, count: 200 }, '200 would take 100 rounds of this recipe (2 per round); one task does at most 64 rounds (128). Split it into several tasks.')
     assert.equal(s.game.callsOf('task.start').length, 0)

@@ -195,12 +195,12 @@ function loadRecipes(dir: string, log: (message: string) => void): RecipeBook | 
       return undefined
     }
     const { book, bad, ms } = loaded
-    if (book.size - book.fake - bad <= 0) {
+    if (book.size - bad <= 0) {
       book.close()
       log(`配方册（recipes.jsonl）是空的，${fallback}。`)
       return undefined
     }
-    log(`配方册：${book.size - book.fake - bad} 条配方、${book.handlers.length} 个配方页，做得出 ${book.counts.products} 种物品（读了 ${ms} 毫秒${book.fake > 0 ? `；另有 ${book.fake} 条只是示意的不列` : ''}${bad > 0 ? `；${bad} 行认不出来，跳过了` : ''}）。`)
+    log(`配方册：${book.size - bad} 条配方、${book.handlers.length} 个配方页，做得出 ${book.counts.products} 种物品（读了 ${ms} 毫秒${book.fake > 0 ? `；其中 ${book.fake} 条游戏标成了“NEI 里显示用的”，照常查得到` : ''}${bad > 0 ? `；${bad} 行认不出来，跳过了` : ''}）。`)
     return book
   } catch (e) {
     log(`配方册读不了（${reason(e)}），${fallback}。`)

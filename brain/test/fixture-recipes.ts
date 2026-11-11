@@ -1,5 +1,5 @@
 // 一本自造的小配方册（格式同 docs/PACKDATA.md）：够得着真实数据里那些要紧的情形——
-// 同一个物品好几种做法耗料不同、手工工具配方、编程电路和模具、一模一样的重复、只是示意的 fake、
+// 同一个物品好几种做法耗料不同、手工工具配方、编程电路和模具、一模一样的重复、游戏标成“NEI 里显示用”的（fake:true，照常查得到）、
 // 高炉的炉温、同一种东西两个 id（玄钢锭）、每种材质一条的工具配方、摆得进 2×2 的无序合成、
 // 不用工具的手工配方和机器配方并存（手工搅粉 2 个、搅拌机 3 个）。
 // 配方的编号就是它在 RECIPE_LINES 里的下标。
@@ -46,6 +46,9 @@ export const ITEMS = [
   { id: 'gregtech:gt.metaitem.01', meta: 2535, name: '煤粉', en: 'Coal Dust', ores: ['dustCoal'] },
   { id: 'gregtech:gt.metaitem.01', meta: 2804, name: '黑曜石粉', en: 'Obsidian Dust', ores: ['dustObsidian'] },
   { id: 'gregtech:gt.blockmachines', meta: 581, name: '基础搅拌机', en: 'Basic Mixer' },
+  // 钻石板只有板材切割机那一页做得出，那一页的配方游戏全标着“NEI 里显示用的”
+  { id: 'gregtech:gt.metaitem.01', meta: 17500, name: '钻石板', en: 'Diamond Plate', ores: ['plateDiamond'] },
+  { id: 'minecraft:diamond_block', meta: 0, name: '钻石块', en: 'Block of Diamond', ores: ['blockDiamond'] },
   // 每种材质一把锤子用的锭
   ...Array.from({ length: 12 }, (_, n) => ({ id: 'demo:ingot', meta: n, name: `${['铜', '锡', '青铜', '钢质', '金', '银', '铅', '镍', '锌', '钴', '钛', '钨钢'][n]}锭`, en: `Ingot ${n}` })),
 ]
@@ -82,7 +85,7 @@ export const RECIPE_LINES: (Record<string, unknown> | string)[] = [
   { h: SHAPED, in: [ore('craftingToolHardHammer', 0, HAMMER), ore('ingotSteel', 3, INGOT_STEEL), ore('ingotSteel', 6, INGOT_STEEL)], out: [gt(17305, 1)] },
   // 4：合金炉，模具不消耗
   { h: 'gt.recipe.alloysmelter', in: [gt(11305, 2), { id: 'gregtech:gt.metaitem.01', meta: 32301, n: 0 }], out: [gt(17305, 1)], eut: 30, ticks: 112 },
-  // 5：只是示意的，不该出现在任何地方
+  // 5：游戏标成“NEI 里显示用的”（GregTech 的 mFakeRecipe）：板材切割机自己另有一套找配方的办法，NEI 里三种冷却液各显示一条。照常查得到
   { h: 'gt.recipe.fakecuttingsaw', in: [{ id: 'gregtech:gt.blockmetal6', meta: 13, n: 1 }], out: [gt(17305, 9)], fin: [{ f: 'water', name: '水', mb: 52 }], eut: 30, ticks: 1120, fake: true },
   // 6、7：高炉出的玄钢锭是 EnderIO 的那个 id；一条要氧气、炉温 1800，一条炉温 2200
   { h: 'gt.recipe.blastfurnace', in: [gt(2364, 1), circuit(11)], out: [{ id: 'EnderIO:itemAlloy', meta: 6, n: 1 }], fin: [{ f: 'oxygen', name: '氧气', mb: 1000 }], eut: 120, ticks: 1000, special: 1800 },
@@ -132,6 +135,8 @@ export const RECIPE_LINES: (Record<string, unknown> | string)[] = [
     out: [gt(2364, 2)],
   },
   { h: 'gt.recipe.mixer', in: [gt(2365, 1), gt(2535, 1), gt(2804, 1), circuit(2)], out: [gt(2364, 3)], eut: 7, ticks: 100 },
+  // 30：钻石板唯一的配方，也是标着 fake 的（真实配方册里的 #206602：1 钻石块 + 720 mB 水 → 9 钻石板）
+  { h: 'gt.recipe.fakecuttingsaw', in: [{ id: 'minecraft:diamond_block', meta: 0, n: 1 }], out: [gt(17500, 9)], fin: [{ f: 'water', name: '水', mb: 720 }], eut: 30, ticks: 12960, fake: true },
 ]
 
 /** 把这本小配方册写进 dir（items.jsonl、handlers.json、recipes.jsonl）。 */

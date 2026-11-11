@@ -3,7 +3,9 @@
 // recipes.jsonl 有一百来兆、三十万条。启动时从头到尾读一遍，只在内存里留索引：每条配方在文件里的位置、属于哪一页，
 // 以及“哪些配方产出这个物品”“哪些配方用到这个物品（或这个矿辞名）”两张倒排表。配方本身用到时才从文件里读那一行。
 // 流体也有同样的两张表（哪些配方产出、用到这种流体），外加流体的注册名 → 中文名：GregTech 的页把流体写在 fin / fout 里。
-// 真实的整合包：读一遍不到一秒，索引占四十兆左右。fake:true 的示意配方不进倒排表，哪里都查不到。
+// 真实的整合包：读一遍不到一秒，索引占四十兆左右。
+// fake:true 是照抄的 GregTech 的 mFakeRecipe：这条配方是给 NEI 显示用的，机器自己另有一套找配方的办法（板材切割机三种冷却液各显示一条、
+// 扫描仪、装配线、工业凿子……）。它不是“假的”：玩家在 NEI 里看到的就是它们，一样进倒排表、一样查得到，只是配方上带着这个事实。
 //
 // 一条配方的编号（ref）就是它在 recipes.jsonl 里是第几行（从 0 数）。文件重新导出以后编号会变，所以编号只在这次运行里用。
 
@@ -59,6 +61,8 @@ export interface Recipe {
   ticks?: number
   /** 配方页自己的附加数值（高炉是炉温）。 */
   special?: number
+  /** 游戏把这条标成了“NEI 里显示用的”（GregTech 的 mFakeRecipe）：机器不是照普通办法逐条对的。不是说它做不出来。 */
+  fake?: true
 }
 
 export const ANY_META = 32767
@@ -149,9 +153,9 @@ function add(map: Map<string, number[]>, key: string, ref: number): void {
 
 export class RecipeBook {
   readonly handlers: readonly RecipeHandler[]
-  /** recipes.jsonl 里一共多少条（含 fake 的）。 */
+  /** recipes.jsonl 里一共多少条。 */
   readonly size: number
-  /** 其中 fake:true、不列出来的条数。 */
+  /** 其中游戏标成“NEI 里显示用的”（fake:true）有多少条。它们照常查得到。 */
   readonly fake: number
   private readonly fd: number
   private readonly offsets: Uint32Array
@@ -229,10 +233,7 @@ export class RecipeBook {
         handlers.push({ key: r.h, name: r.h, machines: [], grid: false, gregtech: false })
       }
       handlerOf.push(h)
-      if (r.fake === true) {
-        fake++
-        return
-      }
+      if (r.fake === true) fake++
       if (Array.isArray(r.out)) for (const o of r.out) if (isRecord(o) && typeof o.id === 'string') add(makes, itemPosting(o.id, typeof o.meta === 'number' ? o.meta : 0), ref)
       if (Array.isArray(r.in)) {
         for (const i of r.in) {
@@ -354,7 +355,7 @@ export class RecipeBook {
     return { products: this.makes.size, ingredients: this.used.size }
   }
 
-  /** 读一条配方。编号不对、那一行读不出来、是 fake 的，都返回 undefined。 */
+  /** 读一条配方。编号不对、那一行读不出来，返回 undefined。 */
   get(ref: number): Recipe | undefined {
     if (!Number.isInteger(ref) || ref < 0 || ref >= this.size) return undefined
     const handler = this.handlerOfRecipe(ref)
@@ -368,11 +369,12 @@ export class RecipeBook {
     } catch {
       return undefined
     }
-    if (!isRecord(r) || r.fake === true) return undefined
+    if (!isRecord(r)) return undefined
     const recipe: Recipe = { ref, handler, in: list(r.in, slot), out: list(r.out, stack), fin: fluids(r.fin), fout: fluids(r.fout) }
     if (typeof r.eut === 'number') recipe.eut = r.eut
     if (typeof r.ticks === 'number') recipe.ticks = r.ticks
     if (typeof r.special === 'number' && r.special !== 0) recipe.special = r.special
+    if (r.fake === true) recipe.fake = true
     return recipe
   }
 

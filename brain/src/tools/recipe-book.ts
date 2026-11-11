@@ -530,7 +530,7 @@ interface Availability {
   text: string
 }
 
-function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings, machineWayExists: boolean): Availability {
+export function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings, machineWayExists: boolean): Availability {
   const kind = wayKind(h)
   if (kind === 'other') return { rank: 4, text: 'you cannot run this yourself (no machine or crafting grid does it: it is an information page, or something that happens in the world)' }
   if (kind === 'craft') {
@@ -640,8 +640,13 @@ export function recipeLine(recipe: Recipe, nm: Namer, opts: LineOptions = {}): s
   if (recipe.ticks !== undefined) power.push(seconds(recipe.ticks))
   if (recipe.special !== undefined) power.push(/blast/i.test(recipe.handler.key) ? `coil heat ${recipe.special} K` : `special value ${recipe.special}`)
   if (recipe.handler.grid) power.push(isHandCraft(recipe) ? (fitsPocketGrid(recipe) ? 'fits your 2x2 grid' : 'needs a crafting table (3x3)') : 'grid too big for you')
-  return power.length > 0 ? `${line} — ${power.join(', ')}` : line
+  // 游戏标成“NEI 里显示用的”那些：照常列出来，带一个标记；这是什么意思在结果末尾说一次（FAKE_FACT）
+  return `${power.length > 0 ? `${line} — ${power.join(', ')}` : line}${recipe.fake ? ` ${FAKE_TAG}` : ''}`
 }
+
+/** 配方行后面的标记，和它是什么意思（GregTech 的 mFakeRecipe：给 NEI 显示用的配方）。 */
+export const FAKE_TAG = '[NEI display]'
+export const FAKE_FACT = `${FAKE_TAG}: the game marks these recipes as shown in NEI for display — the machine finds what to make its own way, not by matching this exact line (a cutting machine shows one line per coolant). They are what a player sees in NEI for the thing, and process_items can try them like any other.`
 
 // ── 找物品 ──
 
@@ -975,8 +980,9 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     if (carve.length > 0) {
       return { content: [`No recipe in the recipe book makes ${label}. It is made another way:`, ...chiselSummary(carve, target, label, nm, 'made')].join('\n'), ...carveData, keepWhole: true }
     }
-    if (asked.kind === 'fluid') return `No recipe in the recipe book gives ${label}${asked.note}: it is pumped, drilled or collected, or comes from something the book does not list. The library function find_uses shows what takes it.`
-    return `No recipe makes ${label}: it is not crafted or processed from anything in the recipe book (a raw material, a drop, or something only found or traded). The library function find_uses shows what it is used for.`
+    // 只陈述配方册里有没有：它是这个客户端的 NEI 导出来的，不替它担保“这东西做不出来”
+    if (asked.kind === 'fluid') return `The recipe book has no recipe that gives ${label}${asked.note} (the recipe book is what this client's NEI shows, exported). The library function find_uses shows what takes it.`
+    return `The recipe book has no recipe that makes ${label} (the recipe book is what this client's NEI shows, exported). The library function find_uses shows what it is used for.`
   }
   // 查的是物品时，每条配方后面算“每个成品耗多少”；流体不算（一条配方出好几种流体，按哪种算都不对）
   const wanted = asked.kind === 'item' ? { target: { id: target.id, meta: target.meta, same: twins } } : {}
@@ -1021,7 +1027,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     const lines = paged.shown.map((r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { ...wanted, ...(have ? { have } : {}) })}`)
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
     return {
-      content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),
+      content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, ...(paged.shown.some((r) => r.fake) ? [FAKE_FACT] : []), 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),
       keepWhole: true,
     }
   }
@@ -1038,6 +1044,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   const lines: string[] = [`${label} can be made ${ways.length} way(s), ${total} recipe(s) in all${merged}${carve.length > 0 ? ', and with a chisel (last entry)' : ''}.${twinNote} Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:`]
   if (around.error) lines.push(`(Which machines and crafting tables are around you could not be checked: ${around.error}.)`)
   else if (around.machinesTotal > around.machines.length) lines.push(`(Only ${around.machines.length} of about ${around.machinesTotal} machines within ${MACHINES_REACH} blocks were checked.)`)
+  let anyFake = false
   judged.slice(0, WAYS_SHOWN).forEach((w, n) => {
     const count = w.recipes.length
     lines.push(`${n + 1}. ${w.handler.name}${wayLabel(w.handler, ways) === w.handler.name ? '' : ` (way "${w.handler.key}")`} — ${count} recipe(s); ${w.avail.text}`)
@@ -1045,6 +1052,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     // 这种方式附近有机器时，逐条看这条配方它做不做得了（同一台高炉，炉温够做这条不够做那条）
     const candidates = wayKind(w.handler) === 'machine' && !around.error ? around.machines.filter((m) => runsWay(m, w.handler)) : []
     for (const r of shown) {
+      if (r.fake) anyFake = true
       const blocked = candidates.length > 0 && w.avail.rank === 0 ? candidates.map((m) => machineProblems(m, r)) : []
       const cannot = blocked.length > 0 && blocked.every((p) => p.length > 0) ? ` [NOT on the machine(s) here: ${blocked[0]!.join(', ')}]` : ''
       lines.push(`   ${recipeLine(r, nm, wanted)}${cannot}${fluidFact(r, candidates)}`)
@@ -1060,6 +1068,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     const [first, ...rest] = chiselSummary(carve, target, label, nm, 'made')
     lines.push(`${Math.min(judged.length, WAYS_SHOWN) + 1}. ${first}`, ...rest)
   }
+  if (anyFake) lines.push(FAKE_FACT)
   lines.push(
     '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.',
   )
@@ -1083,6 +1092,8 @@ export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
     ...(r.fout.length > 0 ? { fluidsOut: r.fout.map(fluid) } : {}),
     ...(r.eut !== undefined ? { eut: r.eut } : {}),
     ...(r.ticks !== undefined ? { ticks: r.ticks } : {}),
+    // 游戏标成“NEI 里显示用的”（见 FAKE_FACT）
+    ...(r.fake ? { fake: true } : {}),
   }
 }
 
@@ -1159,12 +1170,15 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
     if (!paged) return fail(`There is no page ${input.page}: ${list.length} recipe(s)${scope}, ${Math.ceil(list.length / RECIPES_PER_PAGE)} page(s).`)
     const lines: string[] = []
     const shown: Record<string, unknown>[] = []
+    let usesFake = false
     for (const ref of paged.shown) {
       const r = loaded?.get(ref) ?? recipes.get(ref)
       if (!r) continue
       lines.push(`${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm)}`)
       shown.push(recipeData(r, nm))
+      if (r.fake) usesFake = true
     }
+    if (usesFake) lines.push(FAKE_FACT)
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
     return { content: [`Recipes that use ${label}${scope}: ${range}.${asked.note}`, ...lines].join('\n'), data: { ...item, total: list.length, page: paged.page, pages: paged.pages, recipes: shown }, keepWhole: true }
   }
