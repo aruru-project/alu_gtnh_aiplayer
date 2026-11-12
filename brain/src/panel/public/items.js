@@ -257,6 +257,9 @@ function grid(className, label, columns, cells) {
   return el
 }
 
+/** 盔甲格以外穿东西的地方（身体给的 slot 名字）。 */
+const WORN_SLOTS = { back: '背上' }
+
 const ARMOR = [
   { index: 3, label: '头盔（空）', mark: '头' },
   { index: 2, label: '胸甲（空）', mark: '胸' },
@@ -296,6 +299,8 @@ export function inventoryPanel(live, onPick) {
         4,
         ARMOR.map((a) => slotEl({ item: live.armor?.[a.index] ?? undefined, label: a.label, mark: a.mark }, looks, onPick)),
       ),
+      // 背上那一格（探险背包 mod 的直升机背包、背包……）：穿着东西时才有
+      ...((live.worn ?? []).length > 0 ? [grid('slots worn', '背上', live.worn.length, live.worn.map((w) => slotEl({ item: w.item, label: WORN_SLOTS[w.slot] ?? w.slot, mark: '背' }, looks, onPick)))] : []),
       h('div', { class: 'inv-held' }, h('span', { class: 'mc-note', text: '手里拿着' }), h('span', { class: 'inv-held-name', text: held ? held.name : '空手' })),
     ),
     grid('slots grid9', '背包', 9, range(9, 36)),

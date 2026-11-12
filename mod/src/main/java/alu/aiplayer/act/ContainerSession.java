@@ -664,7 +664,9 @@ public final class ContainerSession {
             if (isGhost(s)) continue;
             theirs.add(s);
             ItemStack shown = s.getStack();
-            if (takesNothing(s, shown != null ? shown : probe)) hasProductSlots = true;
+            // A bag is storage, whatever slots it has that refuse a stone (a backpack's tool and fluid slots, its
+            // crafting grid's result): everything in it may be taken.
+            if (opener == null && takesNothing(s, shown != null ? shown : probe)) hasProductSlots = true;
         }
         if (deposit != null) {
             for (; cursor < mine.size(); cursor++) {

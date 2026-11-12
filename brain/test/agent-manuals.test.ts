@@ -39,7 +39,8 @@ describe('手册：提示词只列目录，要用时才读', () => {
     // 核心提示词（公共部分加这条线自己的部分）每条线各自不超过 2,400 字；加上目录、名字、主人、记忆也要明显短
     for (const line of ['talk', 'work'] as const) assert.ok(corePrompt(line, 'Alu').length <= 2400, `the ${line} core prompt is ${corePrompt(line, 'Alu').length} chars`)
     // 上限各加了 300：多了“基地的做法”那一节（空的时候三行，约 130 字），对话线另多两句事实（只写字不调工具这一轮就结束；要查很多步可以交给干活线，约 130 字）
-    assert.ok(work.length < 3600, `the work system prompt is ${work.length} chars`)
+    // 干活线 3,600 → 3,700：手册目录多了 wear 那一行（穿脱背上的东西、加油、按 mod 的键、飞，约 55 字），现在 3,640；对话线也多这一行，3,340
+    assert.ok(work.length < 3700, `the work system prompt is ${work.length} chars`)
     // 对话线 3,200 → 3,300：多了“写的字只有主人在面板上看得到”“在游戏里说话用 say、whisper”“干活线也看不到你写的字”这几句事实（约 80 字），现在约 3,210
     // 3,300 → 3,400：多了一句“也可以派子思维去查、去设计草稿……它交回的话会叫醒你”（约 70 字）
     assert.ok(talk.length < 3400, `the talk system prompt is ${talk.length} chars`)

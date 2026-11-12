@@ -158,10 +158,14 @@ public final class BotConnection extends NetHandlerPlayServer {
         processPlayerBlockPlacement(ClientPackets.placement(x, y, z, side, held, hitX, hitY, hitZ));
     }
 
-    /** Right-clicks with the held item in the air (eat, drink…). */
+    /**
+     * Right-clicks with the held item in the air (eat, drink…), and does the part of it that some mods' items do in
+     * the client (asking the server for their screen, say).
+     */
     public void useItem() {
         ItemStack held = playerEntity.inventory.getCurrentItem();
         processPlayerBlockPlacement(ClientPackets.placement(-1, 255, -1, 255, held, 0, 0, 0));
+        ModClients.usedInAir(this, held);
     }
 
     public void selectHotbar(int slot) {

@@ -322,6 +322,15 @@ public final class BridgeApi {
             }
             return o;
         });
+        bridge.register("bot.keys", p -> {
+            JsonObject o = new JsonObject();
+            o.add("keys", alu.aiplayer.bot.ModClients.keys());
+            return o;
+        });
+        bridge.register(
+            "bot.key",
+            p -> alu.aiplayer.bot.ModClients
+                .press(bots.requireOnline(J.reqStr(p, "bot")), J.reqStr(p, "key"), J.bool(p, "sneak", false)));
         bridge.register("bot.drop", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));
             int n = Inventories.drop(b, J.bool(p, "all", false) ? null : Inventories.filters(J.array(p, "items")));

@@ -15,6 +15,8 @@ import type {
   EntityInfo,
   FindMatch,
   ItemFilter,
+  KeyInfo,
+  KeyPressResult,
   ItemSearchHit,
   MachineInfo,
   PlayerView,
@@ -209,6 +211,14 @@ export class BridgeApi {
   }
   botProbe(bot: string, pos: BlockPos): Promise<ProbeResult> {
     return this.call('bot.probe', { bot, ...pos })
+  }
+  /** 身体按得了的 mod 的键（老的身体没有这个方法：unknown_method）。 */
+  botKeys(): Promise<{ keys?: KeyInfo[] }> {
+    return this.call('bot.keys')
+  }
+  /** 像玩家那样按一下一个 mod 的键；sneak 是按着 Shift。只在没有任务在跑时可用（否则 busy）。 */
+  botKey(bot: string, key: string, sneak?: boolean): Promise<KeyPressResult> {
+    return this.call('bot.key', { bot, key, ...(sneak === true ? { sneak: true } : {}) })
   }
 
   // 任务

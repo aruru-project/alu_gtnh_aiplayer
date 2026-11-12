@@ -29,6 +29,8 @@ import type {
   StockResult,
   Tank,
   TaskInfo,
+  Vec3,
+  WornItem,
 } from '../bridge/protocol.ts'
 import { isRecord } from '../util.ts'
 
@@ -344,6 +346,8 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result, task.params)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
+  } else if (task.type === 'hold') {
+    if (result && typeof result.held === 'number') out.result = holdResultLines(result, task.params)
   }
   return out
 }
@@ -361,7 +365,7 @@ export function formatStatus(status: BotStatus, opts: { itemLimit?: number } = {
   const lines: string[] = []
   const flags: string[] = []
   if (status.inWater) flags.push('in water')
-  if (status.onGround === false) flags.push('not on ground')
+  if (status.onGround === false) flags.push(airText(status.aboveGround, status.motion))
   lines.push(
     `${status.name}: online in ${dimName(status.dim)} at block ${formatPos(status.block ?? status.pos)}` +
       `, health ${status.health ?? '?'}/${status.maxHealth ?? '?'}, food ${status.food ?? '?'}` +
@@ -376,6 +380,7 @@ export function formatStatus(status: BotStatus, opts: { itemLimit?: number } = {
   lines.push(`Inventory (${status.freeSlots ?? '?'} of 36 slots free): ${formatItems(others, opts.itemLimit ?? 40)}`)
   const armor = (status.armor ?? []).filter((a): a is Item => a !== null && a !== undefined)
   if (armor.length > 0) lines.push(`Armor: ${formatItems(armor, 4)}`)
+  for (const w of status.worn ?? []) lines.push(`Worn ${wornText(w)}`)
   lines.push(`Current task: ${status.task ? formatTask(status.task) : 'none'}`)
   const queue = status.queue ?? []
   if (queue.length > 0) lines.push(`Queued tasks: ${queue.map((t) => `${t.id} ${t.type}`).join(', ')}`)
@@ -387,6 +392,59 @@ export function formatStatus(status: BotStatus, opts: { itemLimit?: number } = {
     )
   }
   return lines.join('\n')
+}
+
+/** 一个带小数的位置（飞的时候半格也要紧）。 */
+export function exactPos(p: { x: number; y: number; z: number }): string {
+  const n = (v: number): string => String(Math.round(v * 100) / 100)
+  return `(${n(p.x)}, ${n(p.y)}, ${n(p.z)})`
+}
+
+/** 上一刻往哪动了多少（格/tick，一秒 20 tick）；几乎没动就是 not moving。 */
+export function motionText(m: Vec3 | undefined): string {
+  if (!m) return ''
+  const parts: string[] = []
+  if (Math.abs(m.y) >= 0.005) parts.push(`${m.y > 0 ? 'up' : 'down'} ${Math.abs(m.y)}`)
+  const flat = Math.round(Math.hypot(m.x, m.z) * 100) / 100
+  if (flat >= 0.01) parts.push(`${flat} sideways (x ${m.x}, z ${m.z})`)
+  return parts.length > 0 ? `moving ${parts.join(' and ')} blocks per tick` : 'not moving'
+}
+
+/** 不在地上时：离下面多高、上一刻往哪动了。 */
+export function airText(aboveGround: number | undefined, motion: Vec3 | undefined): string {
+  const height = typeof aboveGround === 'number' ? `${aboveGround} blocks above the ground` : 'nothing below you within 256 blocks (or not loaded)'
+  const moving = motionText(motion)
+  return `in the air, ${height}${moving ? `, ${moving}` : ''}`
+}
+
+/** 一件东西自己存的数据里的单个值（数、字、开关）写成 path=value，最多 max 个；列表只说有几项。 */
+export function dataValues(data: unknown, max: number): string {
+  const out: string[] = []
+  let more = 0
+  const put = (path: string, text: string): void => {
+    if (out.length < max) out.push(`${path}=${text}`)
+    else more++
+  }
+  const walk = (v: unknown, path: string): void => {
+    if (Array.isArray(v)) put(path, `[${v.length} entr${v.length === 1 ? 'y' : 'ies'}]`)
+    else if (isRecord(v)) for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k}` : k)
+    else put(path, typeof v === 'string' ? JSON.stringify(v) : String(v))
+  }
+  walk(data, '')
+  return out.length === 0 ? '' : `${out.join(', ')}${more > 0 ? `, … and ${more} more` : ''}`
+}
+
+export const WORN_VALUES_SHOWN = 16
+
+/** 一件穿在盔甲格以外的东西：在哪、是什么、它的罐、它自己存的数据里的值（键是那个 mod 起的名字，原样）。 */
+export function wornText(w: WornItem): string {
+  const name = nameOf(w)
+  const parts = [`on your ${w.slot}: ${name ? `"${name}" ` : ''}[${itemKey(w)}]`]
+  const tanks = tanksText(w.tanks)
+  if (tanks) parts.push(tanks)
+  const values = dataValues(w.data, WORN_VALUES_SHOWN)
+  if (values) parts.push(`its data: ${values}${w.dataCut === true ? ' (cut short)' : ''}`)
+  return parts.join('; ')
 }
 
 export function formatServerInfo(info: ServerInfo, botName: string, botDim: number | undefined): string {
@@ -1139,6 +1197,43 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   if (typeof freeSlots === 'number') parts.push(`freeSlots ${freeSlots}`)
   if (Object.keys(rest).length > 0) parts.push(`other: ${compactJson(rest, 200)}`)
   return [parts.join('; ')]
+}
+
+export const HOLD_TRACK_SHOWN = 12
+
+/** 为什么松的手（hold 任务结果的 stopped）。 */
+const HOLD_STOPS: Record<string, string> = {
+  ticks: 'the time was up',
+  y: 'your feet reached the height given',
+  above: 'your height above the ground reached the one given',
+  arrived: 'you came within range of the point',
+}
+
+/**
+ * hold 任务的结果：按了哪几个键、多久、为什么松手，现在在哪、离地多高、怎么在动，路上的几个点，穿着的东西的罐。
+ * 做了什么由世界和身上穿的东西决定，这里只报看得见的。
+ */
+export function holdResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
+  const keys = ['jump', 'sneak'].filter((k) => params?.[k] === true)
+  const toward = isRecord(params?.toward) ? params.toward : undefined
+  if (toward) keys.push(`forward toward (${String(toward.x)}, ${String(toward.z)})`)
+  const held = typeof result.held === 'number' ? result.held : 0
+  const why = typeof result.stopped === 'string' ? (HOLD_STOPS[result.stopped] ?? result.stopped) : undefined
+  const lines = [`held ${keys.length > 0 ? keys.join(' + ') : 'no key'} for ${held / 20} s (${held} ticks)${why ? `, let go because ${why}` : ''}${typeof result.distance === 'number' ? ` (${result.distance} blocks from it now)` : ''}`]
+  const at = isRecord(result.pos) ? exactPos(result.pos as unknown as Vec3) : '(?)'
+  const motion = isRecord(result.motion) ? (result.motion as unknown as Vec3) : undefined
+  const above = typeof result.aboveGround === 'number' ? result.aboveGround : undefined
+  lines.push(`now at ${at}: ${result.onGround === true ? `on the ground${motion ? `, ${motionText(motion)}` : ''}` : airText(above, motion)}`)
+  if (isRecord(result.from)) lines.push(`started at ${exactPos(result.from as unknown as Vec3)}; lowest y ${String(result.lowest)}, highest y ${String(result.highest)}`)
+  const track = Array.isArray(result.track) ? result.track.filter(isRecord) : []
+  if (track.length > 1) {
+    const step = Math.max(1, Math.ceil(track.length / HOLD_TRACK_SHOWN))
+    const shown = track.filter((_, n) => n % step === 0 || n === track.length - 1)
+    lines.push(`on the way: ${shown.map((p) => `${Number(p.t) / 20}s ${exactPos(p as unknown as Vec3)}${typeof p.above === 'number' ? ` ${p.above} up` : ''}`).join('; ')}`)
+  }
+  const tanks = Array.isArray(result.tanks) ? result.tanks.filter(isRecord) : []
+  if (tanks.length > 0) lines.push(`tanks of what you wear: ${tanks.map((t) => `${tankText(t as Tank)}${typeof t.was === 'number' ? ` (was ${t.was})` : ''}`).join('; ')}`)
+  return lines
 }
 
 // ── 任务书 ──

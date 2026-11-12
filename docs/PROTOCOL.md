@@ -111,6 +111,7 @@ Container：
 - `key` 可以写全（`fluidAutoOutput:0`），也可以只写冒号前的名字（不重名时）；`panel` 只在重名时需要。
 - 实测：流体提取机 `screen.press {key:"fluidAutoOutput"}` 之后，它罐里的 288 mB 熔融钢几秒内进了隔壁的固化器；固化器 `screen.press {key:"cover_panel_west"}` 之后格子从 40 个变成 49 个，多出来的 9 个就是西面覆盖板里的东西。
 - 这些改的是机器的设置，和玩家点那个按钮是一回事。
+- **只画在 mod 客户端里的按钮**也在 `controls` 里：有的 mod 的界面是原版那种做法，按钮只存在于它的客户端，点了由客户端给服务器发它自己的消息。身体替 bot 做那个客户端的事（见下面“mod 的客户端”），所以这些按钮同样列出来、同样用 `screen.press` 按：`{"key":"equip","kind":"button","label":"Shoulder Copter Pack"}`，`label` 是鼠标移上去时它写的话（英文）。现在有的：探险背包（Adventure Backpack）三样背在背上的东西的界面——从手里打开的有 `equip`（背到背上），从背上打开的有 `unequip`（卸下来）。按了以后界面关上，和客户端点完就关一样；`unequip` 是这个 mod 自己隔 0.2 秒才把东西放回背包。
 
 **一个方块的全部数据**（`world.block` 带 `detail:true` 或 `path`）。不按方块的种类做任何假设：凡是存着东西的方块（里面有什么、怎么设置的、正在干什么），存档时都把自己的全部状态写成一棵树，这里把那棵树原样给出来；会对扫描器“自报家门”的方块再把那几行话给出来。所以没见过的机器、没人为它写过读取代码的状态（输出仓锁定了哪种流体、机器的各种开关、覆盖板的设置……）都在这里。
 
@@ -249,6 +250,9 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
   "heldSlot":0,"held":Item|null,
   "inventory":[{"slot":0,"id":"…","meta":0,"count":1,"name":"…","durability":0.83}],  // slot 0–8 快捷栏，9–35 背包；durability 是剩余比例，仅工具有
   "armor":[Item|null ×4],
+  "worn":[Worn],                   // 穿在盔甲格以外的东西，没有就不带；见下
+  "aboveGround":10.04,             // 脚离下面第一个挡得住人的方块（或液面）多高；站在地上是 0；下面 256 格内什么都没有、或没加载时不带
+  "motion":{"x":0.0,"y":0.18,"z":0.0},   // 上一个 tick 实际移动了多少（格/tick，一秒 20 tick）
   "freeSlots":20,
   "task":TaskInfo|null,"queue":[TaskInfo],
   "settings":{"invulnerable":true,"hunger":false}
@@ -256,6 +260,36 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 ```
 
 离线的 bot 只有 `name uuid online settings task queue`。
+
+Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西放在自己的格子里（探险背包 mod 背上那一格：背包、直升机背包、煤喷气背包，一次一件）。
+
+```jsonc
+{"slot":"back", "id":"adventurebackpack:copterPack","meta":0,"count":1,"name":"Copter Pack",
+ "tanks":[{"fluid":"fuel","name":"Fuel","amount":15806,"capacity":16000}],   // 它画给玩家看的那几个罐（屏幕角上的液位），同 world.block 的 tanks
+ "data":{"wearableData":{"status":2,"fuelTank":{"FluidName":"fuel","Amount":15806},"inventory":[],"tickCounter":1}},  // 它自己存的数据（NBT），原样
+ "dataCut":true}                  // data 里有截掉的部分（最多 5 层、每个列表 12 项、约 3000 字符）时才有
+```
+
+`data` 的键是那个 mod 起的名字，值原样；身体不解释（探险背包的直升机背包：`wearableData.status` 0 关、1 普通、2 悬停，是这个 mod 的代码里的意思）。
+
+### mod 的客户端
+
+有的 mod 让玩家做的事有一半在客户端里：按它加的键、右键它的某些物品、点它界面上画的按钮、按住跳时它做的事。客户端算完，再给服务器发它自己的消息。bot 没有客户端，身体替它做客户端的那一半：照那个 mod 客户端的代码做，发它自己的消息，交给服务器上这个 mod 的处理代码，和真客户端发来的一样。做了什么由那个 mod 决定，身体只报看得见的变化。
+
+现在有的只有探险背包（Adventure Backpack）：
+
+- 它的两个键：`keys.adventureBackpack.openInventory`（打开背上那件的界面；手里拿着背包时打开手里那个；它的界面开着时再按是关上）和 `keys.adventureBackpack.toggleActions`（穿着直升机背包时蹲着按是开关、不蹲按是普通和悬停之间切换；煤喷气背包蹲着按是开关；背包不蹲按是工具循环的开关、蹲着按是夜视的开关；手里拿着软管时换它接的罐）。
+- 右键它的三样东西（在空中）：客户端向服务器要这件东西的界面。`screen.open {item}`、`use` 任务、`deposit`/`withdraw` 的随身包都走这条路，所以这三样从手里能打开界面，背包能当随身的包用。
+- 界面上的 `equip` / `unequip` 按钮（见上面“界面上的控件”）。
+- 按住跳：直升机背包开着、有油时把人往上提（它客户端里的 `elevate`，紧接在这个 mod 自己每 tick 的悬停、慢落之后）；煤喷气背包开着、有蒸汽时告诉服务器“正按着跳”，往上推的是它服务器这边的代码。按住跳是 `hold` 任务。
+- 它的客户端打印的几句话（`CopterPack: Normal Mode.` 这类，配置 Chat Spam 开着时）当成 bot 收到的消息：进 `bot.message` 事件，也在 `bot.key` 的 `said` 里。
+
+| 方法 | 参数 | 结果 |
+|---|---|---|
+| `bot.keys` | – | `{keys:[{key, name, category}]}`：身体按得了的键。`key` 是游戏自己给这个键起的名字，`name`、`category` 是游戏“控制”设置里它的名字和分组（英文） |
+| `bot.key` | `{bot, key, sneak?=false}` | 像玩家那样按一下这个键；`sneak` 是按着 Shift 按。结果 `{key, screen?, changed?, said?}`：`screen` 是按完以后开着的界面（同 `screen.look`；按之前开着、按完关了的，是 `{open:false}`），`changed` 是穿着的东西自己存的数据里变了的值 `[{slot, key, was?, now?}]`（`key` 是 `data` 里的路径，空串是那件东西本身换了；最多 30 个），`said` 是这一下让游戏对它说的话。什么都没变时只有 `key`。只在没有任务在跑时可用（否则 `busy`：一个键可能打开界面）；没有这个键是 `bad_request`，消息里列出有哪些 |
+
+实测（测试服）：直升机背包 16 个柴油单元灌满 16000 mB；蹲着按 toggleActions `status` 0 → 1、说 `CopterPack: Normal Mode.`，再按（不蹲）1 → 2、`Hover Mode.`；悬停时 `hold {jump:true, y:104}` 56 tick 从 y 94 升到 104.04 并停在那里；`hold {toward}` 向西 29 格（最快 0.7 格/tick），松手后又滑了 7.7 格；`hold {sneak:true, y:86}` 61 tick 落地；蹲着按 toggleActions 关机。按住跳时不做客户端的那一半（把身体里的 `elevate` 去掉），同样的 `hold {jump:true}` 100 tick 一格也没升。
 
 **设置**：`invulnerable`（默认开）不受伤害，怪物也不把它当目标；`hunger`（默认关）关着时饱食度不下降。
 进食用 `use` 任务（把食物拿在手里右键）；打开 `hunger` 后没人让它吃它就会饿死。
@@ -345,14 +379,14 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
+| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
 | `screen.press` | `{bot, key, panel?, button?=0, shift?=false}` | 按一下界面上格子以外的东西（见下面“界面上的控件”）：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格照鼠标上拿着的容器装或倒（`button` 0 左键、1 右键）。结果同 `screen.look`。界面没有这个控件、或者它只是显示用的，照实拒绝 |
 | `screen.set` | `{bot, key, panel?, value}` | 把一个开关、数字、文字或选项设成 `value`。只读的控件 `denied` |
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
 
-Slot：`{slot, own?, item?:Item, takesNothing?, ghost?, index?, role?}`。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
+Slot：`{slot, own?, item?:Item, takesNothing?, takes?, ghost?, index?, role?}`。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`takes:[{id,meta,name}]` 是只收某些东西的空格子（燃料格、只收装流体的单元和桶的格子、工具格）收 bot 身上的哪几种（最多 8 种，可能一种都没有）；圆石、bot 身上的东西、几样代表（煤、空桶、水桶、铁镐、空单元）都不收的才算 `takesNothing`；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
 
 常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 
@@ -495,6 +529,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?, index?, role?}`。GregTe
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180, leave?=false}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
 | `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
+| `hold` | `{ticks(1–1200), jump?, sneak?, toward?:{x,z}, range?=1, y?, above?}` | 按住几个键一段时间，像玩家那样：`jump` 跳（空格）、`sneak` 潜行（Shift）、`toward` 朝那一列方块的中心按住前进（边走边转向它）。不找路、不挖不放，前面有什么就撞上什么。按了会怎样由世界和身上穿的东西决定（穿着开着的直升机背包，按住跳是往上升、按住潜行是往下降）。到 `ticks`、脚到 `y`（从下往上升到它，或从上往下降到它）、离地高度到 `above`（同样两个方向；0 是落地）、或者离 `toward` 水平不到 `range` 格时松手结束。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
 规则和边界：
@@ -573,6 +608,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, ghost?, index?, role?}`。GregTe
   为了够到高处垫的方块，任务结束前会拆掉；够不着拆的个数在 `climbingBlocksLeftStanding`。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。
+- `hold`：`{held, stopped, from, pos, block, onGround, aboveGround?, motion, lowest, highest, distance?, track, tanks?}`。`held` 是按了几个 tick；`stopped` 是为什么松手（`ticks` 时间到、`y` 到了那个高度、`above` 离地到了那个高度、`arrived` 到了 `toward` 的 `range` 以内）；`from`、`pos` 是开始和现在的位置（小数）；`aboveGround`、`motion` 同 `BotStatus`（松手那一刻还在动的，之后还会接着滑一段）；`lowest`、`highest` 是脚的最低、最高；`distance` 是现在离 `toward` 多远；`track` 是路上最多约 30 个点 `[{t, x,y,z, above?}]`（`t` 是第几个 tick）；`tanks` 是穿着的东西的罐 `[{slot, fluid?, name?, amount, capacity, was}]`（`was` 是开始时的量）。
 
 ## 事件
 

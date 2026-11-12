@@ -419,6 +419,8 @@ interface ProviderConfig {
   "inventory": [ { "slot": 0, "item": { "id": "TConstruct:pickaxe", "meta": 0, "count": 1, "name": "钢镐", "en": "Steel Pickaxe",
                                          "durability": 0.83, "look": { "icon": 13038 } } } ],   // slot 0–8 快捷栏，9–35 背包
   "armor": [ null, null, null, { "id": "minecraft:iron_helmet", "name": "铁头盔", "look": { "icon": 314 } } ],   // 0 靴子 … 3 头盔
+  "worn": [ { "slot": "back", "item": { "id": "adventurebackpack:copterPack", "name": "直升机背包", "look": { } },
+              "tanks": [ { "fluid": "fuel", "name": "Fuel", "amount": 15885, "capacity": 16000 } ] } ],   // 穿在盔甲格以外的（身体的 worn），没有是空数组
   "screen": { "name": "ContainerChisel", "slotCount": 97, "cursor": null,
               "slots": [ { "slot": 0, "takesNothing": true, "item": { } }, { "slot": 62, "own": true, "item": { } } ],
               "controls": [ { "panel": "basicmachine.…", "key": "fluidAutoOutput:0", "name": "fluidAutoOutput", "kind": "switch", "value": false },

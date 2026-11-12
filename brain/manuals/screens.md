@@ -10,7 +10,7 @@
    - 配方里没列的东西要你自己加进 inputs：**熔炉要燃料**（木炭、煤，1 个烧 8 个东西），有的机器要催化剂。
    - 失败说 nothing inside it changed（10 秒里面什么都没变）：它没开工，原料已经回到你身上。多半是缺燃料、没电、没蒸汽，或者这些原料不是它的配方。
 2. **不行就打开界面自己看。** 走到它旁边，open_screen 给它的坐标。结果分两段：
-   - Its slots：它自己的格子。标着 OUTPUT 的是产物格（放不进东西）；标着 display only 的只是显示（编程电路的设置），里面没有真东西；别的是能放东西的格子（原料、燃料、模具）。
+   - Its slots：它自己的格子。标着 OUTPUT 的是产物格（放不进东西）；标着 display only 的只是显示（编程电路的设置），里面没有真东西；标着 takes only some things 的只收某些东西（燃料格、装流体的单元和桶的格子），后面写着你身上的东西里它收哪几种；别的是能放东西的格子（原料、燃料、模具）。
    - Your own inventory：你背包里有东西的格子。
    - 每格前面的 slot 编号就是 click_slot 要的。
    - Its controls besides slots：界面上格子以外的东西（开关、选项、页签、流体格、按钮），见下面“界面上格子以外的东西”。这一段没有，就是这个界面没有列得出来的控件。
@@ -27,6 +27,7 @@
 - 机器的界面上除了格子，还有开关、数字、文字、选项、能再打开的面板（页签）、流体格、按钮。open_screen（和每次点完、按完回来的界面）把它们列在 Its controls besides slots 下面：名字、种类、现在的值，按所在的面板分开。
 - **名字是这个界面自己起的**（fluidAutoOutput、itemAutoOutput、powerSwitch、cover_panel_west、ghostCircuitPanel、sideSelection_……），身体和这本手册都不知道每一个是干什么的：看名字、看它现在的值、按一下看界面变成什么样，是你自己读懂它的办法。
 - 标着 display only 的只是显示，不收改动；shown value 也只是显示。
+- 有的 mod 的按钮只画在它自己的客户端里（探险背包那几样东西界面上的 equip / unequip：背到背上、卸下来）。身体照那个 mod 的客户端按下它时做的事去做，所以它们也列成 `[button]`，后面是鼠标移上去时它写的话。按完界面可能就关了，结果里接着写你现在背上穿着什么。
 - use_control 按或者设一个控件，给它的名字（key）：
   - 不给 value 是按一下，和玩家点它是一回事：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格见下一条。right: true 是右键，shift: true 是按着 Shift。
   - 给 value 是设成那个值：开关 true / false，数字，文字，选项里的一个。
@@ -63,6 +64,7 @@
 # 界面还能干什么
 - 别的 mod 的工作台、要摆格子的机器：一格格点进去。原版和匠魂的 3×3 合成用 craft_item 更省事。
 - 身上的东西的界面（背包）：open_screen 给 item。往包里存取东西用 deposit_items / withdraw_items 的 bag 更省事。
+- 背在背上的东西的界面（直升机背包、探险背包）：press_key 按那个 mod 的键打开，见 wear 手册。
 - 例程里也能调这几个工具（open_screen、click_slot、use_control、close_screen）：同样的点法要重复很多遍时写成例程。程序里 r.data.controls 是全部控件 [{ panel, key, kind, value / open / fluid、amount…, readOnly? }]。
 
 # 要小心的

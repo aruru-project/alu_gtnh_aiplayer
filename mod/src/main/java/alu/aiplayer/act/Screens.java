@@ -145,7 +145,14 @@ public final class Screens {
                     if (role != null) j.addProperty("role", role);
                 }
                 if (ContainerSession.isGhostSlot(s)) j.addProperty("ghost", true);
-                else if (ContainerSession.slotTakesNothing(s, shown != null ? shown : probe)) j.addProperty("takesNothing", true);
+                else if (ContainerSession.slotTakesNothing(s, shown != null ? shown : probe)) {
+                    // A slot for some things only (fuel, fluid containers, tools) is told from one that takes nothing
+                    // by what the bot carries, and by a few things of those kinds: the kinds of what the bot carries
+                    // that it would take are listed (maybe none).
+                    JsonArray takes = shown != null ? new JsonArray() : carriedThatFit(p, s);
+                    if (takes.size() > 0 || (shown == null && takesSomeKind(s))) j.add("takes", takes);
+                    else j.addProperty("takesNothing", true);
+                }
             }
             // Empty slots of the bot's own inventory say nothing anyone needs; leave them out.
             if (own && shown == null) continue;
@@ -153,12 +160,56 @@ public final class Screens {
         }
         o.add("slots", slots);
         o.addProperty("slotCount", c.inventorySlots.size());
-        // What the screen has besides slots: switches, choices, further panels, fluid slots, buttons.
+        // What the screen has besides slots: switches, choices, further panels, fluid slots, buttons; and the buttons
+        // only a mod's client draws on it.
         JsonArray controls = Controls.list(c);
+        for (com.google.gson.JsonElement e : alu.aiplayer.bot.ModClients.controls(c)) controls.add(e);
         if (controls.size() > 0) o.add("controls", controls);
         ItemStack held = p.inventory.getItemStack();
         if (held != null) o.add("cursor", Names.describe(held));
         return o;
+    }
+
+    /** One thing of each kind a slot may be kept for: fuel, a fluid container empty and full, a tool. */
+    private static ItemStack[] kindProbes;
+
+    private static boolean takesSomeKind(Slot s) {
+        if (kindProbes == null) {
+            java.util.List<ItemStack> probes = new java.util.ArrayList<>();
+            probes.add(new ItemStack(net.minecraft.init.Items.coal));
+            probes.add(new ItemStack(net.minecraft.init.Items.bucket));
+            probes.add(new ItemStack(net.minecraft.init.Items.water_bucket));
+            probes.add(new ItemStack(net.minecraft.init.Items.iron_pickaxe));
+            net.minecraft.item.Item cell = Names.item("IC2:itemCellEmpty");
+            if (cell != null) probes.add(new ItemStack(cell));
+            kindProbes = probes.toArray(new ItemStack[0]);
+        }
+        for (ItemStack probe : kindProbes) {
+            try {
+                if (s.isItemValid(probe)) return true;
+            } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
+    /** The kinds of thing the bot carries that a slot would take: [{id, meta, name}], at most 8. */
+    private static JsonArray carriedThatFit(EntityPlayerMP p, Slot s) {
+        JsonArray out = new JsonArray();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < Inventories.CARRY_SLOTS && out.size() < 8; i++) {
+            ItemStack carried = p.inventory.mainInventory[i];
+            if (carried == null || !seen.add(Names.itemId(carried.getItem()) + "/" + carried.getItemDamage())) continue;
+            try {
+                if (!s.isItemValid(carried)) continue;
+            } catch (Throwable t) {
+                continue;
+            }
+            JsonObject item = Names.describe(carried);
+            item.remove("count");
+            item.remove("durability");
+            out.add(item);
+        }
+        return out;
     }
 
     /**
@@ -182,11 +233,16 @@ public final class Screens {
         return look(bot);
     }
 
-    /** Works one of the screen's controls as a click does; see {@link Controls#press}. */
+    /**
+     * Works one of the screen's controls as a click does; see {@link Controls#press}. A button only a mod's client
+     * draws does what its click does in that client, which may close the screen.
+     */
     public static JsonObject press(Bot bot, String panel, String key, int button, boolean shift) {
         Container c = open(bot);
-        Controls.press(c, panel, key, button, shift);
-        c.detectAndSendChanges();
+        if (!alu.aiplayer.bot.ModClients.pressControl(bot, c, key)) {
+            Controls.press(c, panel, key, button, shift);
+            c.detectAndSendChanges();
+        }
         changed(bot);
         return look(bot);
     }

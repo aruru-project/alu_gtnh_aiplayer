@@ -53,6 +53,8 @@ export interface MockBot {
   queue: MockTask[]
   /** 最近结束的，新的在前。 */
   recent: MockTask[]
+  /** 背在背上的东西（探险背包 mod 的那一格）：测试里放上去。data 照真的身体给的原样（直升机背包的 wearableData.status 0 关、1 普通、2 悬停）。 */
+  worn?: { slot: string; id: string; meta: number; count: number; name: string; tanks?: MockTank[]; data?: Json }[]
 }
 
 export interface MockContainer {
@@ -270,7 +272,13 @@ class RpcError extends Error {
   }
 }
 
-const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'blueprint', 'craft', 'process', 'use', 'wait'])
+const TASK_TYPES = new Set(['goto', 'goto_player', 'follow', 'home', 'dig', 'place', 'clear', 'fill', 'flatten', 'deposit', 'withdraw', 'haul', 'collect', 'give', 'blueprint', 'craft', 'process', 'use', 'hold', 'wait'])
+
+/** 真实 mod 在装了探险背包的服务器上报的键（bot.keys）。 */
+export const MOCK_KEYS = [
+  { key: 'keys.adventureBackpack.openInventory', name: 'Open Inventory', category: 'Adventure Backpack' },
+  { key: 'keys.adventureBackpack.toggleActions', name: 'Toggle Actions', category: 'Adventure Backpack' },
+]
 
 /** 真实 mod 默认的 allowedCommands。一项可以是几个词：team join 只放行 team join …。 */
 const ALLOWED_COMMANDS = ['home', 'sethome', 'delhome', 'homes', 'spawn', 'back', 'tell', 'msg', 'w', 'tpa', 'tpaccept', 'team join']
@@ -792,8 +800,29 @@ export class MockBridge {
       held: bot.inventory.find((i) => i.slot === 0) ?? null,
       inventory: bot.inventory,
       armor: [null, null, null, null],
+      ...(bot.worn && bot.worn.length > 0 ? { worn: bot.worn } : {}),
+      aboveGround: 0,
+      motion: { x: 0, y: -0.08, z: 0 },
       freeSlots: 36 - bot.inventory.length,
     }
+  }
+
+  /**
+   * 按一下 mod 的键（bot.key）：照真的身体，有任务在跑是 busy、没有这个键是 bad_request；
+   * 穿着直升机背包时 toggleActions 蹲着按是开关、不蹲按是普通和悬停之间切换，结果里是数据里变了的值和游戏说的话。别的情况什么都不变。
+   */
+  private pressKey(bot: MockBot, p: Json): Json {
+    if (bot.task) throw new RpcError('busy', 'a task is running; keys are pressed when the bot is idle')
+    const key = String(p.key ?? '')
+    if (!MOCK_KEYS.some((k) => k.key === key)) throw new RpcError('bad_request', `no such key: ${key}; the keys are ${JSON.stringify(MOCK_KEYS)}`)
+    const copter = bot.worn?.find((w) => w.id === 'adventurebackpack:copterPack')
+    const data = copter?.data?.wearableData as Json | undefined
+    if (key !== 'keys.adventureBackpack.toggleActions' || !data) return { key }
+    const was = Number(data.status ?? 0)
+    const now = p.sneak === true ? (was === 0 ? 1 : 0) : was === 0 ? 0 : was === 1 ? 2 : 1
+    if (now === was) return { key }
+    data.status = now
+    return { key, changed: [{ slot: copter!.slot, key: 'wearableData.status', was: String(was), now: String(now) }], said: [`CopterPack: ${['Off', 'Normal Mode', 'Hover Mode'][now]}.`] }
   }
 
   /** 假世界里某一格是什么：y=64 是草地，往下是石头，往上是空气；blueprint 任务动过的格子以动过的为准。 */
@@ -1375,6 +1404,10 @@ export class MockBridge {
       case 'bot.drop':
         this.onlineBot(p.bot)
         return { dropped: 0 }
+      case 'bot.keys':
+        return { keys: MOCK_KEYS }
+      case 'bot.key':
+        return this.pressKey(this.onlineBot(p.bot), p)
       case 'bot.probe': {
         const bot = this.onlineBot(p.bot)
         const block = this.blockAt(this.num(p, 'x'), this.num(p, 'y'), this.num(p, 'z'))
@@ -1505,6 +1538,9 @@ export class MockBridge {
       if (item === undefined && positions(spec.on).length === 0) throw new RpcError('bad_request', 'an empty hand needs a block to click: give on')
       if (spec.side !== undefined && !['down', 'up', 'north', 'south', 'west', 'east'].includes(String(spec.side))) throw new RpcError('bad_request', 'side must be one of down, up, north, south, west, east')
       if (spec.times !== undefined && (typeof spec.times !== 'number' || spec.times < 1 || spec.times > 64)) throw new RpcError('bad_request', 'times must be 1 to 64')
+    }
+    if (type === 'hold' && (typeof spec.ticks !== 'number' || spec.ticks < 1 || spec.ticks > 1200)) {
+      throw new RpcError('bad_request', 'ticks is how long to hold the keys: 1 to 1200 (20 make a second)')
     }
     if ((type === 'deposit' || type === 'withdraw') && (spec.container as Json | undefined)?.item !== undefined) {
       // 随身的包当容器：{item:{id, meta?}}；往里放必须列出放什么
@@ -2782,6 +2818,11 @@ export function sampleResult(task: MockTask): Json {
       return { block: { x: Number(p.x ?? 0), y: Number(p.y ?? 64), z: Number(p.z ?? 0) } }
     case 'home':
       return { dim: 0, block: { x: 0, y: 64, z: 0 } }
+    case 'hold': {
+      // 假世界里按键不让它动：在原地站满时间（真的身体在这里照世界和背上的东西动）
+      const here = { x: 10.5, y: 64, z: -3.5 }
+      return { held: Number(p.ticks ?? 0), stopped: 'ticks', from: here, pos: here, block: { x: 10, y: 64, z: -4 }, onGround: true, aboveGround: 0, motion: { x: 0, y: 0, z: 0 }, lowest: 64, highest: 64, track: [{ ...here, t: 0, above: 0 }] }
+    }
     default:
       return {}
   }

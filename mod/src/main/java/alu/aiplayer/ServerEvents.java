@@ -38,6 +38,19 @@ public final class ServerEvents {
         bots.tick();
     }
 
+    /**
+     * Inside each bot's own tick, after the mods' handlers of that tick (they run at the normal priority): what the
+     * client parts of those mods would do now (see ModClients), such as lifting a player who holds jump.
+     */
+    @SubscribeEvent(priority = EventPriority.LOW)
+    public void onPlayerTick(TickEvent.PlayerTickEvent event) {
+        if (event.phase != TickEvent.Phase.START || event.side != cpw.mods.fml.relauncher.Side.SERVER) return;
+        Bot bot = bots.botOf(event.player);
+        if (bot != null && bot.player() == event.player) {
+            alu.aiplayer.bot.ModClients.tick(bot, (net.minecraft.entity.player.EntityPlayerMP) event.player);
+        }
+    }
+
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onChat(ServerChatEvent event) {
         if (event.player == null) return;

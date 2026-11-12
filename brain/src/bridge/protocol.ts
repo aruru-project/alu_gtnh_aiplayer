@@ -102,10 +102,46 @@ export interface BotStatus {
   held?: Item | null
   inventory?: InventoryItem[]
   armor?: (Item | null)[]
+  /** 穿在盔甲格以外的地方的东西（探险背包 mod 的背上那一格），没有就不带。 */
+  worn?: WornItem[]
+  /** 脚离下面第一个挡得住人的方块（或液面）多高；站在地上是 0，下面 256 格内什么都没有、或者没加载时不带。 */
+  aboveGround?: number
+  /** 上一个 tick 实际移动了多少（格，一秒 20 tick）：站着、悬停时是 0。 */
+  motion?: Vec3
   freeSlots?: number
   task?: TaskInfo | null
   queue?: TaskInfo[]
   settings?: Record<string, unknown>
+}
+
+/** 穿在盔甲格以外的一件东西：在哪（slot，如 "back"）、是什么、它给玩家看的罐（油量这类）、它自己存的数据（原样）。 */
+export interface WornItem extends Item {
+  slot: string
+  tanks?: Tank[]
+  /** 这件东西自己存的数据（NBT），键是那个 mod 起的名字，值原样；太长的地方截了时带 dataCut。 */
+  data?: unknown
+  dataCut?: boolean
+}
+
+/** bot.keys 的一项：一个 mod 加的、按下去会传到服务器的键。key 是游戏自己给这个键起的名字。 */
+export interface KeyInfo {
+  key: string
+  /** 游戏的“控制”设置里它叫什么（英文）。 */
+  name?: string
+  /** 它在“控制”设置里属于哪一组（哪个 mod）。 */
+  category?: string
+}
+
+/**
+ * bot.key 的结果：按下以后看得出的变化。screen：按完之后开着的界面（或者按之前开着、按完关了的那个），
+ * changed：穿着的东西自己存的数据里变了的值（key 是 slot 之下的路径；key 为空串是那件东西本身换了），
+ * said：这一下让游戏对它说的话（那个 mod 在客户端打印的也算）。什么都没变时只有 key。
+ */
+export interface KeyPressResult {
+  key: string
+  screen?: ScreenState
+  changed?: { slot: string; key: string; was?: string; now?: string }[]
+  said?: string[]
 }
 
 export interface PlayerInfo {
@@ -443,6 +479,8 @@ export interface ScreenSlot {
   item?: Item
   /** 放不进东西的格子：机器出产物的地方。 */
   takesNothing?: boolean
+  /** 只收某些东西的空格子（燃料格、装流体的格子、工具格）：bot 身上的东西里它收的那几种（可能一种都没有）。 */
+  takes?: { id: string; meta?: number; name?: string }[]
   /** 只显示、里面没有真东西的格子（编程电路的设置）。 */
   ghost?: boolean
   /** GregTech 机器、总线的界面：这一格在机器自己的格子里是第几个。 */
@@ -480,6 +518,8 @@ export interface ScreenControl {
   /** value / other：它在界面里是哪一类东西。 */
   type?: string
   unreadable?: boolean
+  /** 只在 mod 的客户端里画出来的按钮：鼠标移上去时它写着什么（英文）。 */
+  label?: string
 }
 
 /** screen.open / look / click / press / set 的结果：做完之后界面的样子。有的界面点开后过一小会儿才出现，那时 open 是 false。 */

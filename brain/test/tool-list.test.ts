@@ -95,6 +95,7 @@ const ACTING = [
   'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks', 'build_blueprint',
   'start_routine', 'routine_status', 'stop_routine', 'publish_draft', 'delete_draft',
   'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'use_control', 'close_screen',
+  'press_key', 'hold_keys',
   'craft_item', 'process_items', 'cancel_task',
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
@@ -242,7 +243,10 @@ describe('模型拿到的工具清单', () => {
   //           对话线派一部分心思出去查、去设计，它另起一份上下文、想完了叫醒对话线；说明里写着它带去的只有记忆和基地的做法（背景要写进任务）、
   //           最多 3 个同时在想、结果怎么回来。不能做成库函数：派出去、停掉都是对话线自己的决定，参数要它看得见。干活线没变。
   //           子思维自己的清单是对话线只查不改的那一部分（HELPER_TOOLS，不能看图时 19,695），不在这两条线的数里。
-  for (const [line, ceiling] of [['work', 54_800], ['talk', 29_000]] as const) {
+  //   玩家的键盘之后（意见簿 f22，直升机背包）：干活线实际 56,260、上限 54,800 → 56,400（+1,600）。多的是 press_key（534：按一下 mod 加的键，
+  //           打开背上穿的东西的界面、开关它）和 hold_keys（1,334：按住跳、潜行、朝一点前进一段时间，到某个高度、离地多高、离那个点多近时松手；飞起来、悬停、降落靠它）。这是玩家的键盘，
+  //           不是哪一件东西的专用工具，按了会怎样由 mod 决定；做成库函数的话模型看不到它们的参数，也不知道有这回事。对话线没变。
+  for (const [line, ceiling] of [['work', 56_400], ['talk', 29_000]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -349,7 +353,8 @@ describe('库函数：不在清单里，在程序里调', () => {
     const blind = (await modelCalls(setup(t, { vision: false }), 'fly_to_the_moon')).content
     assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image|\bsay\b|whisper/)
-    assert.ok(blind.length < 1100, `${blind.length} characters`)
+    // 1100 → 1150：干活线多了 press_key、hold_keys 两个名字（实际 1,109）
+    assert.ok(blind.length < 1150, `${blind.length} characters`)
     for (const old of OLD_NAMES) assert.equal(blind.includes(old), false, old)
 
     const seeing = (await modelCalls(setup(t, { vision: true }), 'fly_to_the_moon')).content

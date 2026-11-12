@@ -1520,7 +1520,7 @@ describe('面板：“现在”页的数据（游戏里的它）', () => {
     return { icons, dir: dir.dir }
   }
 
-  it('身上的东西：每一格是什么、多少个、耐久，名字用本地物品表的中文名（身体给的英文名留着备查），盔甲和手持的那一格', async (t) => {
+  it('身上的东西：每一格是什么、多少个、耐久，名字用本地物品表的中文名（身体给的英文名留着备查），盔甲、背上那一格和手持的那一格', async (t) => {
     const s = await setup(t)
     await s.login()
     useLocalNames(new ItemTable([{ id: 'minecraft:dirt', meta: 0, name: '泥土', en: 'Dirt' }]))
@@ -1533,6 +1533,7 @@ describe('面板：“现在”页的数据（游戏里的它）', () => {
         { slot: 9, id: 'minecraft:dirt', meta: 0, count: 64, name: 'Dirt' },
       ],
       armor: [null, null, null, { id: 'minecraft:iron_helmet', meta: 0, count: 1, name: 'Iron Helmet', durability: 0.5 }],
+      worn: [{ slot: 'back', id: 'adventurebackpack:copterPack', meta: 0, count: 1, name: 'Copter Pack', tanks: [{ fluid: 'fuel', name: 'Fuel', amount: 15806, capacity: 16000 }], data: { wearableData: { status: 2 } } }],
     })
     const live = (await s.call('GET', '/api/live')).json
     assert.deepEqual([live.connected, live.online, live.name, live.health, live.maxHealth, live.food, live.xpLevel, live.heldSlot, live.freeSlots, live.yaw], [true, true, 'Alu', 17, 20, 15, 7, 1, 34, 90])
@@ -1545,6 +1546,8 @@ describe('面板：“现在”页的数据（游戏里的它）', () => {
     assert.deepEqual([bySlot[1].name, bySlot[1].en, bySlot[1].durability], ['Steel Pickaxe', undefined, 0.83])
     // 盔甲四格照身体的顺序（3 是头盔）
     assert.deepEqual(live.armor.map((a: { name: string } | null) => a?.name ?? null), [null, null, null, 'Iron Helmet'])
+    // 背上那一格（探险背包 mod 的）：哪一格、是什么、罐里多少
+    assert.deepEqual(live.worn.map((w: { slot: string; item: { id: string; name: string }; tanks: { amount: number }[] }) => [w.slot, w.item.id, w.item.name, w.tanks[0]!.amount]), [['back', 'adventurebackpack:copterPack', 'Copter Pack', 15806]])
   })
 
   it('图标怎么画：图集里有它就指到第几个；没有图集时，方块用方块贴图或它的颜色，别的东西给一个由 id 定的颜色（标明不是真实的）', async (t) => {

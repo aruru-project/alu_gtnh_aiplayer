@@ -6,7 +6,7 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { Item, ScreenControl, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
-import { compactJson, fluidName, itemKey, nameOf } from './format.ts'
+import { compactJson, fluidName, itemKey, nameOf, wornText } from './format.ts'
 import { bool, int, num, obj, pos, str } from './schema.ts'
 import { USE_SIDES } from './tasks.ts'
 import { fail } from './types.ts'
@@ -38,7 +38,7 @@ function controlLine(c: ScreenControl): string {
     case 'text':
       return `- ${c.key} [${c.kind}${fixed}]: ${shown(c.value)}`
     case 'button':
-      return `- ${c.key} [button]`
+      return `- ${c.key} [button]${c.label ? `: "${c.label}"` : ''}`
     case 'circuit':
       return `- ${c.key} [programmed circuit]: ${c.value === 0 ? 'none' : shown(c.value)}; use_control with value 0 (none) or 1–24 picks one, as clicking a number in its window does`
     case 'value':
@@ -134,7 +134,9 @@ export function formatScreen(state: ScreenState): string {
         ? ' (display only: nothing real in it, e.g. a programmed-circuit setting)'
         : s.takesNothing === true
           ? ' (OUTPUT: products appear here, nothing can be put in)'
-          : ''
+          : s.takes !== undefined
+            ? ` (takes only some things; of what you carry: ${s.takes.length > 0 ? s.takes.map((t) => `${nameOf(t) ?? t.id} [${itemKey(t)}]`).join(', ') : 'none'})`
+            : ''
   const controls = state.controls ?? []
   if (theirs.length === 0) lines.push(controls.length > 0 ? 'It has no slots of its own.' : 'It has no slots of its own, and lists no other controls (a screen whose buttons are not listed cannot be pressed from here).')
   else {
@@ -254,13 +256,27 @@ export const useControl: Tool = {
         const value = text === 'true' ? true : text === 'false' ? false : /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : text
         return await act(() => ctx.bridge.screenSet(ctx.botName, { ...which, value }))
       }
-      return await act(() => ctx.bridge.screenPress(ctx.botName, { ...which, ...(i.right === true ? { button: 1 } : {}), ...(i.shift === true ? { shift: true } : {}) }))
+      const pressed = await act(() => ctx.bridge.screenPress(ctx.botName, { ...which, ...(i.right === true ? { button: 1 } : {}), ...(i.shift === true ? { shift: true } : {}) }))
+      return typeof pressed !== 'string' && pressed.isError !== true && (pressed.data as ScreenState | undefined)?.open !== true ? closedBy(ctx, pressed) : pressed
     } catch (e) {
       const told = controlRefusal(e)
       if (told) return told
       throw e
     }
   },
+}
+
+/** 有的按钮一按就关上界面（把拿着的背包穿到背上、从背上卸下来）。等那个 mod 做完（卸背包它自己要等 0.2 秒），说身上现在穿着什么。 */
+export const AFTER_CLOSE_MS = 500
+
+async function closedBy(ctx: ToolContext, pressed: ToolResult): Promise<ToolResult> {
+  await new Promise((resolve) => setTimeout(resolve, AFTER_CLOSE_MS))
+  const status = await ctx.bridge.botStatus(ctx.botName)
+  const worn = (status.worn ?? []).map((w) => `- ${wornText(w)}`)
+  return {
+    ...pressed,
+    content: [`Pressed; the screen closed with it. What you wear outside the armor slots now:`, ...(worn.length > 0 ? worn : ['- nothing']), `Your inventory has ${status.freeSlots ?? '?'} free slots (get_status lists it).`].join('\n'),
+  }
 }
 
 export const closeScreen: Tool = {

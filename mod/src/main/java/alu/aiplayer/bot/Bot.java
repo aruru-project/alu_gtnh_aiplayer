@@ -224,9 +224,19 @@ public final class Bot implements BotConnection.Listener {
         if (spam > SPAM_ROOM_FOR_COMMAND) {
             throw RpcException.denied("too many chat lines and commands in a short time; try again in a few seconds");
         }
-        long mark = heardSeq;
+        long mark = heardMark();
         if (!conn.sendCommand(command)) throw RpcException.badRequest("the command is too long for a chat line");
         spam += SPAM_PER_LINE;
+        return heardSince(mark);
+    }
+
+    /** A mark in what this bot has been told, for {@link #heardSince}. */
+    public long heardMark() {
+        return heardSeq;
+    }
+
+    /** The lines the server and mods told this bot since the mark: what doing something made the game say. */
+    public List<String> heardSince(long mark) {
         List<String> out = new ArrayList<>();
         for (Heard h : heard) if (h.seq > mark) out.add(h.text);
         return out;
@@ -453,7 +463,42 @@ public final class Bot implements BotConnection.Listener {
         JsonArray armor = new JsonArray();
         for (ItemStack s : p.inventory.armorInventory) armor.add(s == null ? JsonNull.INSTANCE : Names.describe(s));
         o.add("armor", armor);
+        // Worn somewhere other mods keep, outside the armor slots (a pack on the back), with the tanks it shows.
+        JsonArray worn = ModClients.worn(p);
+        if (worn.size() > 0) o.add("worn", worn);
+        double above = aboveGround(p);
+        if (above >= 0) o.addProperty("aboveGround", J.round(above));
+        o.add("motion", moved(p));
         return o;
+    }
+
+    /**
+     * How far the player moved in its last tick, in blocks: what a player sees of its own speed. (The game's motion
+     * vector is not that: it holds this tick's gravity even while something keeps the player hovering in place.)
+     */
+    public static JsonObject moved(EntityPlayerMP p) {
+        return J.pos(p.posX - p.prevPosX, p.posY - p.prevPosY, p.posZ - p.prevPosZ);
+    }
+
+    /**
+     * How far the feet are above what is under them: the first block below that stops a fall, or a liquid's surface,
+     * in the column the player stands in. 0 standing on the ground; -1 when nothing is there within 256 blocks or that
+     * part of the world is not loaded.
+     */
+    public static double aboveGround(EntityPlayerMP p) {
+        if (p.onGround) return 0;
+        net.minecraft.world.World w = p.worldObj;
+        int x = MathHelper.floor_double(p.posX), z = MathHelper.floor_double(p.posZ);
+        int top = MathHelper.floor_double(p.posY);
+        for (int y = top; y >= Math.max(0, top - 256); y--) {
+            if (!w.blockExists(x, y, z)) return -1;
+            net.minecraft.block.Block b = w.getBlock(x, y, z);
+            if (b.getMaterial()
+                .isLiquid()) return Math.max(0, p.posY - (y + 1));
+            net.minecraft.util.AxisAlignedBB box = b.getCollisionBoundingBoxFromPool(w, x, y, z);
+            if (box != null && box.maxY <= p.posY + 1.0e-6) return p.posY - box.maxY;
+        }
+        return -1;
     }
 
     public int blockX() {

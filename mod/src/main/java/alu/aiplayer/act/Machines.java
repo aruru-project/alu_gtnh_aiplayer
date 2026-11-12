@@ -207,20 +207,25 @@ public final class Machines {
                     net.minecraftforge.fluids.FluidStack f = t.fluid;
                     String key = i + "|" + (f == null ? "" : f.getFluid().getName() + "|" + f.amount) + "|" + t.capacity;
                     if (!seen.add(key)) continue;
-                    JsonObject o = new JsonObject();
-                    if (f != null && f.getFluid() != null && f.amount > 0) {
-                        o.addProperty("fluid", f.getFluid().getName());
-                        o.addProperty("name", f.getLocalizedName());
-                        o.addProperty("amount", f.amount);
-                    } else {
-                        o.addProperty("amount", 0);
-                    }
-                    o.addProperty("capacity", t.capacity);
-                    out.add(o);
+                    out.add(tank(f, t.capacity));
                 }
             }
         } catch (Throwable ignored) {}
         return out;
+    }
+
+    /** One tank as {fluid, name, amount, capacity}; an empty one has only amount 0 and its capacity. */
+    public static JsonObject tank(net.minecraftforge.fluids.FluidStack f, int capacity) {
+        JsonObject o = new JsonObject();
+        if (f != null && f.getFluid() != null && f.amount > 0) {
+            o.addProperty("fluid", f.getFluid().getName());
+            o.addProperty("name", f.getLocalizedName());
+            o.addProperty("amount", f.amount);
+        } else {
+            o.addProperty("amount", 0);
+        }
+        o.addProperty("capacity", capacity);
+        return o;
     }
 
     public static boolean isGregTech(TileEntity te) {

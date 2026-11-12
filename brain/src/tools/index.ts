@@ -27,6 +27,7 @@ import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routine
 import { reportProblem } from './feedback.ts'
 import { clip, dataWithLocalNames } from './format.ts'
 import { helperStatus, startHelper } from './helpers.ts'
+import { holdKeys, pressKey } from './keys.ts'
 import { recentChat, report, stopWork, tellWorker, workerStatus } from './lines.ts'
 import { readGuide } from './guide.ts'
 import { readLog } from './log.ts'
@@ -127,6 +128,8 @@ export const WORK_TOOLS: readonly Tool[] = [
   clickSlot,
   useControl,
   closeScreen,
+  pressKey,
+  holdKeys,
   findItem,
   findRecipes,
   findInStorage,

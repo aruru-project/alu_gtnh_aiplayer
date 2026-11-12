@@ -460,6 +460,7 @@ ul.plain.helper-list > li:first-child { border-top: 0; }
 .slots { display: grid; grid-auto-rows: 36px; }
 .slots.grid9 { grid-template-columns: repeat(9, 36px); justify-content: center; }
 .slots.armor { grid-template-columns: repeat(4, 36px); }
+.slots.worn { grid-template-columns: repeat(1, 36px); }
 .slots.hotbar { margin-top: 8px; }
 .inv-top { display: flex; align-items: center; gap: 14px; margin: 0 2px 8px; }
 .inv-held { display: flex; flex-direction: column; min-width: 0; }

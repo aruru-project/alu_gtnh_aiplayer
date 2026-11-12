@@ -309,6 +309,11 @@ export class PanelLive {
       inventory,
       // 协议里盔甲的顺序是 1.7.10 的 armorInventory：0 靴子、1 护腿、2 胸甲、3 头盔
       armor: [0, 1, 2, 3].map((n) => this.itemView(status.armor?.[n]) ?? null),
+      // 穿在盔甲格以外的东西（探险背包 mod 的背上那一格）：在哪一格、是什么，罐里多少写在提示里
+      worn: (status.worn ?? []).flatMap((w) => {
+        const item = this.itemView(w)
+        return item ? [{ slot: w.slot, item, tanks: w.tanks ?? [] }] : []
+      }),
       screen: screen?.open ? this.screenView(screen) : null,
       players: this.players(server, name, status),
       world: server ? { dayTime: server.dayTime ?? null, isDay: server.isDay ?? null, raining: server.raining ?? null, tps: server.tps ?? null } : null,

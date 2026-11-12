@@ -73,7 +73,7 @@ describe('工具的写法', () => {
   it('所有启动任务的工具都带 queue 参数', () => {
     const taskTools = [
       'go_to', 'go_to_player', 'follow_player', 'go_home', 'flatten_area', 'clear_area', 'fill_area', 'dig_blocks',
-      'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'craft_item', 'process_items',
+      'place_blocks', 'build_blueprint', 'deposit_items', 'withdraw_items', 'haul_items', 'collect_items', 'give_items', 'use_item', 'hold_keys', 'craft_item', 'process_items',
     ]
     for (const name of taskTools) {
       const tool = programTools(ALL_TOOLS).find((x) => x.name === name)!

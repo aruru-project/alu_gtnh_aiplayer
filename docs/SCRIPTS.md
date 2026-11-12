@@ -146,7 +146,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **流体的名字**是同一个规矩：罐（`tanks: [{ fluid, name, amount, capacity }]`，`inspect_block`、`list_containers`、`find_machines` 的 `data` 里都有）的 `name` 是游戏里的中文名，身体给的英文名在 `en`；多方块的输入输出仓上是 `fluidName`（中文）和 `fluidEn`（英文）。`fluid` 是注册名，和配方册里的写法一样。本地资料里查不到的流体，名字原样是身体给的。
 
-**界面**：`open_screen`、`click_slot`、`use_control`（干活线的工具，例程里能调）的 `data` 是身体给的界面原样：`{ open, screen, slotCount, slots: [{ slot, own?, item?, takesNothing?, ghost? }], cursor?, controls?: [{ panel, key, kind, value?, open?, options?, readOnly?, fluid?, name?, amount?, capacity?, fills?, drains? }] }`。`controls` 是界面上格子以外的东西（开关、数字、文字、选项、页签、流体格、按钮），`panel` 和 `key` 是界面自己起的名字，原样交回给 `use_control`。
+**界面**：`open_screen`、`click_slot`、`use_control`（干活线的工具，例程里能调）的 `data` 是身体给的界面原样：`{ open, screen, slotCount, slots: [{ slot, own?, item?, takesNothing?, takes?, ghost? }], cursor?, controls?: [{ panel, key, kind, value?, open?, options?, readOnly?, fluid?, name?, amount?, capacity?, fills?, drains?, label? }] }`。`controls` 是界面上格子以外的东西（开关、数字、文字、选项、页签、流体格、按钮），`panel` 和 `key` 是界面自己起的名字，原样交回给 `use_control`。`takes` 是只收某些东西的格子收你身上的哪几种。`press_key` 的 `data` 是身体 `bot.key` 的原样回答（`{ key, screen?, changed?, said? }`，见 `docs/PROTOCOL.md`）；不给 `key` 时是 `{ keys }`。
 
 **放下就走的加工**：`process_items` 带 `leave: true` 时任务在机器开工后就结束，`data.result` 是 `{ put, left: true, machine?, circuit?: { now, was }, freeSlots }`（`machine` 是那一刻机器的状态，带 `progress` / `maxProgress`，单位 tick；身体读不懂的机器没有这一项），没有 `outputs`。产物留在机器里，之后 `withdraw_items` 取。
 
