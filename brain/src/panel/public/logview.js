@@ -505,6 +505,8 @@ function renderRun(item, nested = false) {
   const status = run.status === 'running' && !running ? 'unknown' : run.status
   const bits = [`${run.calls} 次调用`]
   if (routine) bits.push(`开了 ${run.tasks} 个任务`)
+  // 例程自己等过的（wait、setTimeout）：几次、一共多久
+  if (run.waits > 0) bits.push(`等了 ${run.waits} 次共 ${Math.round((Number(run.waitedMs) || 0) / 100) / 10} 秒`)
   bits.push(run.errors > 0 ? `${run.errors} 次出错` : '没有出错')
   const span = run.endedAt !== undefined ? duration(run.endedAt - run.startedAt) : undefined
   const el = h('div', { class: `run ${status}${nested ? ' nested' : ''}` })

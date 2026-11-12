@@ -256,7 +256,7 @@ function detailsFold(agents, owner) {
           h('h4', { text: '上一个例程' }),
           kv([
             ['哪一个', h('span', null, h('span', { class: 'mono', text: `${last.id} ` }), last.name || '（没有名字）')],
-            ['结果', `${RUN_STATES[last.status] ?? last.status}${last.endedAt ? `，${when(last.endedAt)}` : ''}：调了 ${num(last.calls)} 次工具，开了 ${num(last.tasks)} 个任务${last.errors > 0 ? `，${last.errors} 次出错` : ''}`],
+            ['结果', `${RUN_STATES[last.status] ?? last.status}${last.endedAt ? `，${when(last.endedAt)}` : ''}：调了 ${num(last.calls)} 次工具，开了 ${num(last.tasks)} 个任务${last.waits > 0 ? `，等了 ${last.waits} 次共 ${Math.round((Number(last.waitedMs) || 0) / 100) / 10} 秒` : ''}${last.errors > 0 ? `，${last.errors} 次出错` : ''}`],
             last.endingText || last.ending ? ['怎么结束的', last.endingText ?? last.ending] : null,
           ]),
         ]

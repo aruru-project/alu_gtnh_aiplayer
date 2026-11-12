@@ -371,8 +371,8 @@ interface ProviderConfig {
       "lastReport": { "type": "question", "text": "…", "time": 1731299990000 },
       "ownTasks": [ "t151", "t152" ],
       "routine": { "id": "r3", "name": "整理抽屉", "status": "running", "startedAt": 1731300100000,
-                   "calls": 312, "tasks": 150, "errors": 0,
-                   "waiting": "withdraw_items {…}", "waitingSince": 1731300160000, "waitingTask": "t151",
+                   "calls": 312, "tasks": 150, "errors": 0,     // 例程自己等过的多 "waits": 4, "waitedMs": 20000
+                   "waiting": "withdraw_items {…}", "waitingSince": 1731300160000, "waitingTask": "t151",   // 自己在等时是 "wait 5 s"，没有 waitingTask
                    "limitMs": 7200000, "file": "routine-20261111-153012-r3.jsonl" },
       "lastRoutine": null,
       "body": { "online": true,

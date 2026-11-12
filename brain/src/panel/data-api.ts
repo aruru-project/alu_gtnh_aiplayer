@@ -151,6 +151,7 @@ function routineState(view: RoutineView): Record<string, unknown> {
     calls: view.calls,
     tasks: view.actions,
     errors: run?.errors ?? 0,
+    ...(view.waits ? { waits: view.waits.count, waitedMs: view.waits.ms } : {}),
     ...(view.current ? { waiting: `${view.current.tool} ${view.current.input}`, waitingSince: view.current.since, ...(view.current.taskId ? { waitingTask: view.current.taskId } : {}) } : {}),
     ...(view.limitMs !== undefined ? { limitMs: view.limitMs } : {}),
     ...(view.ending !== undefined ? { ending: view.ending } : {}),

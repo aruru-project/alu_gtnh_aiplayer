@@ -251,7 +251,7 @@ export function buildTimeline(entries) {
   const applyRunSnapshot = (item, snapshot) => {
     if (!snapshot || typeof snapshot !== 'object') return
     const run = item.run
-    for (const key of ['id', 'kind', 'name', 'status', 'startedAt', 'endedAt', 'calls', 'tasks', 'errors', 'file']) if (snapshot[key] !== undefined) run[key] = snapshot[key]
+    for (const key of ['id', 'kind', 'name', 'status', 'startedAt', 'endedAt', 'calls', 'tasks', 'errors', 'waits', 'waitedMs', 'file']) if (snapshot[key] !== undefined) run[key] = snapshot[key]
     run.waiting = snapshot.status === 'running' ? snapshot.waiting : undefined
   }
 
