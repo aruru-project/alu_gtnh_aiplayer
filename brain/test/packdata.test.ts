@@ -207,8 +207,10 @@ describe('本地资料', { skip: pythonMissing() }, () => {
       assert.equal(res.isError, undefined, res.content)
       assert.match(res.content, /^6 quest\(s\) match \(state available\) for Steve:/)
       assert.deepEqual(idsIn(res.content).sort(), ['43', '4a', '50', '53', '54', NIGHT_WATCH].sort())
-      assert.match(res.content, /^- 43 "导线，奇怪？" \[第0\.5阶 - 蒸汽时代\] \(main\): available$/m)
-      assert.match(res.content, /^- 53 "每日面包" \[游历四方……\]: available$/m)
+      assert.match(res.content, /^- 43 "导线，奇怪？" \[第0\.5阶 - 蒸汽时代\] \(main\): available \{hand in\}$/m)
+      // 每日面包要交东西（收走）、要打勾：这两样要在书里亲手按，行尾标出来，开头说明标记的意思
+      assert.match(res.content, /^- 53 "每日面包" \[游历四方……\]: available \{hand in, tick\}$/m)
+      assert.match(res.content.split('\n')[0]!, /\{…\}: what is done by hand in the quest book: "hand in" \(Detect\/Submit takes items\), "tick" \(a checkbox\), "pick one" \(a reward to choose\)\)$/)
       // 60 没有前置所以也“能做”，但它不在任何章节里
       assert.match(res.content, /^1 more fit but are left out: internal quests that are in no chapter/m)
 
@@ -278,17 +280,21 @@ describe('本地资料', { skip: pythonMissing() }, () => {
         'Requires these quests to be complete first:',
         '- 43 "导线，奇怪？": NOT done',
         'Tasks (what the quest asks for):',
-        '- crafting, the player has to make it (craft or smelt): 2× gregtech:gt.metaitem.01/32600',
-        '- optional_retrieval, optional, the items are kept: 2× gregtech:gt.metaitem.01/23032',
+        '- task 1: crafting, the player has to make it (craft or smelt): 2× gregtech:gt.metaitem.01/32600',
+        '- task 2: optional_retrieval, optional, the items are kept: 2× gregtech:gt.metaitem.01/23032',
         'Rewards:',
-        '- item: 15× gregtech:gt.metaitem.01/32000',
+        '- reward 1: item: 15× gregtech:gt.metaitem.01/32000',
         'Description:',
         '电动马达把电变成转动，以后要用很多。',
         '',
         '磁化铁杆要用红石。',
         '详见 https://wiki.gtnewhorizons.com',
       ])
-      assert.deepEqual(s.game.calls, [{ method: 'quest.progress', params: { player: 'Steve' } }])
+      // 内容是本地的；向服务器问的是 Steve 做完了哪些，和这个任务对他的样子（子任务的进度、按钮；这个假服务器答不上，就不带）
+      assert.deepEqual(s.game.calls, [
+        { method: 'quest.progress', params: { player: 'Steve' } },
+        { method: 'quest.get', params: { id: '47', player: 'Steve' } },
+      ])
     })
 
     it('get_quest：猎杀、地点、流体、任选其一、要对上 NBT 的物品、可重复、经验和连带完成的奖励都说得清', async (t) => {
@@ -297,29 +303,30 @@ describe('本地资料', { skip: pythonMissing() }, () => {
       assert.equal(watch[0], `Quest ${NIGHT_WATCH} "守夜人" (Night Watch), chapter "第0阶 - 石器时代". State for Steve: available (unlocked, not complete yet).`)
       assert.deepEqual(watch.slice(1, 5), [
         'Tasks (what the quest asks for):',
-        '- hunt: kill 10× Zombie',
-        '- location: be in nether (dim -1) "THE NETHER"',
-        '- fluid, the fluid is kept: 1000 mB water',
+        '- task 1: hunt: kill 10× Zombie',
+        '- task 2: location: be in nether (dim -1) "THE NETHER"',
+        '- task 3: fluid, the fluid is kept: 1000 mB water',
       ])
 
       const daily = (await s.run('get_quest', { id: '53' })).content.split('\n')
       assert.equal(daily[0], 'Quest 53 "每日面包" (Daily Bread), chapter "游历四方……". Repeatable: can be done again 1 h after it was completed. State for Steve: available (unlocked, not complete yet).')
       assert.deepEqual(daily.slice(1, 7), [
         'Tasks (any one of them completes the quest):',
-        '- retrieval, the items are taken when handed in, any one of these is enough: 1× minecraft:bread, 1× minecraft:cookie',
-        '- checkbox: nothing to bring: the player ticks it in the quest book',
+        '- task 1: retrieval, the items are taken when handed in, any one of these is enough: 1× minecraft:bread, 1× minecraft:cookie',
+        '- task 2: checkbox: nothing to bring: the player ticks it in the quest book',
         'Rewards:',
-        '- xp: 3 level(s)',
-        '- questcompletion: also completes quest 60 "触发器：跳过"',
+        '- reward 1: xp: 3 level(s)',
+        '- reward 2: questcompletion: also completes quest 60 "触发器：跳过"',
       ])
 
       const first = (await s.run('get_quest', { id: '1' })).content
-      assert.match(first, /^- retrieval, the items are kept: 4× minecraft:log \(any meta\) \(or any logWood\)$/m)
+      assert.match(first, /^- task 1: retrieval, the items are kept: 4× minecraft:log \(any meta\) \(or any logWood\)$/m)
       assert.match(first, /State for Steve: complete\./)
       const bee = (await s.run('get_quest', { id: '54' })).content
-      assert.match(bee, /^- retrieval, the items are kept: 1× Forestry:beePrincessGE with NBT \{"Genome":\{"Chromosomes":\[\{"UID0":"forestry\.speciesForest"/m)
+      assert.match(bee, /^- task 1: retrieval, the items are kept: 1× Forestry:beePrincessGE with NBT \{"Genome":\{"Chromosomes":\[\{"UID0":"forestry\.speciesForest"/m)
       const choice = (await s.run('get_quest', { id: '2' })).content
-      assert.match(choice, /^- choice \(the player picks one\): 8× minecraft:bread, 16× minecraft:torch$/m)
+      // 挑一样的奖励：选项编号，quest_book claim 的 choice 就是它
+      assert.match(choice, /^- reward 1: choice \(the player picks one\): option 1: 8× minecraft:bread, option 2: 16× minecraft:torch$/m)
     })
 
     it('get_quest：前置之间是“任意一个”“恰好一个”的，和前置指向不存在的任务的，状态各算各的', async (t) => {
@@ -360,9 +367,9 @@ describe('本地资料', { skip: pythonMissing() }, () => {
       assert.match(said.join('\n'), /物品表：3 种物品/)
       const s = setup(t, withItems)
       const motors = (await s.run('get_quest', { id: '47' })).content
-      assert.match(motors, /^- crafting, the player has to make it \(craft or smelt\): 2× gregtech:gt\.metaitem\.01\/32600 "电动马达（LV）"$/m)
-      assert.match(motors, /^- optional_retrieval, optional, the items are kept: 2× gregtech:gt\.metaitem\.01\/23032$/m)
-      assert.match(motors, /^- item: 15× gregtech:gt\.metaitem\.01\/32000 "铜币"$/m)
+      assert.match(motors, /^- task 1: crafting, the player has to make it \(craft or smelt\): 2× gregtech:gt\.metaitem\.01\/32600 "电动马达（LV）"$/m)
+      assert.match(motors, /^- task 2: optional_retrieval, optional, the items are kept: 2× gregtech:gt\.metaitem\.01\/23032$/m)
+      assert.match(motors, /^- reward 1: item: 15× gregtech:gt\.metaitem\.01\/32000 "铜币"$/m)
       // 任何变体都行的，拿 meta 0 的那个叫名字
       assert.match((await s.run('get_quest', { id: '1' })).content, /4× minecraft:log \(any meta\) "橡木" \(or any logWood\)/)
     })
@@ -380,7 +387,8 @@ describe('本地资料', { skip: pythonMissing() }, () => {
       assert.match(lines.content, /no player given, so no progress/)
       assert.match(lines.content, /^- 第0阶 - 石器时代 \(Tier 0 - Stone Age\): 4$/m)
       const found = await s.run('find_quests', { query: '马达' })
-      assert.deepEqual(found.content.split('\n').slice(1), ['- 47 "基础制作：马达" [第0.5阶 - 蒸汽时代] (main)', '- 53 "每日面包" [游历四方……]'])
+      // 不知道看谁的进度：要亲手按的照内容全标
+      assert.deepEqual(found.content.split('\n').slice(1), ['- 47 "基础制作：马达" [第0.5阶 - 蒸汽时代] (main)', '- 53 "每日面包" [游历四方……] {hand in, tick}'])
       const byState = await s.run('find_quests', { state: 'available' })
       assert.equal(byState.isError, true)
       assert.match(byState.content, /needs a player whose progress to look at: give "player"/)
@@ -410,7 +418,8 @@ describe('本地资料', { skip: pythonMissing() }, () => {
       assert.match((await s.run('get_quest', { id: '1' })).content, /State for Steve: complete\./)
       const done = (await s.run('find_quests', { state: 'complete' })).content
       assert.match(done, /^- 1 "万事开头难" \[第0阶 - 石器时代\] \(main\): complete$/m)
-      assert.match(done, /^- 2 "趁手的工具" \[第0阶 - 石器时代\]: complete, reward unclaimed$/m)
+      // 奖励是挑一样的、还没领：标着 pick one；领过了的、做完的不再标
+      assert.match(done, /^- 2 "趁手的工具" \[第0阶 - 石器时代\]: complete, reward unclaimed \{pick one\}$/m)
       assert.deepEqual(idsIn((await s.run('find_quests', { state: 'unclaimed' })).content), ['2'])
       assert.match((await s.run('list_quest_lines')).content, /^1 finished quest\(s\) still have a reward Steve has not collected: find_quests with state "unclaimed" lists them\.$/m)
     })

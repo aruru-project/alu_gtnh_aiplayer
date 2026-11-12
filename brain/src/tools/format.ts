@@ -1333,11 +1333,20 @@ export function formatQuest(q: QuestDetail, player: string | undefined): string 
     for (const r of requires) lines.push(`- ${r.id} "${r.name}"${r.complete === undefined ? '' : r.complete ? ': done' : ': NOT done'}`)
   }
 
+  if (q.buttons && player !== undefined) {
+    lines.push(
+      `The quest's buttons in ${player}'s quest book now: Detect/Submit ${q.buttons.submit === true ? 'can be pressed' : 'is greyed out'}, Claim ${q.buttons.claim === true ? 'can be pressed' : 'is greyed out'}.`,
+    )
+  }
+
   const tasks = q.tasks ?? []
   lines.push(tasks.length > 0 ? 'Tasks (what the quest asks for):' : 'Tasks: none listed.')
-  for (const t of tasks) {
+  for (const [k, t] of tasks.entries()) {
     const notes: string[] = []
     if (t.complete !== undefined) notes.push(t.complete ? 'done' : 'not done')
+    if (t.optional === true) notes.push('optional')
+    if (Array.isArray(t.progress)) notes.push(`so far ${t.progress.join(', ')}`)
+    else if (typeof t.progress === 'number') notes.push(`so far ${t.progress}`)
     if (t.consumed !== undefined) notes.push(t.consumed ? 'the items are taken when handed in' : 'the items are kept')
     const wants: string[] = [
       ...(t.items ?? []).map(questItemText),
@@ -1345,13 +1354,18 @@ export function formatQuest(q: QuestDetail, player: string | undefined): string 
     ]
     if (typeof t.target === 'string') wants.push(`kill ${t.count ?? 1}× ${t.target}`)
     if (t.location) wants.push(`be at ${formatPos(t.location)}${t.location.dim !== undefined ? ` in ${dimName(t.location.dim)}` : ''}`)
-    lines.push(`- ${[t.type, ...notes].join(', ')}: ${wants.join(', ') || '(nothing more is recorded about it)'}`)
+    lines.push(`- task ${k + 1}: ${[t.type, ...notes].join(', ')}: ${wants.join(', ') || '(nothing more is recorded about it)'}`)
   }
 
   const rewards = q.rewards ?? []
   if (rewards.length > 0) {
     lines.push('Rewards:')
-    for (const r of rewards) lines.push(`- ${r.type}${(r.items ?? []).length > 0 ? `: ${r.items!.map(questItemText).join(', ')}` : ''}`)
+    for (const [k, r] of rewards.entries()) {
+      const items = (r.items ?? []).map(questItemText)
+      const picked = typeof r.chosen === 'number' && r.chosen >= 0 && r.chosen < items.length ? `; chosen now: option ${r.chosen + 1}` : ''
+      const listed = r.type === 'choice' ? ` (the player picks one): ${items.map((text, n) => `option ${n + 1}: ${text}`).join(', ')}${picked}` : items.length > 0 ? `: ${items.join(', ')}` : ''
+      lines.push(`- reward ${k + 1}: ${r.type}${listed}`)
+    }
   }
   return lines.join('\n')
 }

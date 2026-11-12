@@ -4,8 +4,8 @@
 // 游戏说了什么），不解释任何一个值是什么意思。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { KeyInfo, KeyPressResult } from '../bridge/protocol.ts'
-import { formatScreen } from './screen.ts'
+import type { ClientOnlyScreen, KeyInfo, KeyPressResult } from '../bridge/protocol.ts'
+import { clientOnlyText, formatScreen } from './screen.ts'
 import { bool, int, num, obj, str } from './schema.ts'
 import { queue, startTask } from './tasks.ts'
 import { fail } from './types.ts'
@@ -18,14 +18,22 @@ function keyLine(k: KeyInfo): string {
 
 async function keyList(ctx: ToolContext): Promise<ToolResult> {
   let keys: KeyInfo[]
+  let clientOnly: ClientOnlyScreen[]
   try {
-    keys = (await ctx.bridge.botKeys()).keys ?? []
+    const res = await ctx.bridge.botKeys()
+    keys = res.keys ?? []
+    clientOnly = res.clientOnly ?? []
   } catch (e) {
     if (e instanceof BridgeError && e.code === 'unknown_method') return fail('The body on the game server is older than mod keys: it has no keys to press.')
     throw e
   }
-  if (keys.length === 0) return { content: 'No mod on this server adds a key the body can press.', data: { keys } }
-  return { content: [`The keys mods add here that you can press (press_key with "key"):`, ...keys.map(keyLine)].join('\n'), data: { keys } }
+  // 只在客户端里打开一个界面的键（任务书的键）：按不了，说清楚它做的事用什么做
+  const others = clientOnly.map(
+    (c) => `- ${c.key ?? ''}${c.keyName ? ` "${c.keyName}"` : ''}: only opens ${c.screen} in a game client; there is nothing to press here. ${clientOnlyText(c).replace(/^.*?Instead, /, 'Instead, ')}`,
+  )
+  const tail = others.length > 0 ? ['Keys of a game client that only open a screen the server does not have:', ...others] : []
+  if (keys.length === 0) return { content: ['No mod on this server adds a key the body can press.', ...tail].join('\n'), data: { keys, clientOnly } }
+  return { content: [`The keys mods add here that you can press (press_key with "key"):`, ...keys.map(keyLine), ...tail].join('\n'), data: { keys, clientOnly } }
 }
 
 /** 按完一个键看得见的变化。 */
@@ -60,7 +68,10 @@ export const pressKey: Tool = {
       if (!(e instanceof BridgeError)) throw e
       if (e.code === 'busy') return fail('A task of yours is running: keys are pressed while you have no task. Wait for it to end (or cancel_task), then press it.')
       if (e.code === 'unknown_method') return fail('The body on the game server is older than mod keys: it cannot press them.')
-      if (e.code === 'bad_request') return fail(`Not pressed: ${e.message}. press_key without "key" lists the keys.`)
+      if (e.code === 'bad_request') {
+        const quests = /\bquest\.submit\b/.test(e.message) ? ' quest_book is the tool that presses those buttons.' : ''
+        return fail(`Not pressed: ${e.message}.${quests} press_key without "key" lists the keys.`)
+      }
       throw e
     }
   },

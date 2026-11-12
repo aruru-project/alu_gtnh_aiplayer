@@ -95,7 +95,7 @@ const ACTING = [
   'flatten_area', 'clear_area', 'fill_area', 'dig_blocks', 'place_blocks', 'build_blueprint',
   'start_routine', 'routine_status', 'stop_routine', 'publish_draft', 'delete_draft',
   'deposit_items', 'withdraw_items', 'collect_items', 'give_items', 'use_item', 'open_screen', 'click_slot', 'use_control', 'close_screen',
-  'press_key', 'hold_keys',
+  'press_key', 'hold_keys', 'quest_book',
   'craft_item', 'process_items', 'cancel_task',
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
@@ -250,7 +250,10 @@ describe('模型拿到的工具清单', () => {
   //           多的是 view_draft 的 blueprint 参数和说明里的半句（861 → 1,021）：以前它只认草稿，服务器上的图纸只能用 read_blueprint
   //           拿文字和格子，看不到长什么样。没有另开一个 view_blueprint（同样的一组参数会再占一千多）；也没放进库函数 read_blueprint
   //           （库函数的参数模型看不到，程序里调的结果也带不了图给它看）。
-  for (const [line, ceiling] of [['work', 56_600], ['talk', 29_200]] as const) {
+  //   任务书的按钮之后（意见簿 f23，任务书界面打不开）：干活线实际 57,239、上限 56,400 → 57,400（+1,000；和上面看图纸那次合在一起：实际 57,399、上限 57,600）。多的是 quest_book（898）：
+  //           替自己按任务书上的检测/提交、勾选框、领取（挑一样的奖励带 choice）。任务书的界面只画在客户端里，服务器上没有，open_screen
+  //           打不开；不给这个工具就交不了要收走东西的子任务、打不了勾、领不了奖。三个按钮并在一个工具里，没有各做一个。对话线没变。
+  for (const [line, ceiling] of [['work', 57_600], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

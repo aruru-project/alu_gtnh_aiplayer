@@ -17,20 +17,27 @@ import net.minecraft.nbt.NBTTagList;
 import net.minecraft.server.MinecraftServer;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.util.Names;
+import betterquesting.api.api.QuestingAPI;
+import betterquesting.api.properties.NativeProps;
 import betterquesting.api.questing.IQuest;
 import betterquesting.api.questing.IQuestLine;
+import betterquesting.api.questing.party.IParty;
 import betterquesting.api.questing.rewards.IReward;
 import betterquesting.api.questing.tasks.ITask;
 import betterquesting.api2.storage.DBEntry;
 import betterquesting.api2.utils.QuestTranslation;
 import betterquesting.questing.QuestDatabase;
 import betterquesting.questing.QuestLineDatabase;
+import betterquesting.questing.party.PartyManager;
 import betterquesting.storage.NameCache;
+import bq_standard.rewards.RewardChoice;
+import bq_standard.tasks.base.TaskProgressableBase;
 import cpw.mods.fml.common.Loader;
 
 /**
@@ -56,7 +63,7 @@ public final class Quests {
             .trim();
     }
 
-    private static String name(UUID id, IQuest q) {
+    public static String name(UUID id, IQuest q) {
         try {
             return plain(QuestTranslation.translateQuestName(id, q));
         } catch (Throwable t) {
@@ -84,7 +91,8 @@ public final class Quests {
         return known;
     }
 
-    private static String state(IQuest q, UUID who) {
+    /** "complete", "complete, reward unclaimed", "available" or "locked"; null without a player. */
+    public static String state(IQuest q, UUID who) {
         if (who == null) return null;
         if (q.isComplete(who)) return q.hasClaimed(who) ? "complete" : "complete, reward unclaimed";
         return q.isUnlocked(who) ? "available" : "locked";
@@ -228,7 +236,7 @@ public final class Quests {
     private static final String LEGACY = "00000000-0000-0000-0000-";
 
     /** Old quests carry a number dressed up as a UUID; that number alone is easier to pass around. */
-    private static String shortId(UUID id) {
+    public static String shortId(UUID id) {
         String s = id.toString();
         if (!s.startsWith(LEGACY)) return s;
         String tail = s.substring(LEGACY.length())
@@ -236,7 +244,8 @@ public final class Quests {
         return tail.isEmpty() ? "0" : tail;
     }
 
-    private static Map.Entry<UUID, IQuest> find(String id) {
+    /** A quest by the id quest.search and quest.get give: a short hex number or a UUID. */
+    public static Map.Entry<UUID, IQuest> find(String id) {
         String want = id.trim()
             .toLowerCase(Locale.ROOT);
         UUID key;
@@ -267,6 +276,12 @@ public final class Quests {
         o.addProperty("description", text);
         String st = state(q, who);
         if (st != null) o.addProperty("state", st);
+        if (who != null) {
+            JsonObject party = party(who);
+            if (party != null) o.add("party", party);
+            EntityPlayerMP online = online(who);
+            if (online != null) o.add("buttons", buttons(q, online));
+        }
 
         JsonArray needs = new JsonArray();
         for (UUID req : q.getRequirements()) {
@@ -286,7 +301,12 @@ public final class Quests {
             ITask task = t.getValue();
             JsonObject j = new JsonObject();
             j.addProperty("type", kind(task.getUnlocalisedName()));
-            if (who != null) j.addProperty("complete", task.isComplete(who));
+            if (who != null) {
+                j.addProperty("complete", task.isComplete(who));
+                if (task.ignored(who)) j.addProperty("optional", true);
+                JsonElement done = progress(task, who);
+                if (done != null) j.add("progress", done);
+            }
             NBTTagCompound nbt = new NBTTagCompound();
             try {
                 task.writeToNBT(nbt);
@@ -313,14 +333,107 @@ public final class Quests {
             JsonArray items = items(nbt, "rewards");
             if (items.size() == 0) items = items(nbt, "choices");
             if (items.size() > 0) j.add("items", items);
+            if (who != null && reward instanceof RewardChoice) {
+                int chosen = ((RewardChoice) reward).getSelecton(who);
+                if (chosen >= 0) j.addProperty("chosen", chosen);
+            }
             rewards.add(j);
         }
         o.add("rewards", rewards);
         return o;
     }
 
+    /** The online player with this id, or null. */
+    public static EntityPlayerMP online(UUID who) {
+        for (Object each : MinecraftServer.getServer()
+            .getConfigurationManager().playerEntityList) {
+            EntityPlayerMP p = (EntityPlayerMP) each;
+            if (who.equals(QuestingAPI.getQuestingUUID(p))) return p;
+        }
+        return null;
+    }
+
+    /**
+     * The two buttons of the quest's screen as the player's client draws them: Detect/Submit is active when
+     * {@code canSubmit}, Claim when the quest has rewards and {@code canClaim} (BetterQuesting's GuiQuest.updateButtons).
+     */
+    public static JsonObject buttons(IQuest q, EntityPlayerMP p) {
+        JsonObject o = new JsonObject();
+        o.addProperty("submit", q.canSubmit(p));
+        o.addProperty(
+            "claim",
+            q.getRewards()
+                .size() > 0 && q.canClaim(p));
+        return o;
+    }
+
+    /** {name, members:[names], claimForAll} of the player's party, or null when the player is in none. */
+    public static JsonObject party(UUID who) {
+        DBEntry<IParty> entry = PartyManager.INSTANCE.getParty(who);
+        if (entry == null) return null;
+        JsonObject o = new JsonObject();
+        o.addProperty(
+            "name",
+            plain(
+                entry.getValue()
+                    .getProperties()
+                    .getProperty(NativeProps.NAME)));
+        JsonArray members = new JsonArray();
+        for (UUID m : entry.getValue()
+            .getMembers()) {
+            String n = NameCache.INSTANCE.getName(m);
+            EntityPlayerMP p = online(m);
+            members.add(new JsonPrimitive(p != null ? p.getCommandSenderName() : n != null ? n : m.toString()));
+        }
+        o.add("members", members);
+        // Ticks and hand-ins always count for every member; a claim marks every member as claimed only with this set.
+        o.addProperty("claimForAll", drethic.questbook.config.QBConfig.syncQuestRewards);
+        return o;
+    }
+
+    /**
+     * How far the player has got with a task that counts something, as the task keeps it: one number per item or
+     * fluid it asks for (handed in or seen so far), or a single number (kills, experience). Null for tasks that count
+     * nothing (a checkbox, a place).
+     */
+    public static JsonElement progress(ITask task, UUID who) {
+        if (!(task instanceof TaskProgressableBase)) return null;
+        Object v;
+        try {
+            v = ((TaskProgressableBase<?>) task).getUsersProgress(who);
+        } catch (Throwable t) {
+            return null;
+        }
+        if (v instanceof int[]) {
+            JsonArray a = new JsonArray();
+            for (int n : (int[]) v) a.add(new JsonPrimitive(n));
+            return a;
+        }
+        if (v instanceof Number) return new JsonPrimitive((Number) v);
+        return null;
+    }
+
+    /**
+     * Whether the tasks done (or optional) satisfy the quest's task logic, as BetterQuesting's own update counts them:
+     * then it marks the quest complete at its next check of the player.
+     */
+    public static boolean tasksSatisfied(IQuest q, UUID who) {
+        int done = 0, total = 0;
+        for (DBEntry<ITask> t : q.getTasks()
+            .getEntries()) {
+            total++;
+            if (t.getValue()
+                .isComplete(who)
+                || t.getValue()
+                    .ignored(who))
+                done++;
+        }
+        return total == 0 || q.getProperty(NativeProps.LOGIC_TASK)
+            .getResult(done, total);
+    }
+
     /** "bq_standard.task.retrieval" reads better as "retrieval". */
-    private static String kind(String unlocalised) {
+    public static String kind(String unlocalised) {
         if (unlocalised == null) return "unknown";
         int dot = unlocalised.lastIndexOf('.');
         return dot >= 0 && dot < unlocalised.length() - 1 ? unlocalised.substring(dot + 1) : unlocalised;
@@ -362,7 +475,7 @@ public final class Quests {
         JsonArray out = new JsonArray();
         if (!nbt.hasKey(key, 9)) return out;
         NBTTagList list = nbt.getTagList(key, 10);
-        for (int i = 0; i < list.tagCount() && out.size() < 24; i++) {
+        for (int i = 0; i < list.tagCount(); i++) {
             NBTTagCompound it = list.getCompoundTagAt(i);
             JsonObject o = new JsonObject();
             NBTBase rawId = it.getTag("id");

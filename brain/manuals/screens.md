@@ -29,6 +29,7 @@
 - 机器的界面上除了格子，还有开关、数字、文字、选项、能再打开的面板（页签）、流体格、按钮。open_screen（和每次点完、按完回来的界面）把它们列在 Its controls besides slots 下面：名字、种类、现在的值，按所在的面板分开。
 - **名字是这个界面自己起的**（fluidAutoOutput、itemAutoOutput、powerSwitch、cover_panel_west、ghostCircuitPanel、sideSelection_……），身体和这本手册都不知道每一个是干什么的：看名字、看它现在的值、按一下看界面变成什么样，是你自己读懂它的办法。
 - 标着 display only 的只是显示，不收改动；shown value 也只是显示。
+- 有的界面整个只在客户端里画，服务器上没有（任务书）：open_screen 会直接说打不开，并说它的按钮用什么工具按。
 - 有的 mod 的按钮只画在它自己的客户端里（探险背包那几样东西界面上的 equip / unequip：背到背上、卸下来）。身体照那个 mod 的客户端按下它时做的事去做，所以它们也列成 `[button]`，后面是鼠标移上去时它写的话。按完界面可能就关了，结果里接着写你现在背上穿着什么。
 - use_control 按或者设一个控件，给它的名字（key）：
   - 不给 value 是按一下，和玩家点它是一回事：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格见下一条。right: true 是右键，shift: true 是按着 Shift。

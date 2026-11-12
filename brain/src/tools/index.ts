@@ -45,6 +45,7 @@ import {
   scanArea,
 } from './observe.ts'
 import { viewArea, viewImage } from './pictures.ts'
+import { questBook } from './quest-actions.ts'
 import { findQuests, getQuest, listQuestLines } from './quests.ts'
 import { validate } from './schema.ts'
 import type { Schema } from './schema.ts'
@@ -138,6 +139,7 @@ export const WORK_TOOLS: readonly Tool[] = [
   processItems,
   findQuests,
   getQuest,
+  questBook,
   readGuide,
   taskStatus,
   cancelTask,

@@ -284,9 +284,22 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 - 按住跳：直升机背包开着、有油时把人往上提（它客户端里的 `elevate`，紧接在这个 mod 自己每 tick 的悬停、慢落之后）；煤喷气背包开着、有蒸汽时告诉服务器“正按着跳”，往上推的是它服务器这边的代码。按住跳是 `hold` 任务。
 - 它的客户端打印的几句话（`CopterPack: Normal Mode.` 这类，配置 Chat Spam 开着时）当成 bot 收到的消息：进 `bot.message` 事件，也在 `bot.key` 的 `said` 里。
 
+还有任务书（BetterQuesting）：它的界面整个只在客户端里画，按钮发的消息见下面“任务书的按钮”。
+
+**只在客户端里画的界面**：有的界面服务器上根本没有（不是容器，没有格子），客户端自己画、自己处理点击，点了再给服务器发 mod 自己的消息。身体不替 bot 画这种界面，所以它打不开；它的按钮做的事由专门的方法做。现在有的只有任务书：
+
+```jsonc
+{"screen":"the quest book (BetterQuesting)", "item":{"id":"questbook:ItemQuestBook"},   // 客户端里右键它打开
+ "key":"key.betterquesting.quests", "keyName":"Open Quests",                            // 客户端里按它打开
+ "instead":["quest.submit","quest.check","quest.choose","quest.claim"]}                  // 做它的按钮做的事的方法
+```
+
+- `bot.keys` 的 `clientOnly` 列出有键的；`bot.key` 按这个键是 `bad_request`，消息说它只在客户端里打开什么、用哪些方法。
+- `screen.open {item}` 拿着这件东西右键以后没有界面时，结果是 `{open:false, clientOnly:{screen, instead, text}}`：这个界面不会出现，不用再等。
+
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `bot.keys` | – | `{keys:[{key, name, category}]}`：身体按得了的键。`key` 是游戏自己给这个键起的名字，`name`、`category` 是游戏“控制”设置里它的名字和分组（英文） |
+| `bot.keys` | – | `{keys:[{key, name, category}], clientOnly?}`：身体按得了的键。`key` 是游戏自己给这个键起的名字，`name`、`category` 是游戏“控制”设置里它的名字和分组（英文）。`clientOnly` 是客户端里有、却只打开一个服务器上没有的界面的键（见下面“只在客户端里画的界面”），按不了 |
 | `bot.key` | `{bot, key, sneak?=false}` | 像玩家那样按一下这个键；`sneak` 是按着 Shift 按。结果 `{key, screen?, changed?, said?}`：`screen` 是按完以后开着的界面（同 `screen.look`；按之前开着、按完关了的，是 `{open:false}`），`changed` 是穿着的东西自己存的数据里变了的值 `[{slot, key, was?, now?}]`（`key` 是 `data` 里的路径，空串是那件东西本身换了；最多 30 个），`said` 是这一下让游戏对它说的话。什么都没变时只有 `key`。只在没有任务在跑时可用（否则 `busy`：一个键可能打开界面）；没有这个键是 `bad_request`，消息里列出有哪些 |
 
 实测（测试服）：直升机背包 16 个柴油单元灌满 16000 mB；蹲着按 toggleActions `status` 0 → 1、说 `CopterPack: Normal Mode.`，再按（不蹲）1 → 2、`Hover Mode.`；悬停时 `hold {jump:true, y:104}` 56 tick 从 y 94 升到 104.04 并停在那里；`hold {toward}` 向西 29 格（最快 0.7 格/tick），松手后又滑了 7.7 格；`hold {sneak:true, y:86}` 61 tick 落地；蹲着按 toggleActions 关机。按住跳时不做客户端的那一半（把身体里的 `elevate` 去掉），同样的 `hold {jump:true}` 100 tick 一格也没升。
@@ -379,7 +392,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被拒绝是 `denied`（消息里写着是什么：服务器的出生点保护连范围一起写，领地这类别的 mod 只说被拒绝了），身上没有那件东西是 `no_material` |
+| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面（那件东西的界面只在客户端里画时，结果带 `clientOnly`，见“只在客户端里画的界面”）。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被拒绝是 `denied`（消息里写着是什么：服务器的出生点保护连范围一起写，领地这类别的 mod 只说被拒绝了），身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
 | `screen.press` | `{bot, key, panel?, button?=0, shift?=false}` | 按一下界面上格子以外的东西（见下面“界面上的控件”）：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格照鼠标上拿着的容器装或倒（`button` 0 左键、1 右键）。结果同 `screen.look`。界面没有这个控件、或者它只是显示用的，照实拒绝 |
@@ -390,9 +403,9 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 
-### 任务书（只读）
+### 任务书
 
-服务器上的任务书（BetterQuesting）：章节、每个任务的说明和要求、某个玩家的进度。只查不改，不会替谁提交任务或领奖励。服务器没装任务书时这些方法返回 `not_found`（消息里有 `no quest book`）。
+服务器上的任务书（BetterQuesting）：章节、每个任务的说明和要求、某个玩家的进度。下面四个方法只查；bot 替自己按任务书上的按钮见“任务书的按钮”。服务器没装任务书时这些方法返回 `not_found`（消息里有 `no quest book`）。
 任务书的内容对所有人都一样，也都在客户端包里，大脑可以自己存一份（见 `docs/PACKDATA.md`）；那样只需要 `quest.progress`。
 `player` 是玩家名（在线的，或任务书见过的）；给了才有进度相关的字段。任务 id 是任务书自己的编号：老任务是一小段十六进制数（如 `47`），新任务是完整的 UUID。
 
@@ -418,7 +431,58 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 }
 ```
 
-任务书里的文字是英文。
+任务书里的文字是英文。`tasks`、`rewards` 的顺序就是任务书自己的顺序（和客户端包里的任务文件、大脑的本地资料一样）；下面的按钮方法说“第几个”就是这个顺序，从 0 数。
+
+给了 `player` 时还有这个玩家的：
+
+- 每个子任务的 `complete`；`optional:true`（可做可不做，不影响完成）；`progress`：子任务自己记着的数——每样物品（或流体）一个数，和 `items`（或 `fluids`）一一对应，是交了几个 / 数到几个；猎杀、经验这类是一个数；打勾、到某地这类不计数的没有。
+- 挑一样的奖励（`type:"choice"`）的 `chosen`：他现在选的是 `items` 里的第几样（从 0 数），没选不带。
+- `buttons:{submit, claim}`（玩家在线时）：任务界面上“检测/提交”“领取”两个按钮在他的客户端里能不能按，用的是任务书自己的判断（`canSubmit`；有奖励且 `canClaim`）。
+- `party:{name, members, claimForAll}`（他在任务书的队伍里时）：队伍里打勾、交东西算全队；`claimForAll` 是服务器设置（questbook.cfg 的 syncQuestRewards），为真时一个人领了全队都算领过，为假时各领各的。
+
+### 任务书的按钮
+
+任务书的界面只在客户端里画（见“只在客户端里画的界面”）。玩家在里面能做的四件事，每件是客户端给服务器发一条任务书自己的消息（BQ_NET_CHAN 通道，NBT 压缩后切片）。身体替 bot 做客户端那一半：照任务书客户端的代码拼出同样的消息，交给服务器上这个通道的处理代码，和真客户端发来的一样。**只动 bot 自己的进度**（它在队伍里时，任务书照它的规矩算到全队）。只在没有任务在跑时可用（否则 `busy`）。
+
+| 方法 | 参数 | 客户端里是哪一下 | 发的消息 |
+|---|---|---|---|
+| `quest.submit` | `{bot, id}` | 任务界面的“检测/提交”（Detect/Submit） | `betterquesting:quest_action`，action 1 |
+| `quest.check` | `{bot, id, task}` | 勾选框子任务的那个框 | `bq_standard:task_checkbox` |
+| `quest.choose` | `{bot, id, reward, choice}` | 挑一样的奖励里点其中一样 | `bq_standard:choice_reward` |
+| `quest.claim` | `{bot, id}` | 任务界面的“领取”（Claim） | `betterquesting:quest_action`，action 0 |
+
+`task`、`reward`、`choice` 是 `quest.get` 里的第几个，从 0 数。任务书自己存的编号不一定是 0、1、2……（这个整合包里有 375 处不连着，比如 47b 的三个奖励存的是 1、3、4），身体照位置换成它存的编号再发。不是勾选框的 `task`、不是挑一样的 `reward`、超出范围的是 `bad_request`。
+
+结果（`QuestPressResult`）只报看得见的变化：
+
+```jsonc
+{
+  "pressed":true,
+  "quest":{"id":"2","name":"Sticks 'n Stones","state":"available","was":"locked"},   // 现在的状态，同 quest.get；was 只在变了时有
+  "tasks":[                                   // submit、check：每个子任务现在的样子，task 从 0 数
+    {"task":0,"type":"retrieval","complete":true,"was":false,"progress":[9,5],"progressWas":[0,0]},
+    {"task":1,"type":"retrieval","complete":true,"was":false,"progress":[2],"progressWas":[0]}
+  ],
+  "tasksDone":true,                           // 子任务都满足了、任务还没标完成：任务书下一次查这个玩家时标（每 3 秒一次）
+  "lost":[{"id":"minecraft:log","meta":0,"name":"Oak Wood","count":2}],      // 背包（连盔甲格）少了的：交上去被收走的
+  "gained":[Item…], "dropped":[Item…],        // 多了的；背包放不下、掉在脚边的
+  "xp":{"levelWas":0,"level":1,"pointsWas":0,"points":7},
+  "alsoComplete":[{"id":"60","name":"…"}],    // claim：奖励顺带完成的别的任务
+  "chosen":{"reward":0,"choice":1,"item":Item},   // choose
+  "said":["…"],                               // 这一下让游戏对它说的话（命令奖励这类）
+  "party":{…},                                // 在队伍里时，同 quest.get
+  "note":"…",                                 // 要知道的：任务还锁着（检测不看、打的勾留着解锁后算）、选择只在内存里
+  "freeSlots":28
+}
+```
+
+- **按钮在客户端里是灰的**时身体不发消息，结果是 `{pressed:false, button, why, quest, choices?}`，`why` 用任务书自己的判断：提交——任务已完成（奖励领没领）；领取——没有奖励、还没完成（还锁着的连前置一起写；子任务都满足了、等任务书下一次查的也写明）、已经领过、挑一样的还没挑（`choices` 列出没挑的那个奖励的选项）；勾选框——已经勾上了。
+- **提交**：任务书只看已经解锁的任务。要收走东西的子任务（retrieval、fluid 带 `consumed:true`）只在按这一下时从背包里拿走（这个整合包里有 103 个，没有一个是自动收的）；不收走的那种，背包一变任务书就自己数（玩家没按也会完成），按这一下也会再数一遍。还锁着的照样按得下（客户端里这个按钮亮着），什么都不看，`note` 写明。
+- **打勾**：服务器不看任务解没解锁（客户端开了查看模式就能打开没解锁的任务去点，这台服务器显示查看模式按钮），所以照收；任务还锁着时 `note` 写明勾留着、解锁后算。
+- **挑一样**：选择只存在服务器内存里（任务书不把它写进存档），服务器重启以后、还没领的要重新选。`note` 写着这句。
+- **领取**：东西进背包，放不下的掉在脚边（`dropped`）；命令奖励在下一刻执行，看得见的只有它说的话。
+- 子任务满足以后，“完成”要等任务书下一次查这个玩家（每 3 秒一次）才标上；结果带 `tasksDone` 时，过几秒再 `quest.get` 看。
+- 实测（测试服）：“木棍与石头”（2）身上 9 个沙砾、7 个原木，前置“你的第一个夜晚”（0）没完成时提交：`state:"locked"`、什么都没数，`note` 写着差 0；0 完成以后等 8 秒什么都没变（要收走的那 2 个原木没人收），提交：收走 2 个原木，两个子任务 `[9,5]`、`[2]`，3 秒内标成完成；领取得到 1 个火把、5 个硬币。存档里它的这条进度和正式服上三个真玩家用任务书做完的一模一样（`data` `[9,5]`、`[2]`，`claimed:1`）。勾选框：“GT6 型导线和线缆”（47b）勾上、3 秒内完成；不选就领：灰的，`choices` 列出两样；选第 2 样（橡胶末，任务书里这个奖励存的编号是 1）再领，得到 8 个橡胶末、豌豆汤、10 个硬币。没解锁的“准备出发！”（f）打勾照收，前置一完成它就完成了。“继续焊接！”（a6b，两个子任务存的编号是 1、2）勾第 1 个（从 0 数）、“TecTech 多方块机器”（a7a，勾选框存的编号是 1）勾第 0 个，都勾上了。背包满时领“终于，有点像样的燃料了！”（1b）的桶：桶掉在脚边，`dropped` 里有它。
 
 ### 图纸
 

@@ -1480,12 +1480,16 @@ describe('任务书（本地没有资料，问服务器）', () => {
       tasks: [
         { type: 'crafting', complete: true, items: [{ id: 'gregtech:gt.metaitem.01', meta: 32600, count: 2, name: 'Electric Motor (LV)' }] },
         { type: 'optional_retrieval', complete: false, consumed: false, items: [{ id: 'minecraft:log', count: 4, name: 'Oak Wood', ore: 'logWood' }] },
-        { type: 'retrieval', complete: false, consumed: true, items: [{ id: 'minecraft:iron_ingot', meta: 0, count: 8, name: 'Iron Ingot' }] },
-        { type: 'hunt', complete: false, target: 'Zombie', count: 10 },
+        { type: 'retrieval', complete: false, progress: [3], consumed: true, items: [{ id: 'minecraft:iron_ingot', meta: 0, count: 8, name: 'Iron Ingot' }] },
+        { type: 'hunt', complete: false, progress: 4, target: 'Zombie', count: 10 },
         { type: 'location', complete: false, location: { x: 120, y: 70, z: -340, dim: 0 } },
         { type: 'fluid', complete: false, fluids: [{ fluid: 'water', mb: 1000 }] },
       ],
-      rewards: [{ type: 'item', items: [{ id: 'gregtech:gt.metaitem.01', meta: 32000, count: 15, name: 'Copper Coin' }] }],
+      rewards: [
+        { type: 'item', items: [{ id: 'gregtech:gt.metaitem.01', meta: 32000, count: 15, name: 'Copper Coin' }] },
+        { type: 'choice', chosen: 1, items: [{ id: 'minecraft:bread', meta: 0, count: 8, name: 'Bread' }, { id: 'minecraft:torch', meta: 0, count: 16, name: 'Torch' }] },
+      ],
+      buttons: { submit: false, claim: true },
     })
     const res = await s.run('get_quest', { id: ' 47 ' })
     assert.deepEqual(s.game.callsOf('quest.get'), [{ id: '47', player: 'Steve' }])
@@ -1496,15 +1500,17 @@ describe('任务书（本地没有资料，问服务器）', () => {
       'Requires these quests to be complete first:',
       '- 43 "Wired, Weird?!": done',
       '- 44 "Magnets": NOT done',
+      "The quest's buttons in Steve's quest book now: Detect/Submit is greyed out, Claim can be pressed.",
       'Tasks (what the quest asks for):',
-      '- crafting, done: 2× gregtech:gt.metaitem.01/32600 "Electric Motor (LV)"',
-      '- optional_retrieval, not done, the items are kept: 4× minecraft:log (any meta) "Oak Wood" (or any logWood)',
-      '- retrieval, not done, the items are taken when handed in: 8× minecraft:iron_ingot "Iron Ingot"',
-      '- hunt, not done: kill 10× Zombie',
-      '- location, not done: be at (120,70,-340) in overworld (dim 0)',
-      '- fluid, not done: 1000 mB water',
+      '- task 1: crafting, done: 2× gregtech:gt.metaitem.01/32600 "Electric Motor (LV)"',
+      '- task 2: optional_retrieval, not done, the items are kept: 4× minecraft:log (any meta) "Oak Wood" (or any logWood)',
+      '- task 3: retrieval, not done, so far 3, the items are taken when handed in: 8× minecraft:iron_ingot "Iron Ingot"',
+      '- task 4: hunt, not done, so far 4: kill 10× Zombie',
+      '- task 5: location, not done: be at (120,70,-340) in overworld (dim 0)',
+      '- task 6: fluid, not done: 1000 mB water',
       'Rewards:',
-      '- item: 15× gregtech:gt.metaitem.01/32000 "Copper Coin"',
+      '- reward 1: item: 15× gregtech:gt.metaitem.01/32000 "Copper Coin"',
+      '- reward 2: choice (the player picks one): option 1: 8× minecraft:bread "Bread", option 2: 16× minecraft:torch "Torch"; chosen now: option 2',
     ])
   })
 

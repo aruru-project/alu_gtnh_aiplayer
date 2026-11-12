@@ -180,8 +180,10 @@ tools/make-packdata.py quests --client <客户端整合包>.zip --out brain/pack
 ### 大脑怎么用
 
 - `find_quests` / `get_quest` 和库函数 `list_quest_lines` 的内容全部来自这两个文件，不问服务器。搜索在名称和描述的中文、英文里都找。
-- 进度问服务器：`quest.progress {player}` → `{player, completed: [id…], unclaimed: [id…]}`（见 `docs/PROTOCOL.md`），结果缓存 20 秒。
+- 进度问服务器：`quest.progress {player}` → `{player, completed: [id…], unclaimed: [id…]}`（见 `docs/PROTOCOL.md`），结果缓存 20 秒（bot 按了自己任务书上的按钮以后，它自己的那份马上作废）。
   “做完了 / 现在能做 / 没解锁”由大脑拿 `completed` 和上面的 `pre`、`logic` 算；`unclaimed` 里的显示成“做完了，奖励没领”。
+- `get_quest` 看某个人的进度时，另问一次 `quest.get {id, player}`，只取这个人的部分（每个子任务做完没、数到几个，挑一样的奖励选了哪个，两个按钮）。
+  `tasks`、`rewards` 在这里和服务器上是同一个顺序（任务书自己的顺序；对着正式服的 3814 个任务核对过），按位置对上；子任务、选项的编号（task N、option N，从 1 数）就是这个位置，`quest_book` 换成从 0 数交给身体。
 - 这两个文件不在时，三个工具整个退回去问服务器的 `quest.lines` / `quest.search` / `quest.get`（英文，不能翻页）。
 
 ## 游戏内指南

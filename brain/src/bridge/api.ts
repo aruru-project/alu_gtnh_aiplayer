@@ -10,6 +10,7 @@ import type {
   BotListEntry,
   BotStatus,
   Center,
+  ClientOnlyScreen,
   ContainerInfo,
   DrawersResult,
   EntityInfo,
@@ -24,6 +25,7 @@ import type {
   QuestDetail,
   QuestHit,
   QuestLine,
+  QuestPressResult,
   QuestProgress,
   RecipeFindResult,
   ScanResult,
@@ -149,6 +151,24 @@ export class BridgeApi {
   questGet(id: string, player?: string): Promise<QuestDetail> {
     return this.call('quest.get', player === undefined ? { id } : { id, player })
   }
+  // 任务书的按钮：bot 替自己按（身体做客户端那一半）。task、reward、choice 是 quest.get 里的第几个，从 0 数。
+  // 只在没有任务在跑时可用（否则 busy）；老的身体没有这几个方法（unknown_method）。
+  /** 任务界面的“检测/提交”。 */
+  questSubmit(bot: string, id: string): Promise<QuestPressResult> {
+    return this.call('quest.submit', { bot, id })
+  }
+  /** 一个勾选框子任务的框。 */
+  questCheck(bot: string, id: string, task: number): Promise<QuestPressResult> {
+    return this.call('quest.check', { bot, id, task })
+  }
+  /** 挑一样的奖励里点一样。 */
+  questChoose(bot: string, id: string, reward: number, choice: number): Promise<QuestPressResult> {
+    return this.call('quest.choose', { bot, id, reward, choice })
+  }
+  /** 任务界面的“领取”。 */
+  questClaim(bot: string, id: string): Promise<QuestPressResult> {
+    return this.call('quest.claim', { bot, id })
+  }
 
   // 图纸
   blueprintList(): Promise<{ blueprints?: BlueprintEntry[]; folder?: string }> {
@@ -213,7 +233,7 @@ export class BridgeApi {
     return this.call('bot.probe', { bot, ...pos })
   }
   /** 身体按得了的 mod 的键（老的身体没有这个方法：unknown_method）。 */
-  botKeys(): Promise<{ keys?: KeyInfo[] }> {
+  botKeys(): Promise<{ keys?: KeyInfo[]; clientOnly?: ClientOnlyScreen[] }> {
     return this.call('bot.keys')
   }
   /** 像玩家那样按一下一个 mod 的键；sneak 是按着 Shift。只在没有任务在跑时可用（否则 busy）。 */

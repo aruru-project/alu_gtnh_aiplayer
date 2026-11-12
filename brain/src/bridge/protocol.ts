@@ -134,6 +134,21 @@ export interface KeyInfo {
 }
 
 /**
+ * 只在 mod 的客户端里画的界面，身体不替它画（服务器上没有这个界面，打不开）：它是什么、客户端里用哪件物品右键 / 哪个键打开、
+ * 它的按钮做的事由哪些协议方法做。bot.keys 的 clientOnly 列出有键的；screen.open 拿着那件物品时在结果里带上。
+ */
+export interface ClientOnlyScreen {
+  screen: string
+  item?: { id: string }
+  key?: string
+  keyName?: string
+  /** 做它的按钮做的事的协议方法（quest.submit……）。 */
+  instead?: string[]
+  /** screen.open 带的：身体说的那句话（英文）。 */
+  text?: string
+}
+
+/**
  * bot.key 的结果：按下以后看得出的变化。screen：按完之后开着的界面（或者按之前开着、按完关了的那个），
  * changed：穿着的东西自己存的数据里变了的值（key 是 slot 之下的路径；key 为空串是那件东西本身换了），
  * said：这一下让游戏对它说的话（那个 mod 在客户端打印的也算）。什么都没变时只有 key。
@@ -540,6 +555,8 @@ export interface ScreenState {
   cursor?: Item
   /** 界面上格子以外的东西；这个界面没有（不是 ModularUI 2 做的）就不带。 */
   controls?: ScreenControl[]
+  /** screen.open 拿着的那件东西的界面只在客户端里画（任务书）：永远不会出现，不用再等。 */
+  clientOnly?: ClientOnlyScreen
 }
 
 export interface MachineInfo {
@@ -668,6 +685,10 @@ export interface QuestTask {
   /** crafting、retrieval、optional_retrieval、hunt、location、fluid…… */
   type: string
   complete?: boolean
+  /** 给了 player 才有：这个子任务记着的数（每样物品 / 流体交了或数到几个；猎杀、经验是一个数）；不计数的子任务没有。 */
+  progress?: number[] | number
+  /** 给了 player 才有：可做可不做，不影响任务完成。 */
+  optional?: boolean
   items?: QuestItem[]
   /** 交任务时物品会不会被收走。 */
   consumed?: boolean
@@ -687,7 +708,57 @@ export interface QuestDetail {
   state?: QuestState
   requires?: { id: string; name: string; complete?: boolean }[]
   tasks?: QuestTask[]
-  rewards?: { type: string; items?: QuestItem[] }[]
+  /** chosen：给了 player 时，挑一样的奖励他现在选的是第几样（从 0 数；没选不带）。 */
+  rewards?: { type: string; items?: QuestItem[]; chosen?: number }[]
+  /** 给了 player、而且他在线时：任务界面上两个按钮在他的客户端里能不能按（检测/提交、领取）。 */
+  buttons?: { submit?: boolean; claim?: boolean }
+  /** 给了 player、而且他在队伍里时。 */
+  party?: QuestParty
+}
+
+/** 一个玩家的任务书队伍：队名、队员。队伍里打勾、交东西算全队；claimForAll 时领一次奖励全队都算领过。 */
+export interface QuestParty {
+  name?: string
+  members?: string[]
+  claimForAll?: boolean
+}
+
+/** 任务书上一样东西的变化：数量是变了多少。 */
+export interface QuestPressItem {
+  id: string
+  meta?: number
+  name?: string
+  count: number
+}
+
+/**
+ * quest.submit / quest.check / quest.choose / quest.claim 的结果：bot 替自己按了任务书上的一个按钮，看得见的变化。
+ * pressed:false 是这个按钮在客户端里是灰的（why 是原因），什么都没发。
+ */
+export interface QuestPressResult {
+  pressed: boolean
+  button?: string
+  why?: string
+  quest: { id: string; name: string; state: QuestState; was?: QuestState }
+  /** submit、check：每个子任务现在的样子（task 从 0 数，和 quest.get 的顺序一样）；was、progressWas 只在变了时有。 */
+  tasks?: { task: number; type: string; complete: boolean; was?: boolean; optional?: boolean; progress?: number[] | number; progressWas?: number[] | number }[]
+  /** 子任务都满足了、任务还没标完成：任务书下一次查这个玩家时（每 3 秒）标。 */
+  tasksDone?: boolean
+  lost?: QuestPressItem[]
+  gained?: QuestPressItem[]
+  /** 背包放不下、掉在脚边的。 */
+  dropped?: QuestPressItem[]
+  xp?: { levelWas: number; level: number; pointsWas: number; points: number }
+  /** claim：奖励顺带让这些任务也完成了。 */
+  alsoComplete?: { id: string; name: string }[]
+  /** choose：现在选的是哪个奖励的第几样。 */
+  chosen?: { reward: number; choice: number; item?: QuestPressItem }
+  /** claim 按不了时：还没选的挑一样的奖励和它的选项。 */
+  choices?: { reward: number; items: QuestPressItem[] }[]
+  said?: string[]
+  party?: QuestParty
+  note?: string
+  freeSlots?: number
 }
 
 /**

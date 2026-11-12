@@ -28,6 +28,11 @@ export class QuestProgressCache {
     this.ttlMs = ttlMs
   }
 
+  /** 忘掉留着的这个玩家的进度：bot 刚按了任务书上的按钮，下一次要现问。 */
+  forget(player: string): void {
+    this.kept.delete(player.toLowerCase())
+  }
+
   /** 问不到时抛 BridgeError（不缓存失败）。 */
   async get(player: string): Promise<PlayerQuestProgress> {
     const key = player.toLowerCase()

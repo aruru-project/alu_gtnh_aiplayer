@@ -5,7 +5,7 @@
 // 身体不认界面是哪个 mod 的，点了会怎样由界面自己决定：控件的名字是界面自己起的，这里原样给模型，不替它解释。只在没有任务在跑时可用。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { Item, ScreenControl, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
+import type { ClientOnlyScreen, Item, ScreenControl, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
 import { compactJson, fluidName, itemKey, nameOf, wornText } from './format.ts'
 import { bool, int, num, obj, pos, str } from './schema.ts'
 import { USE_SIDES } from './tasks.ts'
@@ -188,6 +188,20 @@ export function formatScreen(state: ScreenState): string {
   return lines.join('\n')
 }
 
+/**
+ * 只在 mod 的客户端里画的界面（任务书）：服务器上没有，打不开。说清楚它是什么，它的按钮做的事用哪个工具做。
+ * 身体给的是协议方法名（quest.submit……），这里换成做这些事的工具。
+ */
+export function clientOnlyText(c: ClientOnlyScreen): string {
+  const methods = c.instead ?? []
+  const tools = methods.some((m) => m.startsWith('quest.'))
+    ? 'quest_book does what its buttons do (submit: Detect/Submit, tick: a checkbox, claim: Claim, with "choice" for a reward to pick); get_quest and find_quests show what is in it and your progress (give your own name as "player")'
+    : methods.length > 0
+      ? `what its buttons do is done by the body's ${methods.join(', ')}`
+      : 'nothing else does what its buttons do'
+  return `No screen opened, and none will: ${c.screen} is a screen drawn only by the game client, and the game server has no such screen to open. Instead, ${tools}.`
+}
+
 /** 身体对界面动作的拒绝，说成模型知道下一步该干什么的话。 */
 function refusal(e: unknown): ToolResult | undefined {
   if (!(e instanceof BridgeError)) return undefined
@@ -213,11 +227,12 @@ async function act(run: () => Promise<ScreenState>, opened?: { look(): Promise<S
     if (opened) {
       // 刚发出“打开”：界面还没出现就等一等再看，出现了就是它
       const pause = opened.wait ?? SCREEN_SETTLE_MS
-      for (let n = 0; n < SCREEN_SETTLE_TRIES && state.open !== true; n++) {
+      for (let n = 0; n < SCREEN_SETTLE_TRIES && state.open !== true && !state.clientOnly; n++) {
         await new Promise((resolve) => setTimeout(resolve, pause))
         state = await opened.look()
       }
       if (state.open !== true) {
+        if (state.clientOnly) return { content: clientOnlyText(state.clientOnly), data: state }
         return { content: `No screen opened: after asking for it, it was looked for ${SCREEN_SETTLE_TRIES} more times over ${(SCREEN_SETTLE_TRIES * pause) / 1000} s and none appeared. That block (or item) opens no screen this way.`, data: state }
       }
     }

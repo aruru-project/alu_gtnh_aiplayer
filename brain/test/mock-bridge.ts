@@ -285,6 +285,15 @@ export const MOCK_KEYS = [
   { key: 'keys.adventureBackpack.toggleActions', name: 'Toggle Actions', category: 'Adventure Backpack' },
 ]
 
+/** 只在客户端里画的界面（真的身体对 bot.keys、拿着任务书 screen.open 这样说）。 */
+export const MOCK_CLIENT_ONLY = {
+  screen: 'the quest book (BetterQuesting)',
+  item: { id: 'questbook:ItemQuestBook' },
+  key: 'key.betterquesting.quests',
+  keyName: 'Open Quests',
+  instead: ['quest.submit', 'quest.check', 'quest.choose', 'quest.claim'],
+}
+
 /** 真实 mod 默认的 allowedCommands。一项可以是几个词：team join 只放行 team join …。 */
 const ALLOWED_COMMANDS = ['home', 'sethome', 'delhome', 'homes', 'spawn', 'back', 'tell', 'msg', 'w', 'tpa', 'tpaccept', 'team join']
 
@@ -1410,7 +1419,15 @@ export class MockBridge {
         this.onlineBot(p.bot)
         return { dropped: 0 }
       case 'bot.keys':
-        return { keys: MOCK_KEYS }
+        return { keys: MOCK_KEYS, clientOnly: [MOCK_CLIENT_ONLY] }
+      case 'quest.submit':
+        return this.questPress(this.onlineBot(p.bot), p, 'submit')
+      case 'quest.check':
+        return this.questPress(this.onlineBot(p.bot), p, 'check')
+      case 'quest.choose':
+        return this.questPress(this.onlineBot(p.bot), p, 'choose')
+      case 'quest.claim':
+        return this.questPress(this.onlineBot(p.bot), p, 'claim')
       case 'bot.key':
         return this.pressKey(this.onlineBot(p.bot), p)
       case 'bot.probe': {
@@ -1890,6 +1907,130 @@ export class MockBridge {
     return { complete: new Set(), claimed: new Set() }
   }
 
+  /** 每个玩家每个任务的子任务：做完没、交了几个（按 tasks 的顺序）；挑一样的奖励选了第几样。 */
+  private readonly questTasks = new Map<string, { done: boolean[]; counted: number[][] }>()
+  private readonly questChoices = new Map<string, number>()
+
+  /**
+   * 任务书的按钮（quest.submit / check / choose / claim），照真的身体：只动 bot 自己的进度，按钮在客户端里是灰的时 pressed:false 带原因；
+   * 交了东西、打了勾以后子任务都满足的，任务书下一次查（这里就是下一次问）时才是 complete，这一次的结果带 tasksDone。
+   * 简化：retrieval 类按物品 id 数；别的子任务（合成、猎杀）不会被“检测”完成。
+   */
+  private questPress(bot: MockBot, p: Json, button: 'submit' | 'check' | 'choose' | 'claim'): Json {
+    if (bot.task) throw new RpcError('busy', 'a task is running; the quest book is for when the bot is idle')
+    const book = this.quests()
+    const q = book.find((x) => x.id === String(p.id ?? '').trim().toLowerCase())
+    if (!q) throw new RpcError('not_found', `there is no quest with id ${String(p.id)}`)
+    const key = bot.name.toLowerCase()
+    let who = this.questProgress.get(key)
+    if (!who) this.questProgress.set(key, (who = { complete: new Set(), claimed: new Set() }))
+    const slot = `${key}|${q.id}`
+    let tasks = this.questTasks.get(slot)
+    if (!tasks) this.questTasks.set(slot, (tasks = { done: q.tasks.map(() => who!.complete.has(q.id)), counted: q.tasks.map((t) => ((t.items as Json[] | undefined) ?? []).map(() => 0)) }))
+    const before = this.questState(q, who)!
+    const quest = (state: string): Json => ({ id: q.id, name: q.name, state, ...(state !== before ? { was: before } : {}) })
+    const notPressed = (name: string, why: string): Json => ({ pressed: false, button: name, why, quest: quest(before) })
+    const lost: Json[] = []
+    const gained: Json[] = []
+    const wasDone = [...tasks.done]
+    const wasCounted = tasks.counted.map((c) => [...c])
+    const finish = (): void => {
+      if (before === 'locked' || who!.complete.has(q.id)) return
+      if (tasks!.done.every((d) => d)) who!.complete.add(q.id)
+    }
+    if (button === 'submit') {
+      if (before.startsWith('complete')) return notPressed('Detect/Submit', before === 'complete' ? 'the quest is complete and its reward has been claimed' : 'the quest is complete; its reward is waiting to be claimed')
+      if (before !== 'locked') {
+        q.tasks.forEach((t, n) => {
+          const items = (t.items as Json[] | undefined) ?? []
+          if (tasks!.done[n] || !/retrieval/.test(String(t.type)) || items.length === 0) return
+          items.forEach((want, k) => {
+            const need = Number(want.count) - tasks!.counted[n]![k]!
+            const have = bot.inventory.filter((i) => i.id === want.id).reduce((m, i) => m + i.count, 0)
+            const take = Math.min(need, have)
+            if (take <= 0) return
+            tasks!.counted[n]![k]! += take
+            if (t.consumed === true) {
+              let left = take
+              for (const i of [...bot.inventory]) {
+                if (left === 0 || i.id !== want.id) continue
+                const used = Math.min(left, i.count)
+                i.count -= used
+                left -= used
+                if (i.count === 0) bot.inventory.splice(bot.inventory.indexOf(i), 1)
+              }
+              lost.push({ id: want.id, meta: want.meta ?? 0, name: want.name, count: take })
+            }
+          })
+          tasks!.done[n] = items.every((want, k) => tasks!.counted[n]![k]! >= Number(want.count))
+        })
+        finish()
+      }
+    } else if (button === 'check') {
+      const n = this.num(p, 'task')
+      if (n < 0 || n >= q.tasks.length) throw new RpcError('bad_request', `the quest has ${q.tasks.length} task(s), numbered from 0; there is no task ${n}`)
+      if (q.tasks[n]!.type !== 'checkbox') throw new RpcError('bad_request', `task ${n} is a ${String(q.tasks[n]!.type)} task, not a checkbox`)
+      if (tasks.done[n]) return notPressed('checkbox', 'that checkbox is already ticked')
+      tasks.done[n] = true
+      finish()
+    } else if (button === 'choose') {
+      const r = this.num(p, 'reward')
+      const c = this.num(p, 'choice')
+      const reward = q.rewards[r]
+      if (!reward || reward.type !== 'choice') throw new RpcError('bad_request', `reward ${r} is not a choice`)
+      const items = (reward.items as Json[] | undefined) ?? []
+      if (c < 0 || c >= items.length) throw new RpcError('bad_request', `reward ${r} has ${items.length} item(s) to choose from, numbered from 0; there is no ${c}`)
+      this.questChoices.set(`${slot}|${r}`, c)
+      return { pressed: true, quest: quest(before), chosen: { reward: r, choice: c, item: items[c] }, note: 'the server keeps a choice in memory only, not in the save: if it restarts before the reward is claimed, the choice has to be made again', freeSlots: 36 - bot.inventory.length }
+    } else {
+      if (q.rewards.length === 0) return notPressed('Claim', 'the quest has no rewards')
+      if (!who.complete.has(q.id)) return { ...notPressed('Claim', `the quest is not complete (${before})`) }
+      if (who.claimed.has(q.id)) return notPressed('Claim', 'the reward has already been claimed')
+      const unpicked = q.rewards.flatMap((r, n) => (r.type === 'choice' && !this.questChoices.has(`${slot}|${n}`) ? [{ reward: n, items: r.items }] : []))
+      if (unpicked.length > 0) return { ...notPressed('Claim', 'a reward is one to pick from and nothing is picked yet (choices lists it): pick one first'), choices: unpicked }
+      q.rewards.forEach((r, n) => {
+        const items = (r.items as Json[] | undefined) ?? []
+        const given = r.type === 'choice' ? [items[this.questChoices.get(`${slot}|${n}`)!]!] : r.type === 'item' ? items : []
+        for (const it of given) {
+          const used = new Set(bot.inventory.map((i) => i.slot))
+          let free = 0
+          while (used.has(free)) free++
+          bot.inventory.push({ slot: free, id: String(it.id), meta: Number(it.meta ?? 0), count: Number(it.count), name: String(it.name ?? it.id) })
+          gained.push({ id: it.id, meta: it.meta ?? 0, name: it.name, count: it.count })
+        }
+      })
+      who.claimed.add(q.id)
+    }
+    // 子任务都满足了：结果里任务还是原来的状态，任务书下一次查时才标完成
+    const now = button === 'claim' ? this.questState(q, who)! : before
+    const out: Json = { pressed: true, quest: quest(now) }
+    if (button === 'submit' || button === 'check') {
+      out.tasks = q.tasks.map((t, n) => {
+        const items = (t.items as Json[] | undefined) ?? []
+        const changed = wasCounted[n]!.some((c, k) => c !== tasks!.counted[n]![k])
+        return {
+          task: n,
+          type: t.type,
+          complete: tasks!.done[n],
+          ...(wasDone[n] !== tasks!.done[n] ? { was: wasDone[n] } : {}),
+          ...(items.length > 0 ? { progress: tasks!.counted[n], ...(changed ? { progressWas: wasCounted[n] } : {}) } : {}),
+        }
+      })
+      if (before !== 'locked' && who.complete.has(q.id)) out.tasksDone = true
+      if (before === 'locked') {
+        const missing = q.requires.filter((r) => !who!.complete.has(r)).join(', ')
+        out.note =
+          button === 'check'
+            ? `the quest is locked: the tick is kept and counts once the quest unlocks; it needs ${missing} (requirement logic AND)`
+            : `the quest is locked: the quest book takes a submission only for an unlocked quest, so nothing was looked at; it needs ${missing} (requirement logic AND)`
+      }
+    }
+    if (lost.length > 0) out.lost = lost
+    if (gained.length > 0) out.gained = gained
+    out.freeSlots = 36 - bot.inventory.length
+    return out
+  }
+
   private questState(q: MockQuest, who: { complete: Set<string>; claimed: Set<string> } | undefined): string | undefined {
     if (!who) return undefined
     if (who.complete.has(q.id)) return who.claimed.has(q.id) ? 'complete' : 'complete, reward unclaimed'
@@ -2187,6 +2328,10 @@ export class MockBridge {
     const opener = p.item as { id: string; meta?: number } | undefined
     if (opener) {
       if (!bot.inventory.some((i) => i.id === opener.id && (typeof opener.meta !== 'number' || i.meta === opener.meta))) throw new RpcError('no_material', 'the bot carries no such item')
+      // 任务书：界面只在客户端里画，真的身体照实这样说
+      if (opener.id === MOCK_CLIENT_ONLY.item.id) {
+        return { open: false, clientOnly: { screen: MOCK_CLIENT_ONLY.screen, instead: MOCK_CLIENT_ONLY.instead, text: `${MOCK_CLIENT_ONLY.screen} is a screen drawn only by a game client` } }
+      }
       const inside = this.bags.get(opener.id)
       // 右键后没有界面打开的东西：open 是 false
       if (!inside) return { open: false }

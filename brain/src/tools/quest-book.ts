@@ -2,6 +2,7 @@
 // 做完了 / 现在能做 / 没解锁由前置关系在这里算。
 
 import { BridgeError } from '../bridge/protocol.ts'
+import type { QuestDetail, QuestParty } from '../bridge/protocol.ts'
 import type { PackItem, PackQuest, PackQuestReward, PackQuestTask, QuestBook, QuestState } from '../packdata/index.ts'
 import { isQuestId, normalizeQuestId } from '../packdata/index.ts'
 import { compactJson, dimName, formatPos, questItemText } from './format.ts'
@@ -141,10 +142,26 @@ export async function findQuestsLocal(ctx: ToolContext, book: QuestBook, i: Find
       : `${total} quests match${what}. This is page ${page} of ${pages} (quests ${start + 1}-${start + shown.length})${
           page < pages ? `; pass page ${page + 1} for the next ones, or narrow it down with query, line or state` : ''
         }.`
-  const rows = shown.map(
-    (m) => `- ${m.quest.id} "${m.quest.name}" [${m.line.name}]${m.quest.main ? ' (main)' : ''}${m.state ? `: ${m.state}${m.unclaimed ? UNCLAIMED : ''}` : ''}`,
-  )
-  return `${head} (id "title" [chapter]: state; "(main)" marks the main line)\n${rows.join('\n')}${left}${progress.note}`
+  const rows = shown.map((m) => {
+    const marks = bookMarks(m.quest, m.state, m.unclaimed === true)
+    return `- ${m.quest.id} "${m.quest.name}" [${m.line.name}]${m.quest.main ? ' (main)' : ''}${m.state ? `: ${m.state}${m.unclaimed ? UNCLAIMED : ''}` : ''}${marks.length > 0 ? ` {${marks.join(', ')}}` : ''}`
+  })
+  const marked = rows.some((r) => r.endsWith('}'))
+  const legend = marked ? `; {…}: what is done by hand in the quest book: "hand in" (Detect/Submit takes items), "tick" (a checkbox), "pick one" (a reward to choose)` : ''
+  return `${head} (id "title" [chapter]: state; "(main)" marks the main line${legend})\n${rows.join('\n')}${left}${progress.note}`
+}
+
+/**
+ * 这个任务在书里有哪些要玩家亲手按的：交东西会被收走的子任务（只有按“检测/提交”才交）、勾选框、挑一样的奖励。
+ * 做完了的不再说交和勾；奖励领过了的不再说挑。没有进度时（不知道状态）全说。
+ */
+export function bookMarks(quest: PackQuest, state: QuestState | undefined, unclaimed: boolean): string[] {
+  const marks: string[] = []
+  const open = state !== 'complete'
+  if (open && quest.tasks.some((t) => t.consume === true)) marks.push('hand in')
+  if (open && quest.tasks.some((t) => t.type === 'checkbox')) marks.push('tick')
+  if ((open || unclaimed) && quest.rewards.some((r) => r.type === 'choice')) marks.push('pick one')
+  return marks
 }
 
 /** 任务要的或奖励的一样物品；物品表在的话配上中文名。 */
@@ -172,7 +189,28 @@ function locationText(l: NonNullable<PackQuestTask['location']>): string {
   return l.invert ? `NOT ${s}` : s
 }
 
-function taskLine(ctx: ToolContext, t: PackQuestTask): string {
+/** 服务器那边一个子任务对这个玩家的样子（quest.get 带 player）：做完没、记着的数。 */
+type TaskStatus = NonNullable<QuestDetail['tasks']>[number]
+
+/** 记着的数对着要的数：每样物品（或流体）一个，猎杀这类是一个数。 */
+function progressText(t: PackQuestTask, status: TaskStatus): string {
+  const p = status.progress
+  if (Array.isArray(p)) {
+    const wanted = (t.items ?? []).length > 0 ? (t.items ?? []).map((i) => i.count) : (t.fluids ?? []).map((f) => f.mb)
+    if (wanted.length !== p.length) return `counted ${p.join(', ')}`
+    return p.map((n, k) => `${n}/${wanted[k]}`).join(', ')
+  }
+  if (typeof p === 'number') return t.count !== undefined ? `${p}/${t.count}` : `counted ${p}`
+  return ''
+}
+
+function statusText(t: PackQuestTask, status: TaskStatus | undefined): string {
+  if (!status || typeof status.complete !== 'boolean') return ''
+  const counted = progressText(t, status)
+  return status.complete ? ` [done${counted ? `: ${counted}` : ''}]` : ` [not done${counted ? `; so far ${counted}` : ''}]`
+}
+
+function taskLine(ctx: ToolContext, t: PackQuestTask, n: number, status?: TaskStatus): string {
   const notes: string[] = []
   if (t.type.startsWith('optional')) notes.push('optional')
   const items = t.items ?? []
@@ -194,18 +232,22 @@ function taskLine(ctx: ToolContext, t: PackQuestTask): string {
   }
   if (t.location) wants.push(locationText(t.location))
   if (wants.length === 0) wants.push(t.type === 'checkbox' ? 'nothing to bring: the player ticks it in the quest book' : '(nothing more is recorded about it)')
-  return `- ${[t.type, ...notes].join(', ')}: ${wants.join(', ')}`
+  return `- task ${n}: ${[t.type, ...notes].join(', ')}: ${wants.join(', ')}${statusText(t, status)}`
 }
 
-function rewardLine(ctx: ToolContext, book: QuestBook, r: PackQuestReward): string {
+/** chosen：挑一样的奖励里这个玩家现在选的是第几样（从 0 数，服务器给的）。 */
+function rewardLine(ctx: ToolContext, book: QuestBook, r: PackQuestReward, n: number, chosen?: number): string {
+  const head = `- reward ${n}: ${r.type}`
   const items = (r.items ?? []).map((i) => itemText(ctx, i, true))
   if (r.quest !== undefined) {
     const other = book.get(r.quest)
-    return `- ${r.type}: also completes quest ${r.quest}${other ? ` "${other.name}"` : ''}`
+    return `${head}: also completes quest ${r.quest}${other ? ` "${other.name}"` : ''}`
   }
-  if (items.length === 0 && r.amount !== undefined) return `- ${r.type}: ${r.amount} ${r.levels ? 'level(s)' : 'point(s)'}`
-  if (items.length === 0) return `- ${r.type}`
-  return `- ${r.type}${r.type === 'choice' ? ' (the player picks one)' : ''}: ${items.join(', ')}`
+  if (items.length === 0 && r.amount !== undefined) return `${head}: ${r.amount} ${r.levels ? 'level(s)' : 'point(s)'}`
+  if (items.length === 0) return head
+  if (r.type !== 'choice') return `${head}: ${items.join(', ')}`
+  const picked = chosen !== undefined && chosen >= 0 && chosen < items.length ? `; chosen now: option ${chosen + 1}` : ''
+  return `${head} (the player picks one): ${items.map((text, k) => `option ${k + 1}: ${text}`).join(', ')}${picked}`
 }
 
 /** 游戏刻 → 给人看的时长（20 刻一秒）。 */
@@ -232,7 +274,16 @@ function requiresHead(quest: PackQuest): string {
   return `Unlocks by the rule ${quest.logic} over these quests:`
 }
 
-function formatLocalQuest(ctx: ToolContext, book: QuestBook, quest: PackQuest, progress: Progress): string {
+/** 一个玩家的任务书队伍：打勾、交东西算全队；领奖算不算全队看服务器的设置。 */
+export function partyText(player: string, party: QuestParty): string {
+  const others = (party.members ?? []).filter((m) => m.toLowerCase() !== player.toLowerCase())
+  return (
+    `${player} is in the quest book party "${party.name ?? ''}"${others.length > 0 ? ` with ${others.join(', ')}` : ''}: a tick or a hand-in counts for the whole party; ` +
+    (party.claimForAll === true ? 'a claim marks the reward claimed for every member.' : 'each member claims rewards for themselves.')
+  )
+}
+
+function formatLocalQuest(ctx: ToolContext, book: QuestBook, quest: PackQuest, progress: Progress, detail?: QuestDetail): string {
   const out: string[] = []
   const chapters = book.linesOf(quest).map((l) => `"${l.name}"`)
   let head = `Quest ${quest.id} "${quest.name}"${quest.en ? ` (${quest.en})` : ''}, `
@@ -246,6 +297,14 @@ function formatLocalQuest(ctx: ToolContext, book: QuestBook, quest: PackQuest, p
     head += ` State for ${progress.player}: ${state}${unclaimed ? `${UNCLAIMED} (done; the reward has not been collected)` : STATE_NOTES[state]}.`
   }
   out.push(head)
+  if (detail?.buttons && progress.player !== undefined) {
+    const b = detail.buttons
+    const yours = progress.player.toLowerCase() === ctx.botName.toLowerCase() ? ' (quest_book presses them for you)' : ''
+    out.push(
+      `The quest's buttons in ${progress.player}'s quest book now: Detect/Submit ${b.submit === true ? 'can be pressed' : 'is greyed out'}, Claim ${b.claim === true ? 'can be pressed' : 'is greyed out'}${yours}.`,
+    )
+  }
+  if (detail?.party && progress.player !== undefined) out.push(partyText(progress.player, detail.party))
 
   if (quest.pre.length > 0) {
     out.push(requiresHead(quest))
@@ -258,11 +317,14 @@ function formatLocalQuest(ctx: ToolContext, book: QuestBook, quest: PackQuest, p
 
   if (quest.tasks.length === 0) out.push('Tasks: none listed.')
   else out.push(quest.taskLogic === 'OR' && quest.tasks.length > 1 ? 'Tasks (any one of them completes the quest):' : 'Tasks (what the quest asks for):')
-  for (const t of quest.tasks) out.push(taskLine(ctx, t))
+  // 服务器那边的子任务、奖励和本地资料是同一个顺序（都是任务书自己的顺序），按位置对；对不上数的不用
+  const tasks = detail?.tasks?.length === quest.tasks.length ? detail.tasks : undefined
+  const rewards = detail?.rewards?.length === quest.rewards.length ? detail.rewards : undefined
+  quest.tasks.forEach((t, k) => out.push(taskLine(ctx, t, k + 1, tasks?.[k])))
 
   if (quest.rewards.length > 0) {
     out.push('Rewards:')
-    for (const r of quest.rewards) out.push(rewardLine(ctx, book, r))
+    quest.rewards.forEach((r, k) => out.push(rewardLine(ctx, book, r, k + 1, rewards?.[k]?.chosen)))
   }
 
   // 描述放最后：前面那些是办事要用的硬信息，描述长
@@ -285,5 +347,19 @@ export async function getQuestLocal(ctx: ToolContext, book: QuestBook, i: { id: 
     )
   }
   const progress = await progressFor(ctx, i.player)
-  return formatLocalQuest(ctx, book, quest, progress) + progress.note
+  const detail = progress.player !== undefined ? await playerDetail(ctx, quest.id, progress.player) : undefined
+  return formatLocalQuest(ctx, book, quest, progress, detail) + progress.note
+}
+
+/**
+ * 这个任务对这个玩家的样子要问服务器（quest.get 带 player）：每个子任务做完没、记着的数，挑一样的奖励选了哪个，
+ * 两个按钮能不能按，在不在队伍里。问不到（老的身体、连不上）就不带，任务的内容照样给。
+ */
+async function playerDetail(ctx: ToolContext, id: string, player: string): Promise<QuestDetail | undefined> {
+  try {
+    return await ctx.bridge.questGet(id, player)
+  } catch (e) {
+    if (e instanceof BridgeError) return undefined
+    throw e
+  }
 }

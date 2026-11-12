@@ -57,4 +57,12 @@ interface ModClient {
 
     /** Presses such a button, as a click on it does. False when the screen has no such button of its own. */
     boolean pressControl(Bot bot, Container c, String key);
+
+    /**
+     * Its screens that exist only in its client and that the body does not draw: the server has nothing to open, so
+     * opening them from the bot opens nothing. Each is {screen, item?:{id}, key?, keyName?, instead:[methods]}: what
+     * it is, the item whose right-click and the key whose press open it in a client, and the bridge methods that do
+     * what its buttons do.
+     */
+    default void clientScreens(JsonArray out) {}
 }

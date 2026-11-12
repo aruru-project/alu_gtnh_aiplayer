@@ -1,4 +1,4 @@
-// 任务书（BetterQuesting）：章节、任务的说明和要求、某个玩家的进度。只查不改：替不了谁提交任务或领奖励。
+// 任务书（BetterQuesting）：章节、任务的说明和要求、某个玩家的进度。这三个只查不改；bot 按自己任务书上的按钮是 quest-actions.ts。
 //
 // 任务书的内容是静态的，读大脑本地的资料（ctx.packdata.quests，中文，见 quest-book.ts）；只有“谁做完了哪些”问服务器。
 // 本地没有任务书资料时，这三个工具整个退回去问服务器（quest.lines / quest.search / quest.get）：那边的文字是英文的，
@@ -82,7 +82,7 @@ export const listQuestLines: Tool = {
   name: 'list_quest_lines',
   brief: '{player?}: quest book chapters, progress -> lines[{name, quests, complete, available}]',
   description:
-    "The chapters of the quest book (BetterQuesting), in the book's order, with their Chinese and English names: how many quests each has, and for a player how many are done and how many can be done now. Read-only: you cannot hand in quests or claim rewards for anyone.",
+    "The chapters of the quest book (BetterQuesting), in the book's order, with their Chinese and English names: how many quests each has, and for a player how many are done and how many can be done now. Read-only.",
   inputSchema: obj({ player }),
   async run(ctx, i: { player?: string }): Promise<ToolResult> {
     const book = ctx.packdata?.quests

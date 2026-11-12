@@ -100,7 +100,20 @@ public final class Screens {
             if (bot.clickWasRefused(at[0], at[1], at[2])) throw RpcException.denied(bot.refused("opening that"));
         }
         opened(bot, item != null ? null : at);
-        return look(bot);
+        JsonObject o = look(bot);
+        if (item != null && !o.get("open")
+            .getAsBoolean()) {
+            // Some items open a screen only their mod's client draws: nothing will ever appear here.
+            JsonObject screen = alu.aiplayer.bot.ModClients.clientScreenOf(p.inventory.getCurrentItem());
+            if (screen != null) {
+                JsonObject c = new JsonObject();
+                c.addProperty("screen", screen.get("screen").getAsString());
+                c.add("instead", screen.get("instead"));
+                c.addProperty("text", alu.aiplayer.bot.ModClients.clientOnlyText(screen));
+                o.add("clientOnly", c);
+            }
+        }
+        return o;
     }
 
     /** What the open screen shows. Some screens only appear a moment after the click; then this says not open yet. */

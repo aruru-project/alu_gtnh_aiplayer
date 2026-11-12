@@ -100,6 +100,27 @@ public final class BridgeApi {
             requireQuestBook();
             return Quests.get(J.reqStr(p, "id"), Quests.player(J.str(p, "player", null)));
         });
+        // The quest book's buttons, pressed by the bot for itself (its client's half done by the body).
+        bridge.register("quest.submit", p -> {
+            requireQuestBook();
+            return alu.aiplayer.bot.ModClients.questBook()
+                .submit(bots.requireOnline(J.reqStr(p, "bot")), J.reqStr(p, "id"));
+        });
+        bridge.register("quest.check", p -> {
+            requireQuestBook();
+            return alu.aiplayer.bot.ModClients.questBook()
+                .check(bots.requireOnline(J.reqStr(p, "bot")), J.reqStr(p, "id"), J.reqInt(p, "task"));
+        });
+        bridge.register("quest.choose", p -> {
+            requireQuestBook();
+            return alu.aiplayer.bot.ModClients.questBook()
+                .choose(bots.requireOnline(J.reqStr(p, "bot")), J.reqStr(p, "id"), J.reqInt(p, "reward"), J.reqInt(p, "choice"));
+        });
+        bridge.register("quest.claim", p -> {
+            requireQuestBook();
+            return alu.aiplayer.bot.ModClients.questBook()
+                .claim(bots.requireOnline(J.reqStr(p, "bot")), J.reqStr(p, "id"));
+        });
         bridge.register("item.search", p -> {
             String query = J.reqStr(p, "query");
             if (query.trim()
@@ -328,6 +349,13 @@ public final class BridgeApi {
         bridge.register("bot.keys", p -> {
             JsonObject o = new JsonObject();
             o.add("keys", alu.aiplayer.bot.ModClients.keys());
+            // Keys a client has that open a screen only it draws: not pressable here, said so with what does their work.
+            JsonArray clientOnly = new JsonArray();
+            for (JsonElement e : alu.aiplayer.bot.ModClients.clientScreens()) {
+                if (e.getAsJsonObject()
+                    .has("key")) clientOnly.add(e);
+            }
+            if (clientOnly.size() > 0) o.add("clientOnly", clientOnly);
             return o;
         });
         bridge.register(

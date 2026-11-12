@@ -47,7 +47,66 @@ public final class ModClients {
                 AiPlayerMod.LOG.warn("Adventure Backpack is here but its client parts cannot be reached; bots cannot press its keys", t);
             }
         }
+        if (Loader.isModLoaded("betterquesting")) {
+            try {
+                out.add(new BetterQuestingClient());
+            } catch (Throwable t) {
+                AiPlayerMod.LOG.warn("BetterQuesting is here but its client parts cannot be reached; bots cannot use the quest book", t);
+            }
+        }
         return out;
+    }
+
+    /** The quest book's buttons; not_found when the server has no quest book. */
+    public static BetterQuestingClient questBook() {
+        for (ModClient m : ALL) if (m instanceof BetterQuestingClient) return (BetterQuestingClient) m;
+        throw RpcException.notFound("this server has no quest book (BetterQuesting)");
+    }
+
+    /** Screens that only a mod's client draws and the body does not: see {@link ModClient#clientScreens}. */
+    public static JsonArray clientScreens() {
+        JsonArray out = new JsonArray();
+        for (ModClient m : ALL) m.clientScreens(out);
+        return out;
+    }
+
+    /** Such a screen that right-clicking this item opens in a client, or null. */
+    public static JsonObject clientScreenOf(ItemStack held) {
+        if (held == null) return null;
+        String id = Names.itemId(held.getItem());
+        for (com.google.gson.JsonElement e : clientScreens()) {
+            JsonObject o = e.getAsJsonObject();
+            if (o.has("item") && id.equals(
+                o.getAsJsonObject("item")
+                    .get("id")
+                    .getAsString()))
+                return o;
+        }
+        return null;
+    }
+
+    /** Such a screen that this key opens in a client, or null. */
+    private static JsonObject clientScreenOfKey(String key) {
+        for (com.google.gson.JsonElement e : clientScreens()) {
+            JsonObject o = e.getAsJsonObject();
+            if (o.has("key") && key.equals(
+                o.get("key")
+                    .getAsString()))
+                return o;
+        }
+        return null;
+    }
+
+    /** "the quest book (...) is drawn only by a game client ...; its buttons are quest.submit, ..." */
+    public static String clientOnlyText(JsonObject screen) {
+        StringBuilder instead = new StringBuilder();
+        for (com.google.gson.JsonElement m : screen.getAsJsonArray("instead")) {
+            if (instead.length() > 0) instead.append(", ");
+            instead.append(m.getAsString());
+        }
+        return screen.get("screen")
+            .getAsString() + " is a screen drawn only by a game client; the server has no such screen to open. What its buttons do: "
+            + instead;
     }
 
     /** Every key a bot can press: [{key, name, category}]. */
@@ -75,7 +134,15 @@ public final class ModClients {
                     .getAsString())) owner = m;
             }
         }
-        if (owner == null) throw RpcException.badRequest("no such key: " + key + "; the keys are " + keys());
+        if (owner == null) {
+            JsonObject screen = clientScreenOfKey(key);
+            if (screen != null) {
+                throw RpcException.badRequest(
+                    key + " (" + screen.get("keyName")
+                        .getAsString() + ") does nothing on the server, it only opens a screen in a game client: " + clientOnlyText(screen));
+            }
+            throw RpcException.badRequest("no such key: " + key + "; the keys are " + keys());
+        }
         EntityPlayerMP p = bot.player();
         Map<String, String> before = wornData(p);
         boolean screenBefore = p.openContainer != p.inventoryContainer;

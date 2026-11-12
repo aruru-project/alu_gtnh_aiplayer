@@ -702,8 +702,8 @@ it('端到端：主人在面板写了一本手册，然后问“任务书下一�
   assert.equal(/Basic Crafting: Motors/.test(seen(2)), false, 'a locked quest is not listed as available')
   assert.deepEqual(bridge.requestsOf('quest.get'), [{ id: '4a', player: 'Steve' }])
   assert.match(seen(3), /Quest 4a \\"Take to the Skies\\", chapter \\"Tier 0\.5 - Steam\\"\. State for Steve: available/)
-  assert.match(seen(3), /- retrieval, not done, the items are kept: 1× adventurebackpack:copterPack \\"Copter Pack\\"/)
-  assert.match(seen(3), /- item: 10× gregtech:gt\.metaitem\.01\/32000 \\"Copper Coin\\"/)
+  assert.match(seen(3), /- task 1: retrieval, not done, the items are kept: 1× adventurebackpack:copterPack \\"Copter Pack\\"/)
+  assert.match(seen(3), /- reward 1: item: 10× gregtech:gt\.metaitem\.01\/32000 \\"Copper Coin\\"/)
   assert.deepEqual(bridge.commandLog[0], { bot: 'Alu', command: 'tell Steve 能做的有 3 个，最近的是做个直升机背包交任务。' })
 
   brain.child.kill('SIGTERM')
@@ -757,11 +757,12 @@ it('端到端：大脑带着本地任务书资料启动，主人问“任务书�
   assert.match(seen(1), /- 43 \\"导线，奇怪？\\" \[第0\.5阶 - 蒸汽时代\] \(main\): available/)
   assert.equal(/基础制作：马达/.test(seen(1)), false, 'a locked quest is not listed as available')
   assert.match(seen(2), /Quest 4a \\"飞向天空\\" \(Take to the Skies\), chapters \\"游历四方……\\", \\"第0\.5阶 - 蒸汽时代\\"\. State for Steve: available/)
-  assert.match(seen(2), /- retrieval, the items are kept: 1× adventurebackpack:copterPack/)
+  assert.match(seen(2), /- task 1: retrieval, the items are kept: 1× adventurebackpack:copterPack \[not done\]/)
   assert.match(seen(2), /直升机背包能让你在基地上空悬停/)
-  // 向服务器只问了进度，而且两次查询只问一次；任务的内容一个字都没问
+  // 向服务器问了进度（两次查询只问一次），和看详情时这个任务对 Steve 的样子（子任务做完没）；章节和搜索一次都没问
   assert.deepEqual(bridge.requestsOf('quest.progress'), [{ player: 'Steve' }])
-  assert.deepEqual(bridge.requests.map((r) => r.method).filter((m) => /^quest\.(lines|search|get)$/.test(m)), [])
+  assert.deepEqual(bridge.requests.map((r) => r.method).filter((m) => /^quest\.(lines|search|get)$/.test(m)), ['quest.get'])
+  assert.deepEqual(bridge.requestsOf('quest.get'), [{ id: '4a', player: 'Steve' }])
   assert.deepEqual(bridge.commandLog[0], { bot: 'Alu', command: 'tell Steve 能做的有 6 个，比如“飞向天空”：做个直升机背包。' })
 
   brain.child.kill('SIGTERM')
