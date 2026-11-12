@@ -8,6 +8,8 @@ import http from 'node:http'
 import path from 'node:path'
 import type { AgentState, AgentStatus, CompactNowResult } from '../agent/agent.ts'
 import type { LinkState, StopResult } from '../agent/lines.ts'
+import type { HelperOverview } from '../agent/helpers.ts'
+import type { HelperRecord } from '../store/helpers.ts'
 import type { LineName } from '../tools/index.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
 import { historyTokens } from '../agent/compaction.ts'
@@ -47,9 +49,9 @@ import {
   sessionCookie,
   verifySessionValue,
 } from './auth.ts'
-import type { MethodsEnv, TodoPanelAccess } from './data-api.ts'
+import type { HelperStatus, MethodsEnv, TodoPanelAccess } from './data-api.ts'
 import type { MethodAccess } from '../tools/methods.ts'
-import { blueprintRead, guideBooks, guidePage, guideSearch, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords, todoDelete, todoEdit, todoList } from './data-api.ts'
+import { blueprintRead, guideBooks, guidePage, guideSearch, helperStop, helperView, historyCompact, itemTooltips, logPage, methodsDelete, methodsList, methodsPut, panelStatus, runList, runRecords, todoDelete, todoEdit, todoList } from './data-api.ts'
 import type { HistorySize } from './data-api.ts'
 import { errorText, isRecord } from '../util.ts'
 
@@ -108,6 +110,12 @@ export interface PanelDeps {
     contextTokens?(line: LineName): number
     /** 现在就把一条线的历史写成交接记录（dryRun：只写不存）。 */
     compactNow?(line: LineName, opts: { dryRun?: boolean }): Promise<CompactNowResult>
+    /** 对话线派出去的子思维：在想的和最近结束的（不带过程）。 */
+    helperOverview?(limit?: number): HelperOverview
+    /** 一个子思维的完整记录。 */
+    helperView?(id: string): HelperRecord | undefined
+    /** 停掉一个在想的子思维；不在想的返回 false。 */
+    stopHelper?(id: string): boolean
   }
   reminders: { list(): Reminder[]; remove(id: string): boolean }
   /** 它写的程序（例程、run_program）每次运行的明细。没提供时 /api/runs 是空的。 */
@@ -522,9 +530,24 @@ export class PanelServer {
             history: (line) => this.historySize(line),
             awayIdle: () => this.deps.config.get().bot.awayIdle,
             environment: () => this.deps.config.get().bot.environment,
+            ...(this.deps.agent.helperOverview ? { helpers: () => this.helperStatus(8)! } : {}),
           },
           this.now(),
         )
+      // 对话线派出去的子思维：列表（不带过程）、一个的完整过程、停掉一个
+      case 'GET /helpers': {
+        const limit = Math.min(60, Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20))
+        const helpers = this.helperStatus(limit)
+        if (!helpers) throw new HttpError(404, 'not_found', '这个大脑没有子思维')
+        return helpers
+      }
+      case 'GET /helpers/view':
+        return helperView(this.deps.agent, url.searchParams, panelReject)
+      case 'POST /helpers/stop': {
+        const res = helperStop(this.deps.agent, body, panelReject)
+        if (res.stopped) this.deps.log.add({ kind: 'info', text: `在面板上停掉了子思维 ${String(body.id).trim()}；它到现在想到的会交回对话线。` })
+        return res
+      }
       case 'GET /runs':
         return runList(this.deps.runs, url.searchParams)
       case 'GET /runs/records':
@@ -740,6 +763,15 @@ export class PanelServer {
     return data
   }
 
+  /** 子思维：在想的和最近结束的，和它们用的模型（主人单独选的，或者对话线的）。没有子思维的大脑是 undefined。 */
+  private helperStatus(limit: number): HelperStatus | undefined {
+    const overview = this.deps.agent.helperOverview?.(limit)
+    if (!overview) return undefined
+    const own = this.deps.config.helperSelection()
+    const picked = own ?? this.deps.config.lineSelection('talk')
+    return { ...overview, model: picked ? { provider: picked.provider.label, model: picked.model.name, providerId: picked.provider.id, modelId: picked.model.id, own: own !== undefined } : null }
+  }
+
   /** 一条线的历史有多长、离压缩还有多远。 */
   private historySize(line: LineName): HistorySize | undefined {
     const store = line === 'talk' ? this.deps.talkHistory : this.deps.history
@@ -786,7 +818,12 @@ export class PanelServer {
       // 干活线用的（只有一条线时“当前用的”就是它）；两条线各用哪个在 lines 里
       activeProviderId: cfg.activeProviderId,
       activeModelId: cfg.activeModelId,
-      lines: { talk: { providerId: cfg.talkProviderId, modelId: cfg.talkModelId }, work: { providerId: cfg.activeProviderId, modelId: cfg.activeModelId } },
+      // 子思维的：主人没给它单独选时两个 id 是空的、followsTalk 是 true（用对话线的）
+      lines: {
+        talk: { providerId: cfg.talkProviderId, modelId: cfg.talkModelId },
+        work: { providerId: cfg.activeProviderId, modelId: cfg.activeModelId },
+        helper: { providerId: cfg.helperProviderId, modelId: cfg.helperModelId, followsTalk: cfg.helperProviderId === '' },
+      },
       adapters: listAdapters(),
     }
   }
@@ -842,10 +879,41 @@ export class PanelServer {
    * 那条线的下一轮起生效，不用重启。
    */
   private useModel(body: Record<string, unknown>): unknown {
+    if (body.line === 'helper') return this.useHelperModel(body)
     if (typeof body.providerId !== 'string' || typeof body.modelId !== 'string') throw new HttpError(400, 'bad_request', '需要 providerId 和 modelId')
-    if (body.line !== undefined && body.line !== 'talk' && body.line !== 'work') throw new HttpError(400, 'bad_request', 'line 只能是 talk 或 work')
+    if (body.line !== undefined && body.line !== 'talk' && body.line !== 'work') throw new HttpError(400, 'bad_request', 'line 只能是 talk、work 或 helper')
     const provider = this.findProvider(body.providerId)
     return this.switchTo(provider, this.findModel(provider, body.modelId), body.line)
+  }
+
+  /**
+   * 子思维用哪个模型：{ line: 'helper', providerId, modelId }；providerId 给空字符串就是不单独选、用对话线的（对话线换了它跟着换）。
+   * 下一个派出去的起生效，在想的照旧用它开始时的。
+   */
+  private useHelperModel(body: Record<string, unknown>): unknown {
+    if (typeof body.providerId !== 'string') throw new HttpError(400, 'bad_request', '需要 providerId（空字符串是用对话线的）')
+    const before = this.deps.config.get()
+    if (body.providerId === '') {
+      this.deps.config.update((c) => {
+        c.helperProviderId = ''
+        c.helperModelId = ''
+      })
+      if (before.helperProviderId !== '') this.deps.log.add({ kind: 'info', text: '在面板上把子思维的模型改回了“和对话线一样”，下一个派出去的起生效。' })
+      this.overviewCache = undefined
+      return this.providers()
+    }
+    if (typeof body.modelId !== 'string') throw new HttpError(400, 'bad_request', '需要 modelId')
+    const provider = this.findProvider(body.providerId)
+    const model = this.findModel(provider, body.modelId)
+    this.deps.config.update((c) => {
+      c.helperProviderId = provider.id
+      c.helperModelId = model.id
+    })
+    if (before.helperProviderId !== provider.id || before.helperModelId !== model.id) {
+      this.deps.log.add({ kind: 'info', text: `在面板上把子思维的模型换成了 ${provider.label} / ${modelDisplayName(model)}，下一个派出去的起生效。` })
+    }
+    this.overviewCache = undefined
+    return this.providers()
   }
 
   private switchTo(provider: StoredProvider, model: ModelConfig | undefined, line?: LineName): unknown {

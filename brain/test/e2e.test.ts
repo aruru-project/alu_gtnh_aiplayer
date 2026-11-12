@@ -125,7 +125,7 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   assert.equal(test.json.ok, true)
   assert.equal(llm.requests[0]!.headers.authorization, 'Bearer sk-e2e-openai-key-0001')
   // 头一个服务商配上以后两条线都用它；对话线另选一家回话快的
-  assert.deepEqual(created.json.lines, { talk: { providerId: created.json.provider.id, modelId: created.json.provider.models[0].id }, work: { providerId: created.json.provider.id, modelId: created.json.provider.models[0].id } })
+  assert.deepEqual(created.json.lines, { talk: { providerId: created.json.provider.id, modelId: created.json.provider.models[0].id }, work: { providerId: created.json.provider.id, modelId: created.json.provider.models[0].id }, helper: { providerId: '', modelId: '', followsTalk: true } })
   const forTalk = await call('POST', '/providers', { kind: 'anthropic-messages', label: '对话用的', baseUrl: talk.anthropicBaseUrl, apiKey: 'sk-ant-e2e-talk-key-0009', model: 'claude-talk' })
   await call('POST', '/models/use', { providerId: forTalk.json.provider.id, modelId: forTalk.json.provider.models[0].id, line: 'talk' })
   await call('POST', '/bot/spawn', {})
@@ -1009,7 +1009,7 @@ it('端到端：两条线各用各的模型，主人在面板上只换了干活�
   assert.deepEqual([before.provider.modelId, before.lineModels.work.modelId, before.lineModels.talk.modelId], ['fast', 'fast', 't'])
   const switched = await call('POST', '/models/use', { providerId: 'mock', modelId: 'think', line: 'work' })
   assert.equal(switched.status, 200, JSON.stringify(switched.json))
-  assert.deepEqual(switched.json.lines, { talk: { providerId: 'talk', modelId: 't' }, work: { providerId: 'mock', modelId: 'think' } })
+  assert.deepEqual(switched.json.lines, { talk: { providerId: 'talk', modelId: 't' }, work: { providerId: 'mock', modelId: 'think' }, helper: { providerId: '', modelId: '', followsTalk: true } })
   const after = (await call('GET', '/overview')).json
   assert.deepEqual([after.provider.model, after.provider.modelLabel, after.lineModels.talk.model], ['gpt-think', '思考版', 'talk-e2e'])
 

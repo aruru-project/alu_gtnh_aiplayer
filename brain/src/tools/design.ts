@@ -172,7 +172,12 @@ export const runProgramTool: Tool = {
       if (ctx.canSeeImages?.() === true) out.push(`To see what it looks like, view_draft with name "${saved.name}" and picture "iso".`)
     }
     if (run.saved.length > 0) {
-      out.push('Check the design, then tell your owner what it looks like, what it needs and where you would build it. Publish it with publish_draft only after they agree.')
+      // 子思维没有 publish_draft：它把草稿交回对话线，发布、盖是主人点头以后干活线的事
+      out.push(
+        ctx.helper !== undefined
+          ? 'Check the design. The talk line sees only what you hand back: put in the draft\'s name, what it looks like, what it needs and where it would go. Publishing and building it are for the worker, once your owner agrees.'
+          : 'Check the design, then tell your owner what it looks like, what it needs and where you would build it. Publish it with publish_draft only after they agree.',
+      )
     }
     return out.join('\n')
   },

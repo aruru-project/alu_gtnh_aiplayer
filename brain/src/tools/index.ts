@@ -11,6 +11,8 @@
 // （同样的参数校验、同样的结果）。旧习惯、旧笔记、小模型的误调都不该变成一次失败。
 // 例外是“另一条线的事”：对话线按名字调到会动身体的、干活线调到对玩家说话的，不执行，如实告诉它这归谁、它自己该怎么办
 // （otherLine）。这不是限制它的能力：身体只有一个，结构上就只有干活线在操作。
+// 对话线派出去的子思维（agent/helpers.ts）有第三份清单 HELPER_TOOLS：只查不改。说话、交事、动身体、记东西（记忆、清单、手册、基地的做法、
+// 提醒）按名字调到同样不执行、照实说——记不记、说不说由对话线拿了它交回的话再定。
 //
 // 往清单里加一个工具之前先想：通用能力（走、挖放、用物品、开界面点格子、存取、写程序）加上模型自己的脑子做得到的事，
 // 不做成专用工具；“查一查、算一算”的做成库函数。test/tool-list.test.ts 里有一条按字符数防回涨的测试。
@@ -24,6 +26,7 @@ import { totalMaterials } from './materials.ts'
 import { deleteDraft, listDesigns, listDrafts, listImages, publishDraft, routineStatus, runProgramTool, startRoutine, stopRoutine, viewDraft } from './design.ts'
 import { reportProblem } from './feedback.ts'
 import { clip, dataWithLocalNames } from './format.ts'
+import { helperStatus, startHelper } from './helpers.ts'
 import { recentChat, report, stopWork, tellWorker, workerStatus } from './lines.ts'
 import { readGuide } from './guide.ts'
 import { readLog } from './log.ts'
@@ -71,10 +74,11 @@ import {
 import { clickSlot, closeScreen, openScreen, useControl } from './screen.ts'
 import { checkStructure, findStructure, readBlocks } from './structures.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure } from './types.ts'
-import type { LineName, Tool, ToolContext, ToolResult } from './types.ts'
+import type { LineName, Tool, ToolContext, ToolLine, ToolResult } from './types.ts'
 import { errorText } from '../util.ts'
 
-export type { ChatLogAccess, FeedbackAccess, LineName, TalkAccess, WorkerAccess, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, RoutineAccess, Tool, ToolContext, ToolHooks, ToolImage, ToolResult } from './types.ts'
+export type { ChatLogAccess, FeedbackAccess, HelperAccess, LineName, TalkAccess, ToolLine, WorkerAccess, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, RoutineAccess, Tool, ToolContext, ToolHooks, ToolImage, ToolResult } from './types.ts'
+export { HELPERS_MAX, HELPER_TASK_MAX_CHARS } from './helpers.ts'
 export { DEFAULT_RESULT_MAX_CHARS } from './types.ts'
 export { QuestProgressCache } from './quest-progress.ts'
 export { SurroundingsCache } from './recipe-book.ts'
@@ -147,8 +151,8 @@ export const WORK_TOOLS: readonly Tool[] = [
 ]
 
 /**
- * 对话线的工具：在游戏里说话的两个（say 公共聊天、whisper 悄悄话；它不调工具写的字只给主人在面板上看）、交事和管干活线的三个、所有只查不动的、
- * run_program（程序里也只能查）、记忆、提醒、手册、意见簿。没有任何会动身体的：那些事它用 tell_worker 交给干活线。
+ * 对话线的工具：在游戏里说话的两个（say 公共聊天、whisper 悄悄话；它不调工具写的字只给主人在面板上看）、交事和管干活线的三个、
+ * 派子思维的两个、所有只查不动的、run_program（程序里也只能查）、记忆、提醒、手册、意见簿。没有任何会动身体的：那些事它用 tell_worker 交给干活线。
  */
 export const TALK_TOOLS: readonly Tool[] = [
   say,
@@ -156,6 +160,8 @@ export const TALK_TOOLS: readonly Tool[] = [
   tellWorker,
   workerStatus,
   stopWork,
+  startHelper,
+  helperStatus,
   getStatus,
   lookAround,
   scanArea,
@@ -185,6 +191,40 @@ export const TALK_TOOLS: readonly Tool[] = [
   listManuals,
   readManual,
   writeManual,
+  reportProblem,
+]
+
+/**
+ * 子思维的工具：对话线所有只查不改的（世界、箱子库存、配方、任务书、指南、手册、看图、基地的做法、身体的任务和干活线的现状）、
+ * run_program（程序里也只能查；画图纸草稿也在这里）和意见簿（给维护的人报工具的问题，不是她的记忆；工具出问题时手里有调用记录的是它）。
+ * 没有的：说话、交事和叫停、再派子思维、记忆、提醒、基地的做法的记和改、工作清单、写手册，和任何会动身体的、发布或删草稿的。
+ * 写成一份明写的清单而不是“对话线的减去几个”：对话线以后多一个会改东西的工具，不会惄悄到它这里。
+ */
+export const HELPER_TOOLS: readonly Tool[] = [
+  workerStatus,
+  getStatus,
+  lookAround,
+  scanArea,
+  viewArea,
+  inspectBlock,
+  findBlocks,
+  listContainers,
+  getPlayerPosition,
+  listDesigns,
+  runProgramTool,
+  viewImage,
+  viewDraft,
+  findItem,
+  findRecipes,
+  findInStorage,
+  findMachines,
+  findQuests,
+  getQuest,
+  readGuide,
+  taskStatus,
+  baseMethods,
+  listManuals,
+  readManual,
   reportProblem,
 ]
 
@@ -263,10 +303,10 @@ export const QUERY_TOOLS: readonly string[] = [
   'list_homes',
 ]
 
-/** 发给模型的清单随什么变：当前模型能不能看图；是哪条线（对话线的库函数索引里只有只查不动的）。 */
+/** 发给模型的清单随什么变：当前模型能不能看图；是哪条线（对话线和子思维的库函数索引里只有只查不动的）。 */
 export interface ModelView {
   canSee: boolean
-  line?: LineName
+  line?: ToolLine
 }
 
 /** 这个工具对这个模型来说在不在清单里。看图的工具在模型不能看图时不在（除非它有一份只讲文字的说明）。 */
@@ -278,19 +318,32 @@ function listedFor(tool: Tool, view: ModelView): boolean {
  * 库函数的索引里有哪些：LIBRARY_TOOLS，加上因为模型不能看图而没进清单的看图工具（它们给的文字和 data 照样拿得到）。
  */
 export function libraryFor(tools: readonly Tool[], view: ModelView): Tool[] {
-  const library = LIBRARY_TOOLS.filter((lib) => !tools.some((t) => t.name === lib.name)).filter((lib) => view.line !== 'talk' || QUERY_TOOLS.includes(lib.name))
+  const queryOnly = view.line === 'talk' || view.line === 'helper'
+  const library = LIBRARY_TOOLS.filter((lib) => !tools.some((t) => t.name === lib.name)).filter((lib) => !queryOnly || QUERY_TOOLS.includes(lib.name))
   return [...library, ...tools.filter((t) => !listedFor(t, view))]
 }
 
-/** 只归对话线的：在游戏里说话、管干活线。 */
-const TALK_ONLY: readonly string[] = [say.name, whisper.name, tellWorker.name, workerStatus.name, stopWork.name]
+/** 只归对话线的：在游戏里说话、管干活线、派子思维。 */
+const TALK_ONLY: readonly string[] = [say.name, whisper.name, tellWorker.name, workerStatus.name, stopWork.name, startHelper.name, helperStatus.name]
+/** 子思维照实被告知“这是记东西的，由对话线定”的那些：记忆、提醒、基地的做法、工作清单、写手册。 */
+const RECORDING: readonly string[] = [remember.name, forget.name, setReminder.name, setBaseMethod.name, todo.name, writeManual.name]
 
 /**
  * 这个名字是不是另一条线的事。是的话返回给模型的那句话（不执行）；不是返回 undefined（照常找、照常执行）。
  * - 对话线：清单里的和只查不动的都能调；会动身体、会改游戏里东西的（任务、界面、例程、指令、发布图纸……）归干活线。
- * - 干活线：对玩家说话的、提醒、管它自己的那三个归对话线。
+ * - 干活线：对玩家说话的、提醒、管它自己的那三个、派子思维的两个归对话线。
+ * - 子思维：它的清单里的和只查不动的能调；记东西的、说话交事的、动身体的各有一句。
  */
-export function otherLine(line: LineName, name: string): string | undefined {
+export function otherLine(line: ToolLine, name: string): string | undefined {
+  if (line === 'helper') {
+    if (HELPER_TOOLS.some((t) => t.name === name) || QUERY_TOOLS.includes(name)) return undefined
+    if (RECORDING.includes(name)) return `Not done: "${name}" records something, and what gets kept is for the talk line (the part of you that sent you) to decide. Put what is worth keeping in what you hand back.`
+    if (TALK_ONLY.includes(name)) return `Not done: "${name}" is the talk line's: you do not speak in the game, hand work to the worker or send helpers. What you write last goes back to the talk line, which decides what to say, to whom, and what to hand to the worker.`
+    if ([...WORK_TOOLS, ...LIBRARY_TOOLS, ...LEGACY_TOOLS].some((t) => t.name === name)) {
+      return `Not done: "${name}" acts with the body or changes something in the game or on the brain (publishing or deleting a draft included), and only the worker line does that, when the talk line hands it the job. Say in what you hand back what should be done.`
+    }
+    return undefined
+  }
   if (line === 'talk') {
     if (TALK_TOOLS.some((t) => t.name === name) || QUERY_TOOLS.includes(name)) return undefined
     if ([...WORK_TOOLS, ...LIBRARY_TOOLS, ...LEGACY_TOOLS].some((t) => t.name === name)) {
@@ -300,6 +353,7 @@ export function otherLine(line: LineName, name: string): string | undefined {
   }
   if (!TALK_ONLY.includes(name)) return undefined
   if (name === say.name || name === whisper.name) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.`
+  if (name === startHelper.name || name === helperStatus.name) return `Not done: "${name}" is the talk line's tool for sending helpers off to think; you are the worker. To tell the talk line something, use report.`
   return `Not done: "${name}" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`
 }
 
@@ -405,13 +459,14 @@ export async function runTool(
   opts: { maxResultChars?: number } = {},
 ): Promise<ToolResult> {
   const max = opts.maxResultChars ?? DEFAULT_RESULT_MAX_CHARS
-  // 另一条线的事：不执行，如实说归谁
-  const notMine = ctx.line !== undefined ? otherLine(ctx.line, name) : undefined
+  // 另一条线的事：不执行，如实说归谁。子思维看的是它自己那一份
+  const who: ToolLine | undefined = ctx.helper !== undefined ? 'helper' : ctx.line
+  const notMine = who !== undefined ? otherLine(who, name) : undefined
   if (notMine !== undefined) return { content: notMine, isError: true }
   // 三层都找：模型直接调了一个库函数或旧名字，照常执行
   const tool = programTools(tools).find((t) => t.name === name)
   if (!tool) {
-    const view: ModelView = { canSee: ctx.canSeeImages?.() === true, ...(ctx.line !== undefined ? { line: ctx.line } : {}) }
+    const view: ModelView = { canSee: ctx.canSeeImages?.() === true, ...(who !== undefined ? { line: who } : {}) }
     const direct = modelToolSpecs(tools, view).map((t) => t.name)
     const library = libraryFor(tools, view).map((t) => t.name)
     return { content: `There is no tool named "${name}". Your tools: ${direct.join(', ')}. Library functions (in a program: await tool(name, input)): ${library.join(', ')}.`, isError: true }

@@ -7,6 +7,7 @@
 //   3. 对外（main、面板）像原来那一个 agent：收 bridge 事件、握手后对账、状态、停。
 //   4. 工作清单（store/todo.ts）：干活线停下来了（身体上没有任务、没有例程、没有在等的回答），清单上却还有没做的，叫醒它一次。
 //      它被叫醒以后什么都没改就又停了，不再叫：等清单变了，或者它为别的事走了一轮，才重新算。
+//   5. 对话线派出去的子思维（agent/helpers.ts）：它们结束时交回的话送到对话线；对话线的状态里列着在想的那几个；有在想的就不自动下线。
 // 共用的东西只有一份：身体（bridge）、记忆、手册、意见簿、设计工作区、每日 token 上限（两条线合计）。
 
 import type { BridgeApi } from '../bridge/api.ts'
@@ -21,6 +22,8 @@ import type { FeedbackStore } from '../store/feedback.ts'
 import type { MethodAccess } from '../tools/methods.ts'
 import type { TodoAccess } from '../tools/todo.ts'
 import type { HistoryStore } from '../store/history.ts'
+import type { HelperRecord, HelperStore } from '../store/helpers.ts'
+import { DEFAULT_LIMITS } from '../store/config.ts'
 import { clip, formatTask } from '../tools/format.ts'
 import { LINE_TOOLS, QuestProgressCache, SurroundingsCache } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ReminderAccess } from '../tools/index.ts'
@@ -28,6 +31,8 @@ import { Agent, DEFAULT_TIMING, newLineShared } from './agent.ts'
 import type { AgentSettings, AgentState, AgentStatus, AgentTiming, CompactNowResult, LinePeek, LineShared, PersistedAgentState, TurnAt } from './agent.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, fromBridgeEvent } from './events.ts'
+import { Helpers } from './helpers.ts'
+import type { HelperOverview } from './helpers.ts'
 import type { AgentEvent, SaidEvent, WorkerNote } from './events.ts'
 import { describeRoutine } from './routine.ts'
 import type { RoutineLimits } from './routine.ts'
@@ -55,7 +60,12 @@ export interface LinkState {
 export interface LinesDeps {
   /** 每条线的设置：名字、主人这些是一样的，步数上限和历史压缩阈值各是各的。 */
   settings(line: LineName): AgentSettings
-  models: Record<LineName, LineModel>
+  /** 两条线各用的模型；helper 是主人给子思维单独选的，没给、或者它的 llm() 是 undefined（没选）时子思维用对话线的。 */
+  models: Record<LineName, LineModel> & { helper?: LineModel }
+  /** 每个子思维最多走几步（设置里的 helperMaxSteps）。不给用默认的。 */
+  helperSteps?(): number
+  /** 子思维的落盘（在想的和想完了的）；不给就只在内存里。 */
+  helperStore?: HelperStore
   /** 工具结果带的图存一份给面板的对话日志显示；没提供就不存。 */
   pictures?: { save(png: Buffer, blocks?: unknown): string }
   bridge: BridgeApi
@@ -135,6 +145,7 @@ export function lineOf(ev: AgentEvent): LineName | 'both' {
     case 'player_join':
     case 'player_leave':
     case 'worker':
+    case 'helper':
       return 'talk'
     case 'death':
     case 'spawned':
@@ -171,6 +182,8 @@ function shown(text: string, max: number): string {
 export class Lines {
   readonly talk: Agent
   readonly work: Agent
+  /** 对话线派出去的子思维。 */
+  readonly helpers: Helpers
   private readonly deps: LinesDeps
   private readonly shared: LineShared = newLineShared()
   private links: LinkState = {}
@@ -192,9 +205,10 @@ export class Lines {
   constructor(deps: LinesDeps) {
     this.deps = deps
     this.links = { ...(deps.persist?.links?.load() ?? {}) }
+    const caches = { questProgress: new QuestProgressCache(deps.bridge, () => this.now()), surroundings: new SurroundingsCache(() => this.now()) }
     const common = {
       shared: this.shared,
-      caches: { questProgress: new QuestProgressCache(deps.bridge, () => this.now()), surroundings: new SurroundingsCache(() => this.now()) },
+      caches,
       bridge: deps.bridge,
       memory: deps.memory,
       manuals: deps.manuals,
@@ -219,6 +233,39 @@ export class Lines {
       return { llm: () => m.llm(), modelName: () => m.name?.(), canSeeImages: () => m.canSee?.() === true }
     }
     const persist = (line: LineName) => (deps.persist?.[line] ? { persist: deps.persist[line]! } : {})
+    // 子思维的模型：主人给它选了就用那个，没选就用对话线的（每次现问：面板上换了，下一个派出去的就用新的）
+    const own = (): LineModel | undefined => (deps.models.helper?.llm() !== undefined ? deps.models.helper : undefined)
+    this.helpers = new Helpers({
+      settings: () => deps.settings('talk'),
+      maxSteps: () => deps.helperSteps?.() ?? DEFAULT_LIMITS.helperMaxSteps,
+      model: {
+        llm: () => (own() ?? deps.models.talk).llm(),
+        name: () => (own() ?? deps.models.talk).name?.(),
+        canSee: () => (own() ?? deps.models.talk).canSee?.() === true,
+      },
+      bridge: deps.bridge,
+      memory: deps.memory,
+      manuals: deps.manuals,
+      reminders: deps.reminders,
+      log: deps.log,
+      caches,
+      todayTokens: deps.todayTokens,
+      workerStatus: (detail) => this.workerStatus(detail),
+      nextProgramId: () => `p${this.shared.programSeq++}`,
+      // 交回的话在子思维那边已经记过一条（relay），对话线这头不再记
+      deliver: (ev) => this.talk.handleEvent(ev, { logged: true }),
+      defaultPlayer: () => deps.settings('talk').owners[0] ?? this.shared.lastSpeaker,
+      ...(deps.helperStore ? { store: deps.helperStore } : {}),
+      ...(deps.pictures ? { pictures: deps.pictures } : {}),
+      ...(deps.packdata ? { packdata: deps.packdata } : {}),
+      ...(deps.design ? { design: deps.design } : {}),
+      ...(deps.runLogs ? { runLogs: deps.runLogs } : {}),
+      ...(deps.feedback ? { feedback: deps.feedback } : {}),
+      ...(deps.methods ? { methods: deps.methods } : {}),
+      ...(deps.versions ? { versions: deps.versions } : {}),
+      ...(deps.chatLog ? { chatLog: deps.chatLog } : {}),
+      ...(deps.now ? { now: deps.now } : {}),
+    })
     this.work = new Agent({
       ...common,
       ...model('work'),
@@ -242,6 +289,7 @@ export class Lines {
         workerStatus: (detail) => this.workerStatus(detail),
         stopWork: async (reason, said, at) => this.stopText(await this.stopWork(reason, 'talk', said, at)),
         workerLine: (now) => this.workerLine(now),
+        helpers: this.helpers.access(),
       },
     })
     // 老数据：只有一条线的时候，“有人说话”“提醒到点”也排在那一个队列里。现在这些归对话线。
@@ -260,16 +308,18 @@ export class Lines {
   start(): void {
     this.talk.start()
     this.work.start()
+    // 重启前没想完的子思维：告诉对话线（一起叫醒它一次）
+    this.helpers.start()
     // 重启前清单上就有没做的、而干活线没有别的事接着做
     this.armTodo()
   }
 
-  /** 停下：两条线各自打断正在进行的一轮并收尾；没处理完的事已经落盘，下次启动各自接着来。 */
+  /** 停下：两条线各自打断正在进行的一轮并收尾；没处理完的事已经落盘，下次启动各自接着来。在想的子思维停掉，下次启动告诉对话线。 */
   async stop(): Promise<void> {
     this.closed = true
     if (this.todoTimer) clearTimeout(this.todoTimer)
     this.todoTimer = undefined
-    await Promise.all([this.talk.stop(), this.work.stop()])
+    await Promise.all([this.helpers.close(), this.talk.stop(), this.work.stop()])
   }
 
   /** bridge 推来的事件。和这个 bot 无关的会被忽略。 */
@@ -351,6 +401,21 @@ export class Lines {
     return { ...this.links }
   }
 
+  /** 子思维：在想的和最近结束的（面板的列表，不带过程）。 */
+  helperOverview(limit?: number): HelperOverview {
+    return this.helpers.overview(limit)
+  }
+
+  /** 一个子思维的完整记录（在想的是到现在为止的）。 */
+  helperView(id: string): (HelperRecord & { thinkingSince?: number }) | undefined {
+    return this.helpers.view(id)
+  }
+
+  /** 主人在面板上停掉一个子思维。不在想的返回 false。 */
+  stopHelper(id: string): boolean {
+    return this.helpers.stop(id, '主人在面板上停的')
+  }
+
   /** 一条线下一次调模型时上下文大概多大（token）：和它的压缩阈值比的那个数。 */
   contextTokens(line: LineName): number {
     return this[line].contextTokens()
@@ -362,12 +427,12 @@ export class Lines {
   }
 
   /**
-   * 大脑这边现在有没有事：哪条线在跑一轮或排着事，干活线盯着任务，例程在跑，工作清单上有没做的（在等人的不算）。
-   * 自动下线（presence.ts）看的就是它。
+   * 大脑这边现在有没有事：哪条线在跑一轮或排着事，干活线盯着任务，例程在跑，工作清单上有没做的（在等人的不算），
+   * 有子思维在想（它想完会叫醒对话线，和“清单上有没做的”一个道理）。自动下线（presence.ts）看的就是它。
    */
   busy(): boolean {
     const work = this.work.status()
-    return !this.talk.idle() || !this.work.idle() || work.trackedTasks.length > 0 || work.routine?.status === 'running' || this.todoOpen().length > 0
+    return !this.talk.idle() || !this.work.idle() || work.trackedTasks.length > 0 || work.routine?.status === 'running' || this.todoOpen().length > 0 || this.helpers.busy()
   }
 
   // ── 工作清单 ──
@@ -708,6 +773,9 @@ export class Lines {
     if (this.links.waiting) lines.push(`  它在等你回答（${ago(now, this.links.waiting.since)}问的）：${shown(this.links.waiting.text, 300)}`)
     const report = this.links.lastReport
     if (report && !(this.links.waiting && report.type === 'question')) lines.push(`  它最近一次送来的（${NOTE_WORD[report.type]}，${ago(now, report.time)}）：${shown(report.text, 200)}`)
+    // 对话线派出去的子思维：在想的那几个（没有就不写）
+    const helpers = this.helpers.stateLines(now)
+    if (helpers.length > 0) lines.push(helpers)
     return lines.join('\n')
   }
 

@@ -1876,15 +1876,15 @@ describe('面板：两条线', () => {
     const main = (await s.call('POST', '/api/providers', PROVIDER)).json.provider
     const first = main.models[0].id as string
     const fast = (await s.call('POST', `/api/providers/${main.id}/models`, { name: 'gpt-fast', label: '快的' })).json.model.id as string
-    assert.deepEqual((await s.call('GET', '/api/providers')).json.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first } })
+    assert.deepEqual((await s.call('GET', '/api/providers')).json.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first }, helper: { providerId: '', modelId: '', followsTalk: true } })
 
     const talkOnly = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: fast, line: 'talk' })).json
-    assert.deepEqual([talkOnly.lines, talkOnly.activeModelId], [{ talk: { providerId: main.id, modelId: fast }, work: { providerId: main.id, modelId: first } }, first])
+    assert.deepEqual([talkOnly.lines, talkOnly.activeModelId], [{ talk: { providerId: main.id, modelId: fast }, work: { providerId: main.id, modelId: first }, helper: { providerId: '', modelId: '', followsTalk: true } }, first])
     assert.deepEqual([s.config.lineProvider('talk')?.model, s.config.lineProvider('work')?.model], ['gpt-fast', 'gpt-x'])
     const workOnly = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: fast, line: 'work' })).json
     assert.deepEqual([workOnly.lines.work.modelId, workOnly.activeModelId], [fast, fast])
     const both = (await s.call('POST', '/api/models/use', { providerId: main.id, modelId: first })).json
-    assert.deepEqual(both.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first } })
+    assert.deepEqual(both.lines, { talk: { providerId: main.id, modelId: first }, work: { providerId: main.id, modelId: first }, helper: { providerId: '', modelId: '', followsTalk: true } })
     assert.equal((await s.call('POST', '/api/models/use', { providerId: main.id, modelId: first, line: 'main' })).status, 400)
     assert.deepEqual(
       s.log.recent(0, 50).filter((e) => e.kind === 'info' && e.text.startsWith('在面板上把')).map((e) => e.text),
@@ -1949,5 +1949,58 @@ describe('面板：两条线', () => {
     assert.equal(lines.log.recent(0, 100).some((e) => e.kind === 'error'), false)
     const relay = relays(lines, 'stop')
     assert.deepEqual([relay.length, relay[0]!.agent, relay[0]!.relay, relay[0]!.text], [1, undefined, { type: 'stop', from: 'panel', to: 'work', quotes: 0 }, `面板 → 干活线：停（走错了）。打断了干活线的第 ${turn} 轮（第 2 步），取消了 1 个身体任务。`])
+  })
+})
+
+describe('面板：子思维', () => {
+  it('列出在想的和最近结束的（状态里也有）、看一个的完整过程、停掉一个；子思维用哪个模型能单独选，也能改回“和对话线一样”', async (t) => {
+    const lines = makeAgent({ helper: true })
+    t.after(() => lines.agent.stop())
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    // h1 想完了；h2 还在想（模型一直不回来，被停下时像真的适配器那样抛 aborted）
+    let asked = false
+    lines.helper!.enqueue(reply('结论：钢锭够。'), (req) => {
+      asked = true
+      return new Promise((_, reject) => req.signal?.addEventListener('abort', () => reject(new LlmError('aborted', 'aborted')), { once: true }))
+    })
+    lines.agent.helpers.access().start('任务 A：钢锭够不够')
+    await waitFor('h1 ended', () => lines.helperStore.get('h1') !== undefined)
+    lines.agent.helpers.access().start('任务 B：设计一个仓库')
+    await waitFor('h2 is thinking', () => asked)
+
+    const list = (await s.call('GET', '/api/helpers')).json
+    assert.deepEqual([list.max, list.maxSteps, list.model], [3, 40, null])
+    assert.deepEqual(list.running.map((r: any) => [r.id, r.task, r.status, r.steps, typeof r.thinkingSince]), [['h2', '任务 B：设计一个仓库', 'running', 0, 'number']])
+    assert.deepEqual(list.recent.map((r: any) => [r.id, r.status, r.final, r.transcript]), [['h1', 'done', '结论：钢锭够。', undefined]])
+    const status = (await s.call('GET', '/api/status')).json
+    assert.deepEqual([status.helpers.running.map((r: any) => r.id), status.helpers.recent.map((r: any) => r.id)], [['h2'], ['h1']])
+
+    const one = (await s.call('GET', '/api/helpers/view?id=h1')).json
+    assert.deepEqual([one.task, one.status, one.transcript.map((step: any) => [step.n, step.text])], ['任务 A：钢锭够不够', 'done', [[1, '结论：钢锭够。']]])
+    assert.deepEqual([(await s.call('GET', '/api/helpers/view?id=h2')).json.status, (await s.call('GET', '/api/helpers/view?id=x')).status, (await s.call('GET', '/api/helpers/view?id=h99')).status], ['running', 400, 404])
+
+    assert.deepEqual((await s.call('POST', '/api/helpers/stop', { id: 'h2' })).json, { stopped: true })
+    await waitFor('h2 stopped', () => lines.helperStore.get('h2')?.status === 'stopped')
+    assert.equal(lines.helperStore.get('h2')!.note, '主人在面板上停的（停在第 0 步）。')
+    assert.deepEqual((await s.call('POST', '/api/helpers/stop', { id: 'h2' })).json, { stopped: false })
+    assert.ok(s.log.recent(0, 100).some((e) => e.text === '在面板上停掉了子思维 h2；它到现在想到的会交回对话线。'))
+
+    // 模型：单独选一个，再改回和对话线一样
+    const main = (await s.call('POST', '/api/providers', PROVIDER)).json.provider
+    const deep = (await s.call('POST', `/api/providers/${main.id}/models`, { name: 'gpt-deep', label: '想得深' })).json.model.id as string
+    assert.deepEqual((await s.call('GET', '/api/helpers')).json.model, { provider: '主力', model: 'gpt-x', providerId: main.id, modelId: main.models[0].id, own: false })
+    const picked = (await s.call('POST', '/api/models/use', { line: 'helper', providerId: main.id, modelId: deep })).json
+    assert.deepEqual(picked.lines.helper, { providerId: main.id, modelId: deep, followsTalk: false })
+    assert.deepEqual([picked.lines.talk.modelId, s.config.helperProvider()?.model], [main.models[0].id, 'gpt-deep'])
+    assert.deepEqual((await s.call('GET', '/api/helpers')).json.model, { provider: '主力', model: 'gpt-deep', providerId: main.id, modelId: deep, own: true })
+    const back = (await s.call('POST', '/api/models/use', { line: 'helper', providerId: '' })).json
+    assert.deepEqual([back.lines.helper, s.config.helperSelection()], [{ providerId: '', modelId: '', followsTalk: true }, undefined])
+    assert.deepEqual(
+      s.log.recent(0, 100).filter((e) => e.kind === 'info' && e.text.includes('子思维的模型')).map((e) => e.text),
+      ['在面板上把子思维的模型换成了 主力 / 想得深，下一个派出去的起生效。', '在面板上把子思维的模型改回了“和对话线一样”，下一个派出去的起生效。'],
+    )
+    // 每个子思维最多几步在“上限”里改
+    assert.equal((await s.call('PUT', '/api/bot', { limits: { helperMaxSteps: 12 } })).json.bot.limits.helperMaxSteps, 12)
   })
 })

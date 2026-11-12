@@ -27,6 +27,7 @@ import { ChatLog } from './store/chat-log.ts'
 import { RunLogStore } from './agent/run-log.ts'
 import { ConfigStore, modelDisplayName, overridesFromEnv } from './store/config.ts'
 import { FeedbackStore } from './store/feedback.ts'
+import { HelperStore } from './store/helpers.ts'
 import { MethodStore } from './store/methods.ts'
 import { TodoStore } from './store/todo.ts'
 import { PictureStore } from './store/pictures.ts'
@@ -134,6 +135,8 @@ async function main(): Promise<void> {
   const methods = new MethodStore(dataDir)
   // 工作清单：一串交代下来的事还剩哪些没做（两条线和主人共用一份）
   const todo = new TodoStore(dataDir)
+  // 对话线派出去的子思维：在想的（helpers-state.json）和想完了的整个过程（helpers/）
+  const helperStore = new HelperStore(dataDir)
   // 意见簿：存之前把这台大脑上真正的密钥从附带的现场里抹掉（正常不会出现在里面，这是兜底）
   const feedback = new FeedbackStore(dataDir, {
     secrets: () => {
@@ -208,6 +211,21 @@ async function main(): Promise<void> {
   }
   refreshLlm('talk')
   refreshLlm('work')
+  // 子思维的模型：主人给它单独选了才有自己的客户端，没选时是 undefined，Lines 里退回对话线的。用量记在同一本账上
+  const helperLlm: { client: LlmClient | undefined; fingerprint: string } = { client: undefined, fingerprint: '' }
+  const refreshHelperLlm = (): void => {
+    const provider = config.helperProvider()
+    const fingerprint = JSON.stringify(provider ?? null)
+    if (fingerprint === helperLlm.fingerprint) return
+    helperLlm.fingerprint = fingerprint
+    try {
+      helperLlm.client = provider ? createClient(provider, { onUsage: (record) => usage.add(record.usage) }) : undefined
+    } catch (e) {
+      helperLlm.client = undefined
+      info(`[llm] 子思维选的服务商配置用不了（先用对话线的）：${errorText(e)}`)
+    }
+  }
+  refreshHelperLlm()
   const lineModel = (line: LineName) => ({
     llm: () => llms[line].client,
     name: () => {
@@ -226,7 +244,20 @@ async function main(): Promise<void> {
   })
   agent = new Lines({
     settings: (line) => toAgentSettings(config.get(), line),
-    models: { talk: lineModel('talk'), work: lineModel('work') },
+    models: {
+      talk: lineModel('talk'),
+      work: lineModel('work'),
+      helper: {
+        llm: () => helperLlm.client,
+        name: () => {
+          const picked = config.helperSelection()
+          return picked ? `${picked.provider.label} / ${modelDisplayName(picked.model)}` : undefined
+        },
+        canSee: () => config.helperSelection()?.model.vision === true,
+      },
+    },
+    helperSteps: () => config.get().bot.limits.helperMaxSteps,
+    helperStore,
     pictures,
     bridge,
     memory,
@@ -333,6 +364,7 @@ async function main(): Promise<void> {
   config.onChange(() => {
     const talkChanged = refreshLlm('talk')
     if (refreshLlm('work') || talkChanged) agent.notifyConfigChanged()
+    refreshHelperLlm()
     // 面板上改了 bridge 的端口或口令：断开，按新的参数重连
     const next = JSON.stringify(config.bridgeSettings())
     if (next !== bridgeFingerprint) {

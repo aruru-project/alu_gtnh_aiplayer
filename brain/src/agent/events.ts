@@ -40,6 +40,17 @@ export type AgentEvent =
    * open 是叫醒那一刻清单上“没做”的（在等人的不算）。
    */
   | { type: 'todo'; time: number; open: { id: number; text: string }[] }
+  /**
+   * 对话线派出去的子思维结束了（agent/helpers.ts）。task 是对话线当时写的任务，steps 调了几次模型，ms 用了多久；
+   * text 是它最后写的那段话（全文，不截），note 是程序写的一句：它为什么在这里结束。叫醒对话线，由它决定说不说、记不记、交不交给干活线。
+   */
+  | { type: 'helper'; time: number; id: string; task: string; status: HelperEnd; steps: number; ms: number; text: string; note?: string }
+
+/**
+ * 子思维怎么结束的：done 想完了（它不再调工具）；limit 到了步数上限（最后再给它一次不能调工具的机会写交回的话）；
+ * stopped 被停了；failed 模型接口出错；context 上下文超长；budget 每日 token 上限到了；interrupted 大脑重启时还没想完。
+ */
+export type HelperEnd = 'done' | 'limit' | 'stopped' | 'failed' | 'context' | 'budget' | 'interrupted'
 
 /** 人说的话：聊天、悄悄话、面板上发来的。交事和叫停时原样附给干活线的就是这些。 */
 export type SaidEvent = Extract<AgentEvent, { type: 'chat' | 'whisper' | 'panel_command' }>
@@ -221,7 +232,36 @@ export function describeEvent(ev: AgentEvent): string {
     case 'worker':
       if (ev.kind === 'progress') return `干活线还在干（${ev.waiting ?? '它的事还没完'}），这是它中途留下的话：${ev.text}`
       return `${WORKER_NOTE_HEAD[ev.kind]}${ev.text}`
+    case 'helper':
+      return helperText(ev)
   }
+}
+
+export const HELPER_END_WORD: Record<HelperEnd, string> = {
+  done: '想完了',
+  limit: '到了步数上限',
+  stopped: '被停下了',
+  failed: '出错停下了',
+  context: '上下文超出了模型的上限，停下了',
+  budget: '停下了：今天的模型用量到了上限',
+  interrupted: '没想完：大脑重启了，它想到的都没了',
+}
+
+/** 用了多久，给人和模型看的一个词。 */
+export function spentText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 90 ? `${s} 秒` : `${Math.round(s / 60)} 分钟`
+}
+
+/** 子思维结束的事件给对话线看的样子：是哪个、怎么结束的、几步多久、交给它的事、它最后写的话全文。 */
+function helperText(ev: Extract<AgentEvent, { type: 'helper' }>): string {
+  const parts = [`你派出去的子思维 ${ev.id} ${HELPER_END_WORD[ev.status]}（${ev.steps} 步，${spentText(ev.ms)}）。${ev.note ?? ''}`]
+  parts.push(`  交给它的事（你当时写的）：${ev.task}`)
+  if (ev.status !== 'interrupted') {
+    const handed = ev.status === 'done' || ev.status === 'limit'
+    parts.push(ev.text.length > 0 ? `  ${handed ? '它交回的话' : '它最后写下的话'}（原样，只有你看得到）：\n${ev.text}` : '  它没有留下话。')
+  }
+  return parts.join('\n')
 }
 
 /** 叫醒干活线的那句话里，每一条只给开头这么多字（全文在“当前状态”的清单里）。 */

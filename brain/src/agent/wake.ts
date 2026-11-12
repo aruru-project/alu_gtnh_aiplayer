@@ -60,6 +60,7 @@ export interface WakeDecision {
     | 'told'
     | 'worker'
     | 'todo'
+    | 'helper'
     | 'not_owner'
     | 'not_addressed'
     | 'other_bot'
@@ -152,6 +153,9 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
     // 工作清单上还有没做的：程序叫醒干活线（只在它停下来时才发）
     case 'todo':
       return yes('todo')
+    // 对话线派出去的子思维结束了：它交回的话要对话线来定说不说、记不记
+    case 'helper':
+      return yes('helper')
     case 'task_started':
     case 'bot_message':
     case 'spawned':

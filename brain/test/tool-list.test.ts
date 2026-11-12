@@ -99,7 +99,7 @@ const ACTING = [
 ]
 // 能看图的模型拿到的全部工具。不能看图的少两个：view_area、view_image。
 const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
-const TALK_TOOLS_WITH_VISION = ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work', ...LOOKUPS, 'run_program', ...NOTES]
+const TALK_TOOLS_WITH_VISION = ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work', 'start_helper', 'helper_status', ...LOOKUPS, 'run_program', ...NOTES]
 const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
 const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
@@ -238,7 +238,11 @@ describe('模型拿到的工具清单', () => {
   //           use_control 的电路、total_materials 的 automated 这几个参数（那时没动上限，余量吃掉了）。
   //   公屏说话和对话线写的字分开之后：对话线实际 27,717、上限 27,600 → 28,200。多的是 say（约 460：它在公共聊天里说话的那个工具，
   //           说明里写着它不调工具写的字只给主人在面板上看）；干活线的 report 说明改写了（普通汇报不叫醒对话线），54,392，没过上限。
-  for (const [line, ceiling] of [['work', 54_800], ['talk', 28_200]] as const) {
+  //   子思维之后：对话线实际 28,852、上限 28,200 → 29,000（+800）。多的是派子思维的两个工具，start_helper（722）和 helper_status（413）：
+  //           对话线派一部分心思出去查、去设计，它另起一份上下文、想完了叫醒对话线；说明里写着它带去的只有记忆和基地的做法（背景要写进任务）、
+  //           最多 3 个同时在想、结果怎么回来。不能做成库函数：派出去、停掉都是对话线自己的决定，参数要它看得见。干活线没变。
+  //           子思维自己的清单是对话线只查不改的那一部分（HELPER_TOOLS，不能看图时 19,695），不在这两条线的数里。
+  for (const [line, ceiling] of [['work', 54_800], ['talk', 29_000]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -255,10 +259,10 @@ describe('模型拿到的工具清单', () => {
   }
 
   // 原来是“不到一半”。两条线都有的（记忆、提醒、基地的做法、工作清单……）每加一个，两边一样长，比例就往一半上靠：
-  // 加了 todo 以后是 27,259 比 54,386（50.1%），放宽到 52%
-  it('对话线的清单明显比干活线的小：不到 52%', () => {
+  // 加了 todo 以后是 27,259 比 54,386（50.1%），放宽到 52%。加了派子思维的两个（只有对话线有）以后是 28,852 比 54,392（53.0%），放宽到 54%
+  it('对话线的清单明显比干活线的小：不到 54%', () => {
     const size = (line: LineName) => modelToolSpecs(LINE_TOOLS[line], { canSee: false, line }).reduce((n, spec) => n + JSON.stringify(spec).length, 0)
-    assert.ok(size('talk') < size('work') * 0.52, `talk ${size('talk')}, work ${size('work')}`)
+    assert.ok(size('talk') < size('work') * 0.54, `talk ${size('talk')}, work ${size('work')}`)
   })
 })
 
@@ -353,7 +357,7 @@ describe('库函数：不在清单里，在程序里调', () => {
 
     // 对话线：列的是它自己的工具和只查不动的库函数
     const talk = (await lineCalls(setup(t, { vision: false }), 'talk', 'fly_to_the_moon')).content
-    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, tell_worker, worker_status, stop_work, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials, view_area, view_image\.$/)
+    assert.match(talk, /^There is no tool named "fly_to_the_moon"\. Your tools: say, whisper, tell_worker, worker_status, stop_work, start_helper, helper_status, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, .*, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(talk, /haul_items|go_to|start_routine/)
   })
 

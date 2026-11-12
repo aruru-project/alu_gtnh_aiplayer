@@ -41,7 +41,8 @@ describe('手册：提示词只列目录，要用时才读', () => {
     // 上限各加了 300：多了“基地的做法”那一节（空的时候三行，约 130 字），对话线另多两句事实（只写字不调工具这一轮就结束；要查很多步可以交给干活线，约 130 字）
     assert.ok(work.length < 3600, `the work system prompt is ${work.length} chars`)
     // 对话线 3,200 → 3,300：多了“写的字只有主人在面板上看得到”“在游戏里说话用 say、whisper”“干活线也看不到你写的字”这几句事实（约 80 字），现在约 3,210
-    assert.ok(talk.length < 3300, `the talk system prompt is ${talk.length} chars`)
+    // 3,300 → 3,400：多了一句“也可以派子思维去查、去设计草稿……它交回的话会叫醒你”（约 70 字）
+    assert.ok(talk.length < 3400, `the talk system prompt is ${talk.length} chars`)
   })
 
   it('对话线的提示词里有两句事实：只写了字没调工具这一轮就到此为止；要查很多步的事可以交给干活线，两条线每轮各能走几步用的是设置里的数。干活线的提示词里没有这两句', async (t) => {
@@ -53,7 +54,7 @@ describe('手册：提示词只列目录，要用时才读', () => {
     const talk = h.talk.requests[0]!.system ?? ''
     const facts =
       '- 这一步只写了字、没有调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。\n' +
-      '- 要查很多步的事两条线都查得了：你一轮最多 12 步，干活线一轮最多 80 步。交给它查，它查完会带话回来。\n'
+      '- 要查很多步的事两条线都查得了：你一轮最多 12 步，干活线一轮最多 80 步。交给它查，它查完会带话回来。也可以派子思维（start_helper）去查、去设计草稿：它另起一份上下文，你这一轮照常结束，它交回的话会叫醒你。\n'
     assert.ok(talk.includes(facts), talk.slice(0, 1800))
     assert.equal((h.llm.requests[0]!.system ?? '').includes('这一轮就到此为止'), false)
     // 没人说这两个数时用默认的：20 和 60

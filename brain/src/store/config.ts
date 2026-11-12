@@ -39,6 +39,8 @@ export interface LimitsConfig {
   maxSteps: number
   /** 对话线每轮最多调几次模型。 */
   talkMaxSteps: number
+  /** 对话线派出去的子思维，每个最多调几次模型（到了再给它一次不能调工具的机会写交回的话）。 */
+  helperMaxSteps: number
   /** 每日 token 上限（输入+输出，两条线合计），0 为不限。 */
   dailyTokenLimit: number
   /** 干活线的历史估算 token 超过这个值就压缩。 */
@@ -146,6 +148,12 @@ export interface BrainConfig {
   /** 对话线用的服务商和模型。旧配置里没有：和干活线用同一个。 */
   talkProviderId: string
   talkModelId: string
+  /**
+   * 对话线派出去的子思维用的服务商和模型。空字符串（旧配置、没选、选的那家不在了）：用对话线的——不存成对话线的 id，
+   * 对话线换了模型它跟着换。
+   */
+  helperProviderId: string
+  helperModelId: string
   /** 本地资料（任务书、物品表）的目录；相对路径相对 brain/ 目录，空字符串表示用默认的 packdata。 */
   packdataDir: string
 }
@@ -164,6 +172,8 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   maxSteps: 60,
   // 对话线一轮就是回一句话、查几样东西、把事交出去
   talkMaxSteps: 20,
+  // 子思维专门想一件事：一层层查配方、对库存要二三十步，设计一栋建筑要写好几段程序、看草稿、改了再看
+  helperMaxSteps: 40,
   dailyTokenLimit: 0,
   // 这条线的上下文（提示词、工具清单和历史，按模型接口报的输入 token 校准）超过这么多就压缩历史。
   // 现在的模型上下文大多是一百万 token，压一次要重写整段提示词缓存、还会丢细节，所以给得宽；对话线的事少，给一半。
@@ -214,6 +224,8 @@ export function defaultConfig(): BrainConfig {
     activeModelId: '',
     talkProviderId: '',
     talkModelId: '',
+    helperProviderId: '',
+    helperModelId: '',
     packdataDir: '',
   }
 }
@@ -420,6 +432,9 @@ export function normalizeConfig(raw: unknown): BrainConfig {
   const talkPicked = providers.find((p) => p.id === str(raw.talkProviderId, ''))
   const talkProvider = talkPicked ?? activeProvider
   const talkModel = talkProvider?.models.find((m) => m.id === str(raw.talkModelId, '')) ?? (talkPicked ? talkPicked.models[0] : activeModel)
+  // 子思维的：选的那家不在了就是“没选”（用对话线的）；那家还在、模型删了就用它的第一个
+  const helperProvider = providers.find((p) => p.id === str(raw.helperProviderId, ''))
+  const helperModel = helperProvider?.models.find((m) => m.id === str(raw.helperModelId, '')) ?? helperProvider?.models[0]
   const name = str(bot.name, d.bot.name).trim()
 
   return {
@@ -449,6 +464,7 @@ export function normalizeConfig(raw: unknown): BrainConfig {
       limits: {
         maxSteps: int(limits.maxSteps, DEFAULT_LIMITS.maxSteps, 1, MAX_STEPS_LIMIT),
         talkMaxSteps: int(limits.talkMaxSteps, DEFAULT_LIMITS.talkMaxSteps, 1, MAX_STEPS_LIMIT),
+        helperMaxSteps: int(limits.helperMaxSteps, DEFAULT_LIMITS.helperMaxSteps, 1, MAX_STEPS_LIMIT),
         dailyTokenLimit: int(limits.dailyTokenLimit, DEFAULT_LIMITS.dailyTokenLimit, 0, 1_000_000_000),
         historyTokenThreshold: int(limits.historyTokenThreshold, DEFAULT_LIMITS.historyTokenThreshold, 2000, 2_000_000),
         talkHistoryTokenThreshold: int(limits.talkHistoryTokenThreshold, DEFAULT_LIMITS.talkHistoryTokenThreshold, 2000, 2_000_000),
@@ -476,6 +492,8 @@ export function normalizeConfig(raw: unknown): BrainConfig {
     activeModelId: activeModel?.id ?? '',
     talkProviderId: talkProvider?.id ?? '',
     talkModelId: talkModel?.id ?? '',
+    helperProviderId: helperProvider && helperModel ? helperProvider.id : '',
+    helperModelId: helperProvider && helperModel ? helperModel.id : '',
     packdataDir: str(raw.packdataDir, '').trim().slice(0, 1000),
   }
 }
@@ -612,6 +630,19 @@ export class ConfigStore {
   lineProvider(line: 'talk' | 'work'): ProviderConfig | undefined {
     const active = this.lineSelection(line)
     return active ? resolveModel(active.provider, active.model) : undefined
+  }
+
+  /** 主人给子思维单独选的服务商和模型；没选是 undefined（那时子思维用对话线的）。 */
+  helperSelection(): { provider: StoredProvider; model: ModelConfig } | undefined {
+    const provider = this.config.providers.find((p) => p.id === this.config.helperProviderId)
+    const model = provider?.models.find((m) => m.id === this.config.helperModelId)
+    return provider && model ? { provider, model } : undefined
+  }
+
+  /** 子思维单独选的那个模型的调用配置；没选是 undefined。 */
+  helperProvider(): ProviderConfig | undefined {
+    const picked = this.helperSelection()
+    return picked ? resolveModel(picked.provider, picked.model) : undefined
   }
 
   /** 干活线用的是哪个服务商的哪个模型（只有一条线时“当前用的”就是它）。 */

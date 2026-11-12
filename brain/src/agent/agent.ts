@@ -20,7 +20,7 @@ import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
 import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
-import type { LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
+import type { HelperAccess, LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { HARD_LIMIT_SHARE, compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
 import type { CompactResult, ContextGauge, TurnRange } from './compaction.ts'
 import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext, talkClosing } from './context.ts'
@@ -152,6 +152,8 @@ export interface LineLinks {
   outside?(): void
   /** 干活线的一轮走完了（没被叫停、没因为模型用不了退回去）：triggers 是叫醒这一轮的事。看工作清单要不要叫醒它用。 */
   ended?(turn: { id: number; triggers: readonly AgentEvent[] }): void
+  /** 对话线派子思维（start_helper、helper_status）：事情由 agent/helpers.ts 办，这里只是转交给工具。 */
+  helpers?: HelperAccess
 }
 
 /** “现在就写交接记录”（面板的接口）的结果。 */
@@ -1968,6 +1970,7 @@ export class Agent {
       line: this.line,
       programSlot: this.line,
       ...(this.line === 'talk' && links ? { worker: this.workerAccess(links) } : {}),
+      ...(this.line === 'talk' && links?.helpers ? { helpers: links.helpers } : {}),
       ...(this.line === 'work' && links?.toTalk ? { talk: { report: (text: string, question: boolean) => links.toTalk!(question ? 'question' : 'report', text, this.turnAt()) } } : {}),
       ...(this.deps.chatLog ? { chatLog: this.deps.chatLog } : {}),
       activityLog: this.deps.log,

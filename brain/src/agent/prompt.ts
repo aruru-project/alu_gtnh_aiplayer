@@ -6,7 +6,7 @@
 
 import { DEFAULT_LIMITS } from '../store/config.ts'
 import type { Method } from '../store/methods.ts'
-import type { LineName } from '../tools/types.ts'
+import type { LineName, ToolLine } from '../tools/types.ts'
 
 /** 公共部分：两条线都有。 */
 export const COMMON_PROMPT = `你是 {{name}}，GTNH（Minecraft 1.7.10 的 GregTech: New Horizons 整合包）服务器里的一个玩家，是和大家一起玩的伙伴。
@@ -33,7 +33,7 @@ export const TALK_PROMPT = `# 你是对话线
 - 你没有任何让身体动的工具（走、挖放、存取、合成加工、用物品、点界面、例程、指令）。要动手的事用 tell_worker 交给干活线：马上返回，它空闲就立刻开始，在忙就下一步看到。当时跟你说话的人的原话、站位和指向由程序原样附给它，你只写要它做什么、你定了什么。同一步里可以一边说话一边交事。
 - 不交出去，身体不会动；交出去，多一次模型调用、手晚几秒动。你自己查得到的事，自己答更快。
 - 这一步只写了字、没有调工具，这一轮就到此为止。说了“我去查”，而这一步里没调工具、也没交给干活线，之后没有人会接着做。
-- 要查很多步的事两条线都查得了：你一轮最多 {{talkSteps}} 步，干活线一轮最多 {{workSteps}} 步。交给它查，它查完会带话回来。
+- 要查很多步的事两条线都查得了：你一轮最多 {{talkSteps}} 步，干活线一轮最多 {{workSteps}} 步。交给它查，它查完会带话回来。也可以派子思维（start_helper）去查、去设计草稿：它另起一份上下文，你这一轮照常结束，它交回的话会叫醒你。
 - “当前状态”里有一行干活线现在在干什么，细节用 worker_status。补充要求、改方向、回答它的问题都用 tell_worker。stop_work 一次让一切停下（身体的任务、例程、它正在想的那一步），不需要它配合。
 - 干活线开的任务、例程一结束，它自己会被叫醒接着做，不需要谁提醒；它还在干的时候留的话、中途的汇报只作为背景给你。它停下来了、或者提问，才会出现在“需要你处理的事”里。它的话玩家看不到，该让人知道的由你说。它问的你答得了就带话答它；答不了问主人，主人答了再带话。
 - 做不到的说做不到，没做完的说还差什么；看不到、不确定的事明说。
@@ -119,9 +119,12 @@ export interface PromptInput {
  * “基地的做法”一节：这个基地怎么做东西的记录。由程序生成（和手册目录一样，记了、改了下一轮就是新的）。
  * 一类零件怎么做、总的先后这两种很短，全文列出；具体的东西和机器只给条数和怎么看。两条线一样。
  */
-export function methodsSection(methods: readonly Method[]): string {
-  const who = (m: Method): string => (m.by === 'owner' ? '主人定的' : '你定的')
-  const lines = ['# 基地的做法', '这个基地怎么做东西的记录：主人教的，和你自己定过的。total_materials 展开一样东西要的材料时按它走；base_methods 看全部，set_base_method 记一条、改一条、删一条。']
+export function methodsSection(methods: readonly Method[], opts: { readOnly?: boolean } = {}): string {
+  // 子思维只看（记不记、改不改由对话线拿了它交回的话再定）；“自己定的”是她定的，不是这个子思维
+  const self = opts.readOnly ? '她' : '你'
+  const who = (m: Method): string => (m.by === 'owner' ? '主人定的' : `${self}定的`)
+  const edit = opts.readOnly ? '你这里只能看，要记、要改的写进交回的话里。' : 'set_base_method 记一条、改一条、删一条。'
+  const lines = ['# 基地的做法', `这个基地怎么做东西的记录：主人教的，和${self}自己定过的。total_materials 展开一样东西要的材料时按它走；base_methods 看全部，${edit}`]
   const parts = methods.filter((m): m is Extract<Method, { kind: 'part' }> => m.kind === 'part')
   const order = methods.find((m): m is Extract<Method, { kind: 'order' }> => m.kind === 'order')
   const things = methods.filter((m) => m.kind === 'thing').length
@@ -170,11 +173,13 @@ export function guideSection(pages: number): string {
  * “手册”一节：有哪些手册、各在什么时候看。由程序生成：主人在面板上增删手册会立刻反映出来。
  * 干活线的那份带着“动手做某类事之前先看对应的手册”；对话线不动手，只说明手册在哪、它也能读。
  */
-export function manualSection(manuals: readonly ManualListing[], line: LineName = 'work'): string {
+export function manualSection(manuals: readonly ManualListing[], line: ToolLine = 'work'): string {
   const head =
     line === 'talk'
       ? '各类活具体怎么做写在手册里，干活线动手之前会自己看。你要回答这类问题、或者想把事交代得更清楚时，可以用 read_manual 读。'
-      : '各类活具体怎么做都写在手册里，这里没有。要做下面某一类事之前，如果这段对话里还没看过对应的手册，先用 read_manual 看完再动手；“当前状态”里写着哪几本的内容还在这段对话里，在的不用重看。'
+      : line === 'helper'
+        ? '各类活具体怎么做、工具和程序怎么用写在手册里，这里没有；用 read_manual 读。画草稿看 design，程序里调工具看 routines。'
+        : '各类活具体怎么做都写在手册里，这里没有。要做下面某一类事之前，如果这段对话里还没看过对应的手册，先用 read_manual 看完再动手；“当前状态”里写着哪几本的内容还在这段对话里，在的不用重看。'
   const lines = ['# 手册', head, ...manuals.map((m) => `- ${m.name}${m.self ? '（你自己写的）' : m.source === 'user' ? '（主人写的）' : ''}：${m.summary}`)]
   if (manuals.some((m) => m.source === 'user' && !m.self)) {
     lines.push('主人写的手册讲的是这个服务器、这个基地特有的情况，和别的手册有出入时以主人写的为准。')
@@ -220,5 +225,43 @@ export function buildSystemPrompt(input: PromptInput): string {
   if (input.methods) parts.push(methodsSection(input.methods))
 
   parts.push(`# 你的记忆\n${input.memory.trim().length > 0 ? input.memory : '（还没有记下任何东西）'}`)
+  return parts.join('\n\n')
+}
+
+/**
+ * 子思维的提示词（agent/helpers.ts）：对话线派出去想一件事的那部分心思。只写事实：它是谁、能查什么、写的最后一段话去哪里、最多几步。
+ * 不带说话风格和“一个玩家两条线”那段（它不跟人说话）。{{name}} 是她的游戏名，{{steps}} 是设置里的步数上限。
+ */
+export const HELPER_PROMPT = `你是 {{name}} 派出去专门想一件事的那部分心思。{{name}} 是 GTNH（Minecraft 1.7.10 的 GregTech: New Horizons 整合包）服务器里的一个玩家，和大家一起玩。
+- 你不在游戏里露面，不对人说话，也不操作身体。她的对话线在跟人说话，干活线在操作身体，和你各想各的。
+- 你能查：物品、流体、配方、任务书、游戏内指南、手册、多方块结构、看世界、看箱子和容器、基地的做法、身体的任务和干活线在干什么、聊天记录和活动日志。run_program 能写程序一次查很多样、算账，也能画图纸草稿：草稿存在大脑这边，主人在面板上看得到；发布到游戏里、照着盖是干活线的事。
+- 你不调工具、只写字的那一步就是最后一步：那段话会原样交回给她的对话线，由它决定说不说、记不记、交不交给干活线。它看不到你的工具调用和结果，它要用的名字、数量、位置、配方、草稿名都在那段话里才有。
+- 记忆、工作清单、手册、基地的做法你只能看，记不了；值得记的写进交回的话里。
+- 你最多走 {{steps}} 步（调一次模型算一步）。到了上限，会再给你一次不能调工具的机会写交回的话。
+- 物品以 id 和 meta 为准；说到物品用工具结果里的中文名，原样用。
+- 主人教的做法（下面“基地的做法”和记忆里的）就是这个基地怎么做的依据。
+- 查不到、不确定的事，照实写明。`
+
+export interface HelperPromptInput {
+  botName: string
+  /** 最多几步。 */
+  steps: number
+  /** MemoryStore.render() 的结果（只读，和两条线看到的是同一份）。 */
+  memory: string
+  manuals?: readonly ManualListing[]
+  guide?: { pages: number }
+  environment?: { name: string; rules: string }
+  methods?: readonly Method[]
+}
+
+/** 子思维的系统提示词：核心那一段 + 手册目录、指南、这个服务器、基地的做法（只读）、她的记忆（只读）。 */
+export function buildHelperPrompt(input: HelperPromptInput): string {
+  const parts: string[] = [HELPER_PROMPT.replaceAll('{{name}}', input.botName).replace('{{steps}}', String(input.steps))]
+  if (input.manuals && input.manuals.length > 0) parts.push(manualSection(input.manuals, 'helper'))
+  if (input.guide) parts.push(guideSection(input.guide.pages))
+  const environment = input.environment ? environmentSection(input.environment) : undefined
+  if (environment !== undefined) parts.push(environment)
+  if (input.methods) parts.push(methodsSection(input.methods, { readOnly: true }))
+  parts.push(`# 她的记忆（只读，两条线每一轮看到的就是这一份）\n${input.memory.trim().length > 0 ? input.memory : '（还没有记下任何东西）'}`)
   return parts.join('\n\n')
 }

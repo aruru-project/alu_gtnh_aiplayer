@@ -86,6 +86,17 @@ export interface ProgramToolResult {
 /** 哪条线：对话的（talk）还是干活的（work）。见 docs/TALK_WORK.md。 */
 export type LineName = 'talk' | 'work'
 
+/** 谁在调工具：两条线之一，或者对话线派出去的子思维（helper，只查不改，见 agent/helpers.ts）。 */
+export type ToolLine = LineName | 'helper'
+
+/** 对话线派子思维、看它们、停它们的口子（start_helper、helper_status）。文字都是现成的英文，事情由 agent/helpers.ts 办。 */
+export interface HelperAccess {
+  /** 派一个出去想这件事；马上返回（编号，或者为什么没派成）。 */
+  start(task: string): string
+  /** 不给 id：在想的和最近想完的；给 id：那一个的详情。stop：停掉那一个。 */
+  status(id: string | undefined, stop: boolean): string
+}
+
 /** 对话线管干活线的口子（tell_worker、worker_status、stop_work）。文字都是现成的英文，事情由 agent/lines.ts 办。 */
 export interface WorkerAccess {
   /** 把一件事交给干活线或带一句话；当时的人的原话由上层原样附上。马上返回。 */
@@ -146,6 +157,13 @@ export interface ToolContext {
   worker?: WorkerAccess
   /** 干活线才有：向对话线汇报、提问。 */
   talk?: TalkAccess
+  /** 对话线才有：派子思维、看它们、停它们。 */
+  helpers?: HelperAccess
+  /**
+   * 子思维的编号（h3）：给了的话，调工具的是对话线派出去的一个子思维（不看 line）。它只查不改：清单以外的、会说话动身体、
+   * 会记东西的按名字调到也不执行，如实说明（tools/index.ts 的 otherLine）。
+   */
+  helper?: string
   /** 最近的聊天记录。上层没提供时 recent_chat 用不了。 */
   chatLog?: ChatLogAccess
   /** 活动日志（store/activity-log.ts 的 ActivityLog 满足），只读。上层没提供时 read_log 用不了。 */

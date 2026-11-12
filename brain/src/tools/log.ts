@@ -68,7 +68,7 @@ function detailOf(e: ActivityEntry): { text: string; original?: number } | undef
 }
 
 function headOf(e: ActivityEntry): string {
-  const where = `${e.agent !== undefined ? ` ${e.agent}` : ''}${e.turn !== undefined ? ` turn ${e.turn}` : ''}${e.step !== undefined ? ` step ${e.step}` : ''}`
+  const where = `${e.agent !== undefined ? ` ${e.agent}` : ''}${e.helper !== undefined ? ` ${e.helper}` : ''}${e.turn !== undefined ? ` turn ${e.turn}` : ''}${e.step !== undefined ? ` step ${e.step}` : ''}`
   // 悄悄话发给谁另放在 to 里（text 只有原话）
   const to = e.kind === 'say' && e.channel === 'whisper' ? ` (whisper to ${e.to ?? '?'})` : ''
   return `#${e.id} [${logStamp(e.time)}]${where} · ${e.kind}${e.who !== undefined ? ` ${e.who}` : ''}${to}${e.isError ? ' (error)' : ''}:`
@@ -107,13 +107,14 @@ export const readLog: Tool = {
       { max: 10 },
     ),
     line: str('Only the entries of one line: talk or work (plus what belongs to no line: the system, older entries). Default: both lines; each entry says whose it is.', { enum: ['talk', 'work'] }),
+    helper: str('Only the entries of one helper the talk line sent off (like "h3"): its steps, tool calls and what it handed back.', { maxLength: 12 }),
     id: int('One entry whole, by its # number.', { min: 1 }),
     offset: int('With id: start this many characters into its detail (when the detail did not fit in one result).', { min: 0 }),
     after: int('Continue forward: entries after this # number.', { min: 0 }),
     before: int('Continue backward: the latest entries before this # number.', { min: 1 }),
     limit: int(`Entries per page (default ${LOG_LIMIT_DEFAULT}).`, { min: 1, max: LOG_LIMIT_MAX }),
   }),
-  async run(ctx, i: { turn?: number; turnTo?: number; from?: string; to?: string; minutes?: number; query?: string; kinds?: string[]; line?: string; id?: number; offset?: number; after?: number; before?: number; limit?: number }): Promise<ToolResult> {
+  async run(ctx, i: { turn?: number; turnTo?: number; from?: string; to?: string; minutes?: number; query?: string; kinds?: string[]; line?: string; helper?: string; id?: number; offset?: number; after?: number; before?: number; limit?: number }): Promise<ToolResult> {
     if (!ctx.activityLog) return fail('This brain keeps no activity log that can be read.')
     const now = ctx.now()
     const cap = ctx.maxResultChars?.() ?? DEFAULT_RESULT_MAX_CHARS
@@ -136,7 +137,7 @@ export const readLog: Tool = {
       return { content: `${headOf(e)} ${e.text}\ndetail${range}:\n${piece}${more}${kept ? `\n${kept.trim()}` : ''}`, data }
     }
 
-    const query: LogQuery = { limit: i.limit ?? LOG_LIMIT_DEFAULT, from: i.before === undefined && (i.after !== undefined || i.turn !== undefined || i.from !== undefined) ? 'earliest' : 'latest' }
+    const query: LogQuery = { limit: i.limit ?? LOG_LIMIT_DEFAULT, from: i.before === undefined && (i.after !== undefined || i.turn !== undefined || i.from !== undefined || i.helper !== undefined) ? 'earliest' : 'latest' }
     const scope: string[] = []
     if (i.turn !== undefined) {
       const to = i.turnTo ?? i.turn
@@ -175,6 +176,10 @@ export const readLog: Tool = {
     if (i.line !== undefined) {
       query.agent = i.line
       scope.push(`only the ${i.line === 'talk' ? 'talk line' : 'worker'}'s entries and what belongs to no line`)
+    }
+    if (i.helper !== undefined) {
+      query.helper = i.helper.trim()
+      scope.push(`only helper ${query.helper}`)
     }
     if (i.after !== undefined) query.afterId = i.after
     if (i.before !== undefined) query.beforeId = i.before

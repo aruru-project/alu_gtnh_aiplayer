@@ -24,6 +24,7 @@ import { ActivityLog } from '../src/store/activity-log.ts'
 import type { ActivityEntry } from '../src/store/activity-log.ts'
 import { ChatLog } from '../src/store/chat-log.ts'
 import type { FeedbackStore } from '../src/store/feedback.ts'
+import { HelperStore } from '../src/store/helpers.ts'
 import { HistoryStore, TurnIds } from '../src/store/history.ts'
 import { ManualStore } from '../src/store/manuals.ts'
 import { MemoryStore } from '../src/store/memory.ts'
@@ -180,6 +181,12 @@ export interface AgentHarness {
   llm: ScriptedLlm
   /** 对话线的假模型。 */
   talk: ScriptedLlm
+  /** 子思维单独的假模型（helperModel: true 时才有；没有时子思维用对话线的 talk）。 */
+  helper: ScriptedLlm | undefined
+  /** 子思维的落盘（临时目录里的 helpers-state.json 和 helpers/）。 */
+  helperStore: HelperStore
+  /** 每个子思维最多几步（改了下一个派出去的起生效）。 */
+  helperSteps: { value: number }
   /** 干活线的历史。 */
   history: HistoryStore
   /** 对话线的历史。 */
@@ -230,6 +237,10 @@ export interface MakeAgentOptions {
   game?: FakeGame
   llm?: ScriptedLlm
   talk?: ScriptedLlm
+  /** 给子思维单独配一个假模型（true 是新造一个）；不给时子思维用对话线的。 */
+  helper?: ScriptedLlm | true
+  /** 每个子思维最多几步（不给是设置的默认）。 */
+  helperSteps?: number
   /** 意见簿。给了，模型就能用 report_problem，版本号报的是 brain-under-test / mod-under-test。 */
   feedback?: FeedbackStore
   /** 现在用的模型能不能看图（模型上的那个开关）。默认不能。 */
@@ -255,6 +266,9 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const game = opts.game ?? new FakeGame()
   const llm = opts.llm ?? new ScriptedLlm()
   const talk = opts.talk ?? new ScriptedLlm()
+  const helper = opts.helper === true ? new ScriptedLlm() : opts.helper
+  const helperStore = new HelperStore(tmp.dir)
+  const helperSteps = { value: opts.helperSteps ?? 40 }
   // 和 main.ts 一样：干活线沿用原来的文件名，对话线另有一份；轮的编号两条线共用
   const turnIds = new TurnIds()
   const history = new HistoryStore(tmp.dir, { ids: turnIds })
@@ -287,7 +301,10 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     models: {
       talk: { llm: () => (has('talk') ? talk : undefined), canSee: () => opts.vision === true },
       work: { llm: () => (has('work') ? llm : undefined), canSee: () => opts.vision === true },
+      ...(helper ? { helper: { llm: () => helper, name: () => '子思维的模型', canSee: () => opts.vision === true } } : {}),
     },
+    helperSteps: () => helperSteps.value,
+    helperStore,
     bridge: new BridgeApi(game),
     memory,
     methods,
@@ -325,6 +342,9 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     game,
     llm,
     talk,
+    helper,
+    helperStore,
+    helperSteps,
     history,
     talkHistory,
     memory,
@@ -342,7 +362,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     links,
     usedTokens,
     dir: tmp.dir,
-    restart: (overrides = {}) => makeAgent({ ...opts, migrated: false, ...overrides, dir: tmp.dir, persisted, talkPersisted, links, game, llm, talk }),
+    restart: (overrides = {}) => makeAgent({ ...opts, migrated: false, ...overrides, dir: tmp.dir, persisted, talkPersisted, links, game, llm, talk, ...(helper ? { helper } : {}) }),
     cleanup: tmp.cleanup,
   }
   return harness

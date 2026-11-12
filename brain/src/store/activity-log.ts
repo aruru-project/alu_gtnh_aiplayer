@@ -29,9 +29,10 @@ export interface ActivityRelay {
    * tell：对话线交事或带话；report：干活线中途汇报；question：干活线提问、在等回答；
    * result：干活线停下来了，这是它留下的文字（叫醒对话线）；progress：干活线一轮结束留了文字，但它开的任务或例程还在跑、
    * 它的事还没完（只作背景，不叫醒对话线）；trouble：干活线出了状况（模型接口故障、到步数上限……程序替它报的）；stop：叫停。
+   * helper：对话线派出去的子思维结束了（想完、到上限、被停、出错），它最后写的话交回对话线（叫醒它）；条目带 helper 字段。
    */
-  type: 'tell' | 'report' | 'question' | 'result' | 'progress' | 'trouble' | 'stop'
-  from: 'talk' | 'work' | 'panel'
+  type: 'tell' | 'report' | 'question' | 'result' | 'progress' | 'trouble' | 'stop' | 'helper'
+  from: 'talk' | 'work' | 'panel' | 'helper'
   to: 'talk' | 'work'
   /** tell、stop：程序原样附了几句原话。 */
   quotes?: number
@@ -68,8 +69,8 @@ export interface ActivityRun {
 export interface ActivityModelCall {
   /** thinking：还在想（只有 step、startedAt、purpose）；done：回来了；failed：出错了；halted：想到一半被叫停了（全部停下打断的，不是出错）。 */
   state: 'thinking' | 'done' | 'failed' | 'halted'
-  /** turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）。 */
-  purpose: 'turn' | 'compact'
+  /** turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）；helper：子思维的一步（条目带 helper，没有 turn）。 */
+  purpose: 'turn' | 'compact' | 'helper'
   /** 这一轮的第几次模型调用（从 1 起）。 */
   step?: number
   startedAt: number
@@ -106,8 +107,13 @@ export interface ActivityEntry {
   pictures?: string[]
   /** pictures 里哪几张还存着画它用的盒子：面板给这几张加一个“三维预览”。 */
   scenes?: string[]
-  /** 哪条线的：talk（对话线）、work（干活线）。不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目。 */
+  /**
+   * 哪条线的：talk（对话线）、work（干活线）、helper（对话线派出去的子思维，哪一个看 helper）。
+   * 不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目。
+   */
   agent?: string
+  /** 子思维的编号（h3）：它的每一步都带着（和 step 一起定位；它不占轮的编号，没有 turn）。跨重启不重号。 */
+  helper?: string
   /** kind 是 relay 时：这次往来是什么、从谁到谁。 */
   relay?: ActivityRelay
   /** kind 是 say 时：说在哪——public 公共聊天（所有人都看到）、whisper 悄悄话（只有 to 看到）。 */
@@ -142,6 +148,8 @@ export interface LogQuery {
   kinds?: readonly ActivityKind[]
   /** 只要这条线的，加上不分线的（系统的事、聊天、分成两条线之前的旧条目）。不给就是全部。 */
   agent?: string
+  /** 只要这个子思维（h3）的条目。 */
+  helper?: string
   /** 这些词都要出现（不分大小写）：在正文、详细内容、who 里找。 */
   words?: readonly string[]
   /** 只要这一条。 */
@@ -308,6 +316,7 @@ export class ActivityLog {
       if (query.turnTo !== undefined && (e.turn === undefined || e.turn > query.turnTo)) return false
       if (kinds && !kinds.has(e.kind)) return false
       if (query.agent !== undefined && e.agent !== undefined && e.agent !== query.agent) return false
+      if (query.helper !== undefined && e.helper !== query.helper) return false
       if (words.length > 0) {
         const hay = `${e.who ?? ''}\n${e.text}\n${e.detail ?? ''}`.toLowerCase()
         if (!words.every((w) => hay.includes(w))) return false

@@ -3,6 +3,8 @@
 // 和 server.ts 分开放，是为了两边并行改的时候少撞：server.ts 里只有几行路由指到这里。
 
 import type { AgentState, AgentStatus, CompactNowResult } from '../agent/agent.ts'
+import type { HelperOverview } from '../agent/helpers.ts'
+import type { HelperRecord } from '../store/helpers.ts'
 import type { LinkState } from '../agent/lines.ts'
 import type { RoutineView } from '../agent/routine.ts'
 import type { RunLogStore } from '../agent/run-log.ts'
@@ -127,7 +129,15 @@ export interface StatusDeps {
   awayIdle?(): boolean
   /** 这个实例接的是哪个服务器（主人起的名字和写的规矩）。 */
   environment?(): { name: string; rules: string }
+  /** 对话线派出去的子思维：在想的和最近结束的，和它们用的模型。没有子思维的大脑不给。 */
+  helpers?(): HelperStatus
 }
+
+/** 子思维用的模型：own 是主人给它单独选的；不是的话就是对话线那个（没有配任何模型时是 null）。 */
+export type HelperModel = { provider: string; model: string; providerId: string; modelId: string; own: boolean } | null
+
+/** GET /api/status 和 GET /api/helpers 里的子思维：在想的（不带过程）、最近结束的（不带过程）、最多几个、每个最多几步、用的模型。 */
+export type HelperStatus = HelperOverview & { model: HelperModel }
 
 /** 例程在状态里的样子：结构化的那几项，不带最近的调用和日志（那些在明细接口里）。 */
 function routineState(view: RoutineView): Record<string, unknown> {
@@ -202,9 +212,12 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
     }
   }
   const links = deps.agent.linkState?.() ?? {}
+  const helpers = deps.helpers?.()
   return {
     time: now,
     environment: deps.environment?.() ?? { name: '', rules: '' },
+    // 对话线派出去的子思维（没有这一项的是没有子思维的大脑）
+    ...(helpers ? { helpers } : {}),
     agents: [
       line('talk', stateOf('talk')),
       {
@@ -221,6 +234,23 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
       },
     ],
   }
+}
+
+/** GET /api/helpers/view?id=h3：一个子思维的完整记录（任务、每一步写的字和调的工具、交回的话）；在想的是到现在为止的。 */
+export function helperView(agent: { helperView?(id: string): HelperRecord | undefined }, params: URLSearchParams, reject: Reject): HelperRecord {
+  const id = (params.get('id') ?? '').trim()
+  if (!/^h\d+$/.test(id)) return reject(400, 'bad_request', 'id 要写成 h3 这样')
+  const record = agent.helperView?.(id)
+  if (!record) return reject(404, 'not_found', `没有 ${id} 这个子思维（想完了的只留最近 60 个）`)
+  return record
+}
+
+/** POST /api/helpers/stop {id}：停掉一个在想的子思维。它到现在想到的照样交回对话线（写明是主人在面板上停的）。 */
+export function helperStop(agent: { stopHelper?(id: string): boolean }, body: Record<string, unknown>, reject: Reject): { stopped: boolean } {
+  const id = typeof body.id === 'string' ? body.id.trim() : ''
+  if (!/^h\d+$/.test(id)) return reject(400, 'bad_request', 'id 要写成 h3 这样')
+  if (!agent.stopHelper) return reject(404, 'not_found', '这个大脑没有子思维')
+  return { stopped: agent.stopHelper(id) }
 }
 
 /**
