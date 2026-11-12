@@ -45,12 +45,12 @@ function parseJsonField(text, label) {
 
 const modelLabel = (m) => m.label || m.name
 
-/** 哪几条线各用哪个模型：[{ agent, label, providerId, modelId }]。只有一条线的后端就是一项。 */
+/** 哪几条线各用哪个模型：[{ agent, label, providerId, modelId }]。只有一条线的后端就是一项。子思维不在这里（见 helperChoice）。 */
 function lineChoices() {
   const agents = state.status?.agents ?? []
   const lines = providerState.lines
   if (agents.length > 1 || lines) {
-    const ids = agents.length > 1 ? agents.map((a) => a.agent) : Object.keys(lines ?? {})
+    const ids = agents.length > 1 ? agents.map((a) => a.agent) : Object.keys(lines ?? {}).filter((id) => id !== 'helper')
     return ids.map((id) => {
       const a = agents.find((x) => x.agent === id)
       // 这条线现在用的：后端的清单里写着就用它；状态里带着 id 的用状态里的；只有显示名的按显示名对；都没有就是那个“当前模型”
@@ -73,8 +73,18 @@ function applyProviderState(next) {
   refresh()
 }
 
+/**
+ * 对话线派出去的子思维用哪个：后端的清单里有 lines.helper 才有这一项。followsTalk：主人没给它单独选，用的是对话线那个（对话线换了它跟着换）。
+ */
+function helperChoice() {
+  const helper = providerState.lines?.helper
+  if (!helper) return null
+  return { agent: 'helper', label: '子思维', providerId: helper.providerId, modelId: helper.modelId, followsTalk: helper.followsTalk !== false && !helper.providerId }
+}
+
 async function useModel(line, providerId, modelId, control, what) {
-  const next = await act(control, () => actions.useModel(line.agent, providerId, modelId), `${line.label === '它' ? '' : line.label}换成了 ${what}，下一轮起生效`)
+  const done = line.agent === 'helper' ? `子思维的模型换成了${what}，下一个派出去的起生效` : `${line.label === '它' ? '' : line.label}换成了 ${what}，下一轮起生效`
+  const next = await act(control, () => actions.useModel(line.agent, providerId, modelId), done)
   if (next) applyProviderState(next)
 }
 
@@ -288,14 +298,38 @@ function modelSummary(m) {
   return parts.join(' · ')
 }
 
+/** 子思维用哪个模型：第一项是“和对话线一样”（不单独选），往下是全部模型。 */
+function helperSelect(helper, options) {
+  const talk = lineChoices().find((line) => line.agent === 'talk')
+  const talkText = options.find((o) => o.value === `${talk?.providerId}/${talk?.modelId}`)?.text
+  const value = helper.followsTalk ? '' : `${helper.providerId}/${helper.modelId}`
+  const select = h(
+    'select',
+    { id: 'line-model-helper' },
+    h('option', { value: '', text: `和对话线一样${talkText ? `（现在是 ${talkText}）` : ''}`, selected: value === '' }),
+    options.map((o) => h('option', { value: o.value, text: o.text, selected: o.value === value })),
+  )
+  select.addEventListener('change', () => {
+    const [providerId, modelId] = select.value.split('/')
+    const what = select.value ? (select.selectedOptions[0]?.textContent ?? '') : '和对话线一样'
+    useModel(helper, providerId ?? '', modelId ?? '', select, what)
+  })
+  return field(
+    '子思维',
+    select,
+    `对话线派出去专门想一件事的那部分心思（查东西、设计建筑），最多 3 个同时在想。选“和对话线一样”时对话线换了它跟着换。换了以后下一个派出去的起生效。`,
+  )
+}
+
 /** 最上面那块：每条线现在用哪个模型，直接换。 */
 function linesCard(lines) {
   const options = providerState.providers.flatMap((p) => p.models.map((m) => ({ value: `${p.id}/${m.id}`, text: `${p.label} / ${modelLabel(m)}` })))
   const many = lines.length > 1
+  const helper = helperChoice()
   return h(
     'div',
     { class: 'card' },
-    h('h2', { text: many ? '两条线各用哪个模型' : '它用哪个模型' }),
+    h('h2', { text: many ? (helper ? '两条线和子思维各用哪个模型' : '两条线各用哪个模型') : '它用哪个模型' }),
     h('p', { class: 'muted', text: many ? '对话线回话要快，干活线要想得深，可以各选各的，也可以选同一个。换了以后下一轮起生效，不用重启。左边状态区的卡片上也能换。' : '换了以后下一轮起生效，不用重启。左边状态区的卡片上也能换。' }),
     options.length === 0
       ? h('p', { class: 'error', text: '还没有可选的模型：先在下面添加一个服务商和它的模型。它现在没法思考。' })
@@ -311,6 +345,7 @@ function linesCard(lines) {
             })
             return field(many ? line.label : '现在用的', select)
           }),
+          helper ? helperSelect(helper, options) : null,
         ),
   )
 }
@@ -331,6 +366,9 @@ function renderModels() {
     const key = `${p.id}/${m.id}`
     if (editingModels?.provider === p.id && editingModels.model === m.id) return h('li', { class: 'block' }, h('h3', { text: `编辑模型：${modelLabel(m)}` }), modelForm(p, m, false))
     const users = lines.filter((line) => line.providerId === p.id && line.modelId === m.id)
+    // 子思维单独选了这个才算它在用（“和对话线一样”时对话线那一项已经标着）
+    const helper = helperChoice()
+    const helperUses = helper && !helper.followsTalk && helper.providerId === p.id && helper.modelId === m.id
     const result = h('div', { class: 'field-wide' })
     if (testResults.has(key)) result.append(testResultBox(testResults.get(key)))
     const what = `${p.label} / ${modelLabel(m)}`
@@ -362,6 +400,7 @@ function renderModels() {
       'li',
       { class: 'wrap' },
       users.map((line) => badge(lines.length > 1 ? `${line.label}在用` : '当前使用', 'ok')),
+      helperUses ? badge('子思维在用', 'ok') : null,
       h('div', { class: 'grow' }, h('span', { class: 'mono', text: modelLabel(m) }), modelSummary(m) ? h('span', { class: 'muted', text: `  ${modelSummary(m)}` }) : null),
       useBtns,
       testBtn,
@@ -624,7 +663,8 @@ function renderLimits() {
   const fieldsOf = [
     ['maxSteps', field(two ? '干活线每轮最多调几次模型' : '每轮最多调几次模型', input('lf-steps', 'maxSteps', { min: 1, max: 500 }), '它被叫醒一次算一轮，到了这个次数这一轮就被截断。查配方、找材料这类多步的目标常要几十次；它干活时新到的话也接在这一轮里。默认 60，最多 500。')],
     two ? ['talkMaxSteps', field('对话线每轮最多调几次模型', input('lf-talk-steps', 'talkMaxSteps', { min: 1, max: 500 }), '对话线只说话和查资料，一轮本来就短。默认 20。')] : null,
-    ['dailyTokenLimit', field('每日 token 上限', input('lf-daily', 'dailyTokenLimit', { min: 0 }), two ? '输入加输出，两条线合计。0 表示不限。' : '输入加输出。0 表示不限。')],
+    L.helperMaxSteps !== undefined ? ['helperMaxSteps', field('每个子思维最多调几次模型', input('lf-helper-steps', 'helperMaxSteps', { min: 1, max: 500 }), '对话线派出去专门想一件事的那部分心思。到了这个次数再给它一次不能调工具的机会，把想到的写成交回的话。一层层查配方、设计一栋建筑都要二三十步。默认 40。')] : null,
+    ['dailyTokenLimit', field('每日 token 上限', input('lf-daily', 'dailyTokenLimit', { min: 0 }), two ? '输入加输出，两条线和子思维合计。0 表示不限。' : '输入加输出。0 表示不限。')],
     ['historyTokenThreshold', field(two ? '干活线的历史超过多少 token 就压缩' : '历史超过多少 token 就压缩', input('lf-history', 'historyTokenThreshold', { min: 2000 }), '默认 240000。怎么算、怎么压见下面。')],
     two ? ['talkHistoryTokenThreshold', field('对话线的历史超过多少 token 就压缩', input('lf-talk-history', 'talkHistoryTokenThreshold', { min: 2000 }), '默认 120000。对话线的历史本来就短，调低一些回话更快。')] : null,
     ['memoryMaxChars', field('记忆总长度上限（字符）', input('lf-memory', 'memoryMaxChars', { min: 200 }))],

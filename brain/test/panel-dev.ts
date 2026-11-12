@@ -667,6 +667,26 @@ function handover(talk: boolean): string {
   return `<analysis>按时间过一遍：先是平地，问了一层，主人答了 y=69，做完了；又让慢慢平，被叫停。</analysis>\n<summary>\n${sections.map(([title, body]) => `## ${title}\n${body}`).join('\n\n')}\n</summary>`
 }
 
+/** 子思维：照它走到第几步回——看身上、列草稿、画一张草稿、交回。 */
+function helperResponder(messages: any[]): MockReply {
+  const step = messages.filter((m) => m.role === 'assistant').length + 1
+  const usage = { input: 9000 + step * 2500, output: 160, cacheRead: 8000 }
+  const last = messages[messages.length - 1]
+  const final = typeof last?.content === 'string' && /到了 \d+ 步的上限/.test(last.content)
+  if (final || step >= 5) return { text: '没查完：到了步数上限。', usage, delayMs: 1500 }
+  if (step === 1) return { text: '先看看身上有什么、附近有没有箱子。', toolCalls: [{ name: 'get_status', input: {} }], usage, delayMs: 4000 }
+  if (step === 2) return { toolCalls: [{ name: 'list_designs', input: { kind: 'drafts' } }, { name: 'find_item', input: { query: '钢锭' } }], usage, delayMs: 4000 }
+  if (step === 3) {
+    const code = `const b = blueprint(5, 4, 5)\nb.fill(0, 0, 0, 4, 0, 4, 'minecraft:cobblestone')\nb.walls(0, 1, 0, 4, 2, 4, 'minecraft:planks')\nb.set(2, 1, 0, null).set(2, 2, 0, null)\nb.fill(0, 3, 0, 4, 3, 4, 'minecraft:stonebrick')\nb.save('小仓库')\nreturn '5×4×5'`
+    return { text: '现成的草稿里没有合适的，画一张 5×5 的。', toolCalls: [{ name: 'run_program', input: { code } }], usage, delayMs: 5000 }
+  }
+  return {
+    text: '画好了草稿「小仓库」：5×4×5，圆石地板、木板墙、石砖顶，南面留门。\n材料：圆石 25、木板 30、石砖 25；身上的木板 37 块够，圆石要从仓库拿。\n建议放在主基地南边那排压缩箱子东侧，等主人点头再交给干活线盖。',
+    usage,
+    delayMs: 3000,
+  }
+}
+
 function twoLineResponder(req: RecordedLlmRequest): MockReply {
   const messages: any[] = Array.isArray(req.body?.messages) ? req.body.messages : []
   const last = messages[messages.length - 1]
@@ -681,14 +701,21 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
   }
   const talk = tools.includes('tell_worker')
   const todo = text.split('[最近发生的事')[0]?.split('[当前状态]')[0] ?? ''
+  // 对话线派出去的子思维：一步步查、画一张草稿、交回一段话（每步几秒，好看清“在想”）
+  const system = String(messages.find((m) => m.role === 'system')?.content ?? '')
+  if (/^你是 \S+ 派出去专门想一件事的那部分心思/.test(system)) return helperResponder(messages)
   const usage = { input: talk ? 6200 : 48000, output: 90, cacheRead: talk ? 5400 : 45000 }
 
   if (talk) {
     if (afterTool) {
-      // 记到清单上了：应一声
+      // 记到清单上了、派了子思维：应一声
       const asked = messages[messages.length - 2]?.tool_calls?.[0]?.function?.name
-      return { text: asked === 'todo' ? '记上了。' : '', usage }
+      return { text: asked === 'todo' ? '记上了。' : asked === 'start_helper' ? '派了一部分心思去想，想完了告诉你。' : '', usage }
     }
+    // 子思维交回了：照它交回的话的头一句回主人（只写在面板上）
+    const ended = /你派出去的子思维 (h\d+) ([^（\n]+)（[\s\S]*?(?:它交回的话|它最后写下的话)（原样，只有你看得到）：\n([^\n]*)/.exec(todo)
+    if (ended) return { text: `子思维 ${ended[1]} ${ended[2]}：${ended[3]}`, usage }
+    if (/你派出去的子思维 h\d+/.test(todo)) return { text: '那个子思维没想完，要的话我再派一个。', usage }
     // 主人说“记一下：……”：记到工作清单上（和干活线送来的话一起到的时候也先办这件）
     // 主人说“悄悄告诉某人：……”：在游戏里私聊那个人
     const secret = /对你说[:：]\s*悄悄告诉\s*(\S+?)\s*[:：，,]\s*([^\n]+)/.exec(todo)
@@ -704,6 +731,8 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
     }
     const said = /(?:说|对你说)[:：]\s*([\s\S]*)/.exec(todo)?.[1]?.split('\n')[0]?.trim() ?? todo.trim().slice(0, 80)
     if (/停/.test(said)) return { text: '好，都停下。', toolCalls: [{ name: 'stop_work', input: { reason: '主人说停' } }], usage }
+    // “想想：……”“设计……”“算算……”：派一个子思维出去想（任务写上主人的原话）
+    if (/^(想想|设计|算算)/.test(said)) return { toolCalls: [{ name: 'start_helper', input: { task: `主人在面板上说：${said}\n主仓库在 (-522,69,43) 南边那排压缩箱子。查清楚、算清楚，草稿画好以后写明草稿名。` } }], usage }
     if (/查|怎么做/.test(said)) return { toolCalls: [{ name: 'find_item', input: { query: '钢锭' } }], usage }
     if (/平|搬|存|问|例程|慢|做|拿|凿/.test(said)) return { text: '好，我去办。', toolCalls: [{ name: 'tell_worker', input: { text: said } }], usage }
     return { text: '我在。（我是模拟的模型，只认得“平”“搬”“问”“例程”“慢”“停”“查”这几个词。）', usage }

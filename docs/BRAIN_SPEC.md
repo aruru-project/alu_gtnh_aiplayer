@@ -126,6 +126,7 @@ interface ProviderConfig {
 - **干活线**（`work`）：操作身体的只有它（任务、界面、例程、指令）。它不对玩家说话：中途用 `report` 汇报（只作背景，不叫醒对话线，它下次醒来看到）或提问（`question: true`，叫醒对话线）；一轮结束时留下的文字自动送给对话线——它真的停下来了（身体上没有它开的任务、没有例程在跑、没有刚到的事等它处理）才叫醒对话线，它只是在等自己的任务或例程结束时只作背景送达。
 - **事件怎么分**（`agent/lines.ts` 的 `lineOf`）：聊天、悄悄话、面板指令、玩家进出、干活线送来的话 → 对话线；提醒 → 定它的那条线（`reminders.json` 里每条记着 `line`，没有这一项的是对话线定的）；任务开始和结束、受伤、系统消息、对话线交来的事 → 干活线；死亡、上线、下线两条线都收到（死亡两条线都叫醒，上线下线对两条线都只是背景）。
 - **两条线之间**：`tell_worker`（这一轮里的人的原话连同站位和指向由程序原样附上）、`worker_status`、`stop_work`（一次调用取消身体的全部任务和例程、打断干活线正在进行的模型调用、放下它还没处理的事；它随后只在背景里看到“被叫停了”，不因此自己接着干）、`report`。对话线每一轮的“当前状态”里有干活线的现状：在想第几步、在等它自己开的哪个任务（类型、进度、已经多久）或例程、还是真的停着；并写着“任务或例程一结束它自己会被叫醒接着做”这个事实。话头在两条线之间连着倒了 12 次、中间没有任何外面的事时，之后的往来只作背景、不再互相叫醒（防空转）。
+- **子思维**（`agent/helpers.ts`）：对话线用 `start_helper` 派出去专门想一件事的那部分心思，同时最多 3 个，只有一层。全新的上下文（`HELPER_PROMPT`、她的记忆和基地的做法只读、手册目录、任务、派出去那一刻的状态快照），只查不改的工具清单（`HELPER_TOOLS`），每个最多 `helperMaxSteps` 步，不压缩历史。结束时交回的话全文作为 `helper` 事件叫醒对话线（`lineOf` 归对话线，`decideWake` 总是叫醒）；对话线的状态里列着在想的；`Lines.busy()` 把在想的算作有事；在想的落盘，重启后告诉对话线哪几个没想完。用的模型主人可以单独选（`helperProviderId` / `helperModelId`），没选是对话线的。
 - **共用**：bridge、本地资料、记忆、手册、意见簿、基地的做法、工作清单、设计工作区、聊天记录、每日 token 上限（两条线合计）。
 - **工作清单**（`store/todo.ts`，数据目录的 `todo.json`；工具 `todo` 两条线都有）：交代下来的事还剩哪些。每条：`id`、`text`、`state`（`open` 没做 / `waiting` 在等人 / `done`）、`waitingFor?`（等谁、等什么）、`note?`、`by`（`talk` / `work` / `owner`）、`at`、`changedBy?`、`changedAt?`、`doneAt?`。没做完的最多 100 条，做完的留最近 20 条。一次改动里有一处不对整次不做。每一轮的“当前状态”里列没做的、在等人的、最近做完的 3 条（两条线一样）。**叫醒干活线**（`agent/lines.ts`）：干活线一轮走完（没被叫停）、或者清单变了以后过 `todoNudgeMs`（3 秒），干活线没有在跑的一轮和排着的事、没有盯着的任务、例程没在跑、没有在等的回答（`links.waiting`）、身体的任务列表是空的、它在线，清单上又有 `open` 的，就给它一个 `todo` 事件（对话线正在想的时候先不给，等它想完再看：先记清单、再把事交过来是常见的两步）（`{ type: 'todo', open: [{ id, text }] }`，模型看到的是“[系统] 你停下来了（…），工作清单上还有 N 件没做完、也没标成在等人：#3 …、#5 …”）。叫过一次以后，清单上没多出 `open` 的（新加的、重新打开的；勾掉、删掉、改字、改备注都不算，主人在面板上收拾清单不把停着的它叫起来），它也没为别的事走过一轮，就不再叫；被叫停（`stop_work`、面板总停止）以后，要等它为新的事走完一轮；中间没有外面的事（`outside()`：有人说话、提醒、任务结束……）连着叫了 `TODO_NUDGE_MAX`（8）次就不再叫，记一条错误日志。**自动下线**：`Lines.busy()` 把清单上有 `open` 的算作有事，`presence.ts` 平时的检查和下线前的复查都看它。
 
@@ -220,7 +221,7 @@ interface ProviderConfig {
   - “可能卡住了”是面板自己判断的：模型一步超过 90 秒、身体任务的进度 120 秒没动，标黄，悬停写着依据。
   - 导航：现在 · 对话 · 清单 · 知识 · 建造 · 设置。“清单”旁边灰色的数字是工作清单上还没做完的（没做 + 在等人），“知识”旁边红色的是意见簿里没看过的。再下面是游戏连接和今日用量。
 - 页面：
-  - **现在**：一句话的现状；正在跑的那一轮（起因、已经几步多久、上一步调了什么、现在这一步）；等回答的问题全文和“去回答”；例程的实时计数和正在等的那一步；身体任务的进度和排队；工作清单上还没做完的（没做、在等人，最多 8 条，每条能直接勾掉，下面一行加一条，去清单页的链接）；最近几步；一行输入框。右边是游戏里的它：心和鸡腿、位置朝向、**物品栏**（和游戏里一样的格子：盔甲、背包 9×3、快捷栏，手持的有白框，数量、耐久条，悬停或聚焦显示中文名、英文名、id/meta）、开着的界面（它的格子，和格子以外的控件：开关开没开、页签开没开、流体格里是什么多少；只读）。点一个格子，下面是它的详情和**提示文字**（`/api/items/tooltips`；不按键 / 按住 Shift / 按住 Ctrl 三个画面分开，有几个给几个；写明这是对着样品看到的）、别的玩家（远近和方位）、脚下的俯视图（滚到看得见它、页面在前台时才取，10 秒一次）。
+  - **现在**：一句话的现状；正在跑的那一轮（起因、已经几步多久、上一步调了什么、现在这一步）；对话线派出去的子思维（在想的可停，结束了的写着怎么结束的和交回的话，“看过程”展开每一步）；等回答的问题全文和“去回答”；例程的实时计数和正在等的那一步；身体任务的进度和排队；工作清单上还没做完的（没做、在等人，最多 8 条，每条能直接勾掉，下面一行加一条，去清单页的链接）；最近几步；一行输入框。右边是游戏里的它：心和鸡腿、位置朝向、**物品栏**（和游戏里一样的格子：盔甲、背包 9×3、快捷栏，手持的有白框，数量、耐久条，悬停或聚焦显示中文名、英文名、id/meta）、开着的界面（它的格子，和格子以外的控件：开关开没开、页签开没开、流体格里是什么多少；只读）。点一个格子，下面是它的详情和**提示文字**（`/api/items/tooltips`；不按键 / 按住 Shift / 按住 Ctrl 三个画面分开，有几个给几个；写明这是对着样品看到的）、别的玩家（远近和方位）、脚下的俯视图（滚到看得见它、页面在前台时才取，10 秒一次）。
   - **对话**：一条时间线分左右两道、一行行对齐。左边“说了什么”：玩家的话、它的话、主人在面板上说的（对话线自己的那几步也在这边，画得很省）。每一句标着在哪里说的：“公屏”（实心绿，游戏里所有人看得到）、“私聊 → 某人”（它私聊的，虚线黄框；玩家私聊它的标“私聊它”）、“只在面板”（`reply`，灰蓝，游戏里没人看到）；`detail` 里写着“程序替它说的”的再加一个“程序代说”。`say` 没有 `channel` 的旧日志：正文以“（私聊 某人）”开头的当私聊给那个人（这一段去掉），别的当公屏。“现在”页“最近几步”的标签也照这样写（“它·公屏”“它·私聊 阿露”“它·只在面板”“阿露·公屏”）。左边连着好一阵以后才来的右边的一件另起一行，不挨着最早的那句（两分钟内的才画在同一行）。右边“干了什么”：一轮 → 模型的每一步（用时、token）→ 这一步调的工具（收着时是读得懂的一句：物品写中文名，位置写坐标；点开是参数和结果全文）；它写的程序的一次运行是一块汇总（跑着时实时更新，点开读每一步的明细）。两条线之间的往来（`relay`）是横跨两边的一条；`progress`（还在干、中途留的话）是虚线框，后面写着它在等什么（`relay.waiting`）。被叫停的那一步（`halted`）写“想到一半被叫停了”，大脑进程要停时中止的（`failed` + `aborted`）写“大脑进程要停，这一步被中止了”，两样都不算进一轮的“几处出错”。一轮默认收成一行；干活线最新的一轮开着，对话线的只在它正跑着时开着（它的结果就是下面那句话）。三档：只看对话 / 加上模型的决策 / 全部（再加游戏事件和说明）。往上翻到头自动取更早的；不在底部时有“回到最新”；底部输入框（只有它看得到，不进游戏聊天）。窄于 760 像素时两道叠成一列。
   - **清单**：工作清单（`/api/todo`，和概览一起四秒取一次）。“还要做的”是没做和在等人的，照编号排；“做完的”在后面一块，默认收着（最近做完的在前）。每条：编号、内容、在等人的标签和等什么、备注、谁写的（对话线 / 干活线 / 你）和什么时候、最近谁改过或勾掉的。能加（内容和备注）、改内容和备注（在等人的还能改等什么）、勾掉（✓）、重新打开（做完的点 ↺，在等人的点“不等了”）、标成在等人（要写等什么）、删。只把改了的那几样发出去；后端拒了的原话写在那一条下面，要是那一条已经不在清单上了（别处刚删掉），原话放在清单顶上，并马上再取一遍清单。正在改一条时，轮询回来的新清单先不画，加一条的框里没交出去的字也留着。模型调 `todo` 那一步在“对话”页照普通的工具调用画。
   - **知识**：
@@ -232,7 +233,7 @@ interface ProviderConfig {
   - **建造**：草稿（三维预览和四种简图、材料、生成它的程序、发布到游戏、删除）· 图纸（服务器上的：上传、删除、看材料）· 图片（上传、删除）· 多方块结构（按名字搜，每一级的材料和三维预览）。
   - **设置**：模型（每条线用哪个；服务商和它下面的模型的增删改、测试连接、从接口拉模型列表）· 玩家（这个服务器：名字和这里的规矩，`bot.environment`，名字旁边预览左上角会是什么颜色；上线 / 下线、无敌、会饿；自动上下线：开关和分钟数，`bot.presence`；名字、别名、主人名单、什么时候回应聊天；人设提示词）· 上限（历史压缩怎么算写在下面）· 游戏连接 · 面板口令 · 历史和提醒（每条线记得多少、上下文多大、哪几轮写成了交接记录；“试写一份”“马上压缩”（`POST /api/history/compact`，旁边写明真压会把最近那一段以外的轮换成交接记录、试写只给看不存；要等一两分钟，等的时候写着已经多久，回来的结果照实列出：换了哪几轮、留了几轮、上下文前后多大、调了几次模型、记录多长、先收拾了什么、哪一段没写成，交接记录全文和草稿能展开）；清空；今日用量；提醒，每条写着是哪条线定的，可删）。
 - 前端是 `panel/public/` 下的一组 ES 模块，浏览器直接加载，没有构建步骤：
-  `app.js`（登录、框架、换页）、`side.js`（状态区）、`data.js`（定时取状态）、`logstore.js`（日志：SSE 加往上翻）、`logmodel.js`（**日志条目 → 时间线**，纯函数；条目长什么样只有它知道，新旧两种形状都认）、`logview.js`（把时间线画出来）、`items.js`（物品格子、提示文字、心和鸡腿）、`names.js`（物品中文名）、`page-*.js`（六页）、`todo.js`（工作清单的一条怎么画、怎么改，“现在”页和清单页共用）、`knowledge-methods.js`、`knowledge-guide.js`（知识页的两块）、`markdown.js`（指南的正文 → 块和行内的结构，纯函数）、`viewer3d.js`（三维预览）、`ui.js`（小工具）。
+  `app.js`（登录、框架、换页）、`side.js`（状态区）、`data.js`（定时取状态）、`logstore.js`（日志：SSE 加往上翻）、`logmodel.js`（**日志条目 → 时间线**，纯函数；条目长什么样只有它知道，新旧两种形状都认）、`logview.js`（把时间线画出来）、`items.js`（物品格子、提示文字、心和鸡腿）、`names.js`（物品中文名）、`page-*.js`（六页）、`todo.js`（工作清单的一条怎么画、怎么改，“现在”页和清单页共用）、`helpers.js`（“现在”页上子思维那一块：在想的、最近结束的、展开看过程）、`knowledge-methods.js`、`knowledge-guide.js`（知识页的两块）、`markdown.js`（指南的正文 → 块和行内的结构，纯函数）、`viewer3d.js`（三维预览）、`ui.js`（小工具）。
 - 窄窗口（游戏开在旁边）、键盘（都是真的按钮和表单控件；一组物品格子占一个 Tab 位，方向键在格子之间走）也能用。
 - 连不上大脑进程时：状态区顶上一条红的，页面上留着的旧样子调暗，各页写明没取到并给“重试”；连上以后自己恢复。
 - 看面板、截图用的两个脚本（不连真的游戏、不用真的模型，端口见各自文件头）：
@@ -247,7 +248,8 @@ interface ProviderConfig {
 
 | 字段 | 出现在 | 含义 |
 |---|---|---|
-| `agent` | 两条线各自产生的条目 | 哪条线的：`talk`（对话线）、`work`（干活线）。不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目 |
+| `agent` | 两条线各自产生的条目 | 哪条线的：`talk`（对话线）、`work`（干活线）、`helper`（对话线派出去的子思维）。不带的是系统的事（连上、断开、面板上的操作）和分成两条线之前的旧条目 |
+| `helper` | 子思维的每一条 | 哪一个子思维（`h3`，跨重启不重号）。子思维不占轮的编号：它的条目没有 `turn`，靠 `helper` 加 `step` 定位。开始、结束各是一条 `kind: "turn"`（正文“子思维 h3 开始（模型）：任务第一行”，`detail` 是任务全文；“子思维 h3 结束（调了 N 次模型，多久）：想完了”或“子思维 h3 没想完：大脑要停了”） |
 | `relay` | `kind: "relay"` | 两条线之间的一次往来，见下 |
 | `channel` | `kind: "say"` | 说在哪：`public` 公共聊天（所有人都看到）、`whisper` 悄悄话（只有 `to` 看到）。分开以前的旧条目没有这一项，私聊的 `text` 以“（私聊 某人）”开头 |
 | `to` | `kind: "say"`、`channel: "whisper"` | 悄悄话发给谁；`text` 只放原话 |
@@ -258,7 +260,7 @@ interface ProviderConfig {
 | `run` | `kind: "run"`，例程开始和结束的那两条 | 这次运行的快照，见下 |
 | `call` | `kind: "model_call"` | 这次模型调用的账，见下 |
 
-**`turn` 两条线共用一个计数器，不会重号**：单看 `turn` 就能定位一轮，哪条线的看 `agent`。
+**`turn` 两条线共用一个计数器，不会重号**：单看 `turn` 就能定位一轮，哪条线的看 `agent`。子思维的条目没有 `turn`，看 `helper`。
 
 **在哪里说的**：
 - `kind: "reply"`：对话线写的字，不进游戏，只给主人在面板上看（主人从面板说话时就是回他）。字段和 `say` 一样：`agent: "talk"`、`turn`、`step`、`who`（它的名字）、`text`。程序替它写在面板上的那种不带 `turn`、`step`，`detail` 写着“这句话是程序替它说的，不是模型说的。这一轮不是游戏里的人叫醒的，所以只写在面板上、没在游戏里说”。
@@ -278,7 +280,7 @@ interface ProviderConfig {
   "relay": { "type": "question", "from": "work", "to": "talk" } }
 ```
 
-`relay.type`：`tell` 对话线交事或带话；`report` 干活线中途汇报（只作背景，没有叫醒对话线，`text` 里写着“只作背景，没有叫醒它”）；`question` 干活线提问、在等回答；`result` 干活线停下来了、这是它留下的文字（叫醒对话线）；`progress` 干活线一轮结束留了文字、但它开的任务或例程还在跑（只作背景，没有叫醒对话线；`relay.waiting` 是它还在等什么，如 `"在等它开的任务结束：t5（withdraw）"`，`text` 里写着“只作背景，没有叫醒它”）；`trouble` 干活线出了状况（模型接口故障、没选模型、到步数上限、任务连着失败——程序替它报的，带 `isError`）；`stop` 叫停，`from` 是 `talk` 或 `panel`（面板叫停的那条没有 `agent`、`turn`；身体的任务没取消成时带 `isError`）。两条线空转、这一条只作背景没有叫醒对方时，`text` 里写着“只作背景，没有叫醒它”。
+`relay.type`：`tell` 对话线交事或带话；`report` 干活线中途汇报（只作背景，没有叫醒对话线，`text` 里写着“只作背景，没有叫醒它”）；`question` 干活线提问、在等回答；`result` 干活线停下来了、这是它留下的文字（叫醒对话线）；`progress` 干活线一轮结束留了文字、但它开的任务或例程还在跑（只作背景，没有叫醒对话线；`relay.waiting` 是它还在等什么，如 `"在等它开的任务结束：t5（withdraw）"`，`text` 里写着“只作背景，没有叫醒它”）；`trouble` 干活线出了状况（模型接口故障、没选模型、到步数上限、任务连着失败——程序替它报的，带 `isError`）；`stop` 叫停，`from` 是 `talk` 或 `panel`（面板叫停的那条没有 `agent`、`turn`；身体的任务没取消成时带 `isError`）；`helper` 对话线派出去的子思维结束了，它最后写的话交回对话线（`from: "helper"`、`to: "talk"`，条目带 `agent: "helper"` 和 `helper`；正文“子思维 h3 → 对话线（想完了 / 到了步数上限 / 被停下了……）：头一行”，`detail` 是程序写的怎么结束的加上它那段话全文；出错、上下文超长、额度用完的带 `isError`）。两条线空转、这一条只作背景没有叫醒对方时，`text` 里写着“只作背景，没有叫醒它”。
 
 `kind` 在原来那些之外还多两种，**这两种会原地更新**：SSE 里收到一条数据里的 `id` 是已经有的，就是同一条的新样子，替换掉原来那条；之后再拉日志拿到的也是新样子。更新的那一帧不带 SSE 自己的 `id:` 行（只有 `data:`），所以浏览器断线重连用的 `Last-Event-ID` 一直是最新那条的。
 
@@ -288,7 +290,7 @@ interface ProviderConfig {
   { "id": 812, "time": 1731300000000, "kind": "model_call", "turn": 12, "step": 3,
     "text": "第 3 步：11.8 秒，输入 181204（缓存命中 176900） / 输出 412 token，要调 2 个工具",
     "call": { "state": "done",            // thinking | done | failed | halted
-              "purpose": "turn",          // turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）
+              "purpose": "turn",          // turn：一轮里的一步；compact：压缩历史的那次调用（没有 step）；helper：子思维的一步（带 helper，没有 turn）
               "step": 3, "startedAt": 1731300000000, "ms": 11820,
               "model": "claude-…",        // 接口回的模型名
               "inputTokens": 181204,      // 已含缓存读写的部分
@@ -387,6 +389,7 @@ interface ProviderConfig {
 **两条线各选一个模型。**
 
 - `POST /api/models/use { providerId, modelId, line?: "talk" | "work" }`：不带 `line` 是两条线一起换。`POST /api/providers/:id/activate` 也是两条一起。那条线的下一轮起生效。
+- 子思维的模型：`POST /api/models/use { line: "helper", providerId, modelId }` 单独选一个；`{ line: "helper", providerId: "" }` 改回“和对话线一样”（配置里 `helperProviderId` / `helperModelId` 存成空的，对话线换了它跟着换）。下一个派出去的起生效。`GET /api/providers` 的 `lines` 多一项 `helper: { providerId, modelId, followsTalk }`。
 - `GET /api/providers`（以及所有返回它的接口）带 `lines: { "talk": { "providerId", "modelId" }, "work": { … } }`；原来的 `activeProviderId` / `activeModelId` 保留，等于干活线的。
 - `GET /api/overview`：`provider`、`agent`、`history` 保留，都是干活线的；另有 `lineModels: { talk: {…同 provider 的形状…} | null, work: … }`、`talk`（对话线的状态，形状同 `agent`）、`histories: { talk: { turns, hasSummary, estimatedTokens, threshold }, work: … }`。
 - `POST /api/history/clear { line?: "talk" | "work" }`：不带是两条线的都清。
@@ -394,7 +397,7 @@ interface ProviderConfig {
   - `dryRun: true`：只写不存，历史不动，看它会写成什么（试提示词用）；这条线正在跑一轮时也能试，同一条线同时只能有一次试写。
   - 不带 `dryRun`：真压。这条线正在跑一轮、或者后台正在写一份交接记录时不做，回 409 `busy`；没有可用的模型回 503 `no_model`。
   - 回的是 `{ line, dryRun, applied, action, summary, analysis?, turns: { from, to, count } | null, kept, calls, inputChars, usage: { inputTokens, outputTokens }, ms, summaryChars, capChars?, tokensBefore, tokensAfter, tidied?, error? }`：`applied` 历史改了没有；`action` 是 `summarized`（写成了）、`nothing` / `truncated`（最近那一段以外没有可换的轮，或者一段都没写成）、`dropped`；`summary` 是会存进历史的那一份（已有的记录和这些轮合并以后的）；`analysis` 是它打的草稿；`turns` 是换掉的轮的编号范围和轮数，`kept` 是留下的轮数；`calls`、`inputChars`、`usage`、`ms` 是写记录调了几次模型、一共给它看了多少字符、接口报的输入输出 token（写成了的那几次的合计，一次都没写成是 0）、一共等了多少毫秒（没写成的也算）；`capChars` 是记录的上限；`tokensBefore` / `tokensAfter` 是前后上下文多大；`tidied` 是第一步收拾了什么；`error` 是有一段没写成的原因（已经折进去的照样算数）。
-- 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的；`backgroundCompaction`（默认 `true`）两条线共用：交接记录在后台写（见“历史与压缩”）。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
+- 设置（`GET/PUT /api/bot` 的 `bot.limits`）：`maxSteps`、`historyTokenThreshold` 是干活线的；`talkMaxSteps`（默认 20）、`talkHistoryTokenThreshold`（默认 60000）是对话线的；`backgroundCompaction`（默认 `true`）两条线共用：交接记录在后台写（见“历史与压缩”）；`helperMaxSteps`（默认 40）是每个子思维最多调几次模型（到了再给一次不能调工具的机会写交回的话）。`bot.systemPrompt` 字段名没变，含义是“对话线的说话风格”（空 = 默认），`defaultPersona` 返回默认的那段。
 
 - **这个服务器**：`GET/PUT /api/bot` 的 `bot.environment = { name: string, rules: string }`（默认都是空；名字最多 40 字，规矩最多 4000 字，首尾空白去掉）。这个实例接的是哪个服务器（主人起的名字，如“测试服”“正式服”）和主人给这里写的规矩（自由文字）。它是这个实例的设置，不是它的记忆：“这里是测试服，材料随便用”这种话写在这里，不跟着记忆搬到别的服务器。`GET /api/status` 顶层带 `environment`。两样有一样不空时，两条线每一轮的系统提示词里多一节“这个服务器”（`agent/prompt.ts` 的 `environmentSection`，程序生成，在“你的记忆”前面）：名字、“这是主人给这个服务器写的设置，不是你记下来的”、规矩的原话；主人改了下一轮就是新的。
 - **自动上下线**（`agent/presence.ts`，默认关）：`GET/PUT /api/bot` 的 `bot.presence = { idleOffline: boolean, idleMinutes: number }`（默认 `false`、`5`；分钟数可以写小数，0.05–1440）。开着时：服务器上没有真人、它手上也没事（哪条线在跑一轮或排着事、盯着任务、例程在跑、工作清单上有没做的，都算有事；在等人的不算），满 `idleMinutes` 分钟自己下线；有真人进服、主人从面板发指令、它定的提醒到点时再上来，那件事照常处理（进服的作背景，指令和提醒照常叫醒对话线）。
@@ -453,6 +456,12 @@ interface ProviderConfig {
 - `GET /api/todo` → `{ available, counts: { open, waiting, done }, items: [条目 + line] }`，照编号排。条目：`id`、`text`、`state`（`open` 没做 / `waiting` 在等人 / `done` 做完）、`waitingFor?`（在等人时：等谁、等什么）、`note?`、`by`（`talk` 对话线 / `work` 干活线 / `owner` 主人在面板上）、`at`（epoch ms，写下的时间）、`changedBy?`、`changedAt?`（最近一次谁改的、什么时候）、`doneAt?`。`line` 是模型在清单里看到的那一行（`- #3 waiting for Steve 回来: 修二号高炉 (the talk line, 22:30) — note: 不急`）。没有这份存储时 `{ available: false, counts: {0,0,0}, items: [] }`。
 - `POST /api/todo { add?: [{ text, note? }], change?: [{ id, text?, note?, state?, waitingFor?, remove? }] }` → `{ items, counts, added: [id…], changed: [id…], removed: [id…], cleared: [id…] }`。`state: "open"` 是重新打开（做完的、在等人的都行）；给了 `waitingFor` 不给 `state` 就是标成在等人，`state: "waiting"` 一定要有 `waitingFor`（新给的或原来的）；`note: ""` 去掉备注；`remove: true` 删掉。`cleared` 是做完的超过 20 条时清掉的最早几条。有一处不对整次不做：400 `bad_request`，`message` 是和工具一样的英文（`#9 is not on the list.` 这样一处一句）。加了没做的、而干活线停着时，它会被叫醒（见“agent 循环”的工作清单）。
 - `DELETE /api/todo { id }` → `{ removed }`。
+
+**8e. 子思维**（对话线派出去专门想一件事的那部分心思；`agent/helpers.ts`，落盘在 `store/helpers.ts`：数据目录的 `helpers-state.json` 和 `helpers/h3.json`；实现在 `panel/data-api.ts`、`panel/server.ts`）。行为见 `brain/README.md` 的“子思维”。
+
+- `GET /api/status` 顶层多一项 `helpers`（没有子思维的大脑没有这一项），和 `GET /api/helpers?limit=<默认 20，最多 60>` 同一个形状：`{ max: 3, maxSteps, model, running: [摘要 + thinkingSince? + lastTool?], recent: [摘要] }`（状态里的 `recent` 只给最近 8 个）。摘要：`id`、`task`（全文）、`status`（`running` / `done` 想完了 / `limit` 到了步数上限 / `stopped` 被停下了 / `failed` 模型接口出错 / `context` 上下文超长 / `budget` 每日 token 用完 / `interrupted` 大脑重启时没想完）、`startedAt`、`endedAt?`、`steps`（调了几次模型）、`maxSteps`、`model?`（用的模型，给人看的名字）、`final?`（交回的话全文）、`note?`（程序写的一句：怎么结束的）、`usage: { inputTokens, outputTokens }`。`thinkingSince` 是正在想的那一步从什么时候开始（在执行工具时没有），`lastTool` 是最近调的工具。`model`：`{ provider, model, providerId, modelId, own }`（`own` 是主人给它单独选的；不是就是对话线的那个），一个模型都没配时是 `null`。
+- `GET /api/helpers/view?id=h3` → 摘要加上 `transcript: [{ n, at, ms?, inputTokens?, outputTokens?, cacheReadTokens?, text?, calls: [{ name, input, result?, isError?, ms?, pictures? }], error?, final? }]`：每一步（一次模型调用）写的字和调的工具（参数 JSON 留 2,000 字符、结果留 8,000 字符，长的截掉并写明）；`final: true` 是到了上限以后不能调工具的那一步。在想的给的是到现在为止的。`id` 写错 400，没有这个（结束了的只留最近 60 个）404。
+- `POST /api/helpers/stop { id }` → `{ stopped }`：停掉一个在想的；它到现在想到的照样交回对话线，写明是主人在面板上停的。不在想的是 `false`。
 
 **9. 游戏内指南**（只读；整合包带的那本、玩家按 G 看到的，`packdata` 的 `guide.jsonl`，实现在 `panel/data-api.ts`；页面在“知识 → 指南”）。一页写成 `book:path`。给出来的正文是**读成字以后的**，和模型用 `read_guide` 读到的是同一份（物品是“中文名 [id/meta]”，配方框、立体图、图片各是一句“游戏里这里显示的是什么”，页间链接是 `book:path`；规则见 `docs/PACKDATA.md` 的“游戏内指南 · 大脑怎么用”）。同一路径两种语言都有的算一页、给中文的。
 

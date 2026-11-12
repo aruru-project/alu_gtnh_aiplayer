@@ -17,6 +17,8 @@
 // 一轮决策中间插进了别的东西（它说了一句话、别人说了话）时，这一轮切成前后几段，每段各是一个 work，时间线始终是先后顺序。
 //
 // 两条线（lane）：一个 AI 玩家有“对话”和“干活”两条线，各有各的模型调用（条目的 agent 字段：talk / work；现在后端只有一条 main）。
+// 对话线派出去的子思维（agent: helper，helper: h3）不占轮的编号：它的每一步按 helper 编号归成一段（turn.helper），画在干活那一道上；
+// 它结束时交回对话线的那一条是 relay（type: helper）。
 //   talk  说的话，和对话线自己的那几步；谁进出了服务器
 //   work  其余的：干活线（或者唯一的那条线）的每一步、例程、身体的事件、说明和报错
 // layoutRows 把时间线排成一行行：每行左边是对话那条线上的东西，右边是紧跟着它的干活那条线上的东西。
@@ -29,6 +31,8 @@ const PROGRAM_PREFIX = /^\[程序\] ?/
 const RUN_STEP_PREFIX = /^\[(?:例程|程序)[^\]#]*(?:#(\d+))?\] ?/
 const TURN_START = /^第 (\d+) 轮开始(?:（(.*?)）)?：?([\s\S]*)$/
 const TURN_END = /^第 (\d+) 轮结束（调了 (\d+) 次模型(?:，(.*?))?）/
+const HELPER_START = /^子思维 (h\d+) 开始(?:（(.*?)）)?：?([\s\S]*)$/
+const HELPER_END = /^子思维 (h\d+) (?:结束（调了 (\d+) 次模型[^）]*）|没想完)/
 const ROUTINE_START = /^例程 (r\d+)（([\s\S]*?)）开始在后台跑/
 const ROUTINE_END = /^例程 (r\d+)（([\s\S]*?)）(跑完了|停了)：?([\s\S]*)$/
 const SYSTEM_MESSAGE = /^系统消息：/
@@ -241,8 +245,9 @@ export function buildTimeline(entries) {
     if (!item) item = legacyRunByName.get(`new:${id}`)
     if (!item || (file !== undefined && item.run.file !== undefined && item.run.file !== file)) {
       item = newRun(file !== undefined ? `f:${file}` : `r${id}@${entry.id}`, { id, kind: snapshot?.kind ?? (entry.source === 'program' ? 'program' : 'routine'), name: snapshot?.name, time: snapshot?.startedAt ?? entry.time, firstId: entry.id, agent: entry.agent })
-      // run_program 的程序：挂在等着它的那次工具调用下面；例程自己占时间线上的一行
-      const host = item.run.kind === 'program' && lastWork ? pendingTool(lastWork, 'run_program') : undefined
+      // run_program 的程序：挂在等着它的那次工具调用下面；例程自己占时间线上的一行。子思维的程序挂在它自己那一段里
+      const owner = typeof entry.helper === 'string' ? turns.get(`h:${entry.helper}`) : lastWork
+      const host = item.run.kind === 'program' && owner ? pendingTool(owner, 'run_program') : undefined
       if (host) {
         host.tool.run = item
         item.host = host.part
@@ -261,9 +266,12 @@ export function buildTimeline(entries) {
     if (item.host) stamp(item.host.turn, item.host, entry)
   }
 
+  /** 一条属于哪一段：子思维的按它的编号（h:h3），别的按轮的编号。 */
+  const turnKeyOf = (entry) => (typeof entry.helper === 'string' ? `h:${entry.helper}` : entry.turn)
+
   for (const entry of entries) {
     const kind = entry.kind
-    const hasTurn = typeof entry.turn === 'number'
+    const hasTurn = typeof entry.turn === 'number' || typeof entry.helper === 'string'
 
     if (kind === 'chat' || kind === 'whisper' || kind === 'say' || kind === 'reply' || kind === 'command') {
       const where = whereSaid(entry)
@@ -311,6 +319,9 @@ export function buildTimeline(entries) {
         to: relay.to ?? (entry.agent === 'work' ? 'talk' : 'work'),
         quotes: relay.quotes ?? 0,
         text: text.replace(RELAY_PREFIX, ''),
+        // 子思维交回的那一条：是哪一个、怎么结束的（正文开头括号里的：想完了、被停下了……）
+        helper: typeof entry.helper === 'string' ? entry.helper : undefined,
+        ending: relay.type === 'helper' ? /（([^）]*)）：$/.exec(RELAY_PREFIX.exec(text)?.[0] ?? '')?.[1] : undefined,
         // 两条线空转时这一条只作背景，没有叫醒对方（后端写在正文开头的括号里）
         background: /只作背景/.test(RELAY_PREFIX.exec(text)?.[0] ?? ''),
         detail: entry.detail,
@@ -322,22 +333,27 @@ export function buildTimeline(entries) {
     }
 
     if (kind === 'turn' && hasTurn) {
-      const turn = turnOf(entry.turn, entry)
-      const start = TURN_START.exec(entry.text)
-      const end = start ? null : TURN_END.exec(entry.text)
+      const turn = turnOf(turnKeyOf(entry), entry)
+      if (typeof entry.helper === 'string') turn.helper = entry.helper
+      const start = (turn.helper ? HELPER_START : TURN_START).exec(entry.text)
+      const end = start ? null : (turn.helper ? HELPER_END : TURN_END).exec(entry.text)
       if (start) {
         turn.hasStart = true
         turn.startedAt = entry.time
         turn.model = start[2] ?? ''
         turn.trigger = (start[3] ?? '').trim()
         turn.seen = entry.detail
+        // 子思维：详细内容是对话线写的任务全文
+        if (turn.helper) turn.task = entry.detail
         stamp(turn, partOf(turn, entry, true), entry)
       } else {
         turn.open = false
         turn.endedAt = entry.time
         if (end) {
-          turn.calls = Number(end[2])
-          if (!turn.model && end[3]) turn.model = end[3]
+          if (end[2] !== undefined) turn.calls = Number(end[2])
+          if (!turn.helper && !turn.model && end[3]) turn.model = end[3]
+          // 子思维怎么结束的：“结束（…）：想完了”冒号后面那几个字；“没想完”就是大脑要停了
+          if (turn.helper) turn.ending = /：([^：]*)$/.exec(entry.text)?.[1] ?? '没想完：大脑要停了'
         }
         const part = turn.parts[turn.parts.length - 1] ?? partOf(turn, entry, true)
         stamp(turn, part, entry)
@@ -352,7 +368,7 @@ export function buildTimeline(entries) {
         push({ type: 'note', level: LEVEL.work, key: `n${entry.id}`, id: entry.id, time: entry.time, agent: entry.agent, tone: entry.isError ? 'error' : 'info', label: '模型', text: entry.text, detail: entry.detail, call, rev: seqOf(entry) })
         continue
       }
-      const turn = turnOf(entry.turn, entry)
+      const turn = turnOf(turnKeyOf(entry), entry)
       const { part, step } = stepByNumber(turn, { ...entry, step: entry.step ?? call.step })
       step.call = { ...call, id: entry.id, text: entry.text, isError: entry.isError === true }
       stamp(turn, part, entry)
@@ -361,7 +377,7 @@ export function buildTimeline(entries) {
     }
 
     if (kind === 'model_text' && hasTurn) {
-      const turn = turnOf(entry.turn, entry)
+      const turn = turnOf(turnKeyOf(entry), entry)
       const { part, step } = typeof entry.step === 'number' ? stepByNumber(turn, entry) : legacyStep(turn, entry, true)
       step.texts.push({ id: entry.id, time: entry.time, text: entry.text })
       stamp(turn, part, entry)
@@ -372,7 +388,7 @@ export function buildTimeline(entries) {
       const { source, runId, text } = sourceOf(entry)
 
       if (source === 'model' && hasTurn) {
-        const turn = turnOf(entry.turn, entry)
+        const turn = turnOf(turnKeyOf(entry), entry)
         if (kind === 'tool_call') {
           const { part, step } = typeof entry.step === 'number' ? stepByNumber(turn, entry) : legacyStep(turn, entry, true)
           step.tools.push(newTool(entry, text))
@@ -524,7 +540,7 @@ export function buildTimeline(entries) {
         continue
       }
       if (hasTurn) {
-        const turn = turnOf(entry.turn, entry)
+        const turn = turnOf(turnKeyOf(entry), entry)
         const part = partOf(turn, entry, false)
         const step = part.steps[part.steps.length - 1]
         const note = { id: entry.id, time: entry.time, tone: kind, text: entry.text, detail: entry.detail }
@@ -671,7 +687,7 @@ export function msgLabel(item) {
 }
 
 /** 两条线之间一次往来的叫法。 */
-export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', progress: '干活线留话', trouble: '干活线出了状况', stop: '叫停' }
+export const RELAY_LABELS = { tell: '交给干活线', report: '干活线汇报', question: '干活线提问', result: '干活线做完了', progress: '干活线留话', trouble: '干活线出了状况', stop: '叫停', helper: '子思维交回' }
 
 /**
  * “现在”页的“最近几步”：时间线最后的若干样东西，摊平成一行一件事（新的在后）。

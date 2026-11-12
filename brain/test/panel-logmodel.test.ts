@@ -385,3 +385,36 @@ describe('对话页：每一句话是在哪里说的', () => {
     ])
   })
 })
+
+describe('对话页的时间线：子思维', () => {
+  it('子思维的每一步（agent: helper，带它的编号，不带轮的编号）归成它自己的一段，画在干活那一道，和同时在跑的干活线的一轮分得开；它的程序挂在它自己那一步下面；交回对话线的那一条横跨两边', () => {
+    const helper = (kind: string, text: string, extra: Json = {}): Json => e(kind, text, { agent: 'helper', helper: 'h3', ...extra })
+    const call = (state: string, step: number, purpose = 'helper'): Json => ({ state, purpose, step, startedAt: clock, ...(state === 'done' ? { ms: 900, inputTokens: 1200, outputTokens: 40, stop: 'tool_calls', toolCalls: 1 } : {}) })
+    const { items, turns } = model.buildTimeline([
+      helper('turn', '子思维 h3 开始（子思维的模型）：算算钢板要多少钢锭', { detail: '算算钢板要多少钢锭\n主人要 64 块' }),
+      helper('model_call', '第 1 步', { step: 1, call: call('done', 1) }),
+      // 同时干活线在跑它自己的第 7 轮
+      e('turn', '第 7 轮开始：对话线交给你的：去挖土', { agent: 'work', turn: 7 }),
+      e('model_call', '第 1 步', { agent: 'work', turn: 7, step: 1, call: call('done', 1, 'turn') }),
+      e('tool_call', '{"x":1}', { agent: 'work', turn: 7, step: 1, source: 'model', who: 'dig_blocks' }),
+      helper('tool_call', '{"code":"…"}', { step: 1, source: 'model', who: 'run_program' }),
+      helper('run', '程序 p4：已调 1 次工具', { source: 'program', runId: 'p4', run: { id: 'p4', kind: 'program', name: '', status: 'running', startedAt: clock, calls: 1, tasks: 0, errors: 0, file: 'program-20261112-120000-p4.jsonl' } }),
+      e('tool_result', 'Task t1 started', { agent: 'work', turn: 7, step: 1, source: 'model', who: 'dig_blocks' }),
+      helper('tool_result', 'The program finished in 0.2 s.', { step: 1, source: 'model', who: 'run_program' }),
+      helper('model_call', '第 2 步', { step: 2, call: { ...call('done', 2), stop: 'end', toolCalls: 0 } }),
+      helper('model_text', '要 96 个钢锭', { step: 2 }),
+      helper('turn', '子思维 h3 结束（调了 2 次模型，12 秒）：想完了'),
+      helper('relay', '子思维 h3 → 对话线（想完了）：要 96 个钢锭', { detail: '要 96 个钢锭', relay: { type: 'helper', from: 'helper', to: 'talk' } }),
+    ])
+    const mine = turns.get('h:h3' as never)!
+    assert.deepEqual([mine.helper, mine.trigger, mine.task, mine.open, mine.calls, mine.ending, mine.inputTokens], ['h3', '算算钢板要多少钢锭', '算算钢板要多少钢锭\n主人要 64 块', false, 2, '想完了', 2400])
+    assert.deepEqual(toolNames(mine), ['run_program'])
+    assert.equal(mine.parts.flatMap((p: Json) => p.steps.flatMap((s: Json) => s.tools)).find((t: Json) => t.name === 'run_program').run.run.id, 'p4')
+    assert.deepEqual(toolNames(turns.get(7)!), ['dig_blocks'])
+    const work = items.filter((i) => i.type === 'work')
+    assert.deepEqual([...new Set(work.map((i) => i.lane))], ['work'])
+    const relay = items.find((i) => i.type === 'relay')!
+    assert.deepEqual([relay.kind, relay.helper, relay.ending, relay.lane, relay.text], ['helper', 'h3', '想完了', 'both', '要 96 个钢锭'])
+    assert.equal(model.recentActivity(items, 20).find((r) => r.kind === 'relay')!.label, '子思维交回')
+  })
+})

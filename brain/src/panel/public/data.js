@@ -25,9 +25,10 @@ export const state = {
 /** 大脑那边现在几点（用来算“已经想了几秒”，不受浏览器的钟不准影响）。 */
 export const serverNow = () => Date.now() + state.skew
 
-const AGENT_LABELS = { talk: '对话', work: '干活', main: '大脑' }
+const AGENT_LABELS = { talk: '对话', work: '干活', main: '大脑', helper: '子思维' }
 const AGENT_HINTS = {
   talk: '听人说话、回话、查资料；不操作身体',
+  helper: '对话线派出去专门想一件事的那部分心思：只查不改，想完了交回对话线',
   work: '操作身体的那条线：任务和例程归它',
   main: '说话和干活现在是同一条线',
 }
@@ -131,6 +132,8 @@ function normalizeStatus(raw) {
     source: 'status',
     // 这个大脑接的是哪个服务器（主人起的名字和写的规矩）
     environment: raw.environment ?? null,
+    // 对话线派出去的子思维：在想的、最近结束的、用的模型（没有子思维的后端是 null）
+    helpers: raw.helpers ?? null,
     agents: (raw.agents ?? []).map((a) => ({
       ...a,
       model: a.model ?? { state: 'idle' },
@@ -310,7 +313,12 @@ export const actions = {
   },
   spawn: () => api('POST', '/bot/spawn', {}),
   despawn: () => api('POST', '/bot/despawn', {}),
-  /** 换某条线用的模型：line 是 talk 或 work；不带是全部一起换（只有一条线的后端也是这样）。 */
-  useModel: (agent, providerId, modelId) => api('POST', '/models/use', { providerId, modelId, ...(agent === 'talk' || agent === 'work' ? { line: agent } : {}) }),
+  /**
+   * 换某条线用的模型：line 是 talk 或 work；不带是全部一起换（只有一条线的后端也是这样）。
+   * helper 是对话线派出去的子思维：providerId 给空字符串就是“和对话线一样”。
+   */
+  useModel: (agent, providerId, modelId) => api('POST', '/models/use', { providerId, modelId, ...(agent === 'talk' || agent === 'work' || agent === 'helper' ? { line: agent } : {}) }),
+  /** 停掉一个在想的子思维：它到现在想到的照样交回对话线。 */
+  stopHelper: (id) => api('POST', '/helpers/stop', { id }),
   command: (text) => api('POST', '/command', { text }),
 }

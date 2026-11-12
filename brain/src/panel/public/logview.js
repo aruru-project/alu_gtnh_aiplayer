@@ -186,9 +186,11 @@ const RELAY_KINDS = {
   progress: ['还在干，留了句话', ''],
   trouble: ['出了状况', 'bad'],
   stop: ['叫停', 'bad'],
+  helper: ['子思维交回', 'ok'],
 }
 
 function renderRelay(item, compact = false) {
+  if (item.kind === 'helper') return renderHelperRelay(item, compact)
   const [label, tone] = RELAY_KINDS[item.kind] ?? [item.kind, '']
   const toWork = item.to === 'work'
   const left = item.kind === 'stop' && item.from === 'panel' ? '面板' : '对话线'
@@ -201,6 +203,22 @@ function renderRelay(item, compact = false) {
   )
   // “只看对话”那一档里它只占一行，不抢人话的位置；全文在另外两档里看
   if (!compact && item.detail && item.detail !== item.text) el.append(fold('全文', item.detail, `relay:${item.id}`))
+  return el
+}
+
+/** 子思维结束、它最后写的话交回对话线的那一条：横跨两边，右边是哪一个子思维。 */
+function renderHelperRelay(item, compact) {
+  const word = item.ending
+  const tone = item.isError ? 'bad' : word === undefined || /想完了/.test(word) ? 'ok' : 'warn'
+  const text = item.text
+  const el = h(
+    'div',
+    { class: `rband k-helper${item.isError ? ' is-error' : ''} to-talk${compact ? ' compact' : ''}`, title: compact ? item.text : '' },
+    h('div', { class: 'relay-route', title: '对话线派出去的子思维想完了，它最后写的话交回对话线（叫醒它）' }, h('span', { class: 'tag talk', text: '对话线' }), h('span', { class: 'relay-arrow', 'aria-label': '交回', text: '←──' }), h('span', { class: 'tag model', text: `子思维 ${item.helper ?? ''}`.trim() })),
+    h('div', { class: 'relay-main' }, h('span', { class: `chip ${tone}`, text: word ? `交回：${word}` : '交回' }), h('span', { class: 'relay-text', text })),
+    time(item.time),
+  )
+  if (!compact && item.detail && item.detail !== text) el.append(fold('全文', item.detail, `relay:${item.id}`))
   return el
 }
 
@@ -288,6 +306,8 @@ function defaultOpen(item, ctx) {
 
 function turnFlags(turn, live) {
   const out = []
+  // 子思维怎么结束的（想完了、到了步数上限、被停下了……）
+  if (turn.helper && !turn.open && turn.ending) out.push(h('span', { class: `chip ${/想完了/.test(turn.ending) ? 'ok' : /出错|太长|用量/.test(turn.ending) ? 'bad' : 'warn'}`, text: turn.ending }))
   if (turn.errors > 0) out.push(h('span', { class: 'chip bad', text: `${turn.errors} 处出错` }))
   if (turn.open) out.push(live ? h('span', { class: 'chip live', 'data-since': turn.startedAt ?? turn.firstTime, 'data-label': '进行中', text: '进行中' }) : h('span', { class: 'chip', title: '没有这一轮结束的记录：多半是大脑重启时被打断了', text: '没有结束记录' }))
   return out
@@ -312,8 +332,8 @@ function renderWork(item, ctx) {
       'button',
       { type: 'button', class: 'turn-head', 'aria-expanded': String(open), title: open ? '收起这一轮' : '展开看每一步' },
       h('span', { class: 'caret', 'aria-hidden': 'true' }),
-      h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: state.status?.agents?.length > 1 ? agentLabel(state.status.agents.find((a) => a.agent === item.agent) ?? item.agent ?? 'main') : '模型' }),
-      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', title: statsText(turn), text: statsText(turn, !open) }) : trigger),
+      h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: turn.helper ? '子思维' : state.status?.agents?.length > 1 ? agentLabel(state.status.agents.find((a) => a.agent === item.agent) ?? item.agent ?? 'main') : '模型' }),
+      h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: turn.helper ? turn.helper : `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', title: statsText(turn), text: statsText(turn, !open) }) : trigger),
       time(turn.startedAt ?? turn.firstTime),
       h('span', { class: 'turn-meta' }, quiet ? (open ? [] : chipEls(chips)) : h('span', { class: 'stats', text: statsText(turn) }), turnFlags(turn, live)),
     )
@@ -332,7 +352,8 @@ function renderWork(item, ctx) {
     if (item.index === 0) {
       if (quiet && turn.hasStart) body.append(h('div', { class: 'turn-model' }, h('span', { class: 'muted', text: '起因：' }), turn.trigger || '（没写）'))
       if (turn.model) body.append(h('div', { class: 'turn-model muted', text: `用的模型：${turn.model}` }))
-      if (turn.seen) body.append(fold('这一轮开始时给模型看的内容', turn.seen, `seen:${turn.key}`))
+      if (turn.helper && turn.task) body.append(fold('对话线交给它的任务（全文）', turn.task, `seen:${turn.key}`))
+      else if (turn.seen) body.append(fold('这一轮开始时给模型看的内容', turn.seen, `seen:${turn.key}`))
     }
     body.append(...item.notes.map(renderInlineNote), ...item.steps.map((s) => renderStep(s, live)))
     if (body.childElementCount > 0) el.append(body)
@@ -600,6 +621,8 @@ export function createLogView(container, opts = {}) {
       if (a.turn?.id !== undefined) liveTurns.add(a.turn.id)
       else if (a.model?.turn !== undefined) liveTurns.add(a.model.turn)
     }
+    // 在想的子思维：它那一段的编号是 h:h3
+    for (const r of state.status?.helpers?.running ?? []) liveTurns.add(`h:${r.id}`)
     // 不知道是哪一轮在跑（旧的后端）：忙着的时候，最后一轮没结束的就是它
     const busy = agents.some((a) => a.model?.state === 'thinking' || a.model?.state === 'tools')
     const latestTurns = new Set()

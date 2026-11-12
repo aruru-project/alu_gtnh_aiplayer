@@ -5,6 +5,7 @@
 import { actions, agentLabel, bodyAgent, presenceOf, refresh, serverNow, state, watchLiveClosely } from './data.js'
 import { foodBar, hearts, inventoryPanel, screenPanel, slotDetail } from './items.js'
 import { addForm, keepFocus, todoRow, todoUi } from './todo.js'
+import { renderHelpers } from './helpers.js'
 import { describeArgs, recentActivity } from './logmodel.js'
 import { itemName } from './names.js'
 import { getTimeline } from './logstore.js'
@@ -16,6 +17,7 @@ let unsubscribe = []
 let workKey = ''
 let liveKey = ''
 let feedKey = ''
+let helpersKey = ''
 let picked = null
 let mapTimer
 let mapData = null
@@ -54,6 +56,9 @@ function headline() {
     const stale = taskStaleMs(task)
     return { tone: stale > STALE_TASK_MS ? 'warn' : 'body', text: `身体在${taskName(task.type)}`, sub: stale > STALE_TASK_MS ? `任务进度已经 ${duration(stale)}没动，可能卡住了。` : '模型没在想：任务由身体自己做完，做完再叫醒它。' }
   }
+  // 两条线都闲着、子思维还在想：它想完了会叫醒对话线
+  const thinking = state.status?.helpers?.running ?? []
+  if (thinking.length > 0) return { tone: 'think', text: `子思维在想（${thinking.length} 个）`, since: Math.min(...thinking.map((r) => r.startedAt)), sub: '对话线派出去查东西、想事的那部分心思。想完了交回的话会叫醒对话线。' }
   const last = agents.map((a) => a.model?.lastCall?.time).filter((t) => typeof t === 'number').sort((x, y) => y - x)[0]
   if (!state.overview?.provider && state.overview) return { tone: 'bad', text: '还没配模型', sub: '到“设置 → 模型”添加一个，它才能思考。' }
   // 两轮之间的那一小会儿：有事排着，它马上就开始下一轮
@@ -338,6 +343,8 @@ const FEED_TAGS = { say: ['', 'say'], heard: ['', 'heard'], step: ['模型', 'mo
 function renderFeed(el) {
   const { items } = getTimeline()
   const live = new Set((state.status?.agents ?? []).map((a) => a.turn?.id ?? a.model?.turn).filter((id) => id !== undefined))
+  // 在想的子思维：它那一段的编号是 h:h3
+  for (const r of state.status?.helpers?.running ?? []) live.add(`h:${r.id}`)
   const rows = recentActivity(items, 14, live)
   put(el, 
     h('div', { class: 'card-head' }, h('h3', { text: '最近几步' }), h('a', { class: 'more', href: '#chat', text: '去对话页看全部' })),
@@ -602,6 +609,15 @@ function paint(force = false) {
   }
 }
 
+/** 子思维那一块：列表变了（多走了一步、结束了）才重画，免得展开着的过程一秒重画一次。 */
+function paintHelpers(force = false) {
+  if (!root || root.hidden) return
+  const next = JSON.stringify(state.status?.helpers ?? null)
+  if (!force && next === helpersKey) return
+  helpersKey = next
+  renderHelpers(root.querySelector('.now-helpers'), () => paintHelpers(true))
+}
+
 function paintFeed() {
   if (!root || root.hidden) return
   const { items } = getTimeline()
@@ -619,7 +635,7 @@ export function enter(el) {
   unsubscribe = []
   if (el.childElementCount === 0) {
     el.append(
-      h('div', { class: 'now-left' }, h('div', { class: 'now-work' }), h('div', { class: 'now-todo-wrap' }), h('div', { class: 'card now-feed' }), h('div', { class: 'card now-say' })),
+      h('div', { class: 'now-left' }, h('div', { class: 'now-work' }), h('div', { class: 'now-helpers' }), h('div', { class: 'now-todo-wrap' }), h('div', { class: 'card now-feed' }), h('div', { class: 'card now-say' })),
       h('div', { class: 'now-game', 'aria-label': '游戏里的它' }),
     )
   }
@@ -627,11 +643,12 @@ export function enter(el) {
   // 这一页没有地方改一条（只能勾掉），清单变了整块重画
   todoUi.onChange = () => renderTodo(el.querySelector('.now-todo-wrap'))
   todoUi.onChange()
-  workKey = liveKey = feedKey = ''
+  workKey = liveKey = feedKey = helpersKey = ''
   paint(true)
   paintFeed()
+  paintHelpers(true)
   unsubscribe = [
-    bus.on('status', () => (paint(), paintFeed())),
+    bus.on('status', () => (paint(), paintFeed(), paintHelpers())),
     bus.on('overview', () => paint()),
     bus.on('live', () => paint()),
     bus.on('status-error', () => paint()),

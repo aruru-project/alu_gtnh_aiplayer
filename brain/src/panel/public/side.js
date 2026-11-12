@@ -244,6 +244,9 @@ function lineCard(agent, ownsBody, alone) {
     extra.push(h('div', { class: 'lane-note muted', title: turn.about ?? '', text: `第 ${turn.id} 轮${turn.maxSteps ? ` · 已 ${turn.steps ?? 0}/${turn.maxSteps} 步` : ''}${turn.about ? ` · ${turn.about}` : ''}` }))
   }
   if (agent.pending > 0) extra.push(h('div', { class: 'lane-note muted', text: `还有 ${agent.pending} 件事排着等它` }))
+  // 对话线派出去的子思维：在想的有几个（详情在“现在”页）
+  const helpers = agent.agent === 'talk' ? (state.status?.helpers?.running ?? []) : []
+  if (helpers.length > 0) extra.push(h('a', { class: 'lane-note helper-note', href: '#now', title: helpers.map((r) => `${r.id}：${r.task.split('\n', 1)[0]}`).join('\n'), text: `子思维在想 ${helpers.length} 个：${helpers.map((r) => `${r.id} 第 ${r.steps + (r.thinkingSince !== undefined ? 1 : 0)} 步`).join('、')}` }))
   return h(
     'section',
     { class: `line-card agent-${agent.agent}`, 'aria-label': agentLabel(agent) },

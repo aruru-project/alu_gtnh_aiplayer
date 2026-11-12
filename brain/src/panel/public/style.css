@@ -324,6 +324,8 @@ input.narrow { width: 96px; }
 .model-pick { padding: 3px 6px; font-size: 12.5px; color: var(--muted); background: transparent; border-color: var(--line); margin-bottom: 5px; }
 .model-pick:hover { border-color: var(--line-strong); color: var(--text); }
 .lane-note { font-size: 12px; margin-bottom: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.lane-note.helper-note { display: block; color: var(--model); text-decoration: none; }
+a.lane-note.helper-note:hover { text-decoration: underline; }
 .waiting { margin: 2px 0 7px; padding: 7px 9px; border: 1px solid #6a531d; border-radius: 6px; background: #1d190e; }
 .waiting-text { font-size: 13px; overflow-wrap: anywhere; margin: 2px 0; }
 .waiting .hint { margin: 0; }
@@ -388,6 +390,27 @@ input.narrow { width: 96px; }
 .counter-label { color: var(--muted); font-size: 12.5px; }
 .counter.bad .counter-n { color: var(--bad); }
 .now-quiet { margin: 0 2px; font-size: 13px; }
+/* 子思维：对话线派出去想事的那部分心思（helpers.js） */
+.helpers-card h4 { margin: 10px 0 4px; }
+ul.plain.helper-list > li { display: block; padding: 4px 0; border-top: 1px solid var(--line); }
+ul.plain.helper-list > li:first-child { border-top: 0; }
+.helper-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.helper-line > .badge, .helper-line > button { flex: none; }
+.helper-id { flex: none; color: var(--model); }
+.helper-what { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helper-sub { display: flex; align-items: baseline; gap: 4px 12px; min-width: 0; margin: 2px 0 0 calc(2ch + 8px); font-size: 13px; }
+.helper-sub > .muted { flex: none; }
+.helper-result { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.helper-model { font-size: 12.5px; }
+.helper-process { margin: 6px 0 4px 1.2em; padding: 6px 0 2px 12px; border-left: 2px solid var(--model-bg); }
+.helper-task, .helper-final-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.helper-step { padding: 4px 0; }
+.helper-step.failed .step-n { color: var(--bad); }
+.helper-step .step-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12.5px; }
+.helper-call > summary { list-style: none; }
+.helper-call > summary::-webkit-details-marker { display: none; }
+.helper-final { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: var(--raised); }
+.helper-final .now-key { margin-bottom: 4px; }
 .now-more { padding: 10px 16px; }
 .now-more > summary { font-size: 13px; }
 .now-more[open] > summary { margin-bottom: 6px; }
