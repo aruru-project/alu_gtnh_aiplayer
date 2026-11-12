@@ -1628,7 +1628,9 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
   }
   line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
   line += makingText(making, params)
-  if (isRecord(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
+  // 电路没变（配方不要电路、机器上本来就没有）就不提
+  const circuitText = (n: number): string => (n === 0 ? '0 (none)' : String(n))
+  if (isRecord(circuit) && typeof circuit.now === 'number' && circuit.now !== count(circuit.was)) line += `. Programmed circuit: now ${circuitText(circuit.now)}, it was ${circuitText(count(circuit.was))}; it stays ${circuitText(circuit.now)} until someone sets it again`
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
   return [line]
@@ -1656,7 +1658,9 @@ export function processResultLines(result: Record<string, unknown>, params?: Rec
   line += makingText(making, params)
   const places = (Array.isArray(elsewhere) ? elsewhere : []).filter(isRecord)
   if (places.length > 0 && kindList(made).length > 0) {
-    line += `; ${got.length > 0 ? 'more of what it made' : 'what it made'} was moved on out of the machine while it worked, and is now in: ${places.map(elsewhereText).join('; ')}`
+    // 取回来的里面有它做的东西时才是“又一些”：取回来的也可能只是没用上的原料
+    const tookSome = got.some((o) => kindList(made).some((m) => m.id === o.id && m.meta === o.meta))
+    line += `; ${tookSome ? 'more of what it made' : 'what it made'} was moved on out of the machine while it worked, and is now in: ${places.map(elsewhereText).join('; ')}`
   } else if (places.length > 0) {
     // 身体读不懂的机器：它做了什么不知道，只知道它转的时候周围的容器里多了哪些不是原料的东西
     line += `; while it ran, these turned up in the containers around it (not among the inputs; its recipes cannot be read, so that they came from it is likely, not certain): ${places.map(elsewhereText).join('; ')}`

@@ -820,6 +820,41 @@ describe('任务类工具', () => {
     assert.match(t1!, /set out to make 4× gregtech:gt\.metaitem\.01\/29804 "Obsidian Foil": NOT what this batch was for/)
   })
 
+  it('机器做的不是要的东西（意见簿 f5：组装机带着电路 1，铁杆 + 铁环做成了铁栅栏、被自动输出推进箱子）：任务是失败，取回来的没用上的原料不说成“又一些产物”，铁栅栏在哪写着', async (t) => {
+    const s = setup(t)
+    const M = { x: -536, y: 69, z: 40 }
+    const fence = { id: 'gregtech:gt.blockfencemetal', meta: 0, name: 'Iron Fence' }
+    // 测试服上实测时身体回的原样（task.list 里的那一项）
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't1',
+          type: 'process',
+          state: 'failed',
+          finishedAt: 100,
+          params: { type: 'process', machine: M, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 23032, count: 2 }, { id: 'gregtech:gt.metaitem.01', meta: 28032, count: 4 }], circuit: 1, expect: [{ id: 'gregtech:gt.metaitem.01', meta: 32100, count: 2 }] },
+          error: { code: 'invalid', message: 'the machine ran another recipe than the one these inputs were for: it made (or was making) 1x Iron Fence [gregtech:gt.blockfencemetal:0], none of 2x Iron Minecart Wheels [gregtech:gt.metaitem.01:32100]; what was in it fits that recipe too; it ran with programmed circuit 1 as this task set it (set back to 1 now). What had not gone in was taken back out. The result says what it made, where that went and what came back' },
+          result: {
+            put: 6,
+            outputs: [{ id: 'gregtech:gt.metaitem.01', meta: 28032, count: 4, name: 'Iron Ring' }, { id: 'gregtech:gt.metaitem.01', meta: 23032, count: 1, name: 'Iron Rod' }],
+            making: [{ ...fence, count: 1 }],
+            rounds: 1,
+            made: [{ ...fence, count: 1 }],
+            elsewhere: [{ x: -537, y: 69, z: 40, name: 'Diamond Chest', side: 'west', items: [{ ...fence, count: 1 }] }],
+            autoOutput: { items: true, fluids: false, side: 'west', to: { x: -537, y: 69, z: 40, name: 'Diamond Chest' } },
+            freeSlots: 34,
+          },
+        },
+      ],
+    })
+    const line = (await s.run('task_status')).content.split('\n').at(-1)!
+    assert.match(line, /t1 process \[failed\] error=invalid: the machine ran another recipe than the one these inputs were for: it made \(or was making\) 1x Iron Fence/)
+    assert.match(line, /partial result: put 6 item\(s\) into the machine; it finished 1 round\(s\) of a recipe, making 1× gregtech:gt\.blockfencemetal "Iron Fence" in all; took out: 4× gregtech:gt\.metaitem\.01\/28032 "Iron Ring", 1× gregtech:gt\.metaitem\.01\/23032 "Iron Rod"/)
+    assert.match(line, /; what it made was moved on out of the machine while it worked, and is now in: 1× gregtech:gt\.blockfencemetal "Iron Fence" in "Diamond Chest" at \(-537,69,40\), against the west face/)
+  })
+
   it('挖东西的区域任务可以指定背包满了怎么办（overflow）；别的取值被拒绝', async (t) => {
     const s = setup(t)
     await s.run('clear_area', { x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave' })

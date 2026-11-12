@@ -180,17 +180,21 @@ public final class ProcessTask extends Task {
             phase = multi ? "going to the input bus" : "going to the machine";
             trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
             trip.session.deposit(plan(inputs));
-            if (circuit >= 0) {
-                // Standing at it, before anything goes in: the moment a player clicks the circuit. Set afterwards,
-                // the machine could start on the first inputs with the circuit it had (a bender set to 1 made foil).
-                trip.beforeSession(() -> {
-                    TileEntity where = tile(loadAt);
-                    oldCircuit = where == null ? -1 : Machines.circuit(where);
-                    if (oldCircuit < 0 || !Machines.setCircuit(where, circuit)) return false;
-                    circuitSet = true;
-                    return true;
-                }, "this " + (multi ? "input bus" : "machine") + " has no programmed-circuit setting; nothing was put in");
-            }
+            // Standing at it, before anything goes in: whether it is already running a recipe of its own, and the
+            // moment a player clicks the circuit. Set afterwards, the machine could start on the first inputs with the
+            // circuit it had (a bender set to 1 made foil).
+            trip.beforeSession(() -> {
+                TileEntity m = machine();
+                busyBefore = !plain && m != null && Machines.working(m);
+                if (circuit < 0) return true;
+                TileEntity where = tile(loadAt);
+                oldCircuit = where == null ? -1 : Machines.circuit(where);
+                // A machine with no circuit setting has none: clearing it (0) is already done.
+                if (oldCircuit < 0) return circuit == 0;
+                if (!Machines.setCircuit(where, circuit)) return false;
+                circuitSet = true;
+                return true;
+            }, "this " + (multi ? "input bus" : "machine") + " has no programmed-circuit setting; nothing was put in");
         }
     }
 
@@ -494,6 +498,16 @@ public final class ProcessTask extends Task {
                         sawWorking = true;
                         if (making == null || making.size() == 0) making = Machines.making(te);
                     }
+                    if (!takenBack && !busyBefore && otherRecipe() != null) {
+                        // It is making none of what these inputs are for: what is still in its input slots comes back
+                        // out at once, the way a player stops a machine seen making the wrong thing.
+                        takenBack = true;
+                        phase = "taking the inputs back: the machine is making something else";
+                        if (inputs.isEmpty()) trip = null;
+                        else collect(loadAt, true);
+                        stage = 9;
+                        return;
+                    }
                 }
                 if (active) {
                     ran = true;
@@ -576,6 +590,27 @@ public final class ProcessTask extends Task {
                 finish();
                 break;
             }
+            case 9: { // taking back what has not gone into the other recipe; the machine finishes the round it is on
+                TileEntity te = machine();
+                if (te != null) watchRounds(te);
+                if (trip != null) {
+                    ContainerTrip.Status st = trip.tick();
+                    if (st == ContainerTrip.Status.WORKING) return;
+                }
+                if (leave) {
+                    // Not left running on the wrong thing, and not waited on either: the round it is on is its own.
+                    restoreCircuit();
+                    outputs = gained();
+                    elsewhere = foundAround();
+                    failOtherRecipe(true);
+                    return;
+                }
+                // Back to watching: once the round it is on has ended its products are collected as usual, and the
+                // task ends as failed (finish).
+                phase = "waiting for the round it is on";
+                stage = 1;
+                break;
+            }
             default: { // inputs taken back after the machine did not start
                 if (trip != null) {
                     ContainerTrip.Status st = trip.tick();
@@ -597,6 +632,112 @@ public final class ProcessTask extends Task {
 
     private String notStarted;
     private boolean passedOn;
+    /** It was seen making none of what was expected, and what had not gone in was taken back out. */
+    private boolean takenBack;
+    /**
+     * It was running a recipe when the bot came to put the inputs in: what it is first seen making may be that one,
+     * so that alone does not stop the batch.
+     */
+    private boolean busyBefore;
+
+    /**
+     * What the machine was seen making when none of it is what the caller expects ({@code expect}): it runs another
+     * recipe than the one the inputs were for (one that what is in it fits too: the programmed circuit it has, things
+     * already in it or fed by a pipe). Null when nothing is expected, it was not seen making anything, it cannot be
+     * read, or some of it is expected.
+     */
+    private JsonArray otherRecipe() {
+        if (plain || expect.isEmpty()) return null;
+        Kinds seen = new Kinds();
+        for (String k : made.keys()) if (isExpected(k)) return null;
+        for (com.google.gson.JsonElement e : made.toJson()) seen.add(e.getAsJsonObject());
+        if (making != null) for (com.google.gson.JsonElement e : making) {
+            JsonObject o = e.getAsJsonObject();
+            if (isExpected(Kinds.key(o))) return null;
+            if (!seen.keys()
+                .contains(Kinds.key(o))) seen.add(o);
+        }
+        return seen.isEmpty() ? null : seen.toJson();
+    }
+
+    private boolean isExpected(String key) {
+        for (ItemFilter f : expect) if (f.meta < 0 ? key.startsWith(f.id + "@") : key.equals(f.id + "@" + f.meta)) return true;
+        return false;
+    }
+
+    private static String kindsText(JsonArray list) {
+        StringBuilder sb = new StringBuilder();
+        for (com.google.gson.JsonElement e : list) {
+            JsonObject o = e.getAsJsonObject();
+            if (sb.length() > 0) sb.append(", ");
+            if (o.has("count")) sb.append(o.get("count")
+                .getAsInt())
+                .append("x ");
+            sb.append(
+                o.has("name") ? o.get("name")
+                    .getAsString() : "")
+                .append(" [")
+                .append(
+                    o.get("id")
+                        .getAsString())
+                .append(':')
+                .append(
+                    o.get("meta")
+                        .getAsInt())
+                .append(']');
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Ends the task as failed: the machine made something else than what the inputs were for. Called once the
+     * circuit is restored and outputs / elsewhere are read, so the result says what came back and where its products
+     * went.
+     */
+    private void failOtherRecipe(boolean roundStillOn) {
+        StringBuilder wanted = new StringBuilder();
+        for (ItemFilter f : expect) {
+            if (wanted.length() > 0) wanted.append(", ");
+            if (f.count > 0) wanted.append(f.count)
+                .append("x ");
+            JsonObject named = Names.describe(new ItemStack(f.item, 1, Math.max(0, f.meta)));
+            if (named.has("name")) wanted.append(
+                named.get("name")
+                    .getAsString())
+                .append(' ');
+            wanted.append('[')
+                .append(f.label())
+                .append(']');
+        }
+        TileEntity where = plain ? null : tile(loadAt);
+        int now = where == null ? -1 : Machines.circuit(where);
+        String setting;
+        if (circuit >= 0 && oldCircuit >= 0) {
+            setting = "; it ran with programmed circuit " + (circuit == 0 ? "none" : String.valueOf(circuit))
+                + " as this task set it (set back to "
+                + (oldCircuit == 0 ? "none" : String.valueOf(oldCircuit))
+                + " now)";
+        } else if (now >= 0) {
+            setting = "; its programmed circuit is " + (now == 0 ? "none" : String.valueOf(now)) + ", which this task did not set";
+        } else {
+            setting = "";
+        }
+        fail(
+            "invalid",
+            "the machine ran another recipe than the one these inputs were for: it made (or was making) "
+                + kindsText(otherRecipe())
+                + ", none of "
+                + wanted
+                + "; what was in it fits that recipe too"
+                + (busyBefore ? " (it was already running a recipe when the inputs went in)" : "")
+                + setting
+                + ". What had not gone in was taken back out"
+                + (roundStillOn
+                    ? "; the round it was on when that was seen finishes in the machine, and what it makes stays in it"
+                        + " (or goes where its auto-output sends it)"
+                    : "")
+                + ". The result says what it made, where that went and what came back");
+    }
     /** What the machine set out to make when it was first seen working. */
     private JsonArray making;
     /** Whether it was seen running a recipe (not just with its active flag up). */
@@ -624,7 +765,10 @@ public final class ProcessTask extends Task {
         restoreCircuit();
         outputs = gained();
         elsewhere = foundAround();
-        if (outputs.size() == 0 && multi && passedTo.size() > 0) {
+        if (otherRecipe() != null) {
+            // It made things, and none of them is what the inputs were for: not done, whatever came back.
+            failOtherRecipe(false);
+        } else if (outputs.size() == 0 && multi && passedTo.size() > 0) {
             // It ran, and the output bus is empty because it does not keep things. That is how this machine is
             // set up, not a failure; the products are for whoever asked to go and find.
             passedOn = true;
@@ -750,7 +894,7 @@ public final class ProcessTask extends Task {
                         + " and is not used up, such as a mould, stays in it too");
             if (leftState != null) o.add("machine", leftState);
             if (making != null && making.size() > 0) o.add("making", making);
-            if (circuit >= 0) {
+            if (circuit >= 0 && oldCircuit >= 0) {
                 JsonObject c = new JsonObject();
                 c.addProperty("now", circuit);
                 c.addProperty("was", oldCircuit);

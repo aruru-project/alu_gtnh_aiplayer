@@ -383,7 +383,7 @@ export const processItems: Tool = {
       rounds: int('Times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
       inputs: stackList('Instead of "recipe": exactly what to put in, each {id, meta?, count}; what is not used up (a mold) with count 1.', PROCESS_MAX_INPUTS),
       moldInside: bool('true: the mold or shape the recipe needs already sits in the machine; none is put in.'),
-      circuit: int('Programmed circuit number to set (0 clears it). Default: the recipe\'s.', { min: 0, max: 24 }),
+      circuit: int('Programmed circuit number to set (0 clears it). Default: the recipe\'s, 0 when it has none.', { min: 0, max: 24 }),
       fluids: stackList('Multiblock only: full fluid cells you carry, each {id, meta?, count}, to pour into its input hatch.', 6),
       expect: stackList('Multiblock only: products to fetch from the chest its output bus pushes into, each {id, meta?, count}. Default: the recipe\'s.', 9),
       bus: pos('Multiblock only: the input bus to use. Default: the emptiest.'),

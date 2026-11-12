@@ -1226,17 +1226,21 @@ export function craftGrid(recipe: Recipe, have?: Carried): GridCell[] {
 export interface ProcessPlan {
   /** 要放进机器的东西：消耗的原料乘上轮数，模具模头这类不消耗的各 1 个。 */
   inputs: { id: string; meta?: number; count: number }[]
-  /** 配方要的编程电路号（不当物品去找，由 circuit 参数设）。 */
+  /**
+   * 配方要的编程电路号（不当物品去找，由 circuit 参数设）。GregTech 的配方不要电路的是 0（清掉）：机器上留着的电路会让同一批料
+   * 凑成另一条配方（意见簿 f5：组装机留着电路 1，铁杆 + 铁环要做车轮，它拿铁杆按“铁杆 + 电路 1”做了铁栅栏）；没有电路设置的
+   * GregTech 机器，身体当 0 已经是这样。别的机器（熔炉、别的 mod 的）没有这个设置，不带。
+   */
   circuit?: number
-  /** 预期的产物（多方块机器的输出总线不留东西时，身体靠它去箱子里取）。 */
-  expect: { id: string; meta: number; count: number }[]
+  /** 预期的产物（多方块机器的输出总线不留东西时，身体靠它去箱子里取；GregTech 机器做出来的一样都不是它们时，任务失败）。 */
+  expect: { id: string; meta?: number; count: number }[]
   /** 配方要的流体：要么机器已经接好，要么带着装了流体的单元用 fluids 给。 */
   fluids: { f: string; name: string; mb: number }[]
 }
 
 /** moldInside：配方要的模具、模头（不消耗的那格）已经在机器里了，不用带、不用放。 */
 export function processPlan(recipe: Recipe, rounds: number, have?: Carried, items?: ItemTable, moldInside = false): ProcessPlan {
-  const plan: ProcessPlan = { inputs: [], expect: [], fluids: recipe.fin.map((f) => ({ f: f.f, name: f.name, mb: f.mb * rounds })) }
+  const plan: ProcessPlan = { inputs: [], ...(recipe.handler.gregtech ? { circuit: 0 } : {}), expect: [], fluids: recipe.fin.map((f) => ({ f: f.f, name: f.name, mb: f.mb * rounds })) }
   for (const slot of mergedSlots(recipe.in)) {
     const circuit = circuitOf(slot)
     if (circuit !== undefined) {
@@ -1260,7 +1264,7 @@ export function processPlan(recipe: Recipe, rounds: number, have?: Carried, item
   }
   for (const o of recipe.out) {
     // 有概率才出的不算进“一定要取回来的”
-    if (o.chance === undefined) plan.expect.push({ id: o.id, meta: o.meta, count: o.n * rounds })
+    if (o.chance === undefined) plan.expect.push({ id: o.id, ...(o.meta === ANY_META ? {} : { meta: o.meta }), count: o.n * rounds })
   }
   return plan
 }

@@ -474,7 +474,8 @@ describe('process_items：照配方册里的配方用机器加工', () => {
       { id: 'gregtech:gt.metaitem.01', meta: 11305, count: 10 },
       { id: 'gregtech:gt.metaitem.01', meta: 32301, count: 1 },
     ])
-    assert.equal(s.lastTask().circuit, undefined)
+    // 这条配方不要编程电路：电路清成 0，免得机器上留着的电路让同一批料凑成另一条配方（意见簿 f5：组装机留着电路 1，铁杆 + 铁环做成了铁栅栏）
+    assert.equal(s.lastTask().circuit, 0)
     // 模具已经在那台机器里（moldInside）：不带、不放，只放要消耗的
     await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 4, rounds: 5, moldInside: true })
     assert.deepEqual(s.lastTask().inputs, [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 10 }])
