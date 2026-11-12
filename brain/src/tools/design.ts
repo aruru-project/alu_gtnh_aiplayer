@@ -4,11 +4,14 @@
 // 列图纸、草稿、图片合成了一个 list_designs；旧的三个名字（list_blueprints、list_drafts、list_images）不在清单里了，调到照常执行。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import { blueprintListing } from './blueprint.ts'
+import { BLUEPRINT_READ_MAX_CELLS, PLAN_PICTURE_MAX_SIDE, blueprintListing, boxInPlan, boxSize, materialLine, readPlanCells, readPlanHead } from './blueprint.ts'
+import type { BlueprintData } from './blueprint.ts'
+import { nameOf } from './format.ts'
 import { DesignBusyError, PROGRAM_TIMEOUT_MAX_MS, PreviewError, SCHEMATIC_MAX_BYTES, blockCount, isValidDraftName, kindKey, materialsOf, renderPreview, toSchematic } from '../design/index.ts'
 import type { Axis, DesignWorkspace, Draft, DraftSummary, ProgramRun } from '../design/index.ts'
-import { GridError, cropGrid, gridFromDraft, legendLines, renderView } from '../render/index.ts'
-import { VIEW_PARAMS, looksForTable, pictureResult, toImage, viewSpec, viewWords } from './pictures.ts'
+import { GridError, cropGrid, gridFromDraft, kindKey as blockKey, legendLines, renderView } from '../render/index.ts'
+import type { BlockKind, VoxelGrid } from '../render/index.ts'
+import { VIEW_PARAMS, looksFor, looksForTable, pictureResult, toImage, viewSpec, viewWords } from './pictures.ts'
 import { bool, int, obj, str } from './schema.ts'
 import { DEFAULT_RESULT_MAX_CHARS, ToolFailure, fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
@@ -316,6 +319,7 @@ export const listDesigns: Tool = {
 
 interface ViewInput {
   name: string
+  blueprint?: boolean
   along?: string
   x1?: number
   x2?: number
@@ -331,10 +335,12 @@ interface ViewInput {
 
 const coordinate = int(undefined, { min: 0 })
 
-const VIEW_DRAFT_TEXT = 'Look at a blueprint draft: size, materials, and its cells drawn in characters, slice by slice. x1..x2, y1..y2, z1..z2 show only that part (cells count from 0).'
+const VIEW_DRAFT_TEXT =
+  'Look at a blueprint draft, or with "blueprint" a blueprint on the server: size, materials, and its cells drawn in characters, slice by slice. x1..x2, y1..y2, z1..z2 show only that part (cells count from 0).'
 /** view_draft 不管模型能不能看图都有的参数（文字那一半）。 */
 const viewDraftTextParams = {
-  name: str('Draft name, as list_designs shows it.', { maxLength: 60 }),
+  name: str('Draft or blueprint name, as list_designs shows it.', { maxLength: 80 }),
+  blueprint: bool('true: a blueprint on the game server, not a draft.'),
   along: str('Slice along y (layers, bottom up), z (upright slices seen from the south) or x (upright, seen from the west). Default: the thinnest way.', { enum: ['x', 'y', 'z'] }),
   x1: coordinate,
   x2: coordinate,
@@ -364,6 +370,7 @@ export const viewDraft: Tool = {
     ['name'],
   ),
   async run(ctx, i: ViewInput): Promise<ToolResult | string> {
+    if (i.blueprint === true) return viewBlueprint(ctx, i)
     const design = workspace(ctx)
     const record = design.drafts.get(i.name.trim())
     if (!record) return fail(`There is no draft named "${i.name.trim()}". list_designs shows the ones there are.`)
@@ -403,6 +410,95 @@ export const viewDraft: Tool = {
       throw e
     }
   },
+}
+
+/** 文字预览要把读到的那一块放回整张图纸那么大的盒子里（坐标才对得上）：盒子最多这么多格（身体收的图纸最多 4,000,000 格）。 */
+const PLAN_TEXT_MAX_CELLS = 4_000_000
+
+/**
+ * 读到的一块（grid）放进整张图纸那么大的一张草稿里，给字符预览和材料计数用（和草稿同一个画法、同一套坐标）。
+ * 草稿的格子里 n 指 kinds[n - 1]，盒子的 kinds[0] 是空气：去掉它下标就对上了。
+ */
+function planDraft(name: string, size: { x: number; y: number; z: number }, grid: VoxelGrid): Draft {
+  const kinds = grid.kinds.slice(1).map((k) => ({ id: k.id, meta: k.meta }))
+  const o = grid.origin
+  const s = grid.size
+  if (o.x === 0 && o.y === 0 && o.z === 0 && s.x === size.x && s.y === size.y && s.z === size.z) return { name, size, kinds, cells: grid.cells }
+  const cells = new Uint16Array(size.x * size.y * size.z)
+  for (let y = 0; y < s.y; y++) {
+    for (let z = 0; z < s.z; z++) {
+      const from = (y * s.z + z) * s.x
+      cells.set(grid.cells.subarray(from, from + s.x), o.x + ((o.y + y) * size.z + o.z + z) * size.x)
+    }
+  }
+  return { name, size, kinds, cells }
+}
+
+/**
+ * view_draft 加 blueprint: true：服务器上的一张图纸，看法和草稿一样（字符画、四种图）。格子问身体要（blueprint.read，大的分几次读），
+ * 材料表是身体给的（带得由人放的原因）。一张图每边最多 PLAN_PICTURE_MAX_SIDE 格，更大的说清楚、让它用 x1..z2 挑一块。
+ */
+async function viewBlueprint(ctx: ToolContext, i: ViewInput): Promise<ToolResult | string> {
+  const name = i.name.trim().replace(/\.schematic$/i, '')
+  const head = await readPlanHead(ctx.bridge, name)
+  const { size } = head
+  // 显示名：身体给的名字对回本地的中文名（和 read_blueprint 的材料表一样）
+  const given = new Map(head.materials.map((m) => [blockKey(m), m.name]))
+  const names = (k: BlockKind): string | undefined => nameOf({ id: k.id, meta: k.meta, name: given.get(blockKey(k)) }) ?? ctx.design?.nameOf(k)
+  const byHand = head.materials.filter((m) => m.byHand !== undefined).reduce((n, m) => n + m.count, 0)
+  const top = `Blueprint "${head.name}" (on the game server): ${sizeText(size)} (x east-west × y up × z north-south), ${head.blocks} block(s) of ${head.materials.length} kind(s)${byHand > 0 ? `, ${byHand} of them for a player to place by hand` : ''}.`
+  // data：给程序用的那一半（尺寸和材料表；每一格是什么用 read_blueprint）
+  const data: BlueprintData = head
+  const program = i.program ? ['A blueprint on the server keeps no program; read_blueprint gives its cells.'] : []
+  const asked = Object.fromEntries((['x1', 'x2', 'y1', 'y2', 'z1', 'z2'] as const).flatMap((k) => (i[k] === undefined ? [] : [[k, i[k]]])))
+  try {
+    const box = boxInPlan(size, asked)
+    const part = boxSize(box)
+    if (i.picture !== undefined && Math.max(part.x, part.y, part.z) > PLAN_PICTURE_MAX_SIDE) {
+      const wide = (['x', 'y', 'z'] as const).filter((a) => part[a] > PLAN_PICTURE_MAX_SIDE)
+      return fail(
+        `${top}\nThat is ${sizeText(part)}; one picture shows at most ${PLAN_PICTURE_MAX_SIDE} blocks on a side. Give ${wide.map((a) => `${a}1 and ${a}2`).join(', ')} (counted from 0 at its lowest corner) to look at a part, for instance ${wide.map((a) => `${a}1: ${box[`${a}1`]}, ${a}2: ${box[`${a}1`] + PLAN_PICTURE_MAX_SIDE - 1}`).join(', ')}.`,
+      )
+    }
+    const tooBig = `It is too big to draw in characters here (${size.x * size.y * size.z} cells); read_blueprint with "from" and "to" reads its cells a part at a time.`
+    if (i.picture === undefined && size.x * size.y * size.z > PLAN_TEXT_MAX_CELLS) return fail(`${top}\n${tooBig}`)
+    const { grid, reads } = await readPlanCells(ctx.bridge, name, box)
+    const readNote = reads > 1 ? [`It was read from the game in ${reads} parts (one read gives at most ${BLUEPRINT_READ_MAX_CELLS} cells).`] : []
+    const preview = (): string => {
+      if (size.x * size.y * size.z > PLAN_TEXT_MAX_CELLS) return tooBig
+      const draft = planDraft(head.name, size, grid)
+      // 字符按整张图纸的材料表发：只读了一块时，分几次看同一个字符也还是同一种方块
+      return renderPreview(draft, { along: (i.along as Axis | undefined) ?? thinnestAxis(draft), box: asked, budget: PREVIEW_BUDGET_CHARS, nameOf: names, order: head.materials.map(blockKey) })
+    }
+    if (i.picture !== undefined) {
+      const spec = viewSpec({ view: i.picture, from: i.from, layer: i.layer }, grid, (layer) => layer - grid.origin.y)
+      const looks = ctx.design ? looksForTable(ctx.design.colors()) : looksFor(ctx.packdata)
+      const picture = renderView(grid, looks, spec, { title: /^[\x20-\x7e]+$/.test(head.name) ? `Blueprint "${head.name}"` : 'Blueprint' })
+      const words = viewWords(spec, grid)
+      const result = pictureResult(
+        ctx,
+        [
+          top,
+          ...readNote,
+          ...(ctx.canSeeImages?.() === true ? [`Picture: ${words}, ${picture.width}×${picture.height} px, 1 block = ${picture.cell} px.`] : []),
+          `${spec.view === 'layer' ? 'In that layer' : 'In it'} (most common first):`,
+          ...legendLines(picture.legend, names),
+          'The picture is a schematic drawing made from block colours, not what it will look like in the game: use it for shape and looks; the materials list is what counts.',
+          ...program,
+        ],
+        toImage(picture, `${words} of the blueprint "${head.name}"`, grid),
+        () => [preview()],
+      )
+      return { ...result, data }
+    }
+    const shown = head.materials.slice(0, MATERIALS_SHOWN).map(materialLine)
+    const rest = head.materials.slice(MATERIALS_SHOWN)
+    if (rest.length > 0) shown.push(`- … and ${rest.length} more kinds (${rest.reduce((n, m) => n + m.count, 0)} blocks): every kind is in the result data (data.materials)`)
+    return { content: [top, ...readNote, 'Materials, for the whole of it:', ...shown, preview(), ...program].join('\n'), data, keepWhole: true }
+  } catch (e) {
+    if (e instanceof PreviewError || e instanceof GridError) return fail(`${e.message}.`)
+    throw e
+  }
 }
 
 export const publishDraft: Tool = {

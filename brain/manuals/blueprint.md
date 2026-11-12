@@ -39,6 +39,7 @@
 # 图纸里有什么
 - 一张图纸要哪些材料、每一格是什么，不用知道它放在哪：库函数 read_blueprint（不在工具清单里，run_program 写一行 `return (await tool("read_blueprint", { name: "cabin" })).text`）。结果是整张图纸的材料表：每种方块多少个、哪些得由人放。你自己的草稿也用它，加 draft: true。
 - 在程序里，r.data.materials 是 [{ id, meta, name, count, item?, byHand? }]（item 是放它用的物品和方块不同名时的那个物品，byHand 是得由人放的原因），r.data.palette 和 r.data.cells 是每一格：`palette[cells[(y * sz + z) * sx + x]]` 是图纸里 (x, y, z) 那一格，palette[0] 是空。格子超过 262144 个的大图纸一次读不完，结果里会说；用 from、to（图纸里面的两个角，从 0 数）一块块读。
+- 想看它长什么样：view_draft 加 blueprint: true（和看草稿一样：字符画，模型能看图时加 picture 画成图，见 pictures 手册）。主人在控制面板“图纸”页点“查看”看到的也是这种图。
 - check_blueprint 回答的是另一件事：图纸放在某个位置时，现场已经对上多少、还要放什么、有什么挡着。它要原点。
 - 材料表里同一个 id、不同 meta 的方块（chisel:nucrete/7、/3、/11）多半是同一种东西的不同花纹：仓库里没有那个 meta 时，它可能是用凿子从同组的另一种变出来的。find_recipes 查那个方块会说它在凿子的哪一组，见 crafting 手册的“凿子的花纹”。
 

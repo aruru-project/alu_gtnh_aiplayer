@@ -1,8 +1,11 @@
 // 图纸：身体能照 Schematica 的 .schematic 文件盖建筑框体。这里是看有哪些图纸、动手前的对比、启动建造任务三个工具。
 // 发给模型的只有 build_blueprint：列图纸并进了 list_designs（design.ts），check_blueprint 是库函数（程序里调；模型直接调也照常执行）。
+// 图纸长什么样（画成图、三维预览）和草稿用同一套：readPlanCells 把图纸的格子读成一个盒子，view_draft（blueprint: true）和面板都用它。
 
 import type { BlueprintEntry, BlueprintKind, BlueprintPlacement } from '../bridge/protocol.ts'
-import { blockCount, materialsOf } from '../design/index.ts'
+import { DRAFT_MAX_SIDE, blockCount, materialsOf } from '../design/index.ts'
+import { GridError, gridFromBlocks, isAir, kindKey } from '../render/index.ts'
+import type { BlockKind, GridBox, VoxelGrid } from '../render/index.ts'
 import { compactJson, formatBlueprintCheck, formatBlueprintList, itemKey, nameOf } from './format.ts'
 import { arr, bool, int, obj, pos, str } from './schema.ts'
 import { dropoff, overflow, queue, startTask, supply } from './tasks.ts'
@@ -99,7 +102,7 @@ export interface BlueprintData {
 
 const kindName = (k: { id: string; meta?: number; name?: string }): string | undefined => nameOf({ id: k.id, meta: k.meta ?? 0, name: k.name })
 
-function materialLine(m: BlueprintData['materials'][number]): string {
+export function materialLine(m: BlueprintData['materials'][number]): string {
   const name = kindName(m)
   const placed = m.item ? ` (placed with ${kindName(m.item) ? `${kindName(m.item)} ` : ''}[${itemKey({ id: m.item.id, meta: m.item.meta ?? 0 })}])` : ''
   return `- ${m.count}× ${name ? `${name} ` : ''}[${itemKey(m)}]${placed}${m.byHand ? ` — a player has to place it: ${m.byHand}` : ''}`
@@ -115,6 +118,109 @@ function expandRuns(runs: readonly number[], total: number): number[] {
     at += count
   }
   return cells
+}
+
+/** 身体回的一种方块 → data 里的样子。 */
+const kindOf = (k: BlueprintKind) => ({ id: k.id, meta: k.meta ?? 0, ...(k.name !== undefined ? { name: k.name } : {}) })
+
+/** 服务器上一张图纸的尺寸和材料表（不带格子），问身体一次（blueprint.read，cells:false）。身体的错照常抛出。 */
+export async function readPlanHead(bridge: ToolContext['bridge'], name: string): Promise<BlueprintData> {
+  const head = await bridge.blueprintRead({ name, cells: false })
+  return {
+    name: head.name ?? name,
+    source: 'server',
+    size: head.size ?? { x: 0, y: 0, z: 0 },
+    blocks: head.blocks ?? 0,
+    materials: (head.materials ?? []).map((m) => ({ ...kindOf(m), count: m.count ?? 0, ...(m.item ? { item: m.item } : {}), ...(m.byHand !== undefined ? { byHand: m.byHand } : {}) })),
+  }
+}
+
+/** 画成图、三维预览一次最多看这么宽（每边多少格，和草稿的上限一样）：更大的图纸挑一部分看。图画在 1024 像素以内，一格至少一个像素。 */
+export const PLAN_PICTURE_MAX_SIDE = DRAFT_MAX_SIDE
+
+/** 图纸里的一个盒子：两头都含，从图纸最低角的 0 数起。 */
+export interface PlanBox {
+  x1: number
+  x2: number
+  y1: number
+  y2: number
+  z1: number
+  z2: number
+}
+
+/**
+ * 给的范围 → 图纸里实际的盒子：没给的那一头到边，伸到图纸外面的部分裁掉（和草稿的 x1..z2 一个规矩）。
+ * 两头写反了、整个在图纸外面时抛 GridError（消息是给模型看的英文）。
+ */
+export function boxInPlan(size: Corner, box: GridBox): PlanBox {
+  const range = (axis: 'x' | 'y' | 'z'): [number, number] => {
+    const max = size[axis] - 1
+    const lo = box[`${axis}1`] ?? 0
+    const hi = box[`${axis}2`] ?? max
+    if (lo > hi) throw new GridError(`${axis}1 (${lo}) is above ${axis}2 (${hi})`)
+    if (hi < 0 || lo > max) throw new GridError(`${axis} ${lo} to ${hi} is outside the blueprint, which spans ${axis} 0 to ${max}`)
+    return [Math.max(0, lo), Math.min(max, hi)]
+  }
+  const [x1, x2] = range('x')
+  const [y1, y2] = range('y')
+  const [z1, z2] = range('z')
+  return { x1, x2, y1, y2, z1, z2 }
+}
+
+/** 盒子的大小。 */
+export function boxSize(b: PlanBox): Corner {
+  return { x: b.x2 - b.x1 + 1, y: b.y2 - b.y1 + 1, z: b.z2 - b.z1 + 1 }
+}
+
+/**
+ * 读出一张图纸里一个盒子的格子（和图纸本身有关，和世界无关）：一个盒子（render 的 VoxelGrid），origin 是它在图纸里的最低角。
+ * 身体一次 blueprint.read 最多给 262144 格：更大的盒子按层（一层也放不下时按行、按段）分几次读，再拼起来；reads 是读了几次。
+ * 身体的错照常抛出（没有这张图纸、没连上游戏）；身体回的数据对不上约定时抛 GridError。
+ */
+export async function readPlanCells(bridge: ToolContext['bridge'], name: string, box: PlanBox): Promise<{ grid: VoxelGrid; reads: number }> {
+  const size = boxSize(box)
+  const cells = new Uint16Array(size.x * size.y * size.z)
+  const kinds: BlockKind[] = [{ id: 'minecraft:air', meta: 0 }]
+  const index = new Map<string, number>()
+  // 一次读多大的一块：先整行（x），再整层（z），再几层（y），每块都不超过一次能读的
+  const xStep = Math.min(size.x, BLUEPRINT_READ_MAX_CELLS)
+  const zStep = Math.min(size.z, Math.max(1, Math.floor(BLUEPRINT_READ_MAX_CELLS / xStep)))
+  const yStep = Math.min(size.y, Math.max(1, Math.floor(BLUEPRINT_READ_MAX_CELLS / (xStep * zStep))))
+  let reads = 0
+  for (let y = box.y1; y <= box.y2; y += yStep) {
+    for (let z = box.z1; z <= box.z2; z += zStep) {
+      for (let x = box.x1; x <= box.x2; x += xStep) {
+        const from = { x, y, z }
+        const to = { x: Math.min(box.x2, x + xStep - 1), y: Math.min(box.y2, y + yStep - 1), z: Math.min(box.z2, z + zStep - 1) }
+        const answer = await bridge.blueprintRead({ name, from, to })
+        reads++
+        const part = gridFromBlocks(answer, Number.MAX_SAFE_INTEGER)
+        if (part.origin.x !== from.x || part.origin.y !== from.y || part.origin.z !== from.z || part.size.x !== to.x - x + 1 || part.size.y !== to.y - y + 1 || part.size.z !== to.z - z + 1) {
+          throw new GridError(`the game answered with the part from (${part.origin.x}, ${part.origin.y}, ${part.origin.z}), ${part.size.x}×${part.size.y}×${part.size.z}, not the one asked for`)
+        }
+        // 这一块的调色板 → 整个盒子的调色板（空气都是 0）
+        const remap = part.kinds.map((k) => {
+          if (isAir(k)) return 0
+          const key = kindKey(k)
+          let at = index.get(key)
+          if (at === undefined) {
+            at = kinds.push({ id: k.id, meta: k.meta }) - 1
+            index.set(key, at)
+          }
+          return at
+        })
+        const s = part.size
+        for (let dy = 0; dy < s.y; dy++) {
+          for (let dz = 0; dz < s.z; dz++) {
+            const src = (dy * s.z + dz) * s.x
+            const dst = ((y - box.y1 + dy) * size.z + (z - box.z1 + dz)) * size.x + (x - box.x1)
+            for (let dx = 0; dx < s.x; dx++) cells[dst + dx] = remap[part.cells[src + dx]!]!
+          }
+        }
+      }
+    }
+  }
+  return { grid: { size, origin: { x: box.x1, y: box.y1, z: box.z1 }, kinds, cells }, reads }
 }
 
 /**
@@ -149,16 +255,8 @@ export async function blueprintData(src: { bridge: ToolContext['bridge']; design
     }
   } else {
     // 先只要材料表和尺寸；整张图纸放得进一次读取（或者指定了一部分）再要格子
-    const head = await src.bridge.blueprintRead({ name, cells: false })
-    const size = head.size ?? { x: 0, y: 0, z: 0 }
-    const kindOf = (k: BlueprintKind) => ({ id: k.id, meta: k.meta ?? 0, ...(k.name !== undefined ? { name: k.name } : {}) })
-    data = {
-      name: head.name ?? name,
-      source: 'server',
-      size,
-      blocks: head.blocks ?? 0,
-      materials: (head.materials ?? []).map((m) => ({ ...kindOf(m), count: m.count ?? 0, ...(m.item ? { item: m.item } : {}), ...(m.byHand !== undefined ? { byHand: m.byHand } : {}) })),
-    }
+    data = await readPlanHead(src.bridge, name)
+    const size = data.size
     if (i.cells !== false && (part || size.x * size.y * size.z <= BLUEPRINT_READ_MAX_CELLS)) {
       // 超过一次能读的、from/to 写得不对：身体的原话会说清楚（照常以出错的结果回给它）
       const body = await src.bridge.blueprintRead({ name, ...(i.from ? { from: i.from } : {}), ...(i.to ? { to: i.to } : {}) })

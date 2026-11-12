@@ -18,7 +18,7 @@ import { NO_VISION_NOTE } from '../src/tools/pictures.ts'
 import { ALL_TOOLS, runTool } from '../src/tools/index.ts'
 import type { ToolContext, ToolResult } from '../src/tools/index.ts'
 import { DEFAULT_MANUALS_DIR, FakeGame } from './agent-harness.ts'
-import { encodePng, tmpDir, worldBlocksAnswer } from './helpers.ts'
+import { blueprintReadAnswer, encodePng, mockBlueprint, tmpDir, worldBlocksAnswer } from './helpers.ts'
 
 const NOW = 1_800_000_000_000
 // 内置颜色表里的羊毛（meta → 颜色）
@@ -521,6 +521,122 @@ describe('view_draft 的 picture、view_image', () => {
     assert.ok(!res.content.includes('Picture:'))
     assert.match(res.content, /\nLegend: \. empty; A minecraft:wool\/11 "蓝色羊毛"; B minecraft:wool\/14 "红色羊毛"; C minecraft:wool\/4 "黄色羊毛"\n/)
     assert.match(res.content, /\ny=3:\nBBBBB\n/)
+  })
+
+  // 服务器上的图纸：和上面那张草稿一模一样的小屋（蓝墙、红顶、地上一块黄的），另加一个得由人放的箱子
+  const HUT_PLAN = mockBlueprint(
+    'hut',
+    { x: 5, y: 4, z: 5 },
+    [
+      { id: 'minecraft:wool', meta: 11, name: 'Blue Wool' },
+      { id: 'minecraft:wool', meta: 14, name: 'Red Wool' },
+      { id: 'minecraft:wool', meta: 4, name: 'Yellow Wool' },
+      { id: 'minecraft:chest', meta: 2, name: 'Chest', byHand: 'it holds contents or settings' },
+    ],
+    (x, y, z) => (y === 3 ? 2 : x === 2 && z === 2 && y === 0 ? 3 : x === 1 && z === 1 && y === 0 ? 4 : y < 3 && (x === 0 || x === 4 || z === 0 || z === 4) ? 1 : 0),
+  )
+  const HUT_WITH_CHEST = HUT.replace('b.save("hut")', 'b.set(1, 0, 1, "minecraft:chest/2")\n    b.save("hut")')
+
+  it('服务器上的图纸也能看：view_draft 加 blueprint，图和同样内容的草稿一样；材料表带着得由人放的原因；切掉屋顶、只看一层也一样', async (t) => {
+    const s = setup(t, { vision: true })
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ hut: HUT_PLAN })
+    const res = await s.run('view_draft', { name: 'hut', blueprint: true, picture: 'iso' })
+    assert.equal(res.isError, undefined, res.content)
+    const lines = res.content.split('\n')
+    assert.equal(lines[0], 'Blueprint "hut" (on the game server): 5×4×5 (x east-west × y up × z north-south), 75 block(s) of 4 kind(s), 1 of them for a player to place by hand.')
+    assert.match(lines[1]!, /^Picture: iso view from the southeast corner, \d+×\d+ px, 1 block = \d+ px\.$/)
+    assert.equal(res.images![0]!.label, 'iso view from the southeast corner of the blueprint "hut"')
+    // 格子问身体要：先要尺寸和材料表，再要整张的格子（图纸里的两个角）
+    assert.deepEqual(s.game.callsOf('blueprint.read'), [{ name: 'hut', cells: false }, { name: 'hut', from: { x: 0, y: 0, z: 0 }, to: { x: 4, y: 3, z: 4 } }])
+    // 和同样内容的草稿画出来的一样（只有标题不同）
+    assert.equal((await s.run('run_program', { code: HUT_WITH_CHEST })).isError, undefined)
+    const draft = pixelsOf((await s.run('view_draft', { name: 'hut', picture: 'iso' })).images![0]!.data)
+    const plan = pixelsOf(res.images![0]!.data)
+    for (const c of [RED, BLUE, shade(BLUE, ISO_SHADE.left), shade(BLUE, ISO_SHADE.right)]) assert.equal(plan.count(c), draft.count(c), String(c))
+    assert.ok(plan.count(RED) > 500)
+    // 切掉屋顶看里面：只读那一块，看得见地上那块黄的
+    const open = await s.run('view_draft', { name: 'hut', blueprint: true, picture: 'iso', from: 'northwest', y2: 2 })
+    const inside = pixelsOf(open.images![0]!.data)
+    assert.deepEqual([inside.count(RED), inside.count(YELLOW) > 50], [0, true])
+    assert.deepEqual(s.game.callsOf('blueprint.read').at(-1), { name: 'hut', from: { x: 0, y: 0, z: 0 }, to: { x: 4, y: 2, z: 4 } })
+    // 一层：层号是图纸里的 y，从 0 数
+    const roof = await s.run('view_draft', { name: 'hut', blueprint: true, picture: 'layer', layer: 3 })
+    assert.match(roof.content, /Picture: layer y=3 from above \(north up\)/)
+    assert.match(roof.content, /In that layer \(most common first\):\n- 25× minecraft:wool\/14/)
+    const bad = await s.run('view_draft', { name: 'hut', blueprint: true, picture: 'layer', layer: 4 })
+    assert.deepEqual([bad.isError, bad.content], [true, 'Layer 4 is outside: the layers here are 0 to 3.'])
+
+    // 不要图：材料表（得由人放的写明原因）和字符画，和草稿的一个样子
+    const words = await s.run('view_draft', { name: 'hut', blueprint: true, along: 'y', y1: 0, y2: 0 })
+    assert.equal(words.isError, undefined, words.content)
+    assert.ok(words.content.includes('- 1× 箱子 [minecraft:chest/2] — a player has to place it: it holds contents or settings') || words.content.includes('- 1× Chest [minecraft:chest/2] — a player has to place it: it holds contents or settings'), words.content)
+    assert.match(words.content, /\ny=0:\nAAAAA\nA[CD]\.\.A\nA\.[CD]\.A\nA\.\.\.A\nAAAAA(\n|$)/)
+    assert.doesNotMatch(words.content, /y=1/)
+    // 只读了一块也一样：字符按整张图纸的材料表发，分开看的两层里 B 都是红羊毛
+    assert.match(words.content, /Legend: \. empty; A minecraft:wool\/11 "Blue Wool"; [CD] /)
+    assert.match((await s.run('view_draft', { name: 'hut', blueprint: true, along: 'y', y1: 3, y2: 3 })).content, /Legend: \. empty; B minecraft:wool\/14 "Red Wool"\n[^]*\ny=3:\nBBBBB/)
+    // 程序拿到的 data：和 read_blueprint 的一样是服务器上的，整张的材料表
+    assert.deepEqual([(words.data as { source: string }).source, (words.data as { materials: unknown[] }).materials.length], ['server', 4])
+  })
+
+  it('一次读不完的大图纸（超过 262144 格）分几次读，拼起来画；结果里写明读了几次', async (t) => {
+    const s = setup(t, { vision: true })
+    // 70×60×70 = 294000 格：下面是蓝的实心塔，最上面几层是红的（只在第二次读到的那一块里）
+    const TOWER = mockBlueprint('tower', { x: 70, y: 60, z: 70 }, [{ id: 'minecraft:wool', meta: 11, name: 'Blue Wool' }, { id: 'minecraft:wool', meta: 14, name: 'Red Wool' }], (x, y, z) =>
+      x >= 20 && x < 50 && z >= 20 && z < 50 ? (y >= 55 ? 2 : 1) : 0,
+    )
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ tower: TOWER })
+    const res = await s.run('view_draft', { name: 'tower', blueprint: true, picture: 'top' })
+    assert.equal(res.isError, undefined, res.content)
+    assert.match(res.content, /\nIt was read from the game in 2 parts \(one read gives at most 262144 cells\)\.\n/)
+    assert.deepEqual(s.game.callsOf('blueprint.read').slice(1), [
+      { name: 'tower', from: { x: 0, y: 0, z: 0 }, to: { x: 69, y: 52, z: 69 } },
+      { name: 'tower', from: { x: 0, y: 53, z: 0 }, to: { x: 69, y: 59, z: 69 } },
+    ])
+    // 从上往下看是红的顶（第二块里的），图例里两种都在、数目是整座塔的
+    assert.ok(pixelsOf(res.images![0]!.data).count(RED) > 900)
+    assert.ok(res.content.includes('- 49500× minecraft:wool/11'), res.content)
+    assert.ok(res.content.includes('- 4500× minecraft:wool/14'), res.content)
+  })
+
+  it('一张图最多每边 256 格：更宽的图纸要图时说清楚、指给它怎么挑一块，挑了就只读那一块；字符画照常给（画不下的写明）', async (t) => {
+    const s = setup(t, { vision: true })
+    const LONG = mockBlueprint('road', { x: 300, y: 1, z: 3 }, [{ id: 'minecraft:wool', meta: 11, name: 'Blue Wool' }, { id: 'minecraft:wool', meta: 14, name: 'Red Wool' }], (x) => (x >= 250 ? 2 : 1))
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ road: LONG })
+    const wide = await s.run('view_draft', { name: 'road', blueprint: true, picture: 'top' })
+    assert.equal(wide.isError, true)
+    assert.match(wide.content, /That is 300×1×3; one picture shows at most 256 blocks on a side\. Give x1 and x2 \(counted from 0 at its lowest corner\) to look at a part, for instance x1: 0, x2: 255\.$/)
+    // 还没读格子：只问了尺寸
+    assert.deepEqual(s.game.callsOf('blueprint.read'), [{ name: 'road', cells: false }])
+    const part = await s.run('view_draft', { name: 'road', blueprint: true, picture: 'top', x1: 200, x2: 299 })
+    assert.equal(part.isError, undefined, part.content)
+    assert.deepEqual(s.game.callsOf('blueprint.read').at(-1), { name: 'road', from: { x: 200, y: 0, z: 0 }, to: { x: 299, y: 0, z: 2 } })
+    assert.ok(part.content.includes('- 150× minecraft:wool/11'), part.content)
+    assert.ok(part.content.includes('- 150× minecraft:wool/14'), part.content)
+    // 不要图：字符画一片最多画 128 列，剩下的写明怎么要
+    const text = await s.run('view_draft', { name: 'road', blueprint: true })
+    assert.equal(text.isError, undefined, text.content)
+    assert.match(text.content, /Only x 0 to 127 is drawn of x 0 to 299: give x1 and x2 for the rest\./)
+  })
+
+  it('看图纸时游戏那头出了事：没有这张图纸、没连上游戏，都照实说；模型看不了图时给字符画', async (t) => {
+    const s = setup(t, { vision: true })
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ hut: HUT_PLAN })
+    const missing = await s.run('view_draft', { name: 'nope', blueprint: true, picture: 'iso' })
+    assert.deepEqual([missing.isError, missing.content.startsWith('bad_request: there is no blueprint named "nope"')], [true, true])
+    // 同名的草稿不算：不带 blueprint 是草稿，带了是服务器上的图纸
+    assert.equal((await s.run('view_draft', { name: 'hut' })).content, 'There is no draft named "hut". list_designs shows the ones there are.')
+    s.game.connected = false
+    const away = await s.run('view_draft', { name: 'hut', blueprint: true, picture: 'iso' })
+    assert.equal(away.isError, true)
+    assert.match(away.content, /^disconnected: bridge is not connected to the game server/)
+
+    const blind = setup(t)
+    blind.game.handlers['blueprint.read'] = blueprintReadAnswer({ hut: HUT_PLAN })
+    const words = await blind.run('view_draft', { name: 'hut', blueprint: true, picture: 'iso' })
+    assert.equal(words.isError, undefined, words.content)
+    assert.equal(words.content.split('\n')[0], NO_VISION_NOTE)
+    assert.match(words.content, /\ny=3:\nBBBBB\n/)
   })
 
   it('看主人传的图片：小图放大到看得清，透明的地方垫灰白格子；看不了图时给尺寸和主要颜色', async (t) => {

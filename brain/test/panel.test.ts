@@ -31,7 +31,7 @@ import type { AgentHarness } from './agent-harness.ts'
 import { buildGuidePackdata, pythonMissing } from './fixture-guide.ts'
 import { P, R, writePlanFixture } from './fixture-plan.ts'
 import { S, writeStructureFixture } from './fixture-structures.ts'
-import { encodePng, tmpDir, waitFor } from './helpers.ts'
+import { blueprintReadAnswer, encodePng, mockBlueprint, tmpDir, waitFor } from './helpers.ts'
 import { readBlueprintAnswer, readSchematic } from './mock-bridge.ts'
 
 const FULL_KEY = 'sk-live-ABCDEFGHIJKLMNOP-9876'
@@ -152,7 +152,7 @@ describe('面板：鉴权', () => {
     assert.match(page.text, /<title>AI 玩家/)
     assert.equal((await s.call('GET', '/app.js')).status, 200)
     assert.equal((await s.call('GET', '/style.css')).status, 200)
-    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log', '/api/log?before=5', '/api/status', '/api/runs', '/api/runs/records?id=r1', '/api/blueprints/read?name=x', '/api/live', '/api/minimap', '/api/icons/sheet?n=0', '/api/items/names?q=minecraft:dirt/0']) {
+    for (const route of ['/api/overview', '/api/providers', '/api/bot', '/api/memory', '/api/manuals', '/api/blueprints', '/api/drafts', '/api/drafts/view?name=x', '/api/drafts/picture?name=x', '/api/drafts/model?name=x', '/api/pictures/file?id=x', '/api/pictures/model?id=x', '/api/structures', '/api/structures/model?id=x', '/api/textures/atlas.png', '/api/images', '/api/images/file?name=x', '/api/feedback', '/api/feedback/view?id=f1', '/api/feedback/export', '/api/events', '/api/log', '/api/log?before=5', '/api/status', '/api/runs', '/api/runs/records?id=r1', '/api/blueprints/read?name=x', '/api/blueprints/view?name=x', '/api/blueprints/picture?name=x', '/api/blueprints/model?name=x', '/api/live', '/api/minimap', '/api/icons/sheet?n=0', '/api/items/names?q=minecraft:dirt/0']) {
       assert.equal((await s.call('GET', route)).status, 401, route)
     }
     assert.equal((await s.call('POST', '/api/command', { text: '回家' })).status, 401)
@@ -1094,6 +1094,140 @@ describe('面板：对话、AI 玩家、记忆', () => {
       assert.equal((await picture(bad)).status, 400, bad)
     }
     assert.equal((await s.call('GET', '/api/drafts/picture?name=nope')).status, 404)
+  })
+
+  it('图纸的查看：从游戏里读一张图纸，给尺寸、整张的材料表（得由人放的带原因）、每种方块的颜色和数量；图和三维数据和草稿的同一种，带着版本号时不再问游戏', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    // 3×2×1：底下一排红羊毛，西头上面摧一块蓝的（和上面草稿的图那一张一样），东头上面一个箱子（得由人放）
+    const WALL = mockBlueprint(
+      'wall',
+      { x: 3, y: 2, z: 1 },
+      [
+        { id: 'minecraft:wool', meta: 14, name: 'Red Wool' },
+        { id: 'minecraft:wool', meta: 11, name: 'Blue Wool' },
+        { id: 'minecraft:chest', meta: 2, name: 'Chest', byHand: 'it holds contents or settings' },
+      ],
+      (x, y) => (y === 0 ? 1 : x === 0 ? 2 : x === 2 ? 3 : 0),
+    )
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ wall: WALL })
+    const view = await s.call('GET', '/api/blueprints/view?name=wall')
+    assert.equal(view.status, 200, view.text)
+    const v = view.json
+    assert.deepEqual([v.name, v.source, v.size, v.blocks, v.box, v.part, v.cells, v.reads, v.readMax, v.maxSide], ['wall', 'server', { x: 3, y: 2, z: 1 }, 5, { x1: 0, x2: 2, y1: 0, y2: 1, z1: 0, z2: 0 }, false, 6, 1, 262144, 256])
+    assert.equal(typeof v.version, 'string')
+    // 整张的材料表和 /api/blueprints/read 的一样（带得由人放的原因）；每种方块的颜色和图上的一致
+    assert.deepEqual(v.materials.map((m: { id: string; count: number; byHand?: string }) => [m.id, m.count, m.byHand ?? null]), [['minecraft:wool', 3, null], ['minecraft:wool', 1, null], ['minecraft:chest', 1, 'it holds contents or settings']])
+    assert.deepEqual(v.kinds.find((k: { key: string }) => k.key === 'minecraft:wool/14'), { key: 'minecraft:wool/14', name: 'Red Wool', count: 3, color: [151, 52, 49], colorKnown: true })
+    assert.deepEqual([v.kinds.find((k: { key: string }) => k.key === 'minecraft:chest/2').byHand, v.kinds.length], ['it holds contents or settings', 3])
+    // 先要尺寸和材料表，再要格子
+    assert.deepEqual(s.game.callsOf('blueprint.read'), [{ name: 'wall', cells: false }, { name: 'wall', from: { x: 0, y: 0, z: 0 }, to: { x: 2, y: 1, z: 0 } }])
+
+    const box = new URLSearchParams(Object.entries(v.box).map(([k, n]): [string, string] => [k, String(n)]))
+    const picture = async (query: string) => {
+      const res = await fetch(`${s.origin}/api/blueprints/picture?name=wall&v=${v.version}&${box}${query}`, { headers: { cookie: s.cookie() } })
+      const bytes = Buffer.from(await res.arrayBuffer())
+      return { status: res.status, type: res.headers.get('content-type'), bytes, image: res.status === 200 ? decodePng(bytes) : undefined }
+    }
+    const count = (image: { rgba: Buffer }, c: number[]): number => {
+      let n = 0
+      for (let at = 0; at < image.rgba.length; at += 4) if (image.rgba[at] === c[0] && image.rgba[at + 1] === c[1] && image.rgba[at + 2] === c[2]) n++
+      return n
+    }
+    const RED = [151, 52, 49]
+    const BLUE = [46, 57, 142]
+    const iso = await picture('')
+    assert.deepEqual([iso.status, iso.type], [200, 'image/png'])
+    assert.ok(count(iso.image!, RED) > 500 && count(iso.image!, BLUE) > 500)
+    // 俯视：蓝的压在西头那块红的上面；只看第 0 层就没有蓝的了；从北面看，西在右手边，蓝的在右上角
+    const top = await picture('&view=top&plain=1')
+    const cell = top.image!.width / 3
+    assert.ok(count(top.image!, BLUE) > cell * cell * 0.8 && count(top.image!, BLUE) <= cell * cell)
+    const ground = await picture('&view=layer&layer=0&plain=1')
+    assert.deepEqual([count(ground.image!, BLUE), count(ground.image!, RED) > cell * cell * 2.4], [0, true])
+    const north = await picture('&view=side&from=north&plain=1')
+    const at = (x: number, y: number) => [...north.image!.rgba.subarray((y * north.image!.width + x) * 4, (y * north.image!.width + x) * 4 + 3)]
+    const c = north.image!.width / 3
+    assert.deepEqual([at(Math.floor(2.5 * c), Math.floor(0.5 * c)), at(Math.floor(0.5 * c), Math.floor(1.5 * c))], [BLUE, RED])
+    for (const bad of ['&view=iso&from=south', '&view=layer&layer=2', '&view=3d']) assert.equal((await picture(bad)).status, 400, bad)
+    // 三维数据：和草稿的同一种，名字是本地的、没有就用身体给的
+    const model = await s.call('GET', `/api/blueprints/model?name=wall&v=${v.version}&${box}`)
+    assert.equal(model.status, 200, model.text)
+    assert.deepEqual([model.json.name, model.json.size, model.json.origin, model.json.runs], ['wall', { x: 3, y: 2, z: 1 }, { x: 0, y: 0, z: 0 }, [1, 3, 2, 1, 0, 1, 3, 1]])
+    assert.deepEqual(model.json.kinds.slice(1).map((k: { key: string; name?: string; count: number }) => [k.key, k.name, k.count]), [['minecraft:wool/14', 'Red Wool', 3], ['minecraft:wool/11', 'Blue Wool', 1], ['minecraft:chest/2', 'Chest', 1]])
+    // 带着版本号的图和三维数据用的是查看时读到的那一份：一直没再问游戏
+    assert.equal(s.game.callsOf('blueprint.read').length, 2)
+    // 再点一次“查看”：重新读；内容没变版本号就不变
+    const again = await s.call('GET', '/api/blueprints/view?name=wall')
+    assert.deepEqual([s.game.callsOf('blueprint.read').length, again.json.version], [4, v.version])
+
+    // 游戏里的图纸换了（上传了同名的）：留着的不要了，列表里不带版本号的小图重新读，查看得到新的版本号
+    const thumb = async () => {
+      const res = await fetch(`${s.origin}/api/blueprints/picture?name=wall&plain=1&size=96&view=layer&layer=1`, { headers: { cookie: s.cookie() } })
+      return decodePng(Buffer.from(await res.arrayBuffer()))
+    }
+    assert.ok(count(await thumb(), BLUE) > 0)
+    const before = s.game.callsOf('blueprint.read').length
+    await thumb()
+    assert.equal(s.game.callsOf('blueprint.read').length, before)
+    WALL.cells.fill(0, 3, 6)
+    s.game.handlers['blueprint.put'] = () => ({ name: 'wall', size: WALL.size, blocks: 3 })
+    s.game.handlers['blueprint.list'] = () => ({ blueprints: [{ name: 'wall', size: WALL.size, blocks: 3 }], folder: 'config/aiplayer/schematics' })
+    assert.equal((await s.call('POST', '/api/blueprints', { name: 'wall', data: 'AAAA' })).status, 200)
+    assert.equal(count(await thumb(), BLUE), 0)
+    const changed = await s.call('GET', '/api/blueprints/view?name=wall')
+    assert.deepEqual([changed.json.blocks, changed.json.version !== v.version], [3, true])
+
+    // 不是经面板换的（它自己 publish_draft 覆盖了同名的）：列表里的小图带着它知道的“尺寸-方块数”，和留着的对不上就重新读
+    const stamped = async (t: string) => decodePng(Buffer.from(await (await fetch(`${s.origin}/api/blueprints/picture?name=wall&plain=1&size=96&view=layer&layer=1&t=${encodeURIComponent(t)}`, { headers: { cookie: s.cookie() } })).arrayBuffer()))
+    assert.equal(count(await stamped('3×2×1-3'), BLUE), 0)
+    const reads = s.game.callsOf('blueprint.read').length
+    WALL.cells[3] = 2
+    assert.equal(s.game.callsOf('blueprint.read').length, reads)
+    assert.ok(count(await stamped('3×2×1-4'), BLUE) > 0)
+    assert.equal(s.game.callsOf('blueprint.read').length, reads + 2)
+  })
+
+  it('图纸的查看：超过一次能读的格子数分几次读并写明；比每边 256 格宽的先给一块、写明是哪一块；没连上游戏、没有这张图纸、名字和范围不对时照实说', async (t) => {
+    const s = await setup(t)
+    await s.login()
+    const RED = { id: 'minecraft:wool', meta: 14, name: 'Red Wool' }
+    // 70×60×70 = 294000 格，一次读不完；300×1×3 比 256 宽
+    const TOWER = mockBlueprint('tower', { x: 70, y: 60, z: 70 }, [RED], (x, y, z) => (x === z && y % 2 === 0 ? 1 : 0))
+    const ROAD = mockBlueprint('road', { x: 300, y: 1, z: 3 }, [RED], (x) => (x % 2 === 0 ? 1 : 0))
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ tower: TOWER, road: ROAD })
+    const tower = await s.call('GET', '/api/blueprints/view?name=tower')
+    assert.equal(tower.status, 200, tower.text)
+    assert.deepEqual([tower.json.part, tower.json.cells, tower.json.reads, tower.json.kinds[0].count, tower.json.blocks], [false, 294000, 2, 2100, 2100])
+    assert.deepEqual(s.game.callsOf('blueprint.read').slice(1).map((p) => [p.from, p.to]), [
+      [{ x: 0, y: 0, z: 0 }, { x: 69, y: 52, z: 69 }],
+      [{ x: 0, y: 53, z: 0 }, { x: 69, y: 59, z: 69 }],
+    ])
+    // 三维数据是整座的（两次读到的拼起来）
+    const model = await s.call('GET', `/api/blueprints/model?name=tower&v=${tower.json.version}&${new URLSearchParams(Object.entries(tower.json.box).map(([k, n]): [string, string] => [k, String(n)]))}`)
+    assert.deepEqual([model.json.size, model.json.kinds[1].count], [{ x: 70, y: 60, z: 70 }, 2100])
+
+    const road = await s.call('GET', '/api/blueprints/view?name=road')
+    assert.deepEqual([road.status, road.json.part, road.json.box, road.json.kinds[0].count, road.json.blocks], [200, true, { x1: 0, x2: 255, y1: 0, y2: 0, z1: 0, z2: 2 }, 384, 450])
+    const east = await s.call('GET', '/api/blueprints/view?name=road&x1=200')
+    assert.deepEqual([east.json.box, east.json.kinds[0].count], [{ x1: 200, x2: 299, y1: 0, y2: 0, z1: 0, z2: 2 }, 150])
+    assert.deepEqual(s.game.callsOf('blueprint.read').at(-1), { name: 'road', from: { x: 200, y: 0, z: 0 }, to: { x: 299, y: 0, z: 2 } })
+    const tooWide = await s.call('GET', '/api/blueprints/view?name=road&x1=0&x2=299')
+    assert.deepEqual([tooWide.status, tooWide.json.error.message], [400, '一次最多看每边 256 格，x 0 到 299 是 300 格'])
+    assert.equal((await s.call('GET', '/api/blueprints/view?name=road&x1=400')).status, 400)
+    assert.equal((await s.call('GET', '/api/blueprints/view?name=road&x1=-1')).status, 400)
+
+    // 没有这张图纸：身体的原话；名字带路径：400；没连上游戏：503，说清楚是游戏那头
+    const missing = await s.call('GET', '/api/blueprints/view?name=nope')
+    assert.deepEqual([missing.status, missing.json.error.code], [502, 'bad_request'])
+    assert.match(missing.json.error.message, /there is no blueprint named "nope"/)
+    assert.equal((await s.call('GET', '/api/blueprints/view?name=../x')).status, 400)
+    s.game.connected = false
+    for (const route of ['/api/blueprints/view?name=road', '/api/blueprints/picture?name=road&plain=1', '/api/blueprints/model?name=tower&v=other']) {
+      const away = await s.call('GET', route)
+      assert.deepEqual([away.status, away.json.error.code], [503, 'disconnected'], route)
+      assert.match(away.json.error.message, /^游戏那边没办成：bridge is not connected to the game server/)
+    }
   })
 
   it('多方块结构：按名字搜得到机器，一台机器某个等级的材料、说明和三维预览的数据都给得出；没有这份资料时照实说', async (t) => {

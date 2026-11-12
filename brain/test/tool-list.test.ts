@@ -152,12 +152,12 @@ describe('模型拿到的工具清单', () => {
     for (const line of ['work', 'talk'] as const) {
       const seeing = await offered(setup(t, { vision: true }), line)
       assert.deepEqual(seeing.map((tool) => tool.name).sort(), [...TOOLS_WITH_VISION[line]].sort())
-      assert.deepEqual(Object.keys(seeing.find((tool) => tool.name === 'view_draft')!.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program', 'picture', 'from', 'layer'])
+      assert.deepEqual(Object.keys(seeing.find((tool) => tool.name === 'view_draft')!.inputSchema.properties), ['name', 'blueprint', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program', 'picture', 'from', 'layer'])
 
       const blind = await offered(setup(t, { vision: false }), line)
       assert.deepEqual(blind.map((tool) => tool.name).sort(), TOOLS_WITH_VISION[line].filter((name) => name !== 'view_area' && name !== 'view_image').sort())
       const draft = blind.find((tool) => tool.name === 'view_draft')!
-      assert.deepEqual(Object.keys(draft.inputSchema.properties), ['name', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program'])
+      assert.deepEqual(Object.keys(draft.inputSchema.properties), ['name', 'blueprint', 'along', 'x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'program'])
       assert.doesNotMatch(draft.description, /picture/i)
     }
   })
@@ -246,7 +246,11 @@ describe('模型拿到的工具清单', () => {
   //   玩家的键盘之后（意见簿 f22，直升机背包）：干活线实际 56,260、上限 54,800 → 56,400（+1,600）。多的是 press_key（534：按一下 mod 加的键，
   //           打开背上穿的东西的界面、开关它）和 hold_keys（1,334：按住跳、潜行、朝一点前进一段时间，到某个高度、离地多高、离那个点多近时松手；飞起来、悬停、降落靠它）。这是玩家的键盘，
   //           不是哪一件东西的专用工具，按了会怎样由 mod 决定；做成库函数的话模型看不到它们的参数，也不知道有这回事。对话线没变。
-  for (const [line, ceiling] of [['work', 56_400], ['talk', 29_000]] as const) {
+  //   服务器上的图纸也能看图之后：干活线实际 56,501、上限 56,400 → 56,600；对话线实际 29,012、上限 29,000 → 29,200（各 +160）。
+  //           多的是 view_draft 的 blueprint 参数和说明里的半句（861 → 1,021）：以前它只认草稿，服务器上的图纸只能用 read_blueprint
+  //           拿文字和格子，看不到长什么样。没有另开一个 view_blueprint（同样的一组参数会再占一千多）；也没放进库函数 read_blueprint
+  //           （库函数的参数模型看不到，程序里调的结果也带不了图给它看）。
+  for (const [line, ceiling] of [['work', 56_600], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

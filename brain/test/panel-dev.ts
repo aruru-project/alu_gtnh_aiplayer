@@ -10,14 +10,17 @@
 //                   时间线是把样本日志（--sample，旧形状：没有 model_call，例程每一步各两条）转成新形状得来的，后面接一段照 --scene 摆的“现在”。
 //   --lines 2       假数据里把一条线换成“对话”“干活”两条线（docs/TALK_WORK.md，后端还没实现）：各有各的模型状态，日志条目带 agent。
 // 换场景不用重启：POST /__dev/scene {"name":"routine"}；GET /__dev 看现在的设置和面板口令。
+// 游戏断开：POST /__dev/bridge {"up":false}，连回来 {"up":true}。
+//   --blueprints <目录>  把这个目录里的 .schematic 文件放进模拟身体的图纸里（只读它们，照真身体的读法）。
 //
 // 端口只用留给模拟服务的那些（见 ports.ts）：身体 25610，模型 25611，大脑面板 28772，代理 28771。
+// 另一个检出（worktree）用自己的端口段：--bridge-port、--llm-port、--brain-port、--port。
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import { MockBridge } from './mock-bridge.ts'
+import { MockBridge, readSchematic } from './mock-bridge.ts'
 import { MockLlm } from './mock-llm.ts'
 import type { MockReply, RecordedLlmRequest } from './mock-llm.ts'
 
@@ -34,10 +37,11 @@ let scene = arg('scene', 'idle')
 const DATA_DIR = path.resolve(BRAIN, arg('data', 'data/panel-dev'))
 const SAMPLE = path.resolve(BRAIN, arg('sample', 'data/panel-sample/activity-2026-11-11.jsonl'))
 const PACKDATA = path.resolve(BRAIN, arg('packdata', process.env.AIPLAYER_PACKDATA ?? 'packdata'))
-const BRIDGE_PORT = 25610
-const LLM_PORT = 25611
-const BRAIN_PORT = 28772
+const BRIDGE_PORT = Number(arg('bridge-port', '25610'))
+const LLM_PORT = Number(arg('llm-port', '25611'))
+const BRAIN_PORT = Number(arg('brain-port', '28772'))
 const PROXY_PORT = Number(arg('port', '28771'))
+const BLUEPRINTS = arg('blueprints', '')
 const TOKEN = 'mock-token'
 const BOT = 'Alu'
 
@@ -45,6 +49,17 @@ const BOT = 'Alu'
 
 const bridge = new MockBridge({ port: BRIDGE_PORT, token: TOKEN, bots: [BOT], autoFinishMs: 6000 })
 const bot = bridge.bots.get(BOT)!
+// 真图纸：照真身体的读法读进来，blueprint.list / read / check 答的就是它们
+if (BLUEPRINTS) {
+  for (const file of fs.readdirSync(BLUEPRINTS).filter((f) => f.endsWith('.schematic'))) {
+    const name = file.slice(0, -'.schematic'.length)
+    try {
+      bridge.blueprints.set(name, readSchematic(name, fs.readFileSync(path.join(BLUEPRINTS, file))))
+    } catch (e) {
+      bridge.blueprints.set(name, { name, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+}
 bot.pos = { x: -521.5, y: 69, z: 43.5 }
 bot.health = 17
 bot.food = 15
@@ -963,6 +978,13 @@ const proxy = http.createServer((req, res) => {
       const body = await readBody(req)
       statusHeldUntil = Date.now() + Math.max(0, Number(body.holdMs) || 0)
       return json(res, 200, { heldUntil: statusHeldUntil })
+    }
+    if (url.pathname === '/__dev/bridge' && req.method === 'POST') {
+      // 游戏断开 / 连回来：{ up: false } 模拟身体停止监听并断开大脑（看“没连上游戏”时页面怎么说），{ up: true } 再开（大脑自己重连）
+      const body = await readBody(req)
+      if (body.up === false) await bridge.stop()
+      else if (body.up === true) await bridge.start()
+      return json(res, 200, { ok: true })
     }
     if (url.pathname === '/api/status' && statusHeldUntil > Date.now()) await new Promise((resolve) => setTimeout(resolve, statusHeldUntil - Date.now()))
     if (url.pathname === '/__dev/bot' && req.method === 'POST') {

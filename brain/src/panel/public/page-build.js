@@ -1,9 +1,10 @@
 // “建造”页：盖东西用的资料。
 //   草稿         它自己写程序设计出来的建筑，还只在大脑这边；看过觉得行再发布成游戏里的图纸
-//   图纸         游戏服务器上的 .schematic 文件（要连着游戏）：上传、删除、看要用的材料
+//   图纸         游戏服务器上的 .schematic 文件（要连着游戏）：查看、上传、删除、看要用的材料
 //   图片         你传给它做像素画、当参考的图
 //   多方块结构   一台多方块机器每个等级怎么搭（游戏里那个“投影”）
-// 草稿和多方块结构有能拖着转的三维预览（viewer3d.js）。
+// 草稿和图纸用同一个查看器：能拖着转的三维预览（viewer3d.js）和大脑画的四种简图（它自己用 view_draft 看到的就是那种）。
+// 多方块结构也有三维预览。
 
 import { act, api, badge, button, empty, field, fileSize, fileToBase64, h, loadError, num, put, subTabs, toast, when } from './ui.js'
 import { createViewer } from './viewer3d.js'
@@ -22,24 +23,19 @@ const pane = (id) => root?.querySelector(`[data-tab="${id}"]`)
 const sizeText = (s) => (s ? `${s.x}×${s.y}×${s.z}` : '')
 const rgb = (c, shade = 1) => `rgb(${Math.round(c[0] * shade)}, ${Math.round(c[1] * shade)}, ${Math.round(c[2] * shade)})`
 
-// ════════ 草稿（它自己设计的，还没发到游戏里）════════
+// ════════ 查看器：草稿和图纸共用 ════════
 
-/** 正在看的那张草稿：服务器给的内容，现在怎么看（哪种图、站在哪个角或哪一面、第几层）。 */
-let draftView = null
-/** 草稿的三维预览（同时只有一个）。换一种看法、换一张草稿、收起时关掉，把 WebGL 画布还回去。 */
-let draftViewer3d = null
+/**
+ * 正在看的那一张：kind 是 draft（大脑这边的草稿）或 blueprint（游戏服务器上的图纸）；data 是服务器给的内容；
+ * 现在怎么看（哪种图、站在哪个角或哪一面、第几层），三维预览的数据取过就留着。同时只看一张。
+ */
+let viewing = null
+/** 三维预览（同时只有一个）。换一种看法、换一张、收起时关掉，把 WebGL 画布还回去。 */
+let viewer3d = null
 
-function closeDraftViewer3d() {
-  draftViewer3d?.destroy()
-  draftViewer3d = null
-}
-
-async function loadDrafts() {
-  try {
-    renderDrafts(await api('GET', '/drafts'))
-  } catch (e) {
-    if (e.status !== 401) put(pane('drafts'), loadError(`拿不到草稿列表：${e.message}`, loadDrafts))
-  }
+function closeViewer3d() {
+  viewer3d?.destroy()
+  viewer3d = null
 }
 
 /** 草稿的图的地址。图是大脑画的，和它（模型）用 view_draft 要到的是同一种；带上存盘时间，草稿重存以后图跟着换。 */
@@ -48,12 +44,259 @@ function draftPictureUrl(draft, params) {
   return `/api/drafts/picture?${q}`
 }
 
+/** 看的是图纸的哪一块（图纸里的位置，从 0 数）：查看时服务器给的 box，之后的图、三维数据都照它要。 */
+const boxParams = (box) => (box ? { x1: box.x1, x2: box.x2, y1: box.y1, y2: box.y2, z1: box.z1, z2: box.z2 } : {})
+
+/** 图纸的图的地址：和草稿的同一种图（它用 view_draft 加 blueprint 看到的也是这种），带着这一份的版本号。 */
+function blueprintPictureUrl(data, params) {
+  const q = new URLSearchParams({ name: data.name, ...(data.version ? { v: data.version } : {}), ...boxParams(data.box), ...params })
+  return `/api/blueprints/picture?${q}`
+}
+
+/** 两种东西在查看器里不一样的地方。 */
+const KINDS = {
+  draft: {
+    box: '#draft-viewer',
+    title: (d) => `草稿：${d.name}`,
+    picture: draftPictureUrl,
+    model: (d) => `/drafts/model?name=${encodeURIComponent(d.name)}`,
+    layers: (d) => [0, d.size.y - 1],
+  },
+  blueprint: {
+    box: '#bp-viewer',
+    title: (d) => `图纸：${d.name}`,
+    picture: blueprintPictureUrl,
+    model: (d) => `/blueprints/model?${new URLSearchParams({ name: d.name, v: d.version ?? '', ...boxParams(d.box) })}`,
+    layers: (d) => [d.box?.y1 ?? 0, d.box?.y2 ?? d.size.y - 1],
+  },
+}
+
+function startViewing(kind, data) {
+  closeViewer3d()
+  // 另一边开着的查看器收起来（同时只看一张）
+  if (viewing && viewing.kind !== kind) root?.querySelector(KINDS[viewing.kind].box)?.replaceChildren()
+  const keep = viewing?.kind === kind && viewing.data.name === data.name ? viewing : null
+  viewing = { kind, data, view: keep?.view ?? '3d', corner: keep?.corner ?? 0, side: keep?.side ?? 'south', layer: keep?.layer ?? KINDS[kind].layers(data)[0], model: null }
+  renderViewer()
+  root.querySelector(KINDS[kind].box)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
 async function openDraft(name) {
-  const data = await api('GET', `/drafts/view?name=${encodeURIComponent(name)}`)
-  closeDraftViewer3d()
-  draftView = { data, view: '3d', corner: 0, side: 'south', layer: 0, model: null }
-  renderDraftViewer()
-  root.querySelector('#draft-viewer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  startViewing('draft', await api('GET', `/drafts/view?name=${encodeURIComponent(name)}`))
+}
+
+/** 打开一张图纸：大脑这时去游戏里读它（大的分几次读）。part：要看的那一块的起点（太大、一次看不完的图纸）。 */
+async function openBlueprint(name, part = {}) {
+  startViewing('blueprint', await api('GET', `/blueprints/view?${new URLSearchParams({ name, ...part })}`))
+}
+
+/** 图纸读不出来时的话：没连上游戏要说清楚。 */
+function blueprintProblem(e) {
+  return e.status === 503 ? `没连上游戏，图纸存在游戏服务器上，现在读不到。（${e.message}）` : e.status === 404 ? '这个版本的大脑还不会读图纸的格子。' : `没读到这张图纸：${e.message}`
+}
+
+/** 点了“查看”读不出来：原因留在查看器的位置上（不是一闪而过的提示），可以重试。 */
+async function tryOpenBlueprint(name, btn, part = {}) {
+  if (btn) btn.disabled = true
+  try {
+    await openBlueprint(name, part)
+  } catch (e) {
+    if (e.status === 401) return
+    closeViewer3d()
+    if (viewing?.kind === 'blueprint') viewing = null
+    const box = root?.querySelector('#bp-viewer')
+    if (box) {
+      put(box, h('div', { class: 'card' }, h('h2', { text: `图纸：${name}` }), loadError(blueprintProblem(e), (retry) => tryOpenBlueprint(name, retry, part))))
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    } else {
+      toast(blueprintProblem(e), true)
+    }
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+const VIEWS = { '3d': '三维（可以拖着转）', iso: '立体图', top: '俯视图', side: '立面图', layer: '一层层看' }
+const ISO_CORNERS = [
+  { from: 'southeast', label: '站在东南角看：左边是南面，右边是东面' },
+  { from: 'southwest', label: '站在西南角看：左边是西面，右边是南面' },
+  { from: 'northwest', label: '站在西北角看：左边是北面，右边是西面' },
+  { from: 'northeast', label: '站在东北角看：左边是东面，右边是北面' },
+]
+const SIDE_VIEWS = { south: '从南面看（朝北）', west: '从西面看（朝东）', north: '从北面看（朝南）', east: '从东面看（朝西）' }
+
+function swatch(color, title = '') {
+  const dot = h('span', { class: 'swatch-dot', title })
+  dot.style.backgroundColor = rgb(color)
+  return dot
+}
+
+/** 一张太大、一次只看得了一块的图纸：写明看的是哪一块，能换一块。 */
+function partChooser(data) {
+  const { box, size, maxSide } = data
+  const start = (axis) => h('input', { type: 'number', min: 0, max: size[axis] - 1, step: 1, value: box[`${axis}1`], 'aria-label': `从 ${axis} 第几格起`, class: 'narrow' })
+  const x = start('x')
+  const z = start('z')
+  const go = button('看这一块', { class: 'small' }, (btn) => tryOpenBlueprint(data.name, btn, { x1: String(Math.max(0, Number(x.value) || 0)), z1: String(Math.max(0, Number(z.value) || 0)) }))
+  return h(
+    'div',
+    { class: 'notice' },
+    h('p', { text: `这张图纸东西向 ${size.x} 格、南北向 ${size.z} 格，一次最多看每边 ${maxSide} 格，现在看的是 x ${box.x1}–${box.x2}、y ${box.y1}–${box.y2}、z ${box.z1}–${box.z2} 这一块（从图纸最低的角 0 数起）。下面的方块和数量也只是这一块里的。` }),
+    h('div', { class: 'row' }, h('span', { class: 'muted', text: '换一块：从 x' }), x, h('span', { class: 'muted', text: '、z' }), z, h('span', { class: 'muted', text: `起，各往东、往南 ${maxSide} 格` }), go),
+  )
+}
+
+function renderViewer() {
+  const v0 = viewing
+  if (!v0) return
+  const kind = KINDS[v0.kind]
+  const box = root?.querySelector(kind.box)
+  if (!box) return
+  const { data } = v0
+  const size = data.size
+  const [lowest, highest] = kind.layers(data)
+  v0.layer = Math.max(lowest, Math.min(highest, v0.layer))
+
+  const materials = [...data.kinds].sort((a, b) => b.count - a.count)
+  const unknown = materials.filter((k) => !k.colorKnown).length
+  const byHand = materials.filter((k) => k.byHand)
+
+  closeViewer3d()
+  const stage3d = h('div')
+  // 图是大脑画的：换一种看法就是换一个地址
+  const picture = h('img', { class: 'draft-picture', alt: `${kind.title(data)} 的图`, hidden: v0.view === '3d' })
+  const failed = h('p', { class: 'error', hidden: true })
+  picture.addEventListener('error', async () => {
+    // 图没出来：问一下原因（没连上游戏、图纸没了……），照实写出来
+    failed.hidden = false
+    failed.textContent = '这张图没画出来，换一种看法试试，或者刷新页面。'
+    try {
+      const res = await fetch(picture.src, { credentials: 'same-origin' })
+      const why = (await res.json().catch(() => null))?.error?.message
+      if (why) failed.textContent = `这张图没画出来：${why}`
+    } catch {
+      /* 连不上大脑：上面那句就够了 */
+    }
+  })
+  picture.addEventListener('load', () => (failed.hidden = true))
+  const controls = h('div', { class: 'row' })
+  const show = async () => {
+    const v = viewing
+    if (v !== v0) return
+    if (v.view === '3d') {
+      // 方块数据取一次就够了，换别的看法再回来不用重取
+      try {
+        v.model ??= await api('GET', kind.model(data))
+      } catch (e) {
+        put(stage3d, h('p', { class: 'error', text: `三维预览的数据没取到：${v.kind === 'blueprint' ? blueprintProblem(e) : e.message}` }))
+        return
+      }
+      if (viewing !== v || v.view !== '3d' || !stage3d.isConnected) return
+      viewer3d = createViewer(stage3d, v.model)
+      return
+    }
+    const params = { view: v.view }
+    if (v.view === 'iso') params.from = ISO_CORNERS[v.corner].from
+    if (v.view === 'side') params.from = v.side
+    if (v.view === 'layer') params.layer = v.layer
+    picture.src = kind.picture(data, params)
+  }
+  const viewSelect = h('select', { 'aria-label': '怎么看' }, Object.entries(VIEWS).map(([key, label]) => h('option', { value: key, text: label, selected: key === v0.view })))
+  viewSelect.addEventListener('change', () => {
+    v0.view = viewSelect.value
+    renderViewer()
+  })
+  controls.append(viewSelect)
+  if (v0.view === '3d') {
+    controls.append(h('span', { class: 'muted', text: '用的是游戏里的贴图（有贴图的方块）。下面几种看法是大脑画的简图，它自己看到的是那种。' }))
+  } else if (v0.view === 'iso') {
+    const facing = h('span', { class: 'muted', text: ISO_CORNERS[v0.corner].label })
+    controls.append(
+      button('转一下', { class: 'small' }, () => {
+        v0.corner = (v0.corner + 1) % ISO_CORNERS.length
+        facing.textContent = ISO_CORNERS[v0.corner].label
+        show()
+      }),
+      facing,
+    )
+  } else if (v0.view === 'side') {
+    const sideSelect = h('select', { 'aria-label': '从哪一面看' }, Object.entries(SIDE_VIEWS).map(([key, label]) => h('option', { value: key, text: label, selected: key === v0.side })))
+    sideSelect.addEventListener('change', () => {
+      v0.side = sideSelect.value
+      show()
+    })
+    controls.append(sideSelect, h('span', { class: 'muted', text: '远处的颜色暗一些。' }))
+  } else if (v0.view === 'layer') {
+    const where = h('span', { class: 'muted' })
+    const slider = h('input', { type: 'range', min: lowest, max: highest, step: 1, value: v0.layer, 'aria-label': '看第几层' })
+    const label = () => (where.textContent = `第 ${v0.layer - lowest + 1} / ${highest - lowest + 1} 层（从下往上数${lowest > 0 ? `，图纸里的 y=${v0.layer}` : ''}），上北下南，左西右东。`)
+    // 拖的时候只改字，松手才换图（一层一张图）
+    slider.addEventListener('input', () => {
+      v0.layer = Number(slider.value)
+      label()
+    })
+    slider.addEventListener('change', show)
+    label()
+    controls.append(slider, where)
+  } else {
+    controls.append(h('span', { class: 'muted', text: '从正上方看：上北下南，左西右东；高的地方亮一些。' }))
+  }
+  const closeBtn = button('收起', { class: 'small quiet' }, () => {
+    closeViewer3d()
+    viewing = null
+    put(box)
+    // 列表里“正在看”的那一行不再高亮
+    for (const li of root.querySelectorAll('li.current')) li.classList.remove('current')
+  })
+  const facts = `东西向 ${size.x} 格 × 高 ${size.y} 格 × 南北向 ${size.z} 格，${num(data.blocks)} 个方块`
+  const about =
+    v0.kind === 'draft'
+      ? `${facts}，${data.kinds.length} 种。${when(data.savedAt)} 存的。`
+      : `${facts}，${(data.materials ?? data.kinds).length} 种。在游戏服务器上，打开时从游戏里读的。${data.reads > 1 ? `整张 ${num(data.cells)} 格，游戏一次最多给 ${num(data.readMax)} 格，分 ${data.reads} 次读完的。` : ''}`
+  put(
+    box,
+    h(
+      'div',
+      { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { class: 'fill', text: kind.title(data) }), v0.kind === 'blueprint' ? button('重新读', { class: 'small quiet', title: '图纸在游戏那边换过时，再读一次' }, (btn) => tryOpenBlueprint(data.name, btn, data.part ? { x1: String(data.box.x1), z1: String(data.box.z1) } : {})) : null, closeBtn),
+      h('p', { class: 'muted', text: about }),
+      data.part ? partChooser(data) : null,
+      controls,
+      stage3d,
+      picture,
+      failed,
+      v0.view === '3d' ? null : h('p', { class: 'hint', text: '这是按方块颜色画的示意图，不是游戏里的样子：没有贴图，楼梯、栅栏这类只是画小一点。它（模型能看图时）看到的也是这种图。' }),
+      h('h4', { text: data.part ? '这一块里的方块' : '要用的材料' }),
+      h(
+        'div',
+        { class: 'items' },
+        materials.map((k) =>
+          h(
+            'span',
+            { class: `item${k.byHand ? ' by-hand' : ''}`, title: `${k.key}${k.byHand ? `\n它不放，留给人：${k.byHand}` : ''}` },
+            swatch(k.color, k.colorKnown ? '' : '颜色表里没有这种方块，这个颜色只是用来区分'),
+            ` ${k.name ?? k.key} × ${num(k.count)}`,
+            k.byHand ? h('span', { class: 'warn', text: ' 要人手放' }) : null,
+          ),
+        ),
+      ),
+      byHand.length > 0 ? h('p', { class: 'hint', text: `有 ${byHand.length} 种它不放、留给人放（带内容或朝向的方块：箱子、楼梯、机器这类）。鼠标移上去看原因。` }) : null,
+      unknown > 0 ? h('p', { class: 'hint', text: `有 ${unknown} 种方块不在颜色表里，图上给它们配的颜色只是用来区分，不是真实的颜色。` }) : null,
+      data.program ? h('details', { class: 'fold' }, h('summary', { text: '生成它的程序' }), h('pre', { class: 'code', text: data.program })) : null,
+    ),
+  )
+  // 放进页面以后再画：三维预览要量画布的大小
+  show()
+}
+
+// ════════ 草稿（它自己设计的，还没发到游戏里）════════
+
+async function loadDrafts() {
+  try {
+    renderDrafts(await api('GET', '/drafts'))
+  } catch (e) {
+    if (e.status !== 401) put(pane('drafts'), loadError(`拿不到草稿列表：${e.message}`, loadDrafts))
+  }
 }
 
 function renderDrafts(data) {
@@ -76,7 +319,7 @@ function renderDrafts(data) {
     thumb.addEventListener('click', () => act(viewBtn, () => openDraft(d.name)))
     return h(
       'li',
-      { class: `with-thumb${draftView?.data.name === d.name ? ' current' : ''}` },
+      { class: `with-thumb${viewing?.kind === 'draft' && viewing.data.name === d.name ? ' current' : ''}` },
       thumb,
       h('div', { class: 'grow' }, h('span', { class: 'mono', text: d.name })),
       h('span', { class: 'muted', title: '东西向（x）× 高（y）× 南北向（z）', text: `${sizeText(d.size)}，${num(d.blocks)} 个方块，${when(d.savedAt)}` }),
@@ -86,8 +329,9 @@ function renderDrafts(data) {
     )
   }
   // 整块重画：先把开着的三维预览关掉，把 WebGL 画布还回去
-  closeDraftViewer3d()
-  put(el, 
+  closeViewer3d()
+  put(
+    el,
     h(
       'div',
       { class: 'card' },
@@ -98,127 +342,9 @@ function renderDrafts(data) {
     ),
     h('div', { id: 'draft-viewer' }),
   )
-  if (draftView && list.some((d) => d.name === draftView.data.name)) renderDraftViewer()
-  else draftView = null
-}
-
-const DRAFT_VIEWS = { '3d': '三维（可以拖着转）', iso: '立体图', top: '俯视图', side: '立面图', layer: '一层层看' }
-const DRAFT_CORNERS = [
-  { from: 'southeast', label: '站在东南角看：左边是南面，右边是东面' },
-  { from: 'southwest', label: '站在西南角看：左边是西面，右边是南面' },
-  { from: 'northwest', label: '站在西北角看：左边是北面，右边是西面' },
-  { from: 'northeast', label: '站在东北角看：左边是东面，右边是北面' },
-]
-const DRAFT_SIDES = { south: '从南面看（朝北）', west: '从西面看（朝东）', north: '从北面看（朝南）', east: '从东面看（朝西）' }
-
-function swatch(color, title = '') {
-  const dot = h('span', { class: 'swatch-dot', title })
-  dot.style.backgroundColor = rgb(color)
-  return dot
-}
-
-function renderDraftViewer() {
-  const box = root?.querySelector('#draft-viewer')
-  if (!box || !draftView) return
-  const { data } = draftView
-  const size = data.size
-  draftView.layer = Math.max(0, Math.min(size.y - 1, draftView.layer))
-
-  const materials = [...data.kinds].sort((a, b) => b.count - a.count)
-  const unknown = materials.filter((k) => !k.colorKnown).length
-
-  closeDraftViewer3d()
-  const stage3d = h('div')
-  // 图是大脑画的：换一种看法就是换一个地址
-  const picture = h('img', { class: 'draft-picture', alt: `草稿 ${data.name} 的图`, hidden: draftView.view === '3d' })
-  const failed = h('p', { class: 'error', hidden: true, text: '这张图没画出来，换一种看法试试，或者刷新页面。' })
-  picture.addEventListener('error', () => (failed.hidden = false))
-  picture.addEventListener('load', () => (failed.hidden = true))
-  const controls = h('div', { class: 'row' })
-  const show = async () => {
-    const v = draftView
-    if (v.view === '3d') {
-      // 方块数据取一次就够了，换别的看法再回来不用重取
-      try {
-        v.model ??= await api('GET', `/drafts/model?name=${encodeURIComponent(data.name)}`)
-      } catch (e) {
-        put(stage3d, h('p', { class: 'error', text: `三维预览的数据没取到：${e.message}` }))
-        return
-      }
-      if (draftView !== v || v.view !== '3d' || !stage3d.isConnected) return
-      draftViewer3d = createViewer(stage3d, v.model)
-      return
-    }
-    const params = { view: v.view }
-    if (v.view === 'iso') params.from = DRAFT_CORNERS[v.corner].from
-    if (v.view === 'side') params.from = v.side
-    if (v.view === 'layer') params.layer = v.layer
-    picture.src = draftPictureUrl(data, params)
-  }
-  const viewSelect = h('select', { 'aria-label': '怎么看' }, Object.entries(DRAFT_VIEWS).map(([key, label]) => h('option', { value: key, text: label, selected: key === draftView.view })))
-  viewSelect.addEventListener('change', () => {
-    draftView.view = viewSelect.value
-    renderDraftViewer()
-  })
-  controls.append(viewSelect)
-  if (draftView.view === '3d') {
-    controls.append(h('span', { class: 'muted', text: '用的是游戏里的贴图（有贴图的方块）。下面几种看法是大脑画的简图，它自己看到的是那种。' }))
-  } else if (draftView.view === 'iso') {
-    const facing = h('span', { class: 'muted', text: DRAFT_CORNERS[draftView.corner].label })
-    controls.append(
-      button('转一下', { class: 'small' }, () => {
-        draftView.corner = (draftView.corner + 1) % DRAFT_CORNERS.length
-        facing.textContent = DRAFT_CORNERS[draftView.corner].label
-        show()
-      }),
-      facing,
-    )
-  } else if (draftView.view === 'side') {
-    const sideSelect = h('select', { 'aria-label': '从哪一面看' }, Object.entries(DRAFT_SIDES).map(([key, label]) => h('option', { value: key, text: label, selected: key === draftView.side })))
-    sideSelect.addEventListener('change', () => {
-      draftView.side = sideSelect.value
-      show()
-    })
-    controls.append(sideSelect, h('span', { class: 'muted', text: '远处的颜色暗一些。' }))
-  } else if (draftView.view === 'layer') {
-    const where = h('span', { class: 'muted' })
-    const slider = h('input', { type: 'range', min: 0, max: size.y - 1, step: 1, value: draftView.layer, 'aria-label': '看第几层' })
-    const label = () => (where.textContent = `第 ${draftView.layer + 1} / ${size.y} 层（从下往上数），上北下南，左西右东。`)
-    // 拖的时候只改字，松手才换图（一层一张图）
-    slider.addEventListener('input', () => {
-      draftView.layer = Number(slider.value)
-      label()
-    })
-    slider.addEventListener('change', show)
-    label()
-    controls.append(slider, where)
-  } else {
-    controls.append(h('span', { class: 'muted', text: '从正上方看：上北下南，左西右东；高的地方亮一些。' }))
-  }
-  const closeBtn = button('收起', { class: 'small quiet' }, () => {
-    closeDraftViewer3d()
-    draftView = null
-    put(box)
-  })
-  put(box, 
-    h(
-      'div',
-      { class: 'card' },
-      h('div', { class: 'row' }, h('h2', { class: 'fill', text: `草稿：${data.name}` }), closeBtn),
-      h('p', { class: 'muted', text: `东西向 ${size.x} 格 × 高 ${size.y} 格 × 南北向 ${size.z} 格，${num(data.blocks)} 个方块，${data.kinds.length} 种。${when(data.savedAt)} 存的。` }),
-      controls,
-      stage3d,
-      picture,
-      failed,
-      draftView.view === '3d' ? null : h('p', { class: 'hint', text: '这是按方块颜色画的示意图，不是游戏里的样子：没有贴图，楼梯、栅栏这类只是画小一点。它（模型能看图时）看到的也是这种图。' }),
-      h('h4', { text: '要用的材料' }),
-      h('div', { class: 'items' }, materials.map((k) => h('span', { class: 'item', title: k.key }, swatch(k.color, k.colorKnown ? '' : '颜色表里没有这种方块，这个颜色只是用来区分'), ` ${k.name ?? k.key} × ${num(k.count)}`))),
-      unknown > 0 ? h('p', { class: 'hint', text: `有 ${unknown} 种方块不在颜色表里，图上给它们配的颜色只是用来区分，不是真实的颜色。` }) : null,
-      data.program ? h('details', { class: 'fold' }, h('summary', { text: '生成它的程序' }), h('pre', { class: 'code', text: data.program })) : null,
-    ),
-  )
-  // 放进页面以后再画：三维预览要量画布的大小
-  show()
+  if (viewing?.kind !== 'draft') return
+  if (list.some((d) => d.name === viewing.data.name)) renderViewer()
+  else viewing = null
 }
 
 // ════════ 图纸：游戏服务器上的 ════════
@@ -228,7 +354,11 @@ async function loadBlueprints() {
     renderBlueprints(await api('GET', '/blueprints'))
   } catch (e) {
     // 图纸存在游戏服务器上，没连上游戏就看不到：把原因留在页面上，而不是一闪而过
-    if (e.status !== 401) put(pane('blueprints'), h('div', { class: 'card' }, loadError(`拿不到图纸列表：${e.message}`, loadBlueprints), h('p', { class: 'hint', text: '图纸存在游戏服务器上，要先连上游戏才能看和上传。草稿和图片在大脑这边，不用连游戏。' })))
+    if (e.status !== 401) {
+      closeViewer3d()
+      if (viewing?.kind === 'blueprint') viewing = null
+      put(pane('blueprints'), h('div', { class: 'card' }, loadError(`拿不到图纸列表：${e.message}`, loadBlueprints), h('p', { class: 'hint', text: '图纸存在游戏服务器上，要先连上游戏才能看和上传。草稿和图片在大脑这边，不用连游戏。' })))
+    }
   }
 }
 
@@ -249,7 +379,8 @@ async function showMaterials(name, box, btn) {
   btn.textContent = '收起材料'
   const materials = data.materials ?? []
   const byHand = materials.filter((m) => m.byHand)
-  put(box, 
+  put(
+    box,
     h('p', { class: 'muted', text: `${sizeText(data.size)}，${num(data.blocks)} 个方块，${materials.length} 种。` }),
     h('div', { class: 'items' }, materials.map((m) => h('span', { class: `item${m.byHand ? ' by-hand' : ''}`, title: `${m.id}${m.meta ? `/${m.meta}` : ''}${m.byHand ? `\n它不放，留给人：${m.byHand}` : ''}` }, `${m.name ?? m.id} × ${num(m.count)}`, m.byHand ? h('span', { class: 'warn', text: ' 要人手放' }) : null))),
     byHand.length > 0 ? h('p', { class: 'hint', text: `有 ${byHand.length} 种它不放、留给人放（带内容或朝向的方块：箱子、楼梯、机器这类）。鼠标移上去看原因。` }) : null,
@@ -261,6 +392,8 @@ function renderBlueprints(data) {
   if (!el) return
   const list = data.blueprints ?? []
   const maxBytes = data.maxBytes ?? 2 * 1024 * 1024
+  /** 一次最多看每边多少格（和草稿一样）；更宽的图纸查看时先看一块，没有小图。 */
+  const maxSide = 256
 
   // 上传
   const file = h('input', { id: 'bp-file', type: 'file', accept: '.schematic' })
@@ -297,6 +430,8 @@ function renderBlueprints(data) {
       const saved = next.saved ?? {}
       toast(`已上传 ${saved.name ?? wanted}${saved.size ? `（${sizeText(saved.size)}，${num(saved.blocks)} 个方块）` : ''}`)
       renderBlueprints(next)
+      // 正看着的那张被换掉了：重新读一遍，别留着旧的样子
+      if (viewing?.kind === 'blueprint' && viewing.data.name === (saved.name ?? wanted)) tryOpenBlueprint(viewing.data.name)
     } catch (e) {
       // 文件不是能用的图纸时，原因留在表单上，而不是一闪而过的提示
       note.className = 'error'
@@ -315,23 +450,38 @@ function renderBlueprints(data) {
   const row = (b) => {
     const usable = b.error === undefined && b.size
     const materials = h('div', { class: 'field-wide' })
+    const open = (btn) => tryOpenBlueprint(b.name, btn)
+    const viewBtn = usable ? button('查看', { class: 'small' }, open) : null
     const materialsBtn = usable ? button('看材料', { class: 'small' }, (btn) => act(btn, () => showMaterials(b.name, materials, btn))) : null
     const delBtn = button('删除', { class: 'small danger' }, async () => {
       if (!confirm(`从游戏服务器上删除图纸“${b.name}”？`)) return
       const next = await act(delBtn, () => api('DELETE', '/blueprints', { name: b.name }), `已删除 ${b.name}`)
       if (next) renderBlueprints(next)
     })
+    // 小图：大脑去游戏里读这张图纸画的（地址里带着尺寸和方块数，图纸换了就换）；太宽的一次看不全，不画小图
+    let thumb = h('span', { class: 'draft-thumb' })
+    if (usable && b.size.x <= maxSide && b.size.z <= maxSide) {
+      thumb = h('img', { class: 'draft-thumb', alt: '', loading: 'lazy', src: `/api/blueprints/picture?${new URLSearchParams({ name: b.name, plain: '1', size: '96', t: `${sizeText(b.size)}-${b.blocks}` })}` })
+      thumb.addEventListener('click', () => open(viewBtn))
+      // 小图没出来（游戏断了、图纸读不出来）：空着就好，点“查看”会说原因
+      thumb.addEventListener('error', () => (thumb.style.visibility = 'hidden'))
+    }
     return h(
       'li',
-      { class: 'wrap' },
+      { class: `wrap with-thumb${viewing?.kind === 'blueprint' && viewing.data.name === b.name ? ' current' : ''}` },
+      thumb,
       h('div', { class: 'grow' }, h('span', { class: 'mono', text: b.name }), usable ? null : h('div', { class: 'error', text: `读不了：${b.error ?? '游戏那边没给出尺寸'}` })),
       usable ? h('span', { class: 'muted', title: '东西向（x）× 高（y）× 南北向（z）', text: `${sizeText(b.size)}，${num(b.blocks)} 个方块` }) : badge('读不了', 'bad'),
+      viewBtn,
       materialsBtn,
       delBtn,
       materials,
     )
   }
-  put(el, 
+  // 整块重画：先把开着的三维预览关掉，把 WebGL 画布还回去
+  closeViewer3d()
+  put(
+    el,
     h(
       'div',
       { class: 'stack' },
@@ -340,11 +490,15 @@ function renderBlueprints(data) {
         { class: 'card' },
         h('h2', { text: `服务器上的图纸（${list.length}）` }),
         list.length === 0 ? empty('还没有图纸', '在下面上传一个 .schematic 文件，或者把它的草稿发布过来。') : h('ul', { class: 'plain' }, list.map(row)),
-        h('p', { class: 'hint', text: `尺寸是 东西向（x）× 高（y）× 南北向（z）。${data.folder ? `文件在游戏服务器的 ${data.folder} 里，直接放进去也行，不用重启。` : ''}盖的时候不旋转、不镜像。` }),
+        h('p', { class: 'hint', text: `尺寸是 东西向（x）× 高（y）× 南北向（z）。点“查看”时大脑去游戏里读这张图纸，转着看三维、看它画的简图（它自己用 view_draft 看图纸也是这种图）。${data.folder ? `文件在游戏服务器的 ${data.folder} 里，直接放进去也行，不用重启。` : ''}盖的时候不旋转、不镜像。` }),
       ),
+      h('div', { id: 'bp-viewer' }),
       form,
     ),
   )
+  if (viewing?.kind !== 'blueprint') return
+  if (list.some((b) => b.name === viewing.data.name)) renderViewer()
+  else viewing = null
 }
 
 // ════════ 图片（给它做像素画、当参考）════════
@@ -548,7 +702,8 @@ export function enter(el, sub) {
 
 export function leave() {
   // 离开这一页：把 WebGL 画布还回去（浏览器能开的有限）
-  closeDraftViewer3d()
+  closeViewer3d()
   root?.querySelector('#draft-viewer')?.replaceChildren()
-  draftView = null
+  root?.querySelector('#bp-viewer')?.replaceChildren()
+  viewing = null
 }

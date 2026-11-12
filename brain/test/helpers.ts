@@ -2,7 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
+import { BridgeError } from '../src/bridge/protocol.ts'
+import type { BridgeErrorCode } from '../src/bridge/protocol.ts'
 import type { Message, ProviderConfig } from '../src/llm/index.ts'
+import { readBlueprintAnswer } from './mock-bridge.ts'
+import type { MockBlueprint } from './mock-bridge.ts'
 
 /** 建一个临时数据目录，测试结束时由调用方用 t.after(cleanup) 删掉。 */
 export function tmpDir(prefix = 'aiplayer-test-'): { dir: string; cleanup: () => void } {
@@ -219,4 +223,32 @@ export function worldBlocksAnswer(p: Record<string, unknown>, blocks: Readonly<R
     }
   }
   return { x: x1, y: y1, z: z1, sx, sy, sz, palette, runs, unloaded }
+}
+
+/**
+ * 一张假图纸（mock-bridge 的 MockBlueprint）：kinds[0] 是空，at(x, y, z) 给每一格是 kinds 的第几种。
+ */
+export function mockBlueprint(name: string, size: { x: number; y: number; z: number }, kinds: MockBlueprint['kinds'], at: (x: number, y: number, z: number) => number): MockBlueprint {
+  const cells = new Uint16Array(size.x * size.y * size.z)
+  for (let y = 0; y < size.y; y++) for (let z = 0; z < size.z; z++) for (let x = 0; x < size.x; x++) cells[x + (y * size.z + z) * size.x] = at(x, y, z)
+  return { name, size, kinds: [{ id: 'minecraft:air', meta: 0, name: 'Air' }, ...kinds], cells }
+}
+
+/**
+ * 假装是身体的 blueprint.read（给 agent-harness 的 FakeGame 用）：照 mock-bridge 的答法答（和真身体一样，一次最多 262144 格，
+ * 超了 too_large），身体回的错（没有这张图纸、from/to 不对、太大）变成大脑那头收到的 BridgeError。
+ */
+export function blueprintReadAnswer(blueprints: Readonly<Record<string, MockBlueprint>>): (p: Record<string, unknown>) => unknown {
+  return (p) => {
+    const name = String(p.name)
+    const plan = blueprints[name]
+    if (!plan) throw new BridgeError('bad_request', `there is no blueprint named "${name}"; blueprint.list shows the ones there are`)
+    try {
+      return readBlueprintAnswer(plan, p)
+    } catch (e) {
+      const code = (e as { code?: unknown }).code
+      if (e instanceof Error && typeof code === 'string') throw new BridgeError(code as BridgeErrorCode, e.message)
+      throw e
+    }
+  }
 }

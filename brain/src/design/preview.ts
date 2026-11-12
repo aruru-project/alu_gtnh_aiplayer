@@ -24,6 +24,11 @@ export interface PreviewOptions {
   budget: number
   /** 给方块配显示名（物品表里有的话）。 */
   nameOf?: (kind: DraftKind) => string | undefined
+  /**
+   * 字符按这个次序发（方块的 kindKey，用得多的在前）。不给就按这张草稿里的用量。
+   * 服务器上的图纸只读了一块时给整张的材料表：分几次看不同的部分，同一个字符还是同一种方块。
+   */
+  order?: readonly string[]
 }
 
 /** 一片最多画这么宽，再宽的行读起来对不齐。 */
@@ -53,8 +58,8 @@ function range(draft: Draft, box: Box, axis: Axis): [number, number] {
  * 每种方块用哪个字符：按用量从多到少发，发完了的都用 “?”。
  * 整张草稿统一发一次，所以分几次看不同的层，同一个字符始终是同一种方块。
  */
-export function symbolsOf(draft: Draft): string[] {
-  const order = materialsOf(draft).map(kindKey)
+export function symbolsOf(draft: Draft, given?: readonly string[]): string[] {
+  const order = given ?? materialsOf(draft).map(kindKey)
   const symbol = new Map(order.map((key, i) => [key, SYMBOLS[i] ?? OTHER]))
   return draft.kinds.map((kind) => symbol.get(kindKey(kind)) ?? OTHER)
 }
@@ -103,7 +108,7 @@ export function renderPreview(draft: Draft, opts: PreviewOptions): string {
     notes.push(`Only ${view.rows} ${rows[0]} to ${rows[1]} is drawn of ${view.rows} ${asked.rows[0]} to ${asked.rows[1]}: give ${view.rows}1 and ${view.rows}2 for the rest.`)
   }
 
-  const symbols = symbolsOf(draft)
+  const symbols = symbolsOf(draft, opts.order)
   const used = new Set<number>()
   const { x: sx, z: sz } = draft.size
   const at = (pos: Record<Axis, number>): number => draft.cells[pos.x + (pos.y * sz + pos.z) * sx]!

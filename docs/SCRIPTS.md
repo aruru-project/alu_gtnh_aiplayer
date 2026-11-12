@@ -24,7 +24,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 | `start_routine(code, name?, minutes?)` | 把程序放到后台跑（例程）：能调动作类的工具。立刻返回；结束时把模型叫醒 |
 | `routine_status()` / `stop_routine()` | 例程做到哪了（状态、正等着的那一步、最近几次调用、程序的日志）/ 停掉它 |
 | `list_designs(kind?)` | 三样一起列，或者只列一样：`blueprints` 服务器上的图纸、`drafts` 草稿（名字、尺寸、方块数）、`images` 主人在面板上传的图片（名字、宽高）。旧的三个名字 `list_blueprints` / `list_drafts` / `list_images` 不在清单里了，调到照常执行 |
-| `view_draft(name, along?, x1…z2?, program?)` | 看一张草稿：材料表，加一片片的字符画（带图例）。`along` 是 `y`（一层层俯视）、`z`（从南面看的竖切面）、`x`（从西面看）；不给就沿最薄的方向。大草稿按约 4000 字符的预算画，画不下的写明没画哪些，用 `x1…z2` 指定范围再看。`program: true` 把生成它的程序也给出来 |
+| `view_draft(name, blueprint?, along?, x1…z2?, program?)` | 看一张草稿：材料表，加一片片的字符画（带图例）。`along` 是 `y`（一层层俯视）、`z`（从南面看的竖切面）、`x`（从西面看）；不给就沿最薄的方向。大草稿按约 4000 字符的预算画，画不下的写明没画哪些，用 `x1…z2` 指定范围再看。`program: true` 把生成它的程序也给出来。`blueprint: true` 看的是游戏服务器上那张同名的图纸：看法一样，材料表是身体给的（带得由人放的原因），格子用身体的 `blueprint.read` 读（一次最多 262,144 格，大的分几次读，结果里写明读了几次；给了 `x1…z2` 只读那一块），字符按整张图纸的材料表发（分几次看不同的部分，同一个字符还是同一种方块）；`data` 是 `{ name, source: 'server', size, blocks, materials }`，每一格用 `read_blueprint` |
 | `publish_draft(name, as?)` | 把草稿转成 `.schematic`，经 `blueprint.put` 发给身体（同名覆盖） |
 | `delete_draft(name)` | 删草稿（不影响已经发布的图纸） |
 
@@ -118,6 +118,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 - 当前模型能看图：三个都在工具清单里。
 - 不能看图：`view_area`、`view_image` 不进清单，列在库函数的索引里（程序里调，拿文字和 `data`）；`view_draft` 的文字那一半（尺寸、材料表、字符画、生成它的程序）谁都用得上，所以留在清单里，换成不提图的那份说明，少了 `picture`、`from`、`layer` 三个参数（`Tool.textOnly`）。直接调照常执行，给文字。
+- `view_draft` 的图：草稿的，或者加 `blueprint: true` 是服务器上的图纸的（和面板“图纸”页“查看”里的简图是同一种）。一张图每边最多 256 格（和草稿的上限一样，画在 1024 像素里一格至少一个像素）：更宽的图纸要图时照实说多大、让它用 `x1…z2` 挑一块，那时还没读格子。
 
 现在的库函数（`text` 都是整理好的一段话，下面只写 `data`）：
 
@@ -246,7 +247,7 @@ brain/src/script/prelude.js     程序能用的 API，在 vm 上下文里求值�
 brain/src/design/               草稿的检查和存取、文字预览、.schematic、PNG 解码、图片存取
 brain/src/agent/routine.ts      例程：程序调工具时怎么执行、怎么等任务、各项上限、怎么结束
 brain/src/agent/run-log.ts      程序每次运行的记录：每一步的全量写进 logs/runs/，对话日志里一条滚动更新的汇总加出错的那几步
-brain/src/tools/design.ts       run_program、例程的三个工具、list_designs、草稿的三个工具（view_draft 加 picture 可以把草稿画成图）
+brain/src/tools/design.ts       run_program、例程的三个工具、list_designs、草稿的三个工具（view_draft 加 picture 可以把草稿画成图，加 blueprint 看的是服务器上的图纸）
 brain/src/tools/index.ts        工具、库函数、旧名字三层；发给模型的清单（按模型能不能看图）；库函数的索引
 brain/src/tools/pictures.ts     看图的工具：view_area（世界）、view_image（主人传的图片）
 brain/src/render/               简图：把草稿、世界里的一块地方按方块颜色画成 PNG（见 brain/README.md 的“看图”）

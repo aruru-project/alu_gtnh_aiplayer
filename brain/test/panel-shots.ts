@@ -8,7 +8,7 @@
 //   size: [宽, 高]            改窗口大小
 //   goto: "#chat"             换到这个地址（# 开头的只换 hash，不重新加载）
 //   reload: true              重新加载页面
-//   dev: { scene: "routine" } 或 { bot: {…} }   改假环境（POST /__dev/scene、/__dev/bot）
+//   dev: { scene: "routine" } 或 { bot: {…} } 或 { bridge: { up: false } }   改假环境（POST /__dev/scene、/__dev/bot、/__dev/bridge）
 //   waitFor: "选择器"          等到有这个元素（最多 10 秒）
 //   eval: "…"                 在页面里跑一段 JS（可以是返回 Promise 的表达式）；结果打印出来
 //   type: ["选择器", "文字"]    往输入框里填字（触发 input、change 事件）
@@ -127,6 +127,7 @@ async function main(): Promise<void> {
     dev: async (v) => {
       if (v.scene) await fetch(`${BASE}/__dev/scene`, { method: 'POST', body: JSON.stringify({ name: v.scene }) })
       if (v.bot) await fetch(`${BASE}/__dev/bot`, { method: 'POST', body: JSON.stringify(v.bot) })
+      if (v.bridge) await fetch(`${BASE}/__dev/bridge`, { method: 'POST', body: JSON.stringify(v.bridge) })
     },
     goto: async (v) => {
       if (v.startsWith('#')) await evaluate(`location.hash = ${JSON.stringify(v)}`)

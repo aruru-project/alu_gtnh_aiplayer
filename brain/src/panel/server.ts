@@ -24,8 +24,8 @@ import { listAdapters } from '../llm/index.ts'
 import type { ProviderConfig, RemoteModelsResult, TestConnectionResult } from '../llm/index.ts'
 import { StructureBook } from '../packdata/index.ts'
 import type { GuideBook, TextureAtlas, TooltipTable } from '../packdata/index.ts'
-import { BlockLooks, CORNERS, GridError, PICTURE_MAX_SIZE, SIDES, gridFromBlocks, gridFromDraft, renderView, sceneOf } from '../render/index.ts'
-import type { Corner, Scene, Side, ViewSpec, VoxelGrid } from '../render/index.ts'
+import { BlockLooks, GridError, gridFromBlocks, gridFromDraft, renderView, sceneOf } from '../render/index.ts'
+import type { BlockKind, Scene, VoxelGrid } from '../render/index.ts'
 import type { ActivityEntry, ActivityLog } from '../store/activity-log.ts'
 import { isValidPlayerName, maskSecret, modelDisplayName, resolveModel, sanitizeModel, sanitizeProvider } from '../store/config.ts'
 import type { ConfigStore, ModelConfig, StoredProvider } from '../store/config.ts'
@@ -39,6 +39,7 @@ import type { Reminder } from '../store/reminders.ts'
 import type { UsageStore } from '../store/usage.ts'
 import type { ItemIcons } from '../packdata/icons.ts'
 import { PanelLive } from './live.ts'
+import { BlueprintViews, pictureRequest } from './blueprint-view.ts'
 import {
   LoginLimiter,
   sessionCookieName,
@@ -258,10 +259,20 @@ export class PanelServer {
   private readonly live: PanelLive
   /** 实时日志推过的最大的条目 id（比它小的再推来，是同一条的新样子）。 */
   private lastBroadcastId = 0
+  /** 服务器上的图纸长什么样（“图纸”页的“查看”）：读到的格子和画好的图留一会儿（blueprint-view.ts）。 */
+  private readonly blueprintViews: BlueprintViews
 
   constructor(deps: PanelDeps) {
     this.deps = deps
     this.live = new PanelLive({ ...deps, now: () => this.now() })
+    this.blueprintViews = new BlueprintViews({
+      bridge: deps.bridge,
+      looks: () => this.blockLooks(),
+      localName: (kind) => this.deps.design.nameOf(kind),
+      scene: (grid, nameOf) => this.model(grid, nameOf),
+      reject: panelReject,
+      now: () => this.now(),
+    })
     this.publicDir = deps.publicDir ?? path.join(import.meta.dirname, 'public')
     this.server = http.createServer((req, res) => {
       void this.handle(req, res)
@@ -411,6 +422,13 @@ export class PanelServer {
       this.draftPicture(res, url)
       return
     }
+    if (route === '/blueprints/picture' && method === 'GET') {
+      const png = await this.blueprintViews.picture(url.searchParams)
+      // 地址里带着版本号（内容变了号就变），可以放心缓存一会儿；列表里的小图不带，留得短一些
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': png.length, 'Cache-Control': `private, max-age=${url.searchParams.has('v') ? 600 : 60}` })
+      res.end(png)
+      return
+    }
     if (route === '/pictures/file' && method === 'GET') {
       this.pictureFile(res, url)
       return
@@ -554,6 +572,10 @@ export class PanelServer {
         return runRecords(this.deps.runs, url.searchParams, panelReject)
       case 'GET /blueprints/read':
         return blueprintRead(this.deps, url.searchParams, panelReject)
+      case 'GET /blueprints/view':
+        return this.blueprintViews.view(url.searchParams)
+      case 'GET /blueprints/model':
+        return this.blueprintViews.model(url.searchParams)
       case 'GET /guide':
         return guideBooks(this.deps.guide, url.searchParams, panelReject)
       case 'GET /guide/search':
@@ -1178,6 +1200,7 @@ export class PanelServer {
       if (e instanceof BridgeError && e.code === 'bad_request') throw new HttpError(400, 'bad_blueprint', `游戏那边没收下这张图纸：${e.message}`)
       throw e
     }
+    this.blueprintViews.forget(saved.name ?? name)
     const size = saved.size ? `${saved.size.x}×${saved.size.y}×${saved.size.z}，` : ''
     this.deps.log.add({ kind: 'info', text: `在面板上传了图纸 ${saved.name ?? name}（${size}${saved.blocks ?? '?'} 个方块）。` })
     return { saved, ...((await this.blueprints()) as object) }
@@ -1186,6 +1209,7 @@ export class PanelServer {
   private async deleteBlueprint(body: Record<string, unknown>): Promise<unknown> {
     const name = this.blueprintName(body.name)
     const res = await this.deps.bridge.blueprintRemove(name)
+    this.blueprintViews.forget(name)
     const removed = res.removed === true
     if (removed) this.deps.log.add({ kind: 'info', text: `在面板上删除了图纸 ${name}。` })
     return { removed, ...((await this.blueprints()) as object) }
@@ -1238,27 +1262,8 @@ export class PanelServer {
     const record = this.deps.design.drafts.get(q.get('name') ?? '')
     if (!record) throw new HttpError(404, 'not_found', '没有这张草稿')
     const { draft } = record
-    const view = q.get('view') ?? 'iso'
-    const from = q.get('from')
-    let spec: ViewSpec
-    if (view === 'iso') {
-      if (from !== null && !(CORNERS as readonly string[]).includes(from)) throw new HttpError(400, 'bad_request', `立体图的 from 是四个角之一：${CORNERS.join('、')}`)
-      spec = { view, from: (from as Corner | null) ?? 'southeast' }
-    } else if (view === 'side') {
-      if (from !== null && !(SIDES as readonly string[]).includes(from)) throw new HttpError(400, 'bad_request', `立面图的 from 是四边之一：${SIDES.join('、')}`)
-      spec = { view, from: (from as Side | null) ?? 'south' }
-    } else if (view === 'layer') {
-      const layer = Number(q.get('layer') ?? '0')
-      if (!Number.isInteger(layer) || layer < 0 || layer >= draft.size.y) throw new HttpError(400, 'bad_request', `这张草稿的层是 0 到 ${draft.size.y - 1}`)
-      spec = { view, layer }
-    } else if (view === 'top') {
-      spec = { view }
-    } else {
-      throw new HttpError(400, 'bad_request', 'view 是 iso、top、side、layer 之一')
-    }
-    const wanted = Number(q.get('size') ?? PICTURE_MAX_SIZE)
-    const size = Number.isFinite(wanted) ? Math.max(64, Math.min(PICTURE_MAX_SIZE, Math.round(wanted))) : PICTURE_MAX_SIZE
-    const plain = q.get('plain') === '1'
+    // 怎么看：和图纸的图同一套读法（blueprint-view.ts），草稿的层是 0 到高 - 1
+    const { spec, size, plain } = pictureRequest(q, [0, draft.size.y - 1], panelReject)
     const key = JSON.stringify([draft.name, record.savedAt, spec, size, plain])
     let png = this.draftPictures.get(key)
     if (!png) {
@@ -1277,11 +1282,11 @@ export class PanelServer {
     res.end(png)
   }
 
-  /** 三维预览要的数据：盒子里每一格是什么，每种方块怎么画（贴图在图集第几格，或者什么颜色）。 */
-  private model(grid: VoxelGrid): Scene {
+  /** 三维预览要的数据：盒子里每一格是什么，每种方块怎么画（贴图在图集第几格，或者什么颜色）。nameOf 不给就用本地资料里的名字。 */
+  private model(grid: VoxelGrid, nameOf?: (kind: BlockKind) => string | undefined): Scene {
     const textures = this.deps.textures
     return sceneOf(grid, this.blockLooks(), {
-      nameOf: (kind) => this.deps.design.nameOf(kind),
+      nameOf: nameOf ?? ((kind) => this.deps.design.nameOf(kind)),
       ...(textures ? { textures, atlasUrl: `/api/textures/atlas.png?v=${encodeURIComponent(textures.version)}` } : {}),
     })
   }
@@ -1386,6 +1391,7 @@ export class PanelServer {
       if (e instanceof BridgeError && e.code === 'bad_request') throw new HttpError(400, 'bad_blueprint', `游戏那边没收下这张图纸：${e.message}`)
       throw e
     }
+    this.blueprintViews.forget(saved.name ?? this.blueprintName(name))
     this.deps.log.add({ kind: 'info', text: `在面板上把草稿 ${name} 发布成了图纸（${saved.blocks ?? '?'} 个方块）。` })
     return { saved }
   }
