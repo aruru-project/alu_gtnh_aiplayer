@@ -177,6 +177,17 @@ public final class ProcessTask extends Task {
             phase = multi ? "going to the input bus" : "going to the machine";
             trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
             trip.session.deposit(plan(inputs));
+            if (circuit >= 0) {
+                // Standing at it, before anything goes in: the moment a player clicks the circuit. Set afterwards,
+                // the machine could start on the first inputs with the circuit it had (a bender set to 1 made foil).
+                trip.beforeSession(() -> {
+                    TileEntity where = tile(loadAt);
+                    oldCircuit = where == null ? -1 : Machines.circuit(where);
+                    if (oldCircuit < 0 || !Machines.setCircuit(where, circuit)) return false;
+                    circuitSet = true;
+                    return true;
+                }, "this " + (multi ? "input bus" : "machine") + " has no programmed-circuit setting; nothing was put in");
+            }
         }
     }
 
@@ -270,6 +281,7 @@ public final class ProcessTask extends Task {
                 ContainerTrip.Status st = trip.tick();
                 if (st == ContainerTrip.Status.WORKING) return;
                 if (st == ContainerTrip.Status.FAILED) {
+                    restoreCircuit();
                     fail(trip.failCode, trip.failMessage);
                     return;
                 }
@@ -280,25 +292,13 @@ public final class ProcessTask extends Task {
                 }
                 put = trip.session.moved;
                 if (put <= 0) {
+                    restoreCircuit();
                     fail(
                         "invalid",
                         "none of the inputs went in: they are not in the inventory, or the input "
                             + (multi ? "bus is full" : "slots are occupied"),
                         Machines.describe(te));
                     return;
-                }
-                if (circuit >= 0) {
-                    // Standing at it with its screen just used: the moment a player would click the circuit slot.
-                    TileEntity where = tile(loadAt);
-                    oldCircuit = Machines.circuit(where);
-                    if (oldCircuit < 0 || !Machines.setCircuit(where, circuit)) {
-                        phase = "taking the inputs back";
-                        collect(loadAt, true);
-                        stage = 3;
-                        notStarted = "this " + (multi ? "input bus" : "machine") + " has no programmed-circuit setting";
-                        return;
-                    }
-                    circuitSet = true;
                 }
                 if (hatchAt != null) beginPouring();
                 else beginWaiting();

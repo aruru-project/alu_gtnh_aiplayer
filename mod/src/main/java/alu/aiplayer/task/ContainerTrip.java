@@ -24,6 +24,17 @@ final class ContainerTrip {
     private final int x, y, z;
     String failCode;
     String failMessage;
+    /**
+     * Done once on arriving, before anything is put in or taken out: what a player sets on a machine before
+     * loading it (its programmed circuit). Returning false ends the trip as failed with failCode "invalid".
+     */
+    private java.util.function.BooleanSupplier beforeSession;
+    private String beforeSessionRefusal;
+
+    void beforeSession(java.util.function.BooleanSupplier step, String refusal) {
+        beforeSession = step;
+        beforeSessionRefusal = refusal;
+    }
 
     /** No walking: the container is an item the bot carries and opens in its hand. */
     ContainerTrip(Bot bot, alu.aiplayer.act.ItemFilter opener) {
@@ -78,6 +89,15 @@ final class ContainerTrip {
                     arrived = false;
                     return Status.WORKING;
                 }
+            }
+        }
+        if (beforeSession != null) {
+            java.util.function.BooleanSupplier step = beforeSession;
+            beforeSession = null;
+            if (!step.getAsBoolean()) {
+                failCode = "invalid";
+                failMessage = beforeSessionRefusal;
+                return Status.FAILED;
             }
         }
         ContainerSession.Status st = session.tick();
