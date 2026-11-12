@@ -268,6 +268,9 @@ public final class ProcessTask extends Task {
 
     private void beginWaiting() {
         fluidsBefore = fluidState().toString();
+        // The slots right after loading: a change from this means the machine took the inputs.
+        TileEntity te = machine();
+        if (!plain && te instanceof IInventory) contents = fingerprint((IInventory) te);
         before = carried();
         phase = "waiting for the machine";
         stage = 1;
@@ -368,6 +371,12 @@ public final class ProcessTask extends Task {
                     active = ran && unchanged < 240;
                 } else {
                     active = Machines.isActive(te);
+                    // What it set out to make, read while it runs a recipe: if something else got into the machine (a
+                    // pipe feeding it, a circuit it still had), this says so.
+                    if (Machines.working(te)) {
+                        sawWorking = true;
+                        if (making == null || making.size() == 0) making = Machines.making(te);
+                    }
                 }
                 if (active) {
                     ran = true;
@@ -375,7 +384,10 @@ public final class ProcessTask extends Task {
                 } else {
                     idle++;
                 }
-                if (leave && (ran || plain)) {
+                // Left to run: the active flag lingers a moment after a recipe ends, so it counts only once a recipe
+                // is seen running, or the inputs were taken (a recipe short enough to start and end between two looks).
+                boolean started = plain || sawWorking || (ran && (fingerprint((IInventory) te) != contents || inputsUsedUp()));
+                if (leave && started) {
                     // It runs (a machine this mod cannot read is taken at its word once the things are in).
                     left = true;
                     leftState = plain ? null : Machines.describe(te);
@@ -468,6 +480,10 @@ public final class ProcessTask extends Task {
 
     private String notStarted;
     private boolean passedOn;
+    /** What the machine set out to make when it was first seen working. */
+    private JsonArray making;
+    /** Whether it was seen running a recipe (not just with its active flag up). */
+    private boolean sawWorking;
 
     /** What the caller expects to get and the bot has not yet gained since loading. */
     private List<ItemFilter> stillExpected() {
@@ -606,6 +622,7 @@ public final class ProcessTask extends Task {
                         + " it until it is taken out (withdraw with the machine as the container); what was put in"
                         + " and is not used up, such as a mould, stays in it too");
             if (leftState != null) o.add("machine", leftState);
+            if (making != null && making.size() > 0) o.add("making", making);
             if (circuit >= 0) {
                 JsonObject c = new JsonObject();
                 c.addProperty("now", circuit);
@@ -616,6 +633,7 @@ public final class ProcessTask extends Task {
             return o;
         }
         o.add("outputs", outputs);
+        if (making != null && making.size() > 0) o.add("making", making);
         if (passedOn) {
             o.addProperty(
                 "note",

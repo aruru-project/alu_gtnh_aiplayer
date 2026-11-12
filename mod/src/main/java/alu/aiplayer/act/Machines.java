@@ -354,9 +354,44 @@ public final class Machines {
         }
     }
 
+    /**
+     * What a GregTech machine set out to make when it started the recipe it is running: the products it will put
+     * out (single-block machines and multiblocks keep them from the start). Empty when it is idle or cannot be read.
+     */
+    public static com.google.gson.JsonArray making(TileEntity te) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        Object m = meta(te);
+        if (m == null) return out;
+        try {
+            Object[] items = (Object[]) m.getClass()
+                .getField("mOutputItems")
+                .get(m);
+            if (items == null) return out;
+            for (Object o : items) {
+                if (!(o instanceof net.minecraft.item.ItemStack)) continue;
+                net.minecraft.item.ItemStack s = (net.minecraft.item.ItemStack) o;
+                if (s.getItem() == null || s.stackSize <= 0) continue;
+                out.add(alu.aiplayer.util.Names.describe(s));
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
     public static boolean isActive(TileEntity te) {
         try {
             return meta(te) != null && (Boolean) active.invoke(te);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether it is running a recipe right now: active and with a recipe's length set. The active flag alone lingers
+     * a moment after a recipe ends, so a machine that just finished one looks busy before it has started the next.
+     */
+    public static boolean working(TileEntity te) {
+        try {
+            return isActive(te) && (Integer) maxProgress.invoke(te) > 0;
         } catch (Throwable t) {
             return false;
         }

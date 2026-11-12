@@ -647,6 +647,30 @@ describe('任务类工具', () => {
     ])
   })
 
+  it('机器加工：结果里写着机器开工时打算做出什么；和这批要的对不上时照实说（主人那次：卷板机还带着电路 1，9 块黑曜石板先被做成了箔；压模机有管道往里送料，做出来的是别的）', async (t) => {
+    const s = setup(t)
+    const M = { x: -538, y: 69, z: 40 }
+    const plates = [{ id: 'gregtech:gt.metaitem.01', meta: 17804, count: 9 }]
+    const dense = [{ id: 'IC2:itemDensePlates', meta: 7, count: 1 }]
+    const foil = { id: 'gregtech:gt.metaitem.01', meta: 29804, name: 'Obsidian Foil', count: 4 }
+    const densePlate = { id: 'IC2:itemDensePlates', meta: 7, name: 'Dense Obsidian Plate', count: 1 }
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        { id: 't3', type: 'process', state: 'done', finishedAt: 300, params: { type: 'process', machine: M, inputs: plates, circuit: 9, expect: dense }, result: { put: 9, outputs: [densePlate], making: [densePlate], freeSlots: 20 } },
+        { id: 't2', type: 'process', state: 'done', finishedAt: 200, params: { type: 'process', machine: M, inputs: plates, circuit: 9, expect: dense }, result: { put: 9, outputs: [foil], making: [foil], freeSlots: 20 } },
+        { id: 't1', type: 'process', state: 'done', finishedAt: 100, params: { type: 'process', machine: M, inputs: plates, circuit: 9, expect: dense, leave: true }, result: { put: 9, left: true, making: [foil], freeSlots: 20 } },
+      ],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    const [t3, t2, t1] = lines.slice(-3)
+    assert.match(t3!, /when it started it set out to make 1× IC2:itemDensePlates\/7 "Dense Obsidian Plate"(;|$)/)
+    assert.equal(t3!.includes('NOT what'), false)
+    assert.match(t2!, /when it started it set out to make 4× gregtech:gt\.metaitem\.01\/29804 "Obsidian Foil": NOT what this batch was for \(1× IC2:itemDensePlates\/7\)\. Something else was in the machine/)
+    assert.match(t1!, /set out to make 4× gregtech:gt\.metaitem\.01\/29804 "Obsidian Foil": NOT what this batch was for/)
+  })
+
   it('挖东西的区域任务可以指定背包满了怎么办（overflow）；别的取值被拒绝', async (t) => {
     const s = setup(t)
     await s.run('clear_area', { x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave' })

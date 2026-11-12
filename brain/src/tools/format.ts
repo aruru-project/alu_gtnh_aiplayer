@@ -341,7 +341,7 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     if (detail && (typeof detail.storedEU === 'number' || typeof detail.recipes === 'string')) out.error = processErrorLines(detail)
     // 放下就走（leave）的结果里没有产物，是“放进去了、机器开工了”和那一刻机器的状态
     if (result && result.left === true) out.result = processLeftLines(result, task.params)
-    else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result)
+    else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result, task.params)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   }
@@ -1396,8 +1396,26 @@ function ticksText(ticks: number): string {
  * process 任务带 leave 时的结果：原料放进去了、机器开工了，任务就结束了，产物和没消耗的模具留在机器里。
  * 这一轮、全部几轮大概还要多久：照那一刻机器的进度算（progress / maxProgress，单位 tick）；几轮是 process_items 发任务时带上的（params.recipe）。
  */
+/**
+ * 机器开工那一刻打算做出什么（身体读的是机器自己记着的产物）；和这次要的对不上时照实说：
+ * 多半是别的东西进了机器（管道送来的），或者它还带着原来的编程电路。
+ */
+function makingText(making: unknown, params: Record<string, unknown> | undefined): string {
+  const list = kindList(making)
+  if (list.length === 0) return ''
+  let text = `; when it started it set out to make ${list.map((o) => kindText(o.count, o)).join(', ')}`
+  const expect = Array.isArray(params?.expect) ? (params.expect as unknown[]).filter(isRecord) : []
+  if (expect.length > 0) {
+    const same = (e: Record<string, unknown>, m: Record<string, unknown>): boolean => e.id === m.id && (typeof e.meta !== 'number' || e.meta === m.meta)
+    if (!expect.some((e) => list.some((m) => same(e, m)))) {
+      text += `: NOT what this batch was for (${kindList(expect).map((o) => kindText(o.count, o)).join(', ')}). Something else was in the machine (a pipe or cover feeding it), or it ran with the circuit it had`
+    }
+  }
+  return text
+}
+
 export function processLeftLines(result: Record<string, unknown>, params: Record<string, unknown> | undefined): string[] {
-  const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, ...rest } = result
+  const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, making, ...rest } = result
   const batch = isRecord(params?.recipe) ? params.recipe : {}
   const rounds = typeof batch.rounds === 'number' && batch.rounds >= 1 ? batch.rounds : undefined
   const at = isRecord(params?.machine) && typeof params.machine.x === 'number' ? formatPos(params.machine as { x: number; y: number; z: number }) : undefined
@@ -1416,16 +1434,18 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
     if (typeof batch.ticks === 'number' && batch.ticks > 0) line += `. By the recipe book a round takes ${ticksText(batch.ticks)}${rounds !== undefined && rounds > 1 ? `, ${rounds} rounds ${ticksText(rounds * batch.ticks)}` : ''}`
   }
   line += `. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give. What it makes stays in the machine, and so does what was put in and is not used up (a mold): withdraw_items with ${at ? `container ${at}` : 'the machine as the container'} takes the products (a multiblock: from its output bus), and with fromInputs: true what sits in its input slots`
+  line += makingText(making, params)
   if (isRecord(circuit) && typeof circuit.now === 'number') line += `. Programmed circuit: now ${circuit.now}, it was ${count(circuit.was) === 0 ? '0 (none)' : count(circuit.was)}; it stays ${circuit.now} until someone sets it again`
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
   return [line]
 }
 
-export function processResultLines(result: Record<string, unknown>): string[] {
-  const { put, outputs, timedOut, freeSlots, fluids, ...rest } = result
+export function processResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
+  const { put, outputs, timedOut, freeSlots, fluids, making, ...rest } = result
   const got = kindList(outputs)
   let line = `put ${count(put)} item(s) into the machine; took out: ${got.length > 0 ? got.map((o) => kindText(o.count, o)).join(', ') : 'nothing'}`
+  line += makingText(making, params)
   if (Array.isArray(fluids)) {
     // 多方块给的是输出仓（带坐标），单方块给的是它自己的罐
     const hatches = fluids.some((f) => isRecord(f) && typeof f.x === 'number')
