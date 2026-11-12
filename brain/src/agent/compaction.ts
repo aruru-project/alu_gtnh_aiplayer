@@ -5,6 +5,7 @@
 //   2. 还大，就把较早的若干轮换成一份“交接记录”（不带工具的模型调用）。要换掉的东西一次看不完时按顺序一段段折进去
 //      （已有的记录 + 第一段 → 记录，再 + 第二段 → ……），一段都不丢：写记录的模型得看全它要替换掉的东西。
 // 最近的一段（从最新往回数到阈值的四分之一，至少两轮）原样不动：它正在用。
+// 这里只管把一份历史压成什么样；在后台写还是就地写、写回来怎么换进去，在 agent.ts。
 
 import { LlmError, textOf } from '../llm/index.ts'
 import type { GenerateResult, LlmClient, Message } from '../llm/index.ts'
@@ -74,6 +75,11 @@ export const TIDY_ENOUGH_SHARE = 0.7
 export const TARGET_SHARE = 0.5
 /** 该换成交接记录的那部分不到阈值的这么大一份时先攒着（阈值比提示词加工具清单还小的配置下，不然每一轮都要写一次）。 */
 export const MIN_FOLD_SHARE = 0.1
+/**
+ * 硬上限：交接记录在后台写（这条线照常接下一轮）的时候，上下文超过阈值的这么多倍就不再照常接：一轮结束时等后台那份回来再继续；
+ * 没有在写的那份就就地压（和不在后台写时一样）。阈值是 24 万、32 万 token 时这是 36 万、48 万，离模型的一百万还远。
+ */
+export const HARD_LIMIT_SHARE = 1.5
 
 /** 每轮开头那条消息里“当前状态”一节的标题（context.ts 的 composeTurnMessage 拼的）。 */
 const STATE_HEAD = '[当前状态]\n'
@@ -552,6 +558,10 @@ export interface CompactOptions {
    * all：不看阈值，把最近那一段以外的全部写成交接记录（面板上“现在就压”、试提示词用）。
    */
   mode?: 'auto' | 'overflow' | 'all'
+  /** 写不成记录也不丢轮（在后台写的用：丢轮只留给模型说上下文太长的那条路）。 */
+  noDrop?: boolean
+  /** 要调模型写记录了：换成记录的是哪几轮。调模型之前叫一次；只收拾、不写的时候不叫。 */
+  onSummarize?: (range: TurnRange) => void
 }
 
 /** 换成交接记录（或者丢掉）的是哪几轮。 */
@@ -653,6 +663,7 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
   // 该换的太少：先攒着，不值得为它重写一次整段缓存
   if (mode === 'auto' && old.reduce((n, t) => n + turnTokens(t), 0) * scale < opts.threshold * MIN_FOLD_SHARE) return tidiedOnly()
 
+  opts.onSummarize?.(rangeOf(old)!)
   const wrote = await summarize(opts.llm, summary, old, { signal: opts.signal, talk, textSaidBefore: opts.textSaidBefore, segmentChars: opts.segmentChars, capChars })
   const cost: Partial<CompactResult> = { calls: wrote.calls, capChars, inputChars: wrote.inputChars, usage: wrote.usage, ms: wrote.ms, ...(wrote.analysis.length > 0 ? { analysis: wrote.analysis } : {}) }
   if (wrote.error === undefined) {
@@ -663,7 +674,7 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
   const left = current.slice(wrote.folded)
   const partly: Partial<CompactResult> = { ...(folded.length > 0 ? { folded: rangeOf(folded)! } : {}), error: wrote.error, ...cost }
   // 没超太多就先留着下次再试；剩下的还超过两倍阈值（或者模型已经说太长）就不能再拖了，没折成的那些直接丢。
-  if (mode === 'overflow' || (mode === 'auto' && size(wrote.summary, left) > opts.threshold * 2)) {
+  if (mode === 'overflow' || (mode === 'auto' && opts.noDrop !== true && size(wrote.summary, left) > opts.threshold * 2)) {
     const lost = old.slice(wrote.folded)
     const gone = rangeOf(lost)!
     const note = `（第 ${gone.from} 轮到第 ${gone.to} 轮共 ${gone.turns} 轮因为太长被丢弃了，当时没能写成交接记录。原始记录还在活动日志里。）`
@@ -674,14 +685,15 @@ export async function compactHistory(summary: string, turns: readonly Turn[], op
 }
 
 /**
- * 交接记录放在历史最前面的这条 user 消息里。开头把事实写全：这是哪几轮换成的；那些轮的原文不在对话历史里了，
+ * 交接记录放在历史最前面的这条 user 消息里。开头把事实写全：这是哪几轮换成的、写到第几轮为止（后面的轮都比它新）；那些轮的原文不在对话历史里了，
  * 但还在活动日志里，read_log 翻得回去；笔记和手册不在这一段里。range 是历史里记着的范围；老数据没有记，就不说是哪几轮。
  */
 export function summaryMessage(summary: string, range?: TurnRange): Message {
   const which = range
     ? `${range.unknownBefore ? '更早的若干轮（是哪几轮当时没有记下），加上' : ''}第 ${range.from} 轮到第 ${range.to} 轮（共 ${range.turns} 轮）`
     : '较早的若干轮（是哪几轮当时没有记下）'
-  const what = `[更早经历的交接记录：${which}的经过换成了下面这一份，那些轮的原文不在你的对话历史里了。当时查到、看到的东西，这一份里没写的就不在这里；原始记录还在活动日志里（按天存，留最近 ${LOG_KEEP_DAYS} 天有记录的），read_log 能按第几轮、按时间、按词翻回去。你记的笔记和手册不在这一份里，它们一直都在。]`
+  const upTo = range ? `这一份写到第 ${range.to} 轮结束时为止，` : ''
+  const what = `[更早经历的交接记录：${which}的经过换成了下面这一份，那些轮的原文不在你的对话历史里了。${upTo}后面接着的轮都比它新。当时查到、看到的东西，这一份里没写的就不在这里；原始记录还在活动日志里（按天存，留最近 ${LOG_KEEP_DAYS} 天有记录的），read_log 能按第几轮、按时间、按词翻回去。你记的笔记和手册不在这一份里，它们一直都在。]`
   return { role: 'user', content: [{ type: 'text', text: `${what}\n${summary}` }] }
 }
 

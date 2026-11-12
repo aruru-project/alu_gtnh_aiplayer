@@ -64,6 +64,7 @@ function toAgentSettings(c: BrainConfig, line: LineName): AgentSettings {
     maxSteps: line === 'talk' ? c.bot.limits.talkMaxSteps : c.bot.limits.maxSteps,
     dailyTokenLimit: c.bot.limits.dailyTokenLimit,
     historyTokenThreshold: line === 'talk' ? c.bot.limits.talkHistoryTokenThreshold : c.bot.limits.historyTokenThreshold,
+    backgroundCompaction: c.bot.limits.backgroundCompaction,
     toolResultMaxChars: c.bot.limits.toolResultMaxChars,
     routineMinutes: c.bot.limits.routineMinutes,
     routineMaxMinutes: c.bot.limits.routineMaxMinutes,

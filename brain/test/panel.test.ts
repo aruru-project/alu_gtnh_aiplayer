@@ -1834,6 +1834,41 @@ describe('面板：两条线', () => {
     await lines.agent.whenIdle()
   })
 
+  it('交接记录在后台写的时候：GET /api/status 里那条线带 compacting（写的是第几轮到第几轮、快照到第几轮、什么时候开始的），真压回 409；开关 limits.backgroundCompaction 默认开，PUT /api/bot 能关', async (t) => {
+    const lines = makeAgent({ settings: { historyTokenThreshold: 1_000_000 } })
+    const s = await setup(t, {}, { lines })
+    await s.login()
+    for (let i = 1; i <= 5; i++) {
+      lines.llm.enqueue(reply(`第 ${i} 轮做完了。${'话'.repeat(1500)}`))
+      lines.agent.handleEvent(told(`做第 ${i} 件`))
+      await lines.agent.whenIdle()
+    }
+    // 第六轮结束时过了阈值：开始在后台写（写的那次调用拦着），这条线空下来
+    lines.settings.historyTokenThreshold = lines.agent.contextTokens('work')
+    let release: (() => void) | undefined
+    const started = Date.now()
+    lines.llm.enqueue(reply(`第 6 轮做完了。${'话'.repeat(1500)}`), () => new Promise((resolve) => (release = () => resolve(reply('<summary>后台写的记录</summary>')))))
+    lines.agent.handleEvent(told('做第 6 件'))
+    await waitFor('the record is being written in the background', () => release !== undefined && !lines.agent.statusOf('work').busy)
+    const ids = lines.history.get().turns.map((turn) => turn.id)
+    const [talk, work] = (await s.call('GET', '/api/status')).json.agents
+    assert.equal(talk.compacting, null)
+    const { since, ...range } = work.compacting
+    assert.deepEqual([range.from, range.upTo, Object.keys(range).sort()], [ids[0], ids.at(-1), ['from', 'to', 'turns', 'upTo']])
+    assert.ok(range.to < range.upTo && since >= started && since <= Date.now(), JSON.stringify(work.compacting))
+    const busy = await s.call('POST', '/api/history/compact', { line: 'work' })
+    assert.deepEqual([busy.status, busy.json.error.code, busy.json.error.message], [409, 'busy', '干活线后台正在写一份交接记录，等它回来再压（或者带 dryRun 只试不存）'])
+    release!()
+    await lines.agent.whenIdle()
+    const after = (await s.call('GET', '/api/status')).json.agents[1]
+    assert.deepEqual([after.compacting, after.history.summaryOf], [null, { from: range.from, to: range.to, turns: range.turns }])
+
+    // 开关：默认开，面板上能关
+    assert.equal((await s.call('GET', '/api/bot')).json.bot.limits.backgroundCompaction, true)
+    const off = (await s.call('PUT', '/api/bot', { limits: { backgroundCompaction: false } })).json.bot
+    assert.deepEqual([off.limits.backgroundCompaction, s.config.get().bot.limits.backgroundCompaction], [false, false])
+  })
+
   it('两条线各选一个模型：带 line 只换那一条，不带是两条一起换（旧界面的行为）；日志里写明换的是哪条', async (t) => {
     const lines = makeAgent()
     const s = await setup(t, {}, { lines })

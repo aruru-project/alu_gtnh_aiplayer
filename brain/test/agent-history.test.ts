@@ -382,6 +382,21 @@ describe('历史压缩', () => {
     assertToolPairs(dropped.turns.flatMap((t) => t.messages))
   })
 
+  it('在后台写的（noDrop）：同样是一段都没写成、超过两倍阈值，也原样留着不丢；要调模型写之前告诉一声写的是哪几轮，只收拾不写的时候不说', async () => {
+    const failing: LlmClient = { generate: async () => Promise.reject(new Error('model is down')) }
+    const turns = Array.from({ length: 10 }, (_, i) => turn(i + 1, 300))
+    const told: unknown[] = []
+    const res = await compactHistory('', turns, { threshold: Math.floor(historyTokens('', turns) / 4), llm: failing, noDrop: true, onSummarize: (range) => told.push(range) })
+    assert.deepEqual([res.action, res.turns.map((t) => t.id), res.summary, res.discarded], ['nothing', turns.map((t) => t.id), '', undefined])
+    assert.match(res.error ?? '', /model is down/)
+    assert.deepEqual(told, [{ from: 1, to: 8, turns: 8 }])
+    // 收拾完就够了：不调模型，也不说
+    const quiet: unknown[] = []
+    const states = Array.from({ length: 8 }, (_, i) => stateTurn(i + 1))
+    const tidied = await compactHistory('', states, { threshold: Math.floor(historyTokens('', states) * 0.8), llm: failing, noDrop: true, onSummarize: (range) => quiet.push(range) })
+    assert.deepEqual([tidied.action, quiet], ['truncated', []])
+  })
+
   it('该换的那部分太少（不到阈值的一成）：先攒着，不为它写一次记录', async () => {
     // 最近两轮各三千多 token，更早的只有一轮 190 token；阈值六千
     const turns = [turn(1, 100), turn(2, 9000), turn(3, 9000)]
@@ -449,9 +464,9 @@ describe('历史压缩', () => {
   })
 })
 
-/** 历史最前面那条消息开头的那句话（range：第几轮到第几轮，共多少轮）。 */
-function headLine(which: string): string {
-  return `[更早经历的交接记录：${which}的经过换成了下面这一份，那些轮的原文不在你的对话历史里了。当时查到、看到的东西，这一份里没写的就不在这里；原始记录还在活动日志里（按天存，留最近 14 天有记录的），read_log 能按第几轮、按时间、按词翻回去。你记的笔记和手册不在这一份里，它们一直都在。]`
+/** 历史最前面那条消息开头的那句话（which：第几轮到第几轮，共多少轮；to：写到第几轮为止，老数据没记就没有）。 */
+function headLine(which: string, to?: number): string {
+  return `[更早经历的交接记录：${which}的经过换成了下面这一份，那些轮的原文不在你的对话历史里了。${to !== undefined ? `这一份写到第 ${to} 轮结束时为止，` : ''}后面接着的轮都比它新。当时查到、看到的东西，这一份里没写的就不在这里；原始记录还在活动日志里（按天存，留最近 14 天有记录的），read_log 能按第几轮、按时间、按词翻回去。你记的笔记和手册不在这一份里，它们一直都在。]`
 }
 
 /** 活动日志里干活线关于压缩的那几条（数字换成 N，好对着看）。 */
@@ -464,7 +479,8 @@ function compactionLog(h: ReturnType<typeof makeAgent>): string[] {
 
 describe('agent 跑久了以后的历史', () => {
   it('上下文超过阈值：较早的轮换成一份交接记录，最近两轮原样留着；之后发给模型的消息以这份记录开头，开头那句把事实写全；日志里交代了每一步', async (t) => {
-    const h = makeAgent({ settings: { historyTokenThreshold: 6000 } })
+    // 这一条看的是压成什么样、日志怎么写：开关关着，一轮结束时就地压（在后台写的见下面“在后台写交接记录”）
+    const h = makeAgent({ settings: { historyTokenThreshold: 6000, backgroundCompaction: false } })
     t.after(h.cleanup)
     // 每一轮：扫一次地形（结果八百来 token）再结束。写记录的调用（不带工具）按标签回草稿和正文。
     h.game.handlers['world.scan'] = (p) => ({ x1: p.x1, z1: p.z1, x2: p.x2, z2: p.z2, heights: Array.from({ length: 20 }, () => Array.from({ length: 20 }, () => 64)) })
@@ -520,13 +536,14 @@ describe('agent 跑久了以后的历史', () => {
     await h.agent.whenIdle()
     const sent = h.llm.requests.filter((r) => r.tools.length > 0).at(-1)!.messages
     const head = sent[0]!.content[0]!
-    assert.equal(head.type === 'text' ? head.text : '', `${headLine(`第 ${ids[0]} 轮到第 ${ids[5]} 轮（共 6 轮）`)}\n${state.summary}`)
+    assert.equal(head.type === 'text' ? head.text : '', `${headLine(`第 ${ids[0]} 轮到第 ${ids[5]} 轮（共 6 轮）`, ids[5])}\n${state.summary}`)
     assertToolPairs(sent)
   })
 
   it('旧轮里的状态快照拿掉就够了的时候：不调模型写记录；日志里记一条拿掉了多少；模型下一轮看到的旧轮里是那句说明，最近的状态还在', async (t) => {
     // 一轮（一句话就结束的）连状态 160 多 token，其中状态占大半：1300 的阈值到第 8 轮超，拿掉前六轮的状态就回到阈值的七成以下
-    const h = makeAgent({ settings: { historyTokenThreshold: 1300 } })
+    // 开关关着：一轮结束时就地收拾
+    const h = makeAgent({ settings: { historyTokenThreshold: 1300, backgroundCompaction: false } })
     t.after(h.cleanup)
     let summaries = 0
     for (let i = 1; i <= 10; i++) {
@@ -589,7 +606,9 @@ describe('agent 跑久了以后的历史', () => {
       assert.equal(times, i >= 18 ? 0 : 1, `my turn ${i}`)
     }
     assert.deepEqual(state.summaryOf, { from: ids[0], to: ids[16], turns: 17 })
+    // 一下子就过了阈值的 1.5 倍、后台又没有在写的：就地压，写完才接下一轮
     assert.deepEqual(compactionLog(h), [
+      '上下文约 N token，超过了阈值的 1.5 倍（N token），后台没有在写的交接记录：就地压，写完再接下一轮。',
       '历史超过了阈值（上下文约 N token），先收拾最近 2 轮以外的：拿掉了 17 段旧的状态快照（每轮开头那段“当前状态”）。历史从 N 字符变成 N 字符。',
       `收拾完还是太长，把较早的 17 轮（第 ${ids[0]} 轮到第 ${ids[16]} 轮）换成了交接记录（N 字符，上限 9000），写它调了 2 次模型、给它看了 N 字符、等了 N 秒。上下文从约 N token 变成约 N token。`,
     ])
@@ -659,7 +678,7 @@ describe('agent 跑久了以后的历史', () => {
     h.agent.handleEvent(told('再说一句'))
     await h.agent.whenIdle()
     const later = h.llm.requests.at(-1)!.messages[0]!.content[0]!
-    assert.equal(later.type === 'text' ? later.text.split('\n')[0] : '', headLine('更早的若干轮（是哪几轮当时没有记下），加上第 41 轮到第 42 轮（共 2 轮）'))
+    assert.equal(later.type === 'text' ? later.text.split('\n')[0] : '', headLine('更早的若干轮（是哪几轮当时没有记下），加上第 41 轮到第 42 轮（共 2 轮）', 42))
   })
 
   it('模型说上下文超长时，先压历史再重试同一轮：最近那一段留着，更早的换成交接记录', async (t) => {

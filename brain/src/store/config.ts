@@ -45,6 +45,11 @@ export interface LimitsConfig {
   historyTokenThreshold: number
   /** 对话线的历史估算 token 超过这个值就压缩。它的上下文里只有对话、它查的东西和干活线的汇报，压得勤一点回话才快。 */
   talkHistoryTokenThreshold: number
+  /**
+   * 超过阈值时交接记录在后台写（两条线共用这一个开关，默认开）：写的这一两分钟里这条线照常接下一轮，写回来以后在下一次调模型之前换进去。
+   * 关掉就是一轮结束时就地写，写完才接下一轮。
+   */
+  backgroundCompaction: boolean
   /** 记忆总长度上限（字符）。 */
   memoryMaxChars: number
   /** 单个工具结果的长度上限（字符）。 */
@@ -164,6 +169,8 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   // 现在的模型上下文大多是一百万 token，压一次要重写整段提示词缓存、还会丢细节，所以给得宽；对话线的事少，给一半。
   historyTokenThreshold: 240_000,
   talkHistoryTokenThreshold: 120_000,
+  // 就地写时正式服上对话线每次卡 90–194 秒（玩家说话要等一两分钟），干活线 107–660 秒
+  backgroundCompaction: true,
   memoryMaxChars: 4000,
   toolResultMaxChars: 20_000,
   // 例程不限调用次数（一口气搬一万多个东西的活要几千次调用），靠时长、连续失败和随时可停来管：默认两小时，最长十二小时
@@ -445,6 +452,7 @@ export function normalizeConfig(raw: unknown): BrainConfig {
         dailyTokenLimit: int(limits.dailyTokenLimit, DEFAULT_LIMITS.dailyTokenLimit, 0, 1_000_000_000),
         historyTokenThreshold: int(limits.historyTokenThreshold, DEFAULT_LIMITS.historyTokenThreshold, 2000, 2_000_000),
         talkHistoryTokenThreshold: int(limits.talkHistoryTokenThreshold, DEFAULT_LIMITS.talkHistoryTokenThreshold, 2000, 2_000_000),
+        backgroundCompaction: typeof limits.backgroundCompaction === 'boolean' ? limits.backgroundCompaction : DEFAULT_LIMITS.backgroundCompaction,
         memoryMaxChars: int(limits.memoryMaxChars, DEFAULT_LIMITS.memoryMaxChars, 200, 100_000),
         toolResultMaxChars: int(limits.toolResultMaxChars, DEFAULT_LIMITS.toolResultMaxChars, 500, 100_000),
         routineMinutes: int(limits.routineMinutes, DEFAULT_LIMITS.routineMinutes, 1, ROUTINE_MINUTES_LIMIT),

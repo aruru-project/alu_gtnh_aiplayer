@@ -14,15 +14,15 @@ import type { MethodAccess } from '../tools/methods.ts'
 import type { TodoAccess } from '../tools/todo.ts'
 import type { FeedbackContext, FeedbackStore, FeedbackTask, FeedbackToolCall } from '../store/feedback.ts'
 import type { ChatLog } from '../store/chat-log.ts'
-import type { HistoryStore } from '../store/history.ts'
+import type { HistoryStore, Turn } from '../store/history.ts'
 import { speakInChat } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
 import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
 import type { LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
-import { compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
-import type { CompactResult, ContextGauge } from './compaction.ts'
+import { HARD_LIMIT_SHARE, compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
+import type { CompactResult, ContextGauge, TurnRange } from './compaction.ts'
 import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext, talkClosing } from './context.ts'
 import type { PendingReminder } from './context.ts'
 import { describeEvent, eventLine, isHumanInput } from './events.ts'
@@ -52,6 +52,8 @@ export interface AgentSettings {
   /** 0 为不限。 */
   dailyTokenLimit: number
   historyTokenThreshold: number
+  /** 超过阈值时交接记录在后台写（这条线照常接下一轮）。不给是开着；false 是一轮结束时就地写、写完才接下一轮。 */
+  backgroundCompaction?: boolean
   toolResultMaxChars: number
   /** 例程没说跑多久时最多跑几分钟；它自己要求时最多给到几分钟。主人在面板的设置里定，不给用 routine.ts 里的默认。 */
   routineMinutes?: number
@@ -73,6 +75,11 @@ export interface AgentTiming {
   afterDeathDelayMs: number
   /** 干活线一轮结束、或者工作清单变了以后，等这么久再看要不要因为清单叫醒它（免得和紧接着到的事撞在一起）。 */
   todoNudgeMs: number
+  /**
+   * 后台写交接记录没写成以后，第 1、2、3… 次各隔多久再在后台试；用完后一直用最后一个，写成一次就从头数。
+   * 到点以后这条线的下一轮结束时才试（一轮结束时才量上下文）。同样贵的调用（看十几万字符）不每轮都重试。
+   */
+  backgroundRetryMs: number[]
 }
 
 export const DEFAULT_TIMING: AgentTiming = {
@@ -83,6 +90,7 @@ export const DEFAULT_TIMING: AgentTiming = {
   announceIntervalMs: 600_000,
   afterDeathDelayMs: 2500,
   todoNudgeMs: 3000,
+  backgroundRetryMs: [5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000],
 }
 
 export interface PersistedAgentState {
@@ -299,6 +307,20 @@ export interface ModelState {
   lastCall?: LastCall
 }
 
+/** 后台正在写的那份交接记录（面板状态里的 compacting）。 */
+export interface BackgroundCompaction {
+  /** 换成记录的是第几轮到第几轮、共几轮。 */
+  from: number
+  to: number
+  turns: number
+  /** 快照到第几轮为止：写回来换进去时，这一轮以后的轮原样接在后面。 */
+  upTo: number
+  /** 什么时候开始写的（epoch ms）。 */
+  since: number
+  /** 上下文过了硬上限，这条线正等它回来才接下一轮（这时没有在跑的一轮，但这条线占着）。 */
+  waiting?: true
+}
+
 /** 一个代理现在的样子。以后它开的帮手各有一份（各有自己的模型、自己的一轮、自己的例程）。 */
 export interface AgentState {
   /** 哪条线：talk、work。日志条目的 agent 字段和它对得上。 */
@@ -309,6 +331,8 @@ export interface AgentState {
   /** 排着队还没处理的事件数。 */
   pending: number
   botOnline: boolean | undefined
+  /** 后台正在写交接记录时才有。 */
+  compacting?: BackgroundCompaction
 }
 
 export interface AgentStatus {
@@ -377,6 +401,40 @@ const NOT_RUN_HALTED = 'Not executed: you were stopped (stop_work) before this c
  */
 function taskEndKey(ev: Extract<AgentEvent, { type: 'task_ended' }>): string {
   return ev.task.id
+}
+
+/** 一份在后台写的交接记录：拿一张快照（当时的交接记录和到第 upTo 轮为止的各轮）写，回来以后由 adoptBackground 换进去。 */
+interface BackgroundJob {
+  /** 快照里最后一轮的编号：换进去时，历史里编号比它大的轮原样接在后面。 */
+  upTo: number
+  /** 拍快照时历史的代数：换进去之前核对，变了就是历史被别的路径整个换过，这份不用。 */
+  generation: number
+  startedAt: number
+  /** 拍快照时这条线开过几轮（算“这期间跑了几轮”用）。 */
+  turnsAtStart: number
+  abort: AbortController
+  /** 回来了（写成、没写成、被停掉都算）就兑现，不会失败。 */
+  done: Promise<void>
+  /** 回来的结果；还没回来是 undefined。 */
+  result?: CompactResult
+  /** 开始调模型写了才有：写的是哪几轮。只用得着收拾、不用写的那种没有。 */
+  writing?: BackgroundCompaction
+  /** 这条线正在一轮的结尾等它回来（上下文过了硬上限）。 */
+  waited?: boolean
+}
+
+/** 后台写的那份回来以后，压缩的那几条日志里要多写的。 */
+interface BackgroundNote {
+  /** 没写成：多少分钟以后再在后台试。 */
+  retryMin?: number
+  /** 换进去了：从开始到换进去多少秒、这期间这条线跑了几轮（running：哪一轮正跑着）、接上了哪几轮新的、换之前之后上下文多大。 */
+  swapped?: { waitedSec: number; ran: number; running?: number; newer: readonly Turn[]; before: number; after: number }
+}
+
+/** 这个信号被打断时兑现（已经打断了就马上兑现）。 */
+function whenAborted(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
 }
 
 export class Agent {
@@ -461,6 +519,13 @@ export class Agent {
   private gauge: ContextGauge | undefined
   /** 面板上正在试写交接记录（不改历史的那种）：进程要停时打断它。 */
   private dryRun: AbortController | undefined
+  /** 在后台写的那份交接记录（一条线同时最多一份）。回来了、还没换进去的也在这里。 */
+  private bg: BackgroundJob | undefined
+  /** 后台写记录连着没写成几次；在这之前不再在后台试（timing.backgroundRetryMs）。 */
+  private bgFailures = 0
+  private bgRetryAt = 0
+  /** 这条线启动以来开过几轮。 */
+  private turnsStarted = 0
 
   constructor(deps: AgentDeps) {
     this.deps = deps
@@ -552,6 +617,9 @@ export class Agent {
     this.timer = undefined
     this.abort?.abort()
     this.dryRun?.abort()
+    // 后台正在写的交接记录停掉：不换进去、不落盘（下次启动一轮结束时还超阈值就重新写）
+    this.bg?.abort.abort()
+    this.bg = undefined
     // 正在跑的例程停下：它正等着的任务取消掉（等这次取消发出去，最多两秒），“它停在哪”排进下次启动要处理的事里
     if (this.routine?.stop('the brain was shut down or restarted', '大脑停了或者重启了')) {
       let giveUp: NodeJS.Timeout | undefined
@@ -840,7 +908,9 @@ export class Agent {
     }
     if (this.llmFailures > 0) model.outage = { failures: this.llmFailures, since: this.outageSince, nextRetryAt: this.nextRetryAt, lastError: this.lastFailureText }
     if (this.lastCall) model.lastCall = this.lastCall
-    return { agent: this.line, model, turn: this.turnNow ? { ...this.turnNow } : null, pending: this.pending.length, botOnline: this.shared.online }
+    const writing = this.bg?.result === undefined ? this.bg?.writing : undefined
+    const compacting = writing ? { ...writing, ...(this.bg?.waited === true ? { waiting: true as const } : {}) } : undefined
+    return { agent: this.line, model, turn: this.turnNow ? { ...this.turnNow } : null, pending: this.pending.length, botOnline: this.shared.online, ...(compacting ? { compacting } : {}) }
   }
 
   /** 这条线现在在干什么，细到这一轮最近几步（worker_status、对话线状态里讲干活线的那几行用）。 */
@@ -917,9 +987,9 @@ export class Agent {
     return this.isIdle()
   }
 
-  /** 没有正在跑的一轮、也没有排着队的事时兑现。测试用。 */
+  /** 没有正在跑的一轮、也没有排着队的事、后台也没有在写的交接记录时兑现。测试用。 */
   whenIdle(): Promise<void> {
-    if (this.isIdle()) return Promise.resolve()
+    if (this.isIdle() && this.bg === undefined) return Promise.resolve()
     return new Promise((resolve) => this.idleWaiters.push(resolve))
   }
 
@@ -934,7 +1004,7 @@ export class Agent {
   }
 
   private notifyIdle(): void {
-    if (!this.isIdle()) return
+    if (!this.isIdle() || this.bg !== undefined) return
     const waiters = this.idleWaiters
     this.idleWaiters = []
     for (const w of waiters) w()
@@ -987,6 +1057,8 @@ export class Agent {
       this.turnSaidSent.clear()
       this.persist()
       for (const w of this.turnWaiters.splice(0)) w()
+      // 后台写的交接记录在这一轮的最后一步之后才回来：这条线空下来了，现在换进去
+      this.adoptBackground()
       this.schedule()
       this.notifyIdle()
       const ended = this.turnEnded
@@ -1044,9 +1116,12 @@ export class Agent {
       return
     }
 
+    // 后台写的交接记录回来了就先换进去，这一轮从头用新的历史
+    this.adoptBackground()
     this.abort = new AbortController()
     const signal = this.abort.signal
     const turnId = this.deps.history.newTurnId()
+    this.turnsStarted++
     // 提醒到点叫醒的是对话线，干活线的状态里不列
     // 状态里只列这条线自己定的提醒（到点叫醒的是定它的那条线）
     const snapshot = await buildSnapshot(this.deps.bridge, settings.botName, this.deps.reminders.list().filter((r) => (r.line ?? 'talk') === this.line), startedAt, this.deps.todo?.list() ?? [])
@@ -1162,6 +1237,8 @@ export class Agent {
         break
       }
       if (steps > 0) absorbArrivals()
+      // 后台写的交接记录回来了：从这一步起用新的历史。这一轮自己的消息不在历史里，不受影响
+      if (this.adoptBackground()) prior = this.priorMessages()
 
       let result: GenerateResult
       try {
@@ -1332,7 +1409,7 @@ export class Agent {
       // 告诉上层要等这一轮连收尾（压缩历史）都做完、它真的闲下来以后（startTurn 的 finally）
       this.turnEnded = { id: turnId, triggers }
     }
-    await this.maybeCompact(this.compactor(llm, turnId), settings, signal)
+    await this.maybeCompact(llm, settings, signal, turnId)
   }
 
   /**
@@ -1349,9 +1426,12 @@ export class Agent {
     return parts.length > 0 ? parts.join('；') : undefined
   }
 
-  /** 压缩历史用的模型：和一轮里的调用走同一条路，这样它也有一条 model_call 日志、也算进“正在想”。 */
-  private compactor(llm: LlmClient, turn?: number): LlmClient {
-    return { generate: (req) => this.callModel(llm, req, { purpose: 'compact', ...(turn !== undefined ? { turn } : {}) }) }
+  /**
+   * 压缩历史用的模型：和一轮里的调用走同一条路，这样它也有一条 model_call 日志、也算进“正在想”。
+   * background：在后台写的——只记那条日志，不算进这条线的“正在想”，也不动它的最近一次调用和接口故障的记录（这条线同时在跑自己的一轮）。
+   */
+  private compactor(llm: LlmClient, turn?: number, background = false): LlmClient {
+    return { generate: (req) => this.callModel(llm, req, { purpose: 'compact', ...(turn !== undefined ? { turn } : {}), ...(background ? { background } : {}) }) }
   }
 
   private priorMessages(): Message[] {
@@ -1367,15 +1447,17 @@ export class Agent {
    * 调一次模型。每一次在对话日志里是一条 model_call：开始想的时候就记下（面板上看得到“正在想第几步”），
    * 回来或者出错时原地改成结果（用时、token、缓存命中、怎么结束的）。
    */
-  private async callModel(llm: LlmClient, req: GenerateRequest, at: { purpose: 'turn' | 'compact'; turn?: number; step?: number }): Promise<GenerateResult> {
+  private async callModel(llm: LlmClient, req: GenerateRequest, at: { purpose: 'turn' | 'compact'; turn?: number; step?: number; background?: boolean }): Promise<GenerateResult> {
     const started = performance.now()
     const startedAt = this.now()
+    // 在后台写交接记录的调用只记日志，不动这条线自己的这几项（它同时在跑自己的一轮）
+    const own = at.background !== true
     const where = { ...(at.turn !== undefined ? { turn: at.turn } : {}), ...(at.step !== undefined ? { step: at.step } : {}) }
     const begun: ActivityModelCall = { state: 'thinking', purpose: at.purpose, startedAt, ...(at.step !== undefined ? { step: at.step } : {}) }
     const entry = this.log.add({ kind: 'model_call', ...where, text: modelCallText(begun), call: begun })
-    this.thinking = { ...where, since: startedAt, purpose: at.purpose }
+    if (own) this.thinking = { ...where, since: startedAt, purpose: at.purpose }
     const settle = (end: Partial<ActivityModelCall>): void => {
-      this.thinking = undefined
+      if (own) this.thinking = undefined
       const call: ActivityModelCall = { ...begun, ...end, ms: Math.round(performance.now() - started) }
       const patch = { text: modelCallText(call), call, ...(call.state === 'failed' ? { isError: true } : {}) }
       // 那一条已经滚出内存（不大可能：一次调用就几十秒）就另记一条，结果不能丢
@@ -1395,6 +1477,7 @@ export class Agent {
         stop: result.stopReason === 'max_tokens' ? 'truncated' : asked > 0 || result.stopReason === 'tool_use' ? 'tool_calls' : result.stopReason === 'end' ? 'end' : 'other',
         toolCalls: asked,
       })
+      if (!own) return result
       this.lastCall = {
         time: this.now(),
         ok: true,
@@ -1420,9 +1503,10 @@ export class Agent {
     } catch (e) {
       const kind = e instanceof LlmError ? e.kind : 'unknown'
       // 被叫停打断的（全部停下）不是出错：照实写成被叫停。大脑进程要停时中止的还是记成中止
-      if (kind === 'aborted' && this.halting) settle({ state: 'halted', stop: 'halted' })
-      else settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? '大脑在停，这次调用被中止了' : errorText(e) })
-      if (kind !== 'aborted') {
+      // 后台写的不受叫停影响，它被中止只有两种可能：大脑在停，或者模型说上下文太长、改成了就地压
+      if (kind === 'aborted' && this.halting && own) settle({ state: 'halted', stop: 'halted' })
+      else settle({ state: 'failed', stop: 'error', errorKind: kind, error: kind === 'aborted' ? (own ? '大脑在停，这次调用被中止了' : '后台写的这份交接记录停掉了（大脑在停，或者模型说上下文太长、改成了就地压）') : errorText(e) })
+      if (kind !== 'aborted' && own) {
         this.lastCall = {
           time: this.now(),
           ok: false,
@@ -1514,28 +1598,169 @@ export class Agent {
     return { threshold: settings.historyTokenThreshold, talk: this.line === 'talk', gauge: this.gauge, ...(this.textNotSaidSince !== undefined ? { textSaidBefore: this.textNotSaidSince } : {}) }
   }
 
-  private async maybeCompact(llm: LlmClient, settings: AgentSettings, signal: AbortSignal): Promise<void> {
+  /**
+   * 一轮结束时：上下文超过这条线的阈值就压历史。默认在后台写（startBackground），这条线照常接下一轮；
+   * 上下文过了硬上限（阈值 × HARD_LIMIT_SHARE）就不再照常接：后台有在写的那份就等它回来，没有就就地压。
+   * 后台没写成以后隔一阵（timing.backgroundRetryMs）才再在后台试。开关关着（limits.backgroundCompaction）时照原来的做法就地压。
+   */
+  private async maybeCompact(llm: LlmClient, settings: AgentSettings, signal: AbortSignal, turnId: number): Promise<void> {
+    if (this.stopped) return
+    this.adoptBackground()
+    const threshold = settings.historyTokenThreshold
+    const hard = Math.round(threshold * HARD_LIMIT_SHARE)
+    const job = this.bg
+    if (job) {
+      // 后台那份还没回来：没过硬上限就照常接下一轮（一条线同时最多一份）
+      const tokens = this.contextTokens()
+      if (tokens <= hard) return
+      this.log.add({ kind: 'info', turn: turnId, text: `上下文约 ${tokens} token，超过了阈值的 ${HARD_LIMIT_SHARE} 倍（${hard} token），后台那份交接记录还没写完：这条线等它回来再接下一轮。` })
+      job.waited = true
+      try {
+        await Promise.race([job.done, whenAborted(signal)])
+      } finally {
+        job.waited = false
+      }
+      // 等的时候被叫停了、或者大脑在停：不等了（叫停不影响后台那份，它回来时这条线空着就当场换进去）
+      if (signal.aborted || this.stopped) return
+      this.adoptBackground()
+    }
+    if (settings.backgroundCompaction === false) {
+      await this.compactInPlace(llm, settings, signal, turnId)
+      return
+    }
+    const tokens = this.contextTokens()
+    if (tokens <= threshold) return
+    if (tokens > hard) {
+      const waiting = this.now() < this.bgRetryAt ? '（上次在后台没写成，还没到再试的时候）' : ''
+      this.log.add({ kind: 'info', turn: turnId, text: `上下文约 ${tokens} token，超过了阈值的 ${HARD_LIMIT_SHARE} 倍（${hard} token），后台没有在写的交接记录${waiting}：就地压，写完再接下一轮。` })
+      await this.compactInPlace(llm, settings, signal, turnId)
+      return
+    }
+    if (this.now() < this.bgRetryAt) return
+    this.startBackground(llm, settings, turnId)
+  }
+
+  /** 就地压：写完才接下一轮（写的时候 running 还是 true，这条线不开新的一轮）。 */
+  private async compactInPlace(llm: LlmClient, settings: AgentSettings, signal: AbortSignal, turnId: number): Promise<void> {
     const h = this.deps.history.get()
-    const res = await compactHistory(h.summary, h.turns, { ...this.compactOptions(settings), llm, signal })
+    const res = await compactHistory(h.summary, h.turns, { ...this.compactOptions(settings), llm: this.compactor(llm, turnId), signal })
     if (res.action !== 'nothing') this.deps.history.replace(res.summary, res.turns, res.folded)
+    // 写成了：模型写得了，后台没写成的那个退避从头数
+    if (res.action === 'summarized' && res.error === undefined) {
+      this.bgFailures = 0
+      this.bgRetryAt = 0
+    }
     this.logCompaction(res, 'threshold')
   }
 
-  /** 压缩做了什么，照实记进活动日志：第一步收拾了多少、换了哪几轮、调了几次模型、哪里没成。 */
-  private logCompaction(res: CompactResult, why: 'threshold' | 'overflow' | 'panel'): void {
+  /**
+   * 在后台写交接记录：拍一张快照（现在的交接记录和到最后一轮第 N 轮为止的各轮），拿它跑 compactHistory。
+   * 不占这条线（不设 running，和面板上的试写一样），它照常接下一轮；写不成也不丢轮。回来以后由 adoptBackground 换进去。
+   */
+  private startBackground(llm: LlmClient, settings: AgentSettings, turnId: number): void {
+    const h = this.deps.history.get()
+    const last = h.turns[h.turns.length - 1]
+    if (!last || this.bg || this.stopped) return
+    // 历史里的轮数组之后还会往后加（appendTurn），快照要自己的一份
+    const summary = h.summary
+    const turns = [...h.turns]
+    const tokens = this.contextTokens()
+    const job: BackgroundJob = { upTo: last.id, generation: this.deps.history.generation(), startedAt: this.now(), turnsAtStart: this.turnsStarted, abort: new AbortController(), done: Promise.resolve() }
+    this.bg = job
+    const wrote = compactHistory(summary, turns, {
+      ...this.compactOptions(settings),
+      llm: this.compactor(llm, turnId, true),
+      signal: job.abort.signal,
+      noDrop: true,
+      onSummarize: (range: TurnRange) => {
+        job.writing = { from: range.from, to: range.to, turns: range.turns, upTo: last.id, since: this.now() }
+        this.log.add({
+          kind: 'info',
+          turn: turnId,
+          text: `历史超过了阈值（上下文约 ${tokens} token）：开始在后台把较早的 ${range.turns} 轮（第 ${range.from} 轮到第 ${range.to} 轮）写成交接记录，这条线照常接着跑。写回来以后在下一次调模型之前换进去，第 ${last.id} 轮以后的轮原样接在后面。`,
+        })
+      },
+    })
+    job.done = wrote
+      .then(
+        (res) => {
+          job.result = res
+        },
+        (e: unknown) => {
+          job.result = { summary, turns, action: 'nothing', removedTurns: 0, error: errorText(e), recentTurns: turns.length, tokensBefore: tokens, tokensAfter: tokens }
+        },
+      )
+      .then(() => {
+        // 这条线空着就当场换进去；在跑一轮的话等它下一次调模型之前（或者这一轮收尾时）再换
+        if (this.bg === job && !this.running) this.adoptBackground()
+        this.notifyIdle()
+      })
+  }
+
+  /**
+   * 后台写的那份回来了就换进去。调它的地方都是这条线此刻没有拿着历史在用的时候：一轮里每次调模型之前、一轮的开头和收尾、
+   * 这条线空着时它一回来。换之前核对历史的代数：变了就是历史被别的路径整个换过（面板清空、别处压过），这份不用。
+   * 新的历史 = 写回来的交接记录 + 快照里没被换掉的轮（可能被收拾过）+ 现在历史里第 N 轮以后的轮（原样、按顺序）。
+   * 一轮都没写成时历史不动。换了返回 true（拿着历史的要重新取）。
+   */
+  private adoptBackground(): boolean {
+    const job = this.bg
+    if (!job || job.result === undefined || this.stopped) return false
+    this.bg = undefined
+    const res = job.result
+    const waitedSec = Math.round((this.now() - job.startedAt) / 1000)
+    if (this.deps.history.generation() !== job.generation) {
+      this.log.add({ kind: 'info', text: `后台写的交接记录没有用：写的这 ${waitedSec} 秒里这条线的历史被别的路径整个换过（面板上清空了历史，或者别处压过一次），这一份是照换之前的历史写的。历史照现在的样子，没动。` })
+      return false
+    }
+    let retryMin: number | undefined
+    if (res.error !== undefined) {
+      // 没写成（整个或者后半）：隔一阵再在后台试，不每轮都重试同样贵的调用
+      this.bgFailures++
+      const delays = this.timing.backgroundRetryMs
+      const delay = delays[Math.min(this.bgFailures - 1, delays.length - 1)] ?? 0
+      this.bgRetryAt = this.now() + delay
+      retryMin = Math.round(delay / 60_000)
+    } else if (res.action === 'summarized') {
+      this.bgFailures = 0
+      this.bgRetryAt = 0
+    }
+    if (res.action === 'nothing' || (res.error !== undefined && !res.folded)) {
+      if (res.error !== undefined) this.logCompaction(res, 'background', { ...(retryMin !== undefined ? { retryMin } : {}) })
+      return false
+    }
+    const h = this.deps.history.get()
+    const newer = h.turns.filter((t) => t.id > job.upTo)
+    const before = this.contextTokens()
+    this.deps.history.replace(res.summary, [...res.turns, ...newer], res.folded)
+    this.logCompaction(res, 'background', {
+      ...(retryMin !== undefined ? { retryMin } : {}),
+      swapped: { waitedSec, ran: this.turnsStarted - job.turnsAtStart, ...(this.turnNow ? { running: this.turnNow.id } : {}), newer, before, after: this.contextTokens() },
+    })
+    return true
+  }
+
+  /** 压缩做了什么，照实记进活动日志：第一步收拾了多少、换了哪几轮、调了几次模型、哪里没成。background 时 bg 是后台那份要多写的。 */
+  private logCompaction(res: CompactResult, why: 'threshold' | 'overflow' | 'panel' | 'background', bg: BackgroundNote = {}): void {
     const range = (r: { from: number; to: number; turns: number }): string => `较早的 ${r.turns} 轮（第 ${r.from} 轮到第 ${r.to} 轮）`
-    const cause = why === 'threshold' ? `历史超过了阈值（上下文约 ${res.tokensBefore} token）` : why === 'overflow' ? '模型说上下文太长' : '面板上要求现在就压'
+    const cause =
+      why === 'threshold' ? `历史超过了阈值（上下文约 ${res.tokensBefore} token）` : why === 'overflow' ? '模型说上下文太长' : why === 'panel' ? '面板上要求现在就压' : `历史超过了阈值（上下文约 ${res.tokensBefore} token），在后台压`
+    // 后台那份一轮都没写成时什么都没换进去，收拾的那一步也不算
+    const tidied = why === 'background' && !bg.swapped ? undefined : res.tidied
     // 第一步：截短旧的工具结果、拿掉旧的状态快照。动了东西就记一条，不悄悄做
-    if (res.tidied) {
-      const t = res.tidied
+    if (tidied) {
+      const t = tidied
       const did = [t.results > 0 ? `截短了 ${t.results} 条旧的工具结果` : '', t.states > 0 ? `拿掉了 ${t.states} 段旧的状态快照（每轮开头那段“当前状态”）` : ''].filter((x) => x.length > 0)
       this.log.add({ kind: 'info', text: `${cause}，先收拾最近 ${res.recentTurns} 轮以外的：${did.join('，')}。历史从 ${t.charsBefore} 字符变成 ${t.charsAfter} 字符。` })
     }
-    const first = res.tidied ? (why === 'panel' ? '收拾完' : '收拾完还是太长') : cause
+    const first = tidied ? (why === 'panel' ? '收拾完' : '收拾完还是太长') : cause
     const cost = res.calls !== undefined ? `写它调了 ${res.calls} 次模型${res.inputChars !== undefined ? `、给它看了 ${res.inputChars} 字符` : ''}${res.ms !== undefined ? `、等了 ${Math.round(res.ms / 1000)} 秒` : ''}` : ''
-    const now = `上下文从约 ${res.tokensBefore} token 变成约 ${res.tokensAfter} token`
+    // 后台的：换进去时历史里已经多了这期间的轮，前后各多大按换的那一刻量
+    const sw = bg.swapped
+    const now = `上下文从约 ${sw ? sw.before : res.tokensBefore} token 变成约 ${sw ? sw.after : res.tokensAfter} token`
+    const later = why === 'background' ? `${bg.retryMin ?? '?'} 分钟以后再在后台试` : '留到下一轮再试'
     if (res.action === 'summarized' && res.folded) {
-      const partly = res.error ? `；后面还有该换的没写成（${res.error}），留到下一轮再试` : ''
+      const partly = res.error ? `；后面还有该换的没写成（${res.error}），${later}` : ''
       this.log.add({
         kind: res.error ? 'error' : 'info',
         text: `${first}，把${range(res.folded)}换成了交接记录（${res.summary.length} 字符，上限 ${res.capChars ?? '?'}），${cost}${partly}。${now}。`,
@@ -1544,8 +1769,16 @@ export class Agent {
     } else if (res.action === 'dropped' && res.discarded) {
       const kept = res.folded ? `${range(res.folded)}换成了交接记录；` : ''
       this.log.add({ kind: 'error', text: `${first}，交接记录没写成（${res.error ?? '未知原因'}；${cost}）：${kept}${range(res.discarded)}没写成记录，从历史里直接丢掉了（活动日志里还有）。${now}。`, detail: res.summary })
+    } else if (res.error && why === 'background') {
+      this.log.add({ kind: 'error', text: `后台写的交接记录没写成：${res.error}（${cost}）。历史没动，没有丢掉任何一轮；${later}，在那之前上下文超过阈值的 ${HARD_LIMIT_SHARE} 倍就就地压。` })
     } else if (res.error) {
       this.log.add({ kind: 'error', text: `${first}，该写交接记录了，但没写成：${res.error}（${cost}）。${why === 'panel' ? '历史没动。' : '下一轮再试。'}` })
+    }
+    // 后台写的换进去了：等了多久、这期间这条线跑了几轮、接上了哪几轮新的
+    if (sw && res.folded) {
+      const newer = sw.newer.length > 1 ? `（第 ${sw.newer[0]!.id} 轮到第 ${sw.newer[sw.newer.length - 1]!.id} 轮）` : sw.newer.length === 1 ? `（第 ${sw.newer[0]!.id} 轮）` : ''
+      const running = sw.running !== undefined ? `（第 ${sw.running} 轮正跑着，从它的下一步起用新的历史）` : ''
+      this.log.add({ kind: 'info', text: `这份交接记录是在后台写的：从开始写到换进去 ${sw.waitedSec} 秒，这期间这条线照常跑了 ${sw.ran} 轮${running}；换进去时把这期间新记进历史的 ${sw.newer.length} 轮${newer}原样接在了后面。` })
     }
     // 它写记录之前打的草稿不存进历史，留在日志里给人看它是怎么想的
     if (res.analysis && res.analysis.length > 0) {
@@ -1556,6 +1789,13 @@ export class Agent {
 
   /** 模型明确说上下文超长时用：不看阈值，留最近那一段，把更早的压到现在的一半上下；写不成记录就丢。 */
   private async forceCompact(llm: LlmClient, signal: AbortSignal): Promise<void> {
+    // 后台写好了还没换进去的先换进去；还在写的停掉（等不起，它也是照之前的历史写的），改成下面就地压
+    this.adoptBackground()
+    if (this.bg) {
+      this.bg.abort.abort()
+      this.bg = undefined
+      this.log.add({ kind: 'info', text: '后台正在写的那份交接记录停掉了：模型说上下文太长，改成就地压。' })
+    }
     const h = this.deps.history.get()
     if (h.turns.length === 0 && h.summary.length === 0) return
     const res = await compactHistory(h.summary, h.turns, { ...this.compactOptions(this.deps.settings()), llm, signal, mode: 'overflow' })
@@ -1575,12 +1815,14 @@ export class Agent {
   /**
    * 现在就把这条线的历史写成交接记录（面板的接口）：不看阈值，最近那一段以外的全部换掉。
    * dryRun：只写不存——历史不动，返回它会写成什么（试提示词用）；这时不占这条线，它正在跑一轮也能试。
-   * 不带 dryRun 的要等这条线停下来：它正在跑一轮时不做，如实说。
+   * 不带 dryRun 的要等这条线停下来：它正在跑一轮、或者后台正在写一份交接记录时不做，如实说。
    */
   async compactNow(opts: { dryRun?: boolean } = {}): Promise<CompactNowResult> {
     const dryRun = opts.dryRun === true
     const llm = this.deps.llm()
     if (!llm) return { ok: false, reason: 'no_model', message: `${this.line === 'talk' ? '对话线' : '干活线'}还没有可用的模型，写不了交接记录` }
+    // 后台写的那份回来了、这条线又空着：先换进去（它一回来就会换，这里是保底），下面试写、真压都照换过的历史
+    if (!this.running) this.adoptBackground()
     const h = this.deps.history.get()
     const base = { ...this.compactOptions(this.deps.settings()), mode: 'all' as const }
     const view = (res: CompactResult, applied: boolean): CompactNowResult => ({
@@ -1615,6 +1857,8 @@ export class Agent {
         this.dryRun = undefined
       }
     }
+    // 一条线同时最多一份在写：后台那份回来以前不再压
+    if (this.bg) return { ok: false, reason: 'busy', message: `${this.line === 'talk' ? '对话线' : '干活线'}后台正在写一份交接记录，等它回来再压（或者带 dryRun 只试不存）` }
     if (this.running) return { ok: false, reason: 'busy', message: `${this.line === 'talk' ? '对话线' : '干活线'}正在跑一轮，等它停下来再压（或者带 dryRun 只试不存）` }
     // 占住这条线：写记录的这段时间里不开新的一轮
     this.running = true

@@ -197,6 +197,8 @@ export async function panelStatus(deps: StatusDeps, now: number): Promise<unknow
       turn: state.turn,
       pending: state.pending,
       ...(history ? { history } : {}),
+      // 后台正在写的交接记录：写的是第几轮到第几轮、快照到第几轮为止、什么时候开始的；没有是 null
+      compacting: state.compacting ?? null,
     }
   }
   const links = deps.agent.linkState?.() ?? {}

@@ -63,6 +63,8 @@ export class HistoryStore {
   private readonly file: string
   private readonly ids: TurnIds | undefined
   private state: HistoryState = { summary: '', turns: [], nextTurnId: 1 }
+  /** 代数：历史被整体换掉（replace、clear）一次加一；记一轮（appendTurn）不算。不落盘。 */
+  private changes = 0
 
   /**
    * file：历史落在数据目录的哪个文件（默认 history.json，干活线的；对话线是 talk-history.json）。
@@ -101,6 +103,14 @@ export class HistoryStore {
     return this.state
   }
 
+  /**
+   * 这份历史的代数。两次读到的一样，就是这期间只在后面记过新的轮，前面的没被换过、清过
+   * （后台写的交接记录换进去之前拿它核对）。
+   */
+  generation(): number {
+    return this.changes
+  }
+
   newTurnId(): number {
     if (!this.ids) return this.state.nextTurnId++
     const id = this.ids.next()
@@ -130,11 +140,13 @@ export class HistoryStore {
     else if (before) summaryOf = { from: before.from, to: folded.to, turns: before.turns + folded.turns, ...(before.unknownBefore ? { unknownBefore: true } : {}) }
     else summaryOf = { ...folded, ...(hadSummary ? { unknownBefore: true } : {}) }
     this.state = { summary, ...(summaryOf ? { summaryOf } : {}), turns, nextTurnId: this.state.nextTurnId }
+    this.changes++
     this.save()
   }
 
   clear(): void {
     this.state = { summary: '', turns: [], nextTurnId: this.state.nextTurnId }
+    this.changes++
     this.save()
   }
 
