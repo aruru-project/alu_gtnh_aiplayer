@@ -1,4 +1,4 @@
-// 对着真实 mod 的联调：模拟模型服务（按脚本回应）+ 真实启动的大脑进程 + 测试服的 bridge（127.0.0.1:25591）。
+// 对着真实 mod 的联调：模拟模型服务（按脚本回应）+ 真实启动的大脑进程 + 测试服的 bridge（127.0.0.1:25591，另一份检出的测试服见 live-brain.ts）。
 // 两条线各接一个模拟模型服务：脚本写的是干活线（它操作身体）；对话线接的是只传话的那个（mock-llm.ts 的 talkRelay）——
 // 面板和悄悄话发来的话它原样交给干活线，干活线停下来留的话、提问它用 say 在公共聊天里说出去（脚本里干活线做完一件事就停下留一句话）。
 //
@@ -14,22 +14,18 @@
 // 只连测试服的 bridge；正式服的端口写死在 ports.ts 里，一律拒绝。不使用任何真实的模型接口。
 
 import assert from 'node:assert/strict'
-import { execFile, spawn } from 'node:child_process'
-import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { BridgeApi } from '../src/bridge/api.ts'
 import { BridgeClient } from '../src/bridge/client.ts'
 import type { BotStatus, BridgeEvent, ScanResult, TaskInfo } from '../src/bridge/protocol.ts'
+import { REPO_ROOT, TESTSERVER_BRIDGE_PORT, TOKEN_FILE, lastTurnText, rcon, run, say, sleep, stamp, startBrain, until } from './live-brain.ts'
+import type { Step } from './live-brain.ts'
 import { MockLlm, talkRelay } from './mock-llm.ts'
 import type { MockReply, RecordedLlmRequest } from './mock-llm.ts'
 import { RESERVED_PORTS } from './ports.ts'
 
-const BRAIN_ROOT = path.resolve(import.meta.dirname, '..')
-const REPO_ROOT = path.resolve(BRAIN_ROOT, '..')
-const TESTSERVER_BRIDGE_PORT = 25591
-const TOKEN_FILE = path.join(REPO_ROOT, 'testserver', 'config', 'aiplayer', 'bridge-token.txt')
 const BOT = process.env.LIVE_BOT ?? 'Alu'
 /** give_items 的对象：另一个在线的 bot（测试服上没有真人）。只往它脚边扔几个雪球，别的不动它。 */
 const OTHER = process.env.LIVE_OTHER_BOT ?? 'Scout'
@@ -46,101 +42,6 @@ const ARGS = process.argv.slice(2)
 const RESTART_SERVER = ARGS.includes('--restart-server')
 const ONLY = ARGS.includes('--only') ? (ARGS[ARGS.indexOf('--only') + 1] ?? '').split(',').filter(Boolean) : []
 const TRANSCRIPT = ARGS.includes('--transcript') ? ARGS[ARGS.indexOf('--transcript') + 1] : undefined
-
-// ── 小工具 ──
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-const stamp = () => new Date().toTimeString().slice(0, 8)
-const say = (line: string) => console.log(`${stamp()} ${line}`)
-
-async function until<T>(what: string, probe: () => T | undefined | false | null | Promise<T | undefined | false | null>, timeoutMs: number, intervalMs = 150): Promise<T> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const value = await probe()
-    if (value) return value
-    if (Date.now() > deadline) throw new Error(`等了 ${Math.round(timeoutMs / 1000)} 秒也没等到：${what}`)
-    await sleep(intervalMs)
-  }
-}
-
-function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, cwd: REPO_ROOT }, (err, stdout, stderr) => {
-      resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, out: `${stdout}${stderr}`.trim() })
-    })
-  })
-}
-
-const rcon = (command: string) => run(path.join(REPO_ROOT, 'tools', 'testserver'), ['rcon', command], 15_000)
-
-// ── 模拟模型：从请求里取出“最后给模型看的内容”，两种线格式都认 ──
-
-function lastTurnText(req: RecordedLlmRequest): string {
-  const messages: any[] = Array.isArray(req.body?.messages) ? req.body.messages : []
-  if (req.api === 'openai') {
-    const tail: string[] = []
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.role !== 'tool' && m.role !== 'user') break
-      tail.unshift(typeof m.content === 'string' ? m.content : '')
-    }
-    return tail.join('\n')
-  }
-  const last = messages[messages.length - 1]
-  const blocks: any[] = Array.isArray(last?.content) ? last.content : []
-  return blocks.map((b) => (b.type === 'text' ? b.text : b.type === 'tool_result' ? String(b.content) : '')).join('\n')
-}
-
-type Step = MockReply | ((text: string, req: RecordedLlmRequest) => MockReply)
-
-// ── 大脑进程 ──
-
-interface Brain {
-  child: ChildProcess
-  output: () => string
-  exited: Promise<number | null>
-  origin: string
-  call: (method: string, route: string, body?: unknown) => Promise<any>
-}
-
-async function startBrain(dataDir: string, password?: string): Promise<Brain> {
-  const env = { ...process.env }
-  delete env.NODE_USE_ENV_PROXY
-  const child = spawn(process.execPath, ['src/main.ts'], {
-    cwd: BRAIN_ROOT,
-    env: {
-      ...env,
-      AIPLAYER_DATA_DIR: dataDir,
-      AIPLAYER_PANEL_HOST: '127.0.0.1',
-      AIPLAYER_PANEL_PORT: '0',
-      AIPLAYER_BRIDGE_HOST: '127.0.0.1',
-      AIPLAYER_BRIDGE_PORT: String(TESTSERVER_BRIDGE_PORT),
-      AIPLAYER_BRIDGE_TOKEN_FILE: TOKEN_FILE,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let out = ''
-  child.stdout!.on('data', (d: Buffer) => (out += d.toString()))
-  child.stderr!.on('data', (d: Buffer) => (out += d.toString()))
-  const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)))
-  const origin = await until('大脑打印面板地址', () => /面板地址：(http:\/\/127\.0\.0\.1:\d+)\//.exec(out)?.[1], 15_000)
-  const pw = password ?? (await until('大脑打印面板口令', () => /已生成面板访问口令：(\S+)/.exec(out)?.[1], 5000))
-  let cookie = ''
-  const call = async (method: string, route: string, body?: unknown) => {
-    const res = await fetch(`${origin}/api${route}`, {
-      method,
-      headers: { ...(cookie ? { cookie } : {}), ...(method !== 'GET' ? { origin, 'content-type': 'application/json' } : {}) },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    })
-    const json: any = await res.json().catch(() => undefined)
-    if (!res.ok) throw new Error(`面板 ${method} ${route} → ${res.status} ${JSON.stringify(json)}`)
-    const set = res.headers.getSetCookie()[0]
-    if (set) cookie = set.split(';')[0]!
-    return json
-  }
-  await call('POST', '/login', { password: pw })
-  return { child, output: () => out, exited, origin, call }
-}
 
 // ── 主流程 ──
 

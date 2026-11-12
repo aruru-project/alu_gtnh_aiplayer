@@ -5,7 +5,8 @@
   bridge.py listen [seconds]                   prints events as they arrive
   bridge.py wait-task <bot> [seconds]          waits until the bot has no active or queued task, prints the last result
 
-Defaults target the local test instance; override with AIPLAYER_BRIDGE_PORT / AIPLAYER_BRIDGE_TOKEN_FILE.
+Defaults target the local test instance (its bridge port is AIPLAYER_TEST_BRIDGE_PORT when tools/local.env sets
+one, as tools/testserver does); override with AIPLAYER_BRIDGE_PORT / AIPLAYER_BRIDGE_TOKEN_FILE.
 """
 import json
 import os
@@ -14,7 +15,24 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = int(os.environ.get("AIPLAYER_BRIDGE_PORT", "25591"))
+
+
+def _local_env(key):
+    """A value from the environment, else from tools/local.env (plain KEY=value lines)."""
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        with open(os.path.join(ROOT, "tools", "local.env"), encoding="utf-8") as fh:
+            for line in fh:
+                name, _, value = line.strip().partition("=")
+                if name == key and value:
+                    return value.strip().strip('"')
+    except OSError:
+        pass
+    return None
+
+
+PORT = int(os.environ.get("AIPLAYER_BRIDGE_PORT") or _local_env("AIPLAYER_TEST_BRIDGE_PORT") or "25591")
 TOKEN_FILE = os.environ.get(
     "AIPLAYER_BRIDGE_TOKEN_FILE", os.path.join(ROOT, "testserver", "config", "aiplayer", "bridge-token.txt")
 )

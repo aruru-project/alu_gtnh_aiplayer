@@ -89,6 +89,20 @@ AIPLAYER_SOURCE_INSTANCE=/path/to/your/server/instance      # tools/testserver s
 AIPLAYER_CLIENT_PACK=/path/to/GTNH-2.9.0-client.zip          # tools/client setup 用的客户端整合包
 ```
 
+同一台机器上的另一份检出（git worktree）要开自己的测试服和大脑，在它自己的 `tools/local.env` 里另给端口和 systemd 单元名，两套可以同时开：
+
+```bash
+AIPLAYER_TEST_GAME_PORT=10286          # tools/testserver：游戏、RCON、bridge 的端口和 systemd 单元名
+AIPLAYER_TEST_RCON_PORT=25577
+AIPLAYER_TEST_BRIDGE_PORT=25592
+AIPLAYER_TEST_UNIT=aiplayer-testserver-wear
+AIPLAYER_BRAIN_UNIT=aiplayer-brain-test-wear    # tools/brain：单元名、面板端口、本地资料在哪
+AIPLAYER_BRAIN_PANEL_PORT=28770
+AIPLAYER_BRAIN_PACKDATA=/path/to/brain/packdata
+```
+
+端口在 `tools/testserver setup` 时写进实例；`tools/bridge.py` 和大脑的联调脚本也读这里的 bridge 端口。
+
 大脑的开发和运行见 [brain/README.md](brain/README.md)。
 
 ## 部署到正式服

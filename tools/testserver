@@ -8,9 +8,11 @@ TS="$ROOT/testserver"
 # Where things are on this machine: tools/local.env (not in git), or the environment.
 [[ -f $ROOT/tools/local.env ]] && { set -a; source "$ROOT/tools/local.env"; set +a; }
 SOURCE=${AIPLAYER_SOURCE_INSTANCE:-}
-GAME_PORT=10186
-RCON_PORT=25576
-BRIDGE_PORT=25591
+# A second checkout (a git worktree) runs its own instance next to the first one: it sets other ports and
+# another unit name in its tools/local.env. The ports are written into the instance by setup.
+GAME_PORT=${AIPLAYER_TEST_GAME_PORT:-10186}
+RCON_PORT=${AIPLAYER_TEST_RCON_PORT:-25576}
+BRIDGE_PORT=${AIPLAYER_TEST_BRIDGE_PORT:-25591}
 MEMORY=${AIPLAYER_TEST_MEMORY:-6G}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -18,7 +20,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # The server runs as its own systemd user unit, not as a child of whatever shell started it: a process left
 # behind by a shell belongs to that shell's service and is killed with it (an agent host restarting took the
 # server down that way, without a save).
-UNIT=aiplayer-testserver
+UNIT=${AIPLAYER_TEST_UNIT:-aiplayer-testserver}
 
 pid() { local p; p=$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || true); [[ -n $p && $p != 0 ]] && echo "$p" || true; }
 running() { systemctl --user is-active --quiet "$UNIT"; }
@@ -33,6 +35,7 @@ setup() {
         --exclude '/World*' --exclude '/logs' --exclude '/backups' --exclude '/journeymap' \
         --exclude '/visualprospecting' --exclude '/crash-reports' --exclude '/manager-jvm.conf' \
         --exclude '/.gtnh-version' --exclude '/usercache.json' --exclude '/usernamecache.json' \
+        --exclude '/mods/aiplayer*.jar' \
         "$SOURCE/" "$TS/"
     local props="$TS/server.properties" pass
     pass=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
@@ -57,7 +60,8 @@ install() {
     local jar
     jar=$(ls -t "$ROOT"/mod/build/libs/*.jar 2>/dev/null | grep -vE -- '-(dev|sources|javadoc)\.jar$' | head -1 || true)
     [[ -n $jar ]] || die "no built jar in mod/build/libs; run tools/gradle build"
-    rm -f "$TS"/mods/aiplayer-*.jar
+    # Any copy of the body counts, the one a live instance deploys as aiplayer.jar included: two at once do not load.
+    rm -f "$TS"/mods/aiplayer*.jar
     cp "$jar" "$TS/mods/aiplayer-test.jar"
     printf 'installed %s\n' "$(basename "$jar")"
 }
@@ -82,7 +86,7 @@ start() {
         # "Done" comes before the mods' own start-up work; with the mod installed the server is only usable
         # once its bridge is listening (on a large world that can be minutes later).
         if grep -qaE 'Done \([0-9.]+s\)!' console.log \
-            && { ! ls mods/aiplayer-*.jar >/dev/null 2>&1 || grep -qa 'Bridge listening' console.log; }; then
+            && { ! ls mods/aiplayer*.jar >/dev/null 2>&1 || grep -qa 'Bridge listening' console.log; }; then
             printf 'started in %ss (pid %s)\n' "$waited" "$(pid)"
             return
         fi

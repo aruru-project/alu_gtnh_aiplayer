@@ -534,6 +534,8 @@ npm run live:testserver -- --transcript /tmp/live.txt   # 把每次给模型看�
 
 模拟模型服务会像真实接口那样检查每个请求的消息格式（角色交替、工具调用和结果配对），不合规的直接回 400；脚本还把历史压缩的阈值调低，让压缩在这一趟里一定发生。
 
+联调脚本连的是这一份检出的测试服：bridge 端口取环境变量或 `tools/local.env` 里的 `AIPLAYER_TEST_BRIDGE_PORT`（另一份检出、git worktree 有自己的测试服，见 `tools/testserver`），都没有就是 25591。共用的几样（起大脑、等事情、rcon）在 `test/live-brain.ts`。
+
 ## 作为后台服务运行
 
 `aiplayer-brain.service` 是 systemd 用户服务的模板（没有安装）。要用的话：
