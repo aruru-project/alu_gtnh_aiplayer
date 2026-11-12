@@ -258,6 +258,8 @@ async function main(): Promise<void> {
     },
     helperSteps: () => config.get().bot.limits.helperMaxSteps,
     helperStore,
+    // 身体是自动下线的：有真人进服时 presence 会把它叫上来，对话线等它上线了再被叫醒
+    awayIdle: () => config.get().bot.awayIdle,
     pictures,
     bridge,
     memory,

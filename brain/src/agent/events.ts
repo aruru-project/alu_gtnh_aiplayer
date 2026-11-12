@@ -15,7 +15,12 @@ export type AgentEvent =
   | { type: 'death'; time: number; cause: string }
   | { type: 'spawned'; time: number }
   | { type: 'despawned'; time: number; reason: string }
-  | { type: 'player_join'; time: number; player: string }
+  /**
+   * 有人进了服务器。isBot：进来的是另一个 bot（身体给的；老的身体不给时当作不是）。
+   * wake：这一回要叫醒对话线——agent/lines.ts 定的（真人、同一个人 10 分钟内没为他叫醒过；身体自动下线时等它上线了才交过去）。
+   * lastLeft、lastSaid：大脑见到他上次离开服务器、他上次在聊天里说话是什么时候（知道才有：前者是这次启动以来看到的，后者在聊天记录里）。
+   */
+  | { type: 'player_join'; time: number; player: string; isBot?: boolean; wake?: true; lastLeft?: number; lastSaid?: number }
   | { type: 'player_leave'; time: number; player: string }
   | { type: 'server_stopping'; time: number }
   | { type: 'panel_command'; time: number; text: string }
@@ -127,7 +132,7 @@ export function fromBridgeEvent(e: BridgeEvent, botName: string, now: number): A
     case 'bot.death':
       return mine ? { type: 'death', time, cause: s(d.cause, 'unknown') } : undefined
     case 'player.join':
-      return s(d.player).length > 0 && !sameName(d.player, botName) ? { type: 'player_join', time, player: s(d.player) } : undefined
+      return s(d.player).length > 0 && !sameName(d.player, botName) ? { type: 'player_join', time, player: s(d.player), ...(d.isBot === true ? { isBot: true } : {}) } : undefined
     case 'player.leave':
       return s(d.player).length > 0 && !sameName(d.player, botName) ? { type: 'player_leave', time, player: s(d.player) } : undefined
     case 'server.stopping':
@@ -207,8 +212,14 @@ export function describeEvent(ev: AgentEvent): string {
       return '你上线了'
     case 'despawned':
       return `你下线了（${ev.reason}）`
-    case 'player_join':
-      return `${ev.player} 进入了服务器`
+    case 'player_join': {
+      // 她判断要不要打招呼用得上的事实：离上次离开多久、上次说话是多久以前（知道才写）
+      const facts = [
+        ev.lastLeft !== undefined ? `距他上次离开服务器 ${agoText(ev.time - ev.lastLeft)}` : '',
+        ev.lastSaid !== undefined ? `他上次在聊天里说话是 ${agoText(ev.time - ev.lastSaid)}前` : '',
+      ].filter((f) => f.length > 0)
+      return `${ev.player}${ev.isBot ? '（另一个 bot）' : ''} 进入了服务器${facts.length > 0 ? `（${facts.join('；')}）` : ''}`
+    }
     case 'player_leave':
       return `${ev.player} 离开了服务器`
     case 'server_stopping':
@@ -245,6 +256,15 @@ export const HELPER_END_WORD: Record<HelperEnd, string> = {
   context: '上下文超出了模型的上限，停下了',
   budget: '停下了：今天的模型用量到了上限',
   interrupted: '没想完：大脑重启了，它想到的都没了',
+}
+
+/** 隔了多久，给模型看的一个词：秒、分钟、小时、天。 */
+export function agoText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 90) return `${s} 秒`
+  if (s < 90 * 60) return `${Math.round(s / 60)} 分钟`
+  if (s < 48 * 3600) return `${Math.round(s / 3600)} 小时`
+  return `${Math.round(s / 86400)} 天`
 }
 
 /** 用了多久，给人和模型看的一个词。 */

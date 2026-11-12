@@ -122,6 +122,12 @@ describe('唤醒策略：其他事件', () => {
     assert.equal(wakes(hurt(5), policy(), state({ lastHurtWake: NOW - 10_000 })), false)
   })
 
+  it('有人进服：带着 wake（真人、10 分钟内没为他叫醒过，agent/lines.ts 定的）才叫醒；别的 bot、断线期间补发的旧事件不叫', () => {
+    assert.equal(wakes({ type: 'player_join', time: NOW, player: 'Steve', wake: true }), true)
+    assert.equal(wakes({ type: 'player_join', time: NOW, player: 'Robo', isBot: true, wake: true }), false)
+    assert.equal(wakes({ type: 'player_join', time: NOW - 11 * 60_000, player: 'Steve', wake: true }), false)
+  })
+
   it('任务开始、玩家进出、上下线、系统消息只进背景', () => {
     const background: AgentEvent[] = [
       { type: 'task_started', time: NOW, task: { id: 't1', type: 'goto', state: 'running' } },

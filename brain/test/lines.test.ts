@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { VOLLEY_MAX, lineOf } from '../src/agent/lines.ts'
+import { JOIN_WAKE_GAP_MS, VOLLEY_MAX, lineOf } from '../src/agent/lines.ts'
 import { TEXT_NOT_SAID_NOTE } from '../src/agent/agent.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { BridgeError } from '../src/bridge/protocol.ts'
@@ -193,7 +193,7 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     assert.deepEqual(h.game.said, [])
   })
 
-  it('不会自己叫醒自己、两个 bot 不会互相套娃：它 say 出去的话回到大脑不叫醒它；另一个 bot 叫它的名字不叫醒它；有人进服、离开只作背景', async (t) => {
+  it('不会自己叫醒自己、两个 bot 不会互相套娃：它 say 出去的话回到大脑不叫醒它；另一个 bot 叫它的名字不叫醒它；另一个 bot 进服、有人离开只作背景', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)
     h.talk.enqueue(says('在的'))
@@ -204,7 +204,7 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     h.agent.handleBridgeEvent({ seq: 1, time: Date.now(), event: 'chat', data: { player: 'Alu', message: '在的' } })
     // 另一个 bot 在公共聊天里叫它
     h.agent.handleBridgeEvent({ seq: 2, time: Date.now(), event: 'chat', data: { player: 'Robo', message: 'Alu 你好呀', isBot: true } })
-    h.agent.handleBridgeEvent({ seq: 3, time: Date.now(), event: 'player.join', data: { player: 'Bob' } })
+    h.agent.handleBridgeEvent({ seq: 3, time: Date.now(), event: 'player.join', data: { player: 'Bob', isBot: true } })
     h.agent.handleBridgeEvent({ seq: 4, time: Date.now(), event: 'player.leave', data: { player: 'Bob' } })
     await sleep(100)
     await h.agent.whenIdle()
@@ -215,7 +215,7 @@ describe('对话线说话：写的字只给主人在面板上看，在游戏里�
     await h.agent.whenIdle()
     const background = h.talk.lastUserText(h.talk.requests.length - 1).split('[最近发生的事')[1]?.split('[当前状态]')[0] ?? ''
     assert.match(background, /Robo（另一个 bot） 说：Alu 你好呀/)
-    assert.match(background, /Bob 进入了服务器[\s\S]*Bob 离开了服务器/)
+    assert.match(background, /Bob（另一个 bot） 进入了服务器[\s\S]*Bob 离开了服务器/)
     assert.equal(background.includes('在的'), false)
   })
 
@@ -1190,3 +1190,87 @@ describe('从只有一条线的老数据升上来', () => {
     assert.deepEqual([h.persisted.state?.queue, h.talkPersisted.state?.queue], [[], []])
   })
 })
+
+describe('有人进服', () => {
+  /** 身体推来的进服、离开（真的 bridge 事件的样子）。 */
+  const join = (h: AgentHarness, player: string, time: number, isBot = false): void =>
+    h.agent.handleBridgeEvent({ seq: 1, time, event: 'player.join', data: { player, uuid: `u-${player}`, ...(isBot ? { isBot: true } : {}) } })
+  const leave = (h: AgentHarness, player: string, time: number): void => h.agent.handleBridgeEvent({ seq: 1, time, event: 'player.leave', data: { player, uuid: `u-${player}` } })
+  /** 对话线被叫醒的那几轮里“需要你处理的事”那一节。 */
+  const woken = (h: AgentHarness): string[] => h.talk.requests.map((_, n) => h.talk.lastUserText(n).split('[最近发生的事')[0]!.split('[当前状态]')[0]!)
+
+  it('真人进服叫醒对话线一次（事件只写事实：谁进来了、距他上次离开多久、他上次说话是多久以前）；别的 bot 进服、有人离开只作背景；同一个人 10 分钟内再进服只作背景，过了 10 分钟再叫醒', async (t) => {
+    const clock = { now: Date.now() }
+    const h = makeAgent({ now: () => clock.now })
+    t.after(h.cleanup)
+    const t0 = clock.now
+    // 聊天记录里有 Steve 一小时前说的话
+    h.chatLog.add({ time: t0 - 60 * 60_000, kind: 'chat', who: 'Steve', text: '我先下了' })
+    join(h, 'Steve', t0)
+    await waitFor('the talk line was woken', () => h.talk.requests.length === 1)
+    await h.agent.whenIdle()
+    assert.match(woken(h)[0]!, /^\[需要你处理的事\]\n\[[\d:]+\] Steve 进入了服务器（他上次在聊天里说话是 60 分钟前）\n/)
+    assert.match(h.talk.lastUserText(0), /\[谁在跟你说话\] 这一轮没有人跟你说话。/)
+    assert.equal(h.llm.requests.length, 0)
+
+    // 别的 bot 进服、Steve 离开：只作背景
+    join(h, 'Robo', t0 + 10_000, true)
+    clock.now = t0 + 60_000
+    leave(h, 'Steve', clock.now)
+    // 一两分钟里退了又进：只作背景
+    clock.now = t0 + 2 * 60_000
+    join(h, 'Steve', clock.now)
+    await sleep(60)
+    await h.agent.whenIdle()
+    assert.equal(h.talk.requests.length, 1)
+
+    // 过了 10 分钟（从上一回叫醒它的那次进服算）再进服：再叫醒一次，写着距他上次离开多久
+    clock.now = t0 + JOIN_WAKE_GAP_MS
+    leave(h, 'Steve', clock.now - 30_000)
+    join(h, 'Steve', clock.now)
+    await waitFor('the talk line was woken again', () => h.talk.requests.length === 2)
+    await h.agent.whenIdle()
+    const second = h.talk.lastUserText(1)
+    assert.match(woken(h)[1]!, /\] Steve 进入了服务器（距他上次离开服务器 30 秒；他上次在聊天里说话是 70 分钟前）\n/)
+    // 中间那几件在背景里看得到
+    const background = second.split('[最近发生的事')[1]!.split('[当前状态]')[0]!
+    assert.match(background, /Robo（另一个 bot） 进入了服务器[\s\S]*Steve 离开了服务器[\s\S]*Steve 进入了服务器/)
+    // 另一个人进服不受 Steve 的影响
+    join(h, 'Alex', clock.now + 1000)
+    await waitFor('Alex woke it', () => h.talk.requests.length === 3)
+  })
+
+  it('身体是自动下线的、正因为有人进服被叫上来：等它上线了再叫醒对话线（它醒来就说得了话）；等太久没上来照样叫醒；主人手动下线的（不是自动下线）照样马上叫醒', async (t) => {
+    // 等身体上线最多等 1.5 秒：上线以后马上叫醒（远不到 1.5 秒），等够了才是“没上来照样叫醒”
+    const h = makeAgent({ joinSpawnWaitMs: 1500 })
+    t.after(h.cleanup)
+    h.away.value = true
+    h.agent.handleEvent({ type: 'despawned', time: Date.now(), reason: 'despawn' })
+    join(h, 'Steve', Date.now())
+    await sleep(120)
+    assert.equal(h.talk.requests.length, 0, 'not before the body is online')
+    // presence 把它叫上来了
+    h.away.value = false
+    h.agent.handleEvent({ type: 'spawned', time: Date.now() })
+    await waitFor('the talk line was woken once the body was online', () => h.talk.requests.length === 1, 700)
+    assert.match(woken(h)[0]!, /\] Steve 进入了服务器\n/)
+    assert.match(h.talk.lastUserText(0), /\] 你上线了/)
+    await h.agent.whenIdle()
+
+    // 上线没成功：等够了照样叫醒
+    h.away.value = true
+    h.agent.handleEvent({ type: 'despawned', time: Date.now(), reason: 'despawn' })
+    join(h, 'Alex', Date.now())
+    await sleep(700)
+    assert.equal(h.talk.requests.length, 1, 'still waiting for the body')
+    await waitFor('woken after waiting', () => h.talk.requests.length === 2, 3000)
+    assert.match(woken(h)[1]!, /\] Alex 进入了服务器\n/)
+    await h.agent.whenIdle()
+
+    // 主人手动下线的：不是自动下线，没人会把它叫上来，照样马上叫醒（状态里写着它不在线）
+    h.away.value = false
+    join(h, 'Herobrine', Date.now())
+    await waitFor('woken at once', () => h.talk.requests.length === 3, 250)
+  })
+})
+

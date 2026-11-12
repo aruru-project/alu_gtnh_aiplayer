@@ -187,6 +187,8 @@ export interface AgentHarness {
   helperStore: HelperStore
   /** 每个子思维最多几步（改了下一个派出去的起生效）。 */
   helperSteps: { value: number }
+  /** 身体现在是不是自动下线的（presence 的 awayIdle）：是的话，有真人进服时等它上线了再叫醒对话线。 */
+  away: { value: boolean }
   /** 干活线的历史。 */
   history: HistoryStore
   /** 对话线的历史。 */
@@ -241,6 +243,8 @@ export interface MakeAgentOptions {
   helper?: ScriptedLlm | true
   /** 每个子思维最多几步（不给是设置的默认）。 */
   helperSteps?: number
+  /** 有真人进服、身体自动下线时，等它上线最多等多久（不给是 JOIN_SPAWN_WAIT_MS）。 */
+  joinSpawnWaitMs?: number
   /** 意见簿。给了，模型就能用 report_problem，版本号报的是 brain-under-test / mod-under-test。 */
   feedback?: FeedbackStore
   /** 现在用的模型能不能看图（模型上的那个开关）。默认不能。 */
@@ -269,6 +273,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
   const helper = opts.helper === true ? new ScriptedLlm() : opts.helper
   const helperStore = new HelperStore(tmp.dir)
   const helperSteps = { value: opts.helperSteps ?? 40 }
+  const away = { value: false }
   // 和 main.ts 一样：干活线沿用原来的文件名，对话线另有一份；轮的编号两条线共用
   const turnIds = new TurnIds()
   const history = new HistoryStore(tmp.dir, { ids: turnIds })
@@ -305,6 +310,8 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     },
     helperSteps: () => helperSteps.value,
     helperStore,
+    awayIdle: () => away.value,
+    ...(opts.joinSpawnWaitMs !== undefined ? { joinSpawnWaitMs: opts.joinSpawnWaitMs } : {}),
     bridge: new BridgeApi(game),
     memory,
     methods,
@@ -345,6 +352,7 @@ export function makeAgent(opts: MakeAgentOptions = {}): AgentHarness {
     helper,
     helperStore,
     helperSteps,
+    away,
     history,
     talkHistory,
     memory,

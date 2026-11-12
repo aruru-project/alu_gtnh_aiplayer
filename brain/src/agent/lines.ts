@@ -8,6 +8,8 @@
 //   4. 工作清单（store/todo.ts）：干活线停下来了（身体上没有任务、没有例程、没有在等的回答），清单上却还有没做的，叫醒它一次。
 //      它被叫醒以后什么都没改就又停了，不再叫：等清单变了，或者它为别的事走了一轮，才重新算。
 //   5. 对话线派出去的子思维（agent/helpers.ts）：它们结束时交回的话送到对话线；对话线的状态里列着在想的那几个；有在想的就不自动下线。
+//   6. 有真人进服叫醒对话线一次（打不打招呼由它定）：同一个人 10 分钟内再进服、别的 bot 进服、有人离开只作背景；
+//      身体是自动下线的、正被叫上来时，等它上线了再交给对话线（它说得了话）。
 // 共用的东西只有一份：身体（bridge）、记忆、手册、意见簿、设计工作区、每日 token 上限（两条线合计）。
 
 import type { BridgeApi } from '../bridge/api.ts'
@@ -66,6 +68,10 @@ export interface LinesDeps {
   helperSteps?(): number
   /** 子思维的落盘（在想的和想完了的）；不给就只在内存里。 */
   helperStore?: HelperStore
+  /** 身体现在是不是自动下线的（presence.ts 的 bot.awayIdle）：是的话，有真人进服时等它上线了再叫醒对话线。不给当作不是。 */
+  awayIdle?(): boolean
+  /** 等身体上线最多等多久（不给是 JOIN_SPAWN_WAIT_MS；测试里调小）。 */
+  joinSpawnWaitMs?: number
   /** 工具结果带的图存一份给面板的对话日志显示；没提供就不存。 */
   pictures?: { save(png: Buffer, blocks?: unknown): string }
   bridge: BridgeApi
@@ -127,6 +133,16 @@ const SPINNING = `The two lines have now woken each other ${VOLLEY_MAX} times in
  * 在活动日志里记一条；有外面的事就从头数。
  */
 export const TODO_NUDGE_MAX = 8
+/**
+ * 有真人进服叫醒对话线一次；同一个人这么久之内再进服只作背景（主人常在一两分钟里退了又进）。从上一回为他叫醒算起，
+ * 记在内存里，大脑重启就清零。
+ */
+export const JOIN_WAKE_GAP_MS = 10 * 60_000
+/**
+ * 身体是自动下线的、正因为有人进服被 presence.ts 叫上来时：等它上线（spawned）再把这件事交给对话线，它醒来就说得了话。
+ * 等这么久还没上来（上线没成功），照样交过去叫醒它——和主人手动下线时一样，状态里写着它不在线。
+ */
+export const JOIN_SPAWN_WAIT_MS = 30_000
 const NOTE_WORD: Record<WorkerNote, string> = { report: '汇报', question: '提问', result: '停下来了，留下的话', progress: '还在干，中途留下的话', trouble: '出了状况' }
 /** 干活线自己会接着做：对话线交事的结果里、状态里都写着这个事实，它就不必回头去催。 */
 const SELF_WAKE = 'When a task or routine it started ends, the worker is woken by itself and carries on; nothing has to remind it.'
@@ -203,6 +219,14 @@ export class Lines {
   private todoInRow = 0
   private todoCapLogged = false
   private closed = false
+  // ── 有人进服 ──
+  /** 为谁进服叫醒过对话线、是哪一刻的进服（名字小写；只在内存里）。 */
+  private joinWoke = new Map<string, number>()
+  /** 这次启动以来，谁什么时候离开的服务器（名字小写）。进服的事件里写“距他上次离开多久”用。 */
+  private lastLeft = new Map<string, number>()
+  /** 等身体上线了再交给对话线的进服。 */
+  private heldJoins: AgentEvent[] = []
+  private heldTimer: NodeJS.Timeout | undefined
 
   constructor(deps: LinesDeps) {
     this.deps = deps
@@ -321,6 +345,10 @@ export class Lines {
     this.closed = true
     if (this.todoTimer) clearTimeout(this.todoTimer)
     this.todoTimer = undefined
+    // 还在等身体上线的进服：不再交过去（重启以后人还在的话，对话线在状态里看得到谁在线）
+    if (this.heldTimer) clearTimeout(this.heldTimer)
+    this.heldTimer = undefined
+    this.heldJoins = []
     await Promise.all([this.helpers.close(), this.talk.stop(), this.work.stop()])
   }
 
@@ -342,13 +370,54 @@ export class Lines {
     const to = lineOf(ev)
     // 刚上线：下线期间清单上多出来的事，那时看过一眼就放下了（不在线叫醒它也没用），现在再看
     if (ev.type === 'spawned') queueMicrotask(() => this.armTodo())
-    if (to === 'talk') this.talk.handleEvent(ev)
+    if (ev.type === 'player_leave') this.lastLeft.set(ev.player.toLowerCase(), ev.time)
+    if (ev.type === 'player_join') this.playerJoined(ev)
+    else if (to === 'talk') this.talk.handleEvent(ev)
     else if (to === 'work') this.work.handleEvent(ev)
     else {
       // 干活线记日志、去处理；对话线只是知道（死亡会叫醒它，上线下线只作背景）
       this.work.handleEvent(ev)
       this.talk.handleEvent(ev, { logged: true })
     }
+    // 身体上线了：等着它的进服现在交给对话线（它醒来就说得了话）
+    if (ev.type === 'spawned') this.releaseJoins()
+  }
+
+  /**
+   * 有人进服：真人、同一个人 10 分钟内没为他叫醒过的，带上 wake 交给对话线（叫醒它一次）；别的照样交过去，只作背景。
+   * 身体是自动下线的（presence.ts 这时正因为这个人进服把它叫上来）：等它上线再交过去。主人手动下线的照样马上交过去。
+   * 事件里带上她判断用得上的事实：这次启动以来见他上次离开是什么时候、聊天记录里他上次说话是什么时候。
+   */
+  private playerJoined(ev: Extract<AgentEvent, { type: 'player_join' }>): void {
+    const key = ev.player.toLowerCase()
+    const left = this.lastLeft.get(key)
+    const said = this.deps.chatLog?.recent({ player: ev.player, limit: 1 }).lines[0]?.time
+    const last = this.joinWoke.get(key)
+    const wake = ev.isBot !== true && (last === undefined || ev.time - last >= JOIN_WAKE_GAP_MS)
+    const joined: AgentEvent = { ...ev, ...(left !== undefined ? { lastLeft: left } : {}), ...(said !== undefined ? { lastSaid: said } : {}), ...(wake ? { wake: true as const } : {}) }
+    if (!wake) {
+      this.talk.handleEvent(joined)
+      return
+    }
+    this.joinWoke.set(key, ev.time)
+    // 有真人来了是外面的事：两条线之间“连着往来了几次”从头数
+    this.outside()
+    if (this.shared.online !== true && this.deps.awayIdle?.() === true) {
+      this.heldJoins.push(joined)
+      if (!this.heldTimer) {
+        this.heldTimer = setTimeout(() => this.releaseJoins(), this.deps.joinSpawnWaitMs ?? JOIN_SPAWN_WAIT_MS)
+        this.heldTimer.unref?.()
+      }
+      return
+    }
+    this.talk.handleEvent(joined)
+  }
+
+  private releaseJoins(): void {
+    if (this.heldTimer) clearTimeout(this.heldTimer)
+    this.heldTimer = undefined
+    if (this.closed) return
+    for (const ev of this.heldJoins.splice(0)) this.talk.handleEvent(ev)
   }
 
   /** bridge 每次握手成功后调用：确认 bot 在不在线，核对断线期间结束的任务。 */

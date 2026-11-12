@@ -307,7 +307,7 @@ describe('agent 的一轮决策', () => {
 
     // 第一轮卡在模型调用上时来了三件事：两件会触发，一件只是背景
     h.agent.handleEvent(chat('Steve', 'Alu 第二件事'))
-    h.agent.handleEvent({ type: 'player_join', time: Date.now(), player: 'Alex' })
+    h.agent.handleEvent({ type: 'player_leave', time: Date.now(), player: 'Alex' })
     h.agent.handleEvent({ type: 'whisper', time: Date.now(), from: 'Steve', message: '第三件事' })
     await sleep(30)
     assert.equal(h.talk.requests.length, 1, 'no second turn while the first is running')
@@ -319,10 +319,10 @@ describe('agent 的一轮决策', () => {
     const text = h.talk.lastUserText(1)
     assert.match(text, /第二件事/)
     assert.match(text, /Steve 私聊你：第三件事/)
-    assert.match(text, /Alex 进入了服务器/)
+    assert.match(text, /Alex 离开了服务器/)
     // 触发的事在“需要你处理的事”里，背景在后面一节
     assert.ok(text.indexOf('第二件事') < text.indexOf('[最近发生的事'))
-    assert.ok(text.indexOf('Alex 进入了服务器') > text.indexOf('[最近发生的事'))
+    assert.ok(text.indexOf('Alex 离开了服务器') > text.indexOf('[最近发生的事'))
   })
 
   it('没叫它名字的聊天不触发模型，但下一轮会作为背景给模型看', async (t) => {

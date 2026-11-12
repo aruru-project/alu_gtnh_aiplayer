@@ -61,6 +61,7 @@ export interface WakeDecision {
     | 'worker'
     | 'todo'
     | 'helper'
+    | 'player_join'
     | 'not_owner'
     | 'not_addressed'
     | 'other_bot'
@@ -156,11 +157,16 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
     // 对话线派出去的子思维结束了：它交回的话要对话线来定说不说、记不记
     case 'helper':
       return yes('helper')
+    // 有人进服：真人进服叫醒对话线一次（打不打招呼由它定）。叫不叫由 agent/lines.ts 定好写在 wake 上：
+    // 别的 bot 不叫，同一个人 10 分钟内再进服不叫，身体自动下线时等它上线了才交过来。断线期间补发的旧事件也不叫
+    case 'player_join':
+      if (ev.isBot === true || ev.wake !== true) return no('background')
+      if (state.now - ev.time > policy.staleChatMs) return no('stale')
+      return yes('player_join')
     case 'task_started':
     case 'bot_message':
     case 'spawned':
     case 'despawned':
-    case 'player_join':
     case 'player_leave':
     case 'server_stopping':
       return no('background')
