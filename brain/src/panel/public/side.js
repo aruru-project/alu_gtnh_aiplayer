@@ -262,18 +262,20 @@ function stopAll() {
   const agents = state.status?.agents ?? []
   // 有总停止接口的后端连“正在想的那一步”也打断得了；没有的只停得了例程和任务
   const working = agents.filter((a) => a.agent !== 'talk')
-  const busy = working.some((a) => a.routine || a.body?.task || (a.body?.queue ?? []).length > 0 || (state.status?.source === 'status' && (a.model?.state === 'thinking' || a.model?.state === 'tools')))
+  // 对话线派出去的子思维在想也算：“全部停下”连它们一起停
+  const helpers = state.status?.helpers?.running?.length ?? 0
+  const busy = helpers > 0 || working.some((a) => a.routine || a.body?.task || (a.body?.queue ?? []).length > 0 || (state.status?.source === 'status' && (a.model?.state === 'thinking' || a.model?.state === 'tools')))
   return button(
     '全部停下',
     {
       class: `stop-all${busy ? ' armed' : ''}`,
       disabled: !busy,
-      title: busy ? '让一切停下：打断干活的那条线正在想的那一步，停掉例程，取消身体正在做的和排着队的全部任务' : '现在没有在跑的东西',
+      title: busy ? '让一切停下：打断干活的那条线正在想的那一步，停掉例程，取消身体正在做的和排着队的全部任务，停掉在想的子思维（它们想到的照样交回对话线）' : '现在没有在跑的东西',
     },
     (btn) =>
       act(btn, actions.stopAll).then((res) => {
         if (!res) return
-        const did = [res.turn ? '打断了正在想的那一步' : '', res.routine ? `停了例程${typeof res.routine === 'string' && res.routine !== '例程' ? ` ${res.routine}` : ''}` : '', res.tasks > 0 ? `取消了 ${res.tasks} 个任务` : ''].filter(Boolean)
+        const did = [res.turn ? '打断了正在想的那一步' : '', res.routine ? `停了例程${typeof res.routine === 'string' && res.routine !== '例程' ? ` ${res.routine}` : ''}` : '', res.tasks > 0 ? `取消了 ${res.tasks} 个任务` : '', res.helpers > 0 ? `停了 ${res.helpers} 个子思维` : ''].filter(Boolean)
         toast(did.length > 0 ? `已停下：${did.join('，')}` : '没有要停的')
         refresh()
       }),

@@ -613,7 +613,7 @@ describe('叫停', () => {
     h.agent.handleEvent(told('过去'))
     await h.agent.whenIdle()
     const res = await h.agent.stopWork('手滑了', 'panel')
-    assert.deepEqual(res, { tasks: ['t1'], dropped: 0 })
+    assert.deepEqual(res, { tasks: ['t1'], dropped: 0, helpers: [] })
     const relay = relays(h, 'stop')[0]!
     assert.deepEqual([relay.agent, relay.relay, relay.text], [undefined, { type: 'stop', from: 'panel', to: 'work', quotes: 0 }, '面板 → 干活线：停（手滑了）。干活线当时空闲，取消了 1 个身体任务。'])
     await sleep(40)

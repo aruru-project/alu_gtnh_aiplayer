@@ -303,6 +303,31 @@ describe('子思维：怎么结束', () => {
     assert.equal(h.agent.helpers.access().status('h9', true), 'There is no helper h9.')
   })
 
+  it('主人在面板上点“全部停下”：连在想的子思维一起停，交回对话线时写明是主人在面板上停的；对话线的 stop_work 只停身体和干活线，子思维照常想', async (t) => {
+    const h = setup(t)
+    const second = held(() => reply('不该到这里'))
+    h.helper!.enqueue(reply('钢锭在主仓库，查到一半。', [{ name: 'get_status' }]), second.fn)
+    h.agent.helpers.access().start(TASK)
+    await second.asked
+    // 对话线的 stop_work：身体和干活线停了，它自己派的子思维不停
+    const byTalk = await lineCalls(h, 'talk', 'stop_work', { reason: '先别干了' })
+    assert.match(byTalk.content, /^Stopped\. /)
+    assert.deepEqual([h.agent.helpers.busy(), h.agent.helperOverview().running.map((r) => r.id)], [true, ['h1']])
+    // 面板上的总停止：连子思维一起停
+    const before = h.talk.requests.length
+    const res = await h.agent.stopWork('主人在面板上点了“全部停下”', 'panel')
+    assert.deepEqual(res.helpers, ['h1'])
+    const at = await waitFor('the helper event reached the talk line', () => h.talk.requests.findIndex((_, n) => n >= before && h.talk.lastUserText(n).includes('子思维 h1 被停下了')) + 1)
+    const seen = h.talk.lastUserText(at - 1)
+    assert.match(seen, /你派出去的子思维 h1 被停下了（1 步，\d+ 秒）。主人在面板上点“全部停下”时一起停的（停在第 1 步）。下面是它被停下前最后写的话，不一定是结论。\n/)
+    assert.ok(seen.includes('  它最后写下的话（原样，只有你看得到）：\n钢锭在主仓库，查到一半。'))
+    assert.deepEqual([h.agent.helpers.busy(), h.helperStore.get('h1')!.status], [false, 'stopped'])
+    const stop = h.log.recent(0, 500).filter((e) => e.kind === 'relay' && e.relay?.type === 'stop').map((e) => e.text)
+    assert.equal(stop.length, 2)
+    assert.doesNotMatch(stop[0]!, /子思维/)
+    assert.match(stop[1]!, /^面板 → 干活线：停（主人在面板上点了“全部停下”）。.*，一起停了子思维 h1。$/)
+  })
+
   it('模型接口出错、上下文超长、今天的用量到上限：都结束并交回它之前最后写的话，照实写明怎么结束的', async (t) => {
     const h = setup(t, { settings: { dailyTokenLimit: 50_000 } })
     h.helper!.enqueue(reply('看了一半', [{ name: 'get_status' }]), llmDown('context_length'))

@@ -1937,7 +1937,7 @@ describe('面板：两条线', () => {
 
     assert.equal((await s.call('POST', '/api/work/stop', { reason: '走错了' }, { origin: 'https://evil.example' })).status, 403)
     const res = await s.call('POST', '/api/work/stop', { reason: '走错了' })
-    assert.deepEqual([res.status, res.json], [200, { ok: true, turn: true, routine: null, tasks: 1, dropped: 0 }])
+    assert.deepEqual([res.status, res.json], [200, { ok: true, turn: true, routine: null, tasks: 1, dropped: 0, helpers: 0 }])
     await lines.agent.whenIdle()
     assert.equal(aborted, true)
     assert.deepEqual(lines.game.callsOf('task.cancel'), [{ bot: 'Alu' }])
@@ -1984,6 +1984,14 @@ describe('面板：子思维', () => {
     await waitFor('h2 stopped', () => lines.helperStore.get('h2')?.status === 'stopped')
     assert.equal(lines.helperStore.get('h2')!.note, '主人在面板上停的（停在第 0 步）。')
     assert.deepEqual((await s.call('POST', '/api/helpers/stop', { id: 'h2' })).json, { stopped: false })
+    // “全部停下”连在想的子思维一起停，回的结果里写着停了几个
+    lines.helper!.enqueue((req) => new Promise((_, reject) => req.signal?.addEventListener('abort', () => reject(new LlmError('aborted', 'aborted')), { once: true })))
+    lines.agent.helpers.access().start('任务 C')
+    await waitFor('h3 is thinking', () => lines.agent.helperOverview().running[0]?.thinkingSince !== undefined)
+    const all = (await s.call('POST', '/api/work/stop', {})).json
+    assert.deepEqual([all.ok, all.helpers], [true, 1])
+    await waitFor('h3 stopped', () => lines.helperStore.get('h3')?.status === 'stopped')
+    assert.equal(lines.helperStore.get('h3')!.note, '主人在面板上点“全部停下”时一起停的（停在第 0 步）。')
     assert.ok(s.log.recent(0, 100).some((e) => e.text === '在面板上停掉了子思维 h2；它到现在想到的会交回对话线。'))
 
     // 模型：单独选一个，再改回和对话线一样

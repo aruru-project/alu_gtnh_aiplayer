@@ -384,7 +384,7 @@ interface ProviderConfig {
   - `routine`：正在跑的例程，没有是 `null`；`lastRoutine` 是上一个结束的（多 `endedAt`、`ending`、`endingText`：为什么结束，`ending` 是给模型看的英文原话，`endingText` 是给主人看的中文）。停它是 `POST /api/routine/stop`。
   - `body`：`task` 是身体正在做的任务（`progress` 身体给了才有），`queue` 是排队的。连不上身体时是 `{ "online": false, "task": null, "queue": [], "error": "…" }`。取消是 `POST /api/tasks/cancel`。
 
-**总停止** `POST /api/work/stop`，body 可带 `{ "reason": "…" }` → `{ "ok": true, "turn": true, "routine": "r3", "tasks": 2, "dropped": 1 }`（打断了正在跑的一轮没有 / 停掉的例程编号或 `null` / 取消了几个身体任务 / 放下了几件它还没处理的事；身体的任务没取消成时 `ok: false` 并带 `error`）。和对话线的 `stop_work` 是同一件事；日志里是一条 `relay`（`type: "stop"`, `from: "panel"`）。
+**总停止** `POST /api/work/stop`，body 可带 `{ "reason": "…" }` → `{ "ok": true, "turn": true, "routine": "r3", "tasks": 2, "dropped": 1, "helpers": 1 }`（打断了正在跑的一轮没有 / 停掉的例程编号或 `null` / 取消了几个身体任务 / 放下了几件它还没处理的事 / 一起停了几个在想的子思维；身体的任务没取消成时 `ok: false` 并带 `error`）。除了子思维，和对话线的 `stop_work` 是同一件事（`stop_work` 不停子思维）；停掉的子思维到现在想到的照样交回对话线，`note` 写着“主人在面板上点“全部停下”时一起停的”。日志里是一条 `relay`（`type: "stop"`, `from: "panel"`，停了子思维时正文末尾写着“一起停了子思维 h3”）。
 
 **两条线各选一个模型。**
 

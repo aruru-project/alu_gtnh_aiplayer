@@ -788,13 +788,13 @@ export class PanelServer {
     }
   }
 
-  /** 总停止（和对话线的 stop_work 是同一件事）：取消身体的全部任务、停掉例程、打断干活线正在想的那一步。 */
+  /** 总停止（和对话线的 stop_work 是同一件事，另外连在想的子思维一起停）：取消身体的全部任务、停掉例程、打断干活线正在想的那一步。 */
   private async stopWork(body: Record<string, unknown>): Promise<unknown> {
     if (!this.deps.agent.stopWork) throw new HttpError(501, 'not_supported', '这个大脑没有总停止')
     const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
     const res = await this.deps.agent.stopWork(reason, 'panel')
     this.overviewCache = undefined
-    return { ok: res.error === undefined, turn: res.turn !== undefined, routine: res.routine ?? null, tasks: res.tasks.length, dropped: res.dropped, ...(res.error !== undefined ? { error: res.error } : {}) }
+    return { ok: res.error === undefined, turn: res.turn !== undefined, routine: res.routine ?? null, tasks: res.tasks.length, dropped: res.dropped, helpers: res.helpers.length, ...(res.error !== undefined ? { error: res.error } : {}) }
   }
 
   // ── 对话 ──

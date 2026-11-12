@@ -303,7 +303,7 @@ export const actions = {
   async stopAll() {
     try {
       const res = await api('POST', '/work/stop', { reason: '主人在面板上点了“全部停下”' })
-      return { turn: res.turn === true, routine: res.routine || null, tasks: res.tasks ?? 0, whole: true }
+      return { turn: res.turn === true, routine: res.routine || null, tasks: res.tasks ?? 0, helpers: res.helpers ?? 0, whole: true }
     } catch (e) {
       if (e.status !== 404) throw e
     }

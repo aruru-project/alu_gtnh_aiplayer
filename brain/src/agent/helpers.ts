@@ -224,6 +224,11 @@ export class Helpers {
     return true
   }
 
+  /** 停掉在想的全部（主人在面板上点“全部停下”）。返回停了哪几个；它们到现在想到的照样交回对话线，写明 why。 */
+  stopAll(why: string): string[] {
+    return [...this.running.keys()].filter((id) => this.stop(id, why))
+  }
+
   /** 在想的和最近结束的（面板的列表；不带过程）。 */
   overview(limit = 20): HelperOverview {
     return { max: HELPERS_MAX, maxSteps: this.deps.maxSteps(), running: [...this.running.values()].map((r) => this.nowView(r)), recent: this.ended(limit) }

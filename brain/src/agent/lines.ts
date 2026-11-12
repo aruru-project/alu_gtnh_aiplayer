@@ -107,6 +107,8 @@ export interface StopResult {
   tasks: string[]
   /** 放下了几件干活线还没处理的事。 */
   dropped: number
+  /** 一起停掉的子思维（只有面板上的总停止停它们；对话线的 stop_work 不停）。 */
+  helpers: string[]
   /** 身体的任务没取消成（没连上、不在线）时的原话。 */
   error?: string
 }
@@ -592,11 +594,14 @@ export class Lines {
   /**
    * 让一切停下（对话线的 stop_work、面板上的总停止）：打断干活线正在想的那一步，放下它还没处理的事，停掉例程，取消身体的全部任务。
    * 不需要干活线配合。它随后在背景里看到一条“你被叫停了”（附原因和原话），不会因此自己接着干。
+   * 面板上的总停止（主人点的“全部停下”）连在想的子思维也一起停：它们到现在想到的照样交回对话线，写明是主人在面板上停的。
+   * 对话线的 stop_work 不停子思维（它们是对话线自己派的，要停用 helper_status）。
    */
   async stopWork(reason: string, by: 'talk' | 'panel', said: SaidEvent[] = [], at: TurnAt = {}): Promise<StopResult> {
     const botName = this.deps.settings('work').botName
     const note: Extract<AgentEvent, { type: 'halted' }> = { type: 'halted', time: this.now(), by, reason, said }
     const halt = this.work.halt(note)
+    const helpers = by === 'panel' ? this.helpers.stopAll('主人在面板上点“全部停下”时一起停的') : []
     // 叫停了：不因为清单再把它叫起来，等有新的事交给它（存着，重启后照旧）
     this.saveLinks({ ...this.links, haltedAt: this.now() })
     if (this.todoTimer) clearTimeout(this.todoTimer)
@@ -623,12 +628,13 @@ export class Lines {
       await cancelAll().catch(() => {})
     }
     if (this.links.waiting) this.saveLinks({ ...this.links, waiting: undefined })
-    const result: StopResult = { ...(halt.turn ? { turn: halt.turn } : {}), ...(halt.routine !== undefined ? { routine: halt.routine } : {}), tasks, dropped: halt.dropped, ...(error !== undefined ? { error } : {}) }
+    const result: StopResult = { ...(halt.turn ? { turn: halt.turn } : {}), ...(halt.routine !== undefined ? { routine: halt.routine } : {}), tasks, dropped: halt.dropped, helpers, ...(error !== undefined ? { error } : {}) }
     const what = [
       halt.turn ? `打断了干活线的第 ${halt.turn.id} 轮（第 ${halt.turn.step} 步）` : '干活线当时空闲',
       halt.routine !== undefined ? `停掉例程 ${halt.routine}` : undefined,
       error !== undefined ? `身体的任务没取消成（${error}）` : tasks.length > 0 ? `取消了 ${tasks.length} 个身体任务` : '身体没有在做的任务',
       halt.dropped > 0 ? `放下了 ${halt.dropped} 件它还没处理的事` : undefined,
+      helpers.length > 0 ? `一起停了子思维 ${helpers.join('、')}` : undefined,
     ].filter((part) => part !== undefined)
     this.deps.log.add({
       kind: 'relay',
