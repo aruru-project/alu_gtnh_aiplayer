@@ -326,8 +326,13 @@ export function libraryFor(tools: readonly Tool[], view: ModelView): Tool[] {
   return [...library, ...tools.filter((t) => !listedFor(t, view))]
 }
 
+/**
+ * 在游戏里说话的工具（对话线的 say、whisper）。一轮到了步数上限以后多给的那一步收尾里，执行的只有这些（agent.ts）：
+ * 那一步只用来把做到哪、结果是什么告诉人。
+ */
+export const SPEAKING_TOOLS: readonly string[] = [say.name, whisper.name]
 /** 只归对话线的：在游戏里说话、管干活线、派子思维。 */
-const TALK_ONLY: readonly string[] = [say.name, whisper.name, tellWorker.name, workerStatus.name, stopWork.name, startHelper.name, helperStatus.name]
+const TALK_ONLY: readonly string[] = [...SPEAKING_TOOLS, tellWorker.name, workerStatus.name, stopWork.name, startHelper.name, helperStatus.name]
 /** 子思维照实被告知“这是记东西的，由对话线定”的那些：记忆、提醒、基地的做法、工作清单、写手册。 */
 const RECORDING: readonly string[] = [remember.name, forget.name, setReminder.name, setBaseMethod.name, todo.name, writeManual.name]
 
@@ -355,7 +360,7 @@ export function otherLine(line: ToolLine, name: string): string | undefined {
     return undefined
   }
   if (!TALK_ONLY.includes(name)) return undefined
-  if (name === say.name || name === whisper.name) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.`
+  if (SPEAKING_TOOLS.includes(name)) return `Not done: "${name}" is not yours. The worker line does not speak to players; the talk line does. Tell it in the text that ends your turn, or with report (a plain report waits until the talk line is next woken; question: true wakes it), and it decides what to say to whom.`
   if (name === startHelper.name || name === helperStatus.name) return `Not done: "${name}" is the talk line's tool for sending helpers off to think; you are the worker. To tell the talk line something, use report.`
   return `Not done: "${name}" is the talk line's tool for handing you work and stopping you; you are the worker. To tell the talk line something, use report.`
 }

@@ -11,6 +11,8 @@ interface LogModel {
   layoutRows(items: Json[], maxLevel?: number): { key: string; left: Json[]; right: Json[]; both?: Json }[]
   recentActivity(items: Json[], limit?: number): Json[]
   describeArgs(raw: unknown, itemName?: (id: string, meta: number) => string | undefined): string | undefined
+  turnTag(item: Json): string
+  closingNow(turn: Json): boolean
 }
 // 面板的脚本是浏览器里直接跑的 JS（没有类型声明），这里按地址载入
 const model = (await import(new URL('../src/panel/public/logmodel.js', import.meta.url).href)) as LogModel
@@ -340,6 +342,82 @@ describe('对话页：左右两道怎么对齐', () => {
     const items = model.buildTimeline([e('chat', 'Alu 过来', { who: '阿露', time: t + 1000 }), e('turn', '第 10 轮开始', { agent: 'work', turn: 10, time: t + 20_000 })]).items
     const rows = model.layoutRows(items)
     assert.deepEqual(rows.map((r) => [r.left.length, r.right.length]), [[1, 1]])
+  })
+
+  /** 一行里左右两边各是什么：一句话写它说了什么，一轮写第几轮（子思维写它的编号），横条写 relay。 */
+  const sides = (rows: { left: Json[]; right: Json[]; both?: Json }[]): string[][][] =>
+    rows.map((r) => {
+      const name = (i: Json): string => (i.type === 'msg' ? `说：${i.text}` : i.type === 'work' ? `轮：${i.turn.helper ?? i.turn.id}` : i.type)
+      return r.both ? [[name(r.both)]] : [r.left.map(name), r.right.map(name)]
+    })
+  const helperStarts = (id: string, time: number): Json[] => [
+    e('turn', `子思维 ${id} 开始：设计两层小屋`, { agent: 'helper', helper: id, detail: '设计两层小屋', time }),
+    e('model_call', '第 1 步', { agent: 'helper', helper: id, step: 1, call: { state: 'done', purpose: 'helper', step: 1, startedAt: time, ms: 900, stop: 'tool_calls', toolCalls: 1 }, time: time + 900 }),
+  ]
+
+  it('主人连着说了几句、中间没有横条隔开，对话线在后一轮里派了子思维：子思维排在派它的那一轮下面，不画在头一句话旁边（那样看上去比派它的那句话还早）', () => {
+    const t = clock
+    const items = model.buildTimeline([
+      e('chat', 'Alu 帮我设计一间小屋', { who: '阿露', time: t + 1000 }),
+      e('turn', '第 20 轮开始：阿露 说：Alu 帮我设计一间小屋', { agent: 'talk', turn: 20, time: t + 2000 }),
+      e('turn', '第 20 轮结束（调了 1 次模型）', { agent: 'talk', turn: 20, time: t + 4000 }),
+      e('chat', '要两层的', { who: '阿露', time: t + 20_000 }),
+      e('turn', '第 21 轮开始：阿露 说：要两层的', { agent: 'talk', turn: 21, time: t + 21_000 }),
+      e('tool_call', '{"task":"设计两层小屋"}', { agent: 'talk', turn: 21, step: 1, source: 'model', who: 'start_helper', time: t + 23_000 }),
+      e('tool_result', 'Helper h3 is thinking about it now', { agent: 'talk', turn: 21, step: 1, source: 'model', who: 'start_helper', time: t + 23_100 }),
+      ...helperStarts('h3', t + 23_200),
+      e('turn', '第 21 轮结束（调了 2 次模型）', { agent: 'talk', turn: 21, time: t + 25_000 }),
+    ]).items
+    assert.deepEqual(sides(model.layoutRows(items)), [
+      [['说：Alu 帮我设计一间小屋', '轮：20', '说：要两层的', '轮：21'], []],
+      [[], ['轮：h3']],
+    ])
+    // 只看对话的那一档里轮和子思维都不显示：两句话还是一行
+    assert.deepEqual(sides(model.layoutRows(items, 1)), [[['说：Alu 帮我设计一间小屋', '说：要两层的'], []]])
+  })
+
+  it('左边只有一件时照旧：横条之后对话线的那一轮，和它派出去的子思维画在同一行的两边', () => {
+    const t = clock
+    const items = model.buildTimeline([
+      e('relay', '干活线 → 对话线：平好了', { agent: 'work', relay: { type: 'result', from: 'work', to: 'talk' }, time: t + 1000 }),
+      e('turn', '第 30 轮开始：干活线停下来了', { agent: 'talk', turn: 30, time: t + 2000 }),
+      e('tool_call', '{"task":"设计两层小屋"}', { agent: 'talk', turn: 30, step: 1, source: 'model', who: 'start_helper', time: t + 3000 }),
+      ...helperStarts('h4', t + 3200),
+    ]).items
+    assert.deepEqual(sides(model.layoutRows(items)), [[['relay']], [['轮：30'], ['轮：h4']]])
+  })
+})
+
+describe('对话页：一轮头上写的是哪条线，和它是怎么结束的', () => {
+  it('哪条线只看条目自己带的 agent，不看 /api/status（状态还没回来时就画好的行，状态来了也不会重画这一块）：对话线、干活线、子思维；分成两条线以前的条目写“模型”', () => {
+    const { items } = model.buildTimeline([
+      e('turn', '第 1 轮开始：主人说：平地', { turn: 1 }),
+      e('turn', '第 2 轮开始：Steve 说：在吗', { agent: 'talk', turn: 2 }),
+      e('turn', '第 3 轮开始：对话线交给你的：平地', { agent: 'work', turn: 3 }),
+      e('turn', '子思维 h1 开始：查钢锭', { agent: 'helper', helper: 'h1' }),
+    ])
+    assert.deepEqual(items.filter((i) => i.type === 'work').map((i) => model.turnTag(i)), ['模型', '对话线', '干活线', '子思维'])
+  })
+
+  it('一轮到了步数上限、最后一步是收尾：结束那一句冒号后面的是这一轮的 ending（画在它头上），收尾的那次调用标着 final；照常结束的一轮没有 ending；模型名里带括号也认得对', () => {
+    const call = (step: number, extra: Json = {}): Json => ({ state: 'done', purpose: 'turn', step, startedAt: clock, ms: 800, stop: 'tool_calls', toolCalls: 1, ...extra })
+    const { turns } = model.buildTimeline([
+      e('turn', '第 5 轮开始：Steve 说：设计一间小屋', { agent: 'talk', turn: 5 }),
+      e('model_call', '第 1 步：0.8 秒', { agent: 'talk', turn: 5, step: 1, call: call(1) }),
+      e('error', '到了每轮 1 步的上限，这一轮被截断。再给它一步收尾（…），之后这一轮结束。', { agent: 'talk', turn: 5 }),
+      e('model_call', '第 2 步（收尾）：0.8 秒', { agent: 'talk', turn: 5, step: 2, call: call(2, { final: true }) }),
+      e('turn', '第 5 轮结束（调了 2 次模型，官方（新） / gpt-x）：到了每轮 1 步的上限，第 2 步是收尾', { agent: 'talk', turn: 5 }),
+      e('turn', '第 6 轮开始：Steve 说：好', { agent: 'talk', turn: 6 }),
+      e('turn', '第 6 轮结束（调了 1 次模型）', { agent: 'talk', turn: 6 }),
+    ])
+    const cut = turns.get(5)!
+    assert.deepEqual([cut.ending, cut.calls, cut.model, cut.errors, cut.open], ['到了每轮 1 步的上限，第 2 步是收尾', 2, '官方（新） / gpt-x', 1, false])
+    assert.deepEqual(cut.parts.flatMap((p: Json) => p.steps.map((s: Json) => [s.n, s.call?.final === true])), [[1, false], [2, true]])
+    assert.equal(turns.get(6)!.ending, undefined)
+  })
+
+  it('正在跑的一轮在不在收尾：走完的步数到了上限、这一轮还没结束（状态区和“现在”页上那一小块）', () => {
+    assert.deepEqual([model.closingNow({ steps: 20, maxSteps: 20 }), model.closingNow({ steps: 19, maxSteps: 20 }), model.closingNow({ steps: 3 }), model.closingNow(undefined as never)], [true, false, false, false])
   })
 })
 

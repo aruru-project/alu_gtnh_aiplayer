@@ -424,7 +424,7 @@ export class Helpers {
   private async callModel(r: Running, llm: LlmClient, req: GenerateRequest, n: number, final: boolean): Promise<GenerateResult> {
     const started = performance.now()
     const startedAt = this.now()
-    const begun: ActivityModelCall = { state: 'thinking', purpose: 'helper', step: n, startedAt }
+    const begun: ActivityModelCall = { state: 'thinking', purpose: 'helper', step: n, startedAt, ...(final ? { final: true as const } : {}) }
     const entry = r.log.add({ kind: 'model_call', step: n, text: modelCallText(begun), call: begun })
     const step: HelperStep = { n, at: startedAt, calls: [], ...(final ? { final: true as const } : {}) }
     r.record.transcript.push(step)

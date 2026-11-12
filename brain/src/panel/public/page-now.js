@@ -6,7 +6,7 @@ import { actions, agentLabel, bodyAgent, presenceOf, refresh, serverNow, state, 
 import { foodBar, hearts, inventoryPanel, screenPanel, slotDetail } from './items.js'
 import { addForm, keepFocus, todoRow, todoUi } from './todo.js'
 import { renderHelpers } from './helpers.js'
-import { describeArgs, recentActivity } from './logmodel.js'
+import { CLOSING_HINT, closingNow, describeArgs, recentActivity } from './logmodel.js'
 import { itemName } from './names.js'
 import { getTimeline } from './logstore.js'
 import { STALE_TASK_MS, modelState, taskProgress, taskStaleMs } from './side.js'
@@ -109,6 +109,7 @@ function turnCard(agent, many) {
       h('span', { class: `tag ${agent.agent === 'talk' ? 'talk' : 'model'}`, text: many ? agentLabel(agent) : '模型' }),
       h('strong', { text: `第 ${turn.id} 轮` }),
       h('span', { class: 'muted', text: `已经 ${turn.steps ?? 0}${turn.maxSteps ? ` / ${turn.maxSteps}` : ''} 步` }),
+      closingNow(turn) ? h('span', { class: 'chip warn', title: CLOSING_HINT, text: '到了上限，在收尾' }) : null,
       turn.startedAt ? h('span', { class: 'muted', 'data-since': turn.startedAt, 'data-label': '这一轮已经', text: `这一轮已经 ${duration(Math.max(0, serverNow() - turn.startedAt))}` }) : null,
     ),
     about ? h('div', { class: 'now-row' }, h('span', { class: 'now-key', text: '起因' }), h('span', { class: 'now-val', text: about })) : null,

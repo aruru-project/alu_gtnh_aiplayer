@@ -5,6 +5,7 @@
 //   todo     工作清单（两条线和主人共用的那一张）。和概览一起四秒一问；在面板上改了，用改完回来的那份。
 // 后端的 /api/status 还没有时（404），从 /api/overview 里凑一个出来：只分得出“忙 / 闲 / 故障”，不知道第几步。
 
+import { LINE_NAMES } from './logmodel.js'
 import { api, bus } from './ui.js'
 
 export const state = {
@@ -25,7 +26,8 @@ export const state = {
 /** 大脑那边现在几点（用来算“已经想了几秒”，不受浏览器的钟不准影响）。 */
 export const serverNow = () => Date.now() + state.skew
 
-const AGENT_LABELS = { talk: '对话', work: '干活', main: '大脑', helper: '子思维' }
+// 和后端给的 title 一样：状态还没问到时用这一份，问到以后写的字不变
+const AGENT_LABELS = { ...LINE_NAMES, main: '大脑' }
 const AGENT_HINTS = {
   talk: '听人说话、回话、查资料；不操作身体',
   helper: '对话线派出去专门想一件事的那部分心思：只查不改，想完了交回对话线',

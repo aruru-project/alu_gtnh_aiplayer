@@ -4,6 +4,7 @@
 
 import { actions, agentHint, agentLabel, bodyAgent, environmentOf, presenceOf, refresh, serverNow, state } from './data.js'
 import { foodIcon, heartIcon, playerHead } from './items.js'
+import { CLOSING_HINT, closingNow } from './logmodel.js'
 import { act, button, clock, compact, dimName, duration, h, num, pos, progressBar, put, taskName, toast } from './ui.js'
 
 /** 模型一步想了这么久算“比平时久”（默认的接口超时是 120 秒）。 */
@@ -241,7 +242,8 @@ function lineCard(agent, ownsBody, alone) {
   if (m.state === 'outage' && m.outage) {
     extra.push(h('div', { class: 'lane-note bad', text: `连着失败 ${m.outage.failures} 次，${clock(m.outage.nextRetryAt)} 再试` }))
   } else if (turn) {
-    extra.push(h('div', { class: 'lane-note muted', title: turn.about ?? '', text: `第 ${turn.id} 轮${turn.maxSteps ? ` · 已 ${turn.steps ?? 0}/${turn.maxSteps} 步` : ''}${turn.about ? ` · ${turn.about}` : ''}` }))
+    const closing = closingNow(turn)
+    extra.push(h('div', { class: 'lane-note muted', title: closing ? CLOSING_HINT : (turn.about ?? ''), text: `第 ${turn.id} 轮${turn.maxSteps ? ` · 已 ${turn.steps ?? 0}/${turn.maxSteps} 步` : ''}${closing ? ' · 到了上限，在收尾' : ''}${turn.about ? ` · ${turn.about}` : ''}` }))
   }
   if (agent.pending > 0) extra.push(h('div', { class: 'lane-note muted', text: `还有 ${agent.pending} 件事排着等它` }))
   // 对话线派出去的子思维：在想的有几个（详情在“现在”页）

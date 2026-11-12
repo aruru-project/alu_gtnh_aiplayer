@@ -640,8 +640,13 @@ function playTwoLines(): void {
  *   慢              干活线想得久一点（每步 6 秒），好看“正在想”
  *   停              对话线叫停（stop_work）
  *   查 / 怎么做      对话线自己查一下再回答，不惊动干活线
+ *   一直查          对话线一步步查个没完，直到每轮的步数上限；收尾那一步在公屏说一句、给主人写一句
+ *   一直干          交给干活线，它一步步看个没完，直到步数上限；收尾那一步写一句做到哪了（程序替它报给对话线）
+ *                   上限在面板“设置 → 上限”里调小了看得快
  * 别的话对话线只回一句。
  */
+/** 到了每轮步数上限、程序给的收尾那一步：接在最后一次工具结果后面的那句话（agent.ts 的 closingNote）。 */
+const CLOSING_STEP = /这一轮到了每轮 (\d+) 步的上限。再给你一步收尾/
 /** 模拟模型写的交接记录（照提示词要的小节，内容是随手编的，看面板怎么显示）。 */
 function handover(talk: boolean): string {
   const sections = talk
@@ -706,6 +711,21 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
   if (/^你是 \S+ 派出去专门想一件事的那部分心思/.test(system)) return helperResponder(messages)
   const usage = { input: talk ? 6200 : 48000, output: 90, cacheRead: talk ? 5400 : 45000 }
 
+  // 这一轮开头那条（不是工具结果后面接着的）里要你处理的事
+  const textIn = (m: any): string => (typeof m?.content === 'string' ? m.content : Array.isArray(m?.content) ? m.content.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n') : '')
+  // （上一轮以一句空话结束时，两轮开头那条会并在一条消息里：取最后一段）
+  const turnOpening = textIn([...messages].reverse().find((m) => m.role === 'user' && textIn(m).includes('[需要你处理的事]')))
+  const openingTodo = turnOpening.slice(turnOpening.lastIndexOf('[需要你处理的事]')).split('[最近发生的事')[0]?.split('[当前状态]')[0] ?? ''
+  // “一直查”“一直干”：到了步数上限、给了收尾的一步——对话线在公屏说一句、给主人写一句，干活线写一句做到哪了
+  const closing = CLOSING_STEP.exec(text)
+  if (closing) {
+    const asked = messages.filter((m) => m.role === 'assistant').length
+    return talk
+      ? { text: `查了 ${asked} 步就到了每轮 ${closing[1]} 步的上限：身上和周围都看过了，草稿还没画。`, toolCalls: [{ name: 'say', input: { text: '我查到一半就到步数上限了：身上和周围都看过，草稿还没画，叫我一声我接着画' } }], usage, delayMs: 4000 }
+      : { text: `看了 ${asked} 次状态就到了上限，还没开始干活。`, usage, delayMs: 4000 }
+  }
+  if ((talk ? /一直查/ : /一直干/).test(openingTodo)) return { text: afterTool ? '' : '我一步步看。', toolCalls: [{ name: 'get_status', input: {} }], usage, delayMs: 800 }
+
   if (talk) {
     if (afterTool) {
       // 记到清单上了、派了子思维：应一声
@@ -734,7 +754,7 @@ function twoLineResponder(req: RecordedLlmRequest): MockReply {
     // “想想：……”“设计……”“算算……”：派一个子思维出去想（任务写上主人的原话）
     if (/^(想想|设计|算算)/.test(said)) return { toolCalls: [{ name: 'start_helper', input: { task: `主人在面板上说：${said}\n主仓库在 (-522,69,43) 南边那排压缩箱子。查清楚、算清楚，草稿画好以后写明草稿名。` } }], usage }
     if (/查|怎么做/.test(said)) return { toolCalls: [{ name: 'find_item', input: { query: '钢锭' } }], usage }
-    if (/平|搬|存|问|例程|慢|做|拿|凿/.test(said)) return { text: '好，我去办。', toolCalls: [{ name: 'tell_worker', input: { text: said } }], usage }
+    if (/平|搬|存|问|例程|慢|做|拿|凿|干/.test(said)) return { text: '好，我去办。', toolCalls: [{ name: 'tell_worker', input: { text: said } }], usage }
     return { text: '我在。（我是模拟的模型，只认得“平”“搬”“问”“例程”“慢”“停”“查”这几个词。）', usage }
   }
 
@@ -926,6 +946,9 @@ async function fake(req: http.IncomingMessage, res: http.ServerResponse, url: UR
   return false
 }
 
+/** POST /__dev/status 定的：在这个时刻以前的 /api/status 都压着，到点才回。 */
+let statusHeldUntil = 0
+
 const proxy = http.createServer((req, res) => {
   void (async () => {
     const url = new URL(req.url ?? '/', 'http://dev.local')
@@ -935,6 +958,13 @@ const proxy = http.createServer((req, res) => {
       setScene(String(body.name ?? 'idle'))
       return json(res, 200, { scene })
     }
+    if (url.pathname === '/__dev/status' && req.method === 'POST') {
+      // 接下来这么久（holdMs）里的 /api/status 都压到那时才回：看状态第一次回来之前页面画成什么样、回来以后改没改过来
+      const body = await readBody(req)
+      statusHeldUntil = Date.now() + Math.max(0, Number(body.holdMs) || 0)
+      return json(res, 200, { heldUntil: statusHeldUntil })
+    }
+    if (url.pathname === '/api/status' && statusHeldUntil > Date.now()) await new Promise((resolve) => setTimeout(resolve, statusHeldUntil - Date.now()))
     if (url.pathname === '/__dev/bot' && req.method === 'POST') {
       // 改身体：{ health?, food?, screen?, players? }。players: false 是服务器上的真人都走了（看“自动上下线”），true 是回来
       const body = await readBody(req)

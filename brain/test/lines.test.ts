@@ -992,6 +992,24 @@ describe('对话窗口', () => {
     await sleep(30)
     assert.equal(h.talk.requests.length, 8)
   })
+
+  it('过了对话窗口、又没带名字的话不叫醒它（叫醒方式是“叫到名字”）：面板上那句话下面写着窗口多长、他上次和它说上话是多久以前', async (t) => {
+    let clock = Date.now()
+    const h = makeAgent({ settings: { conversationWindowSec: 300 }, now: () => clock })
+    t.after(h.cleanup)
+    h.talk.enqueue(says('在'), reply(''))
+    h.agent.handleEvent(chat('Steve', 'Alu 在吗', clock))
+    await h.agent.whenIdle()
+    clock += 7 * 60_000
+    h.agent.handleEvent(chat('Steve', '帮我看看箱子', clock))
+    h.agent.handleEvent(chat('Bob', '有人吗', clock))
+    await sleep(30)
+    assert.equal(h.talk.requests.length, 2)
+    const why = (text: string): string | undefined => h.log.recent(0, 100).find((e) => e.kind === 'chat' && e.text === text)?.detail
+    assert.equal(why('帮我看看箱子'), '没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内（窗口 5 分钟；Steve 上次和它说上话是 7 分钟前）。')
+    // 没和它说上过话的人：只写窗口
+    assert.equal(why('有人吗'), '没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内（窗口 5 分钟）。')
+  })
 })
 
 describe('主人问“你在干嘛”', () => {

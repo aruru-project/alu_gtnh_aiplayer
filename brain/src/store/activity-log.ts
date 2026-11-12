@@ -73,6 +73,11 @@ export interface ActivityModelCall {
   purpose: 'turn' | 'compact' | 'helper'
   /** 这一轮的第几次模型调用（从 1 起）。 */
   step?: number
+  /**
+   * 到了步数上限以后多给的那一步（收尾）：对话线在这一步里只有 say、whisper 会执行，干活线和子思维不能调工具；
+   * 这一步之后这一轮（子思维）就结束了。
+   */
+  final?: true
   startedAt: number
   ms?: number
   /** 接口回的模型名。 */

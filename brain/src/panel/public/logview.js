@@ -2,8 +2,8 @@
 // 一轮决策默认收成一行汇总，点开看模型的每一步，再点开看每个工具的参数和结果；最新的那一轮自己开着。
 // 开合的状态记在这个模块里（按键），所以重画、切页都不丢。
 
-import { actions, agentLabel, serverNow, state } from './data.js'
-import { LEVEL, describeArgs, layoutRows, toolHistogram } from './logmodel.js'
+import { actions, serverNow, state } from './data.js'
+import { CLOSING_HINT, LEVEL, describeArgs, layoutRows, toolHistogram, turnTag } from './logmodel.js'
 import { itemName, namesVersion } from './names.js'
 import { act, api, button, clock, compact, dateTime, dayLabel, duration, h, put, reconcile, sameDay } from './ui.js'
 import { playerHead } from './items.js'
@@ -239,7 +239,9 @@ function stepHead(step, live) {
       else if (call.stop && call.stop !== 'tool_calls') parts.push(h('span', { class: call.stop === 'truncated' ? 'warn' : '', text: STOP_REASONS[call.stop] ?? call.stop }))
     }
   }
-  return h('div', { class: 'step-head' }, h('span', { class: 'step-n', text: step.n !== undefined ? `第 ${step.n} 步` : '这一轮里' }), parts.flatMap((p, i) => (i === 0 ? [p] : [h('span', { class: 'sep', text: '·' }), p])))
+  // 到了步数上限以后多给的那一步
+  const closing = call?.final ? h('span', { class: 'chip warn', title: CLOSING_HINT, text: '收尾' }) : null
+  return h('div', { class: 'step-head' }, h('span', { class: 'step-n', text: step.n !== undefined ? `第 ${step.n} 步` : '这一轮里' }), closing, parts.flatMap((p, i) => (i === 0 ? [p] : [h('span', { class: 'sep', text: '·' }), p])))
 }
 
 function renderStep(step, live) {
@@ -306,8 +308,8 @@ function defaultOpen(item, ctx) {
 
 function turnFlags(turn, live) {
   const out = []
-  // 子思维怎么结束的（想完了、到了步数上限、被停下了……）
-  if (turn.helper && !turn.open && turn.ending) out.push(h('span', { class: `chip ${/想完了/.test(turn.ending) ? 'ok' : /出错|太长|用量/.test(turn.ending) ? 'bad' : 'warn'}`, text: turn.ending }))
+  // 怎么结束的：子思维（想完了、到了步数上限、被停下了……）；两条线的一轮只有不寻常的才有（到了每轮步数的上限，最后一步是收尾）
+  if (!turn.open && turn.ending) out.push(h('span', { class: `chip ${/想完了/.test(turn.ending) ? 'ok' : /出错|太长|用量/.test(turn.ending) ? 'bad' : 'warn'}`, title: turn.helper ? '' : `这一轮到了步数上限被截断。收尾：${CLOSING_HINT}`, text: turn.ending }))
   if (turn.errors > 0) out.push(h('span', { class: 'chip bad', text: `${turn.errors} 处出错` }))
   if (turn.open) out.push(live ? h('span', { class: 'chip live', 'data-since': turn.startedAt ?? turn.firstTime, 'data-label': '进行中', text: '进行中' }) : h('span', { class: 'chip', title: '没有这一轮结束的记录：多半是大脑重启时被打断了', text: '没有结束记录' }))
   return out
@@ -332,7 +334,8 @@ function renderWork(item, ctx) {
       'button',
       { type: 'button', class: 'turn-head', 'aria-expanded': String(open), title: open ? '收起这一轮' : '展开看每一步' },
       h('span', { class: 'caret', 'aria-hidden': 'true' }),
-      h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: turn.helper ? '子思维' : state.status?.agents?.length > 1 ? agentLabel(state.status.agents.find((a) => a.agent === item.agent) ?? item.agent ?? 'main') : '模型' }),
+      // 哪条线的：看条目自己（不看 /api/status：状态还没回来时画的这一行，状态来了不会重画）
+      h('span', { class: `tag ${quiet ? 'talk' : 'model'}`, text: turnTag(item) }),
       h('span', { class: 'turn-title' }, h('span', { class: 'turn-n', text: turn.helper ? turn.helper : `第 ${turn.id} 轮` }), quiet ? h('span', { class: 'stats', title: statsText(turn), text: statsText(turn, !open) }) : trigger),
       time(turn.startedAt ?? turn.firstTime),
       h('span', { class: 'turn-meta' }, quiet ? (open ? [] : chipEls(chips)) : h('span', { class: 'stats', text: statsText(turn) }), turnFlags(turn, live)),

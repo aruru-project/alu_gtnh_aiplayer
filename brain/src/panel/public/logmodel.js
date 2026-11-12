@@ -16,12 +16,13 @@
 //   events 连着的几条游戏事件（系统消息、谁进了服务器、任务开始了……）              —— 全部
 // 一轮决策中间插进了别的东西（它说了一句话、别人说了话）时，这一轮切成前后几段，每段各是一个 work，时间线始终是先后顺序。
 //
-// 两条线（lane）：一个 AI 玩家有“对话”和“干活”两条线，各有各的模型调用（条目的 agent 字段：talk / work；现在后端只有一条 main）。
+// 两条线（lane）：一个 AI 玩家有“对话”和“干活”两条线，各有各的模型调用（条目的 agent 字段：talk / work；分成两条线以前的条目没有）。
 // 对话线派出去的子思维（agent: helper，helper: h3）不占轮的编号：它的每一步按 helper 编号归成一段（turn.helper），画在干活那一道上；
 // 它结束时交回对话线的那一条是 relay（type: helper）。
 //   talk  说的话，和对话线自己的那几步；谁进出了服务器
 //   work  其余的：干活线（或者唯一的那条线）的每一步、例程、身体的事件、说明和报错
-// layoutRows 把时间线排成一行行：每行左边是对话那条线上的东西，右边是紧跟着它的干活那条线上的东西。
+// layoutRows 把时间线排成一行行：每行左边是对话那条线上的东西，右边是紧跟着它的干活那条线上的东西；
+// 从上往下就是先后，右边的东西不会画在引出它的那句话上面。
 
 /** 时间线上每样东西属于哪一档：1 对话，2 加上模型的决策，3 全部。 */
 export const LEVEL = { talk: 1, work: 2, all: 3 }
@@ -30,7 +31,8 @@ const ROUTINE_PREFIX = /^\[例程 (r\d+)\] ?/
 const PROGRAM_PREFIX = /^\[程序\] ?/
 const RUN_STEP_PREFIX = /^\[(?:例程|程序)[^\]#]*(?:#(\d+))?\] ?/
 const TURN_START = /^第 (\d+) 轮开始(?:（(.*?)）)?：?([\s\S]*)$/
-const TURN_END = /^第 (\d+) 轮结束（调了 (\d+) 次模型(?:，(.*?))?）/
+// 冒号后面是这一轮怎么结束的（有才写：“到了每轮 20 步的上限，第 21 步是收尾”）
+const TURN_END = /^第 (\d+) 轮结束（调了 (\d+) 次模型(?:，(.*?))?）(?:：([\s\S]*))?$/
 const HELPER_START = /^子思维 (h\d+) 开始(?:（(.*?)）)?：?([\s\S]*)$/
 const HELPER_END = /^子思维 (h\d+) (?:结束（调了 (\d+) 次模型[^）]*）|没想完)/
 const ROUTINE_START = /^例程 (r\d+)（([\s\S]*?)）开始在后台跑/
@@ -42,6 +44,25 @@ const RELAY_PREFIX = /^[^：\n]{0,40}→[^：\n]{0,40}：/
 
 /** 条目的 agent → 画在哪条线上。 */
 export const laneOfAgent = (agent) => (agent === 'talk' ? 'talk' : 'work')
+
+/** 一条线给人看的名字（和后端 /api/status 里的 title 一样；面板各处都用这一份）。 */
+export const LINE_NAMES = { talk: '对话线', work: '干活线', helper: '子思维' }
+
+/**
+ * 对话页上一轮（子思维是一段）头上那个标签：是哪条线的。只看条目自己带的 agent，不看 /api/status——
+ * 状态第一次回来之前就画好的行，状态来了不会重画（一行重画不重画看它自己的 rev），靠状态定的标签会一直停在“模型”。
+ * 分成两条线以前的条目没有 agent：写“模型”（那时只有一条线）。
+ */
+export function turnTag(item) {
+  if (item.turn?.helper) return LINE_NAMES.helper
+  return LINE_NAMES[item.agent] ?? '模型'
+}
+
+/** 到了每轮步数上限以后多给的那一步（收尾）是什么：面板上几处鼠标移上去看到的是这一句。 */
+export const CLOSING_HINT = '到了每轮步数的上限以后多给的一步：对话线只有 say、whisper 会执行（写的字只给你看），干活线和子思维不能调工具；这一步之后就结束了'
+
+/** 正在跑的一轮（/api/status 的 agents[].turn）是不是在收尾：走完的步数已经到了上限，这一轮却还没结束。 */
+export const closingNow = (turn) => typeof turn?.maxSteps === 'number' && (turn.steps ?? 0) >= turn.maxSteps
 
 /**
  * 一条工具调用或结果是谁发起的（模型自己、run_program 的程序、后台的例程），属于哪次程序运行，去掉前缀以后的正文。
@@ -354,6 +375,8 @@ export function buildTimeline(entries) {
           if (!turn.helper && !turn.model && end[3]) turn.model = end[3]
           // 子思维怎么结束的：“结束（…）：想完了”冒号后面那几个字；“没想完”就是大脑要停了
           if (turn.helper) turn.ending = /：([^：]*)$/.exec(entry.text)?.[1] ?? '没想完：大脑要停了'
+          // 两条线的一轮：照常结束的没有这一段；到了步数上限的写着“到了每轮 20 步的上限，第 21 步是收尾”
+          else if (end[4]) turn.ending = end[4]
         }
         const part = turn.parts[turn.parts.length - 1] ?? partOf(turn, entry, true)
         stamp(turn, part, entry)
@@ -601,14 +624,18 @@ export function buildTimeline(entries) {
   return { items, turns }
 }
 
-/**
- * 时间线 → 一行行。每行 { key, left, right }：left 是对话那条线上连着的几样东西，right 是紧跟在它们后面的干活那条线上的东西。
- * 干活线上的东西后面又来了对话线上的，就另起一行：所以从上到下、每行先左后右，还是时间顺序。
- * minLevel 以上的不要（1 只要对话，2 加上模型的决策，3 全部）。
- */
 /** 左右两边的事差这么多以内算“同时”，画在同一行里。 */
 const SIDE_BY_SIDE_MS = 120_000
 
+/**
+ * 时间线 → 一行行。每行 { key, left, right }：left 是对话那条线上连着的几样东西，right 是紧跟在它们后面的干活那条线上的东西。
+ * 一行里两边顶着对齐：右边头一件画在左边头一件旁边。所以从上往下就是先后——
+ *   - 干活线上的东西后面又来了对话线上的，另起一行；
+ *   - 右边的一件只在这一行左边刚好一件、而且差不多同时（两分钟内）时排进来。左边已经有好几件了（主人连着说了几句、
+ *     对话线自己的那几步），它比头一件后面那几件都晚，排进来就画在了它们上面——派出去的子思维会显得比派它的那句话还早；
+ *     左边那一件是好一阵以前的，挨着画也不对。这两种都另起一行，排在它们下面。
+ * maxLevel 以上的不要（1 只要对话，2 加上模型的决策，3 全部）；不要的也不算件数。
+ */
 export function layoutRows(items, maxLevel = LEVEL.all) {
   const rows = []
   let row
@@ -621,10 +648,9 @@ export function layoutRows(items, maxLevel = LEVEL.all) {
       continue
     }
     const left = item.lane === 'talk'
-    // 右边的一件挨着左边这一行的头上画：只有它和这一行开头差不多同时（两分钟内）才这样；
-    // 左边已经连着说了好一阵（比如半小时的聊天）以后才来的，另起一行，排在它们下面
-    const late = !left && row && row.right.length === 0 && row.left.length > 0 && item.time - row.left[0].time > SIDE_BY_SIDE_MS
-    if (!row || (left && row.right.length > 0) || late) {
+    // 右边的一件要挨着左边画，只能挨着这一行左边的头一件：左边只有这一件、而且差不多同时才行，不然另起一行排在下面
+    const below = !left && row && row.right.length === 0 && row.left.length > 0 && (row.left.length > 1 || item.time - row.left[0].time > SIDE_BY_SIDE_MS)
+    if (!row || (left && row.right.length > 0) || below) {
       row = { key: item.key, left: [], right: [] }
       rows.push(row)
     }
@@ -718,7 +744,7 @@ export function recentActivity(items, limit = 12, liveTurns = undefined) {
         }
         for (let x = step.texts.length - 1; x >= 0; x--) rows.push({ key: `x${step.texts[x].id}`, time: step.texts[x].time, kind: 'step', label: '模型的文字', text: step.texts[x].text, turn: item.turn.id, step: step.n })
         // “正在想”只对真的还在跑的那一轮写（liveTurns 给了就照它；想到一半被打断的旧记录不算）
-        if (step.call?.state === 'thinking' && (liveTurns === undefined || liveTurns.has(item.turn.id))) rows.push({ key: `k${step.call.id}`, time: step.time, kind: 'step', label: `第 ${step.n ?? '?'} 步`, text: '正在想…', pending: true, turn: item.turn.id, step: step.n })
+        if (step.call?.state === 'thinking' && (liveTurns === undefined || liveTurns.has(item.turn.id))) rows.push({ key: `k${step.call.id}`, time: step.time, kind: 'step', label: `第 ${step.n ?? '?'} 步${step.call.final ? '（收尾）' : ''}`, text: '正在想…', pending: true, turn: item.turn.id, step: step.n })
       }
     }
   }

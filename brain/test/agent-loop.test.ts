@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { BridgeError } from '../src/bridge/protocol.ts'
 import { LlmError } from '../src/llm/index.ts'
-import type { GenerateResult } from '../src/llm/index.ts'
+import type { GenerateResult, Message } from '../src/llm/index.ts'
 import { assertToolPairs, chat, llmDown, makeAgent, relays, reply, says, sentToTalk, taskEnded, told } from './agent-harness.ts'
+import type { AgentHarness } from './agent-harness.ts'
 import { sleep, waitFor } from './helpers.ts'
 
 // 这里测的是一条线自己的一轮怎么走（收事件、调模型、执行工具、落历史、出故障怎么办），大多用干活线：
@@ -106,32 +107,13 @@ describe('agent 的一轮决策', () => {
     assert.equal(/任务 t1/.test(h.talk.lastUserText(0)), false)
   })
 
-  it('模型一直调工具时，到每轮步数上限就停，而且每个调用都有结果', async (t) => {
-    const h = makeAgent({ settings: { maxSteps: 3 } })
-    t.after(h.cleanup)
-    for (let i = 0; i < 10; i++) h.llm.enqueue(reply('', [{ name: 'get_status' }]))
-    h.agent.handleEvent(told('看看你现在什么情况'))
-    await h.agent.whenIdle()
-
-    assert.equal(h.llm.requests.length, 3)
-    const turn = h.history.get().turns[0]!
-    assertToolPairs(turn.messages)
-    const last = turn.messages[turn.messages.length - 1]!
-    assert.equal(last.role, 'user')
-    assert.ok(last.content.some((p) => p.type === 'text' && p.text.includes('步数上限')))
-    assert.ok(h.log.recent().some((e) => e.kind === 'error' && e.text.includes('上限')))
-    // 干活线被截断这件事对话线知道（程序替它报的），主人问起来答得出
-    assert.deepEqual(relays(h, 'trouble').map((e) => e.isError), [true])
-    assert.match(h.talk.lastUserText(0), /干活线出了状况（这句是程序替它报的）：干活线这一轮到了每轮 3 步的上限，被截断了/)
-  })
-
-  it('对话线有它自己的步数上限', async (t) => {
+  it('对话线有它自己的步数上限（到了再给一步收尾，然后这一轮结束）', async (t) => {
     const h = makeAgent({ settings: { maxSteps: 9 }, talkSettings: { maxSteps: 2 } })
     t.after(h.cleanup)
     for (let i = 0; i < 5; i++) h.talk.enqueue(reply('', [{ name: 'get_status' }]))
     h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
     await h.agent.whenIdle()
-    assert.equal(h.talk.requests.length, 2)
+    assert.equal(h.talk.requests.length, 3)
     assert.equal(h.agent.state('talk').turn, null)
   })
 
@@ -1026,5 +1008,153 @@ describe('agent 的限制和故障处理', () => {
     h.agent.handleEvent(taskEnded('t8', 'failed', { error: { code: 'stuck', message: 'no progress' } }))
     await h.agent.whenIdle()
     assert.equal(h.llm.requests.length, 7)
+  })
+})
+
+describe('一轮到了步数上限：再给一步收尾', () => {
+  /** 这条线的模型调用：第几步、是不是收尾的那一步、日志里那一行开头写的是什么。 */
+  const modelCalls = (h: AgentHarness, agent: string): [number | undefined, boolean, string][] =>
+    h.log
+      .recent(0, 500)
+      .filter((e) => e.kind === 'model_call' && e.agent === agent)
+      .map((e) => [e.step, e.call?.final === true, e.text.split('：')[0]!])
+  /** 这条线最后一轮结束的那一句。 */
+  const turnEnd = (h: AgentHarness, agent: string): string => h.log.recent(0, 500).filter((e) => e.kind === 'turn' && e.agent === agent).at(-1)!.text
+  /** 一份历史里最后那条消息里某个调用的结果。 */
+  const resultIn = (messages: readonly Message[], id: string): { isError: boolean; content: string } => {
+    const part = messages.at(-1)!.content.find((p) => p.type === 'tool_result' && p.toolCallId === id)
+    assert.ok(part && part.type === 'tool_result', `no result for ${id}`)
+    return { isError: part.isError === true, content: part.content }
+  }
+
+  it('对话线（主人请它设计一间小屋，它查到第 3 步就到了上限）：再给它一步收尾——say、whisper 照常说进游戏，写的字照常给主人看，别的工具不执行；之后这一轮结束，记录里写着是截断后收尾的', async (t) => {
+    const h = makeAgent({ talkSettings: { maxSteps: 3 } })
+    t.after(h.cleanup)
+    h.talk.enqueue(
+      reply('', [{ name: 'get_status' }]),
+      reply('先看看周围', [{ name: 'get_status' }]),
+      reply('', [{ name: 'get_status' }]),
+      // 收尾那一步：在游戏里回他一句，写一句给主人看，顺手还想再查一次（不会执行）
+      reply('草稿 hut2 画好了，还没盖。', [
+        { id: 'c_say', name: 'say', input: { text: '小屋的草稿画好了，叫 hut2，面板上能看，要盖跟我说' } },
+        { id: 'c_more', name: 'get_status' },
+      ]),
+    )
+    h.agent.handleEvent(chat('Steve', 'Alu 帮我设计一间小屋'))
+    await h.agent.whenIdle()
+
+    // 3 步加 1 步收尾。收尾那一步照旧发整份工具清单、不强制它调什么：说不说、跟谁说由它定，哪些会执行写在消息末尾
+    assert.equal(h.talk.requests.length, 4)
+    assert.deepEqual(h.talk.requests.map((r) => r.toolChoice), [undefined, undefined, undefined, undefined])
+    assert.deepEqual(h.talk.requests[3]!.tools.map((x) => x.name), h.talk.requests[0]!.tools.map((x) => x.name))
+    const seen = h.talk.lastUserText(3)
+    assert.ok(
+      seen.endsWith(
+        '[系统] 这一轮到了每轮 3 步的上限。再给你一步收尾，这一步之后这一轮就结束了，没做完的要等下次被叫醒才能接着做。这一步里只有 say、whisper 会执行（照常说进游戏），写的字照常只给主人在面板上看；调别的工具不会执行。\n' +
+          '[谁在跟你说话] Steve 是在游戏聊天里对你说的；要回他得用 say（所有人都看到）或 whisper（只有那个人看到），只写字他看不到。',
+      ),
+      seen,
+    )
+    // 游戏里的人收到了回话；那一步要的别的工具没执行，结果里照实写了
+    assert.deepEqual(h.game.said, ['小屋的草稿画好了，叫 hut2，面板上能看，要盖跟我说'])
+    const turn = h.talkHistory.get().turns[0]!
+    assertToolPairs(turn.messages)
+    assert.equal(resultIn(turn.messages, 'c_say').isError, false)
+    assert.deepEqual(resultIn(turn.messages, 'c_more'), { isError: true, content: 'Not executed: this was the one closing step given at the step limit, and in it only say and whisper run. The turn ended after that step.' })
+    assert.equal(h.agent.state('talk').turn, null)
+
+    // 记录：截断是一条错误；收尾的那次模型调用标着收尾；这一轮结束那一句写着到了上限、哪一步是收尾
+    assert.deepEqual(
+      h.log.recent(0, 500).filter((e) => e.kind === 'error' && e.agent === 'talk').map((e) => e.text),
+      ['到了每轮 3 步的上限，这一轮被截断。再给它一步收尾（只有 say、whisper 会执行，写的字给主人在面板上看），之后这一轮结束。'],
+    )
+    assert.deepEqual(modelCalls(h, 'talk'), [[1, false, '第 1 步'], [2, false, '第 2 步'], [3, false, '第 3 步'], [4, true, '第 4 步（收尾）']])
+    assert.match(turnEnd(h, 'talk'), /^第 \d+ 轮结束（调了 4 次模型）：到了每轮 3 步的上限，第 4 步是收尾$/)
+    // 写的字照常只在面板上（reply），说的话是 say
+    assert.deepEqual(
+      h.log.recent(0, 500).filter((e) => e.kind === 'reply' || e.kind === 'say').map((e) => [e.kind, e.text]),
+      [['reply', '先看看周围'], ['reply', '草稿 hut2 画好了，还没盖。'], ['say', '小屋的草稿画好了，叫 hut2，面板上能看，要盖跟我说']],
+    )
+  })
+
+  it('到上限那一步期间新到的话不接进收尾（那一步只能说话，接进来就算这一轮办过了）：这一轮结束后为它另开一轮', async (t) => {
+    const h = makeAgent({ talkSettings: { maxSteps: 2 } })
+    t.after(h.cleanup)
+    h.talk.enqueue(
+      reply('', [{ name: 'get_status' }]),
+      // 它想第 2 步的时候 Steve 又说了一句
+      () => {
+        h.agent.handleEvent(chat('Steve', '再加个烟囱'))
+        return reply('', [{ name: 'get_status' }])
+      },
+      says('草稿画好了，叫 hut2'),
+      // 新的一轮：看到了那句话，手里是全套工具
+      says('好，给 hut2 加个烟囱'),
+      reply(''),
+    )
+    h.agent.handleEvent(chat('Steve', 'Alu 帮我设计一间小屋'))
+    await waitFor('the next turn ended', () => h.talk.requests.length === 5)
+    await h.agent.whenIdle()
+    assert.match(h.talk.lastUserText(2), /\[系统\] 这一轮到了每轮 2 步的上限。/)
+    assert.equal(h.talk.lastUserText(2).includes('再加个烟囱'), false)
+    assert.match(h.talk.lastUserText(3), /^\[需要你处理的事\]\n\[[\d:]+\] Steve 说：再加个烟囱\n/)
+    assert.equal(h.talk.lastUserText(3).includes('步的上限'), false)
+    assert.deepEqual(h.game.said, ['草稿画好了，叫 hut2', '好，给 hut2 加个烟囱'])
+    assert.deepEqual(modelCalls(h, 'talk').map(([step, final]) => [step, final]), [[1, false], [2, false], [3, true], [1, false], [2, false]])
+  })
+
+  it('干活线（开了个任务、又查了两步就到了上限）：收尾那一步不能调工具（toolChoice none）；它写的话连同“被截断了”“还在等任务”由程序报给对话线；它收尾的时候对话线的状态里写着这是收尾的一步', async (t) => {
+    const h = makeAgent({ settings: { maxSteps: 3 } })
+    t.after(h.cleanup)
+    h.llm.enqueue(
+      reply('', [{ name: 'flatten_area', input: { x1: 0, z1: 0, x2: 7, z2: 7, y: 64 } }]),
+      reply('', [{ name: 'get_status' }]),
+      reply('', [{ name: 'get_status' }]),
+      // 收尾那一步：它想的时候主人问“你在干嘛”
+      async () => {
+        h.agent.handleEvent(chat('Steve', 'Alu 你在干嘛'))
+        await waitFor('the talk line looked at the worker', () => h.talk.requests.length === 1)
+        return reply('平地任务 t1 开了，在等它做完；东边那排还没看。', [{ id: 'c_more', name: 'get_status' }])
+      },
+    )
+    h.agent.handleEvent(told('把这块地平一下'))
+    await waitFor('the talk line heard about the cut', () => h.talk.requests.length === 2)
+    await h.agent.whenIdle()
+
+    assert.equal(h.llm.requests.length, 4)
+    assert.deepEqual(h.llm.requests.map((r) => r.toolChoice), [undefined, undefined, undefined, 'none'])
+    assert.ok(
+      h.llm.lastUserText(3).endsWith('[系统] 这一轮到了每轮 3 步的上限。再给你一步收尾，这一步之后这一轮就结束了，没做完的要等下次被叫醒才能接着做。这一步调不了工具（调了也不会执行）；写的字和一轮结束时留下的话一样，送给对话线。'),
+      h.llm.lastUserText(3),
+    )
+    // 它收尾的时候，对话线看到的干活线的现状
+    assert.match(h.talk.lastUserText(0), /\n干活线：在忙。第 \d+ 轮（.*），已经想完 3 步，正在想第 4 步（到了每轮 3 步的上限，这是收尾的一步：不能调工具，写完这一轮就结束）。\n/)
+    // 收尾那一步要的工具没执行
+    const turn = h.history.get().turns[0]!
+    assertToolPairs(turn.messages)
+    assert.deepEqual(resultIn(turn.messages, 'c_more'), { isError: true, content: 'Not executed: this was the one closing step given at the step limit, and in it no tools run. The turn ended after that step.' })
+    // 程序替它报给对话线（叫醒对话线）：被截断了、它收尾时写的话原样、它还在等自己开的任务。没有另外的“还在干”那一条
+    const report = '干活线这一轮到了每轮 3 步的上限，被截断了。收尾的那一步（不能再调工具）它写的话：平地任务 t1 开了，在等它做完；东边那排还没看。\n它还在干（在等它开的任务结束：t1（flatten）），这些结束时它自己会被叫醒接着做。'
+    assert.deepEqual(sentToTalk(h), [report])
+    assert.deepEqual(relays(h).map((e) => [e.relay?.type, e.isError]), [['trouble', true]])
+    assert.ok(h.talk.lastUserText(1).includes(`干活线出了状况（这句是程序替它报的）：${report}`), h.talk.lastUserText(1))
+    assert.deepEqual(modelCalls(h, 'work'), [[1, false, '第 1 步'], [2, false, '第 2 步'], [3, false, '第 3 步'], [4, true, '第 4 步（收尾）']])
+    assert.match(turnEnd(h, 'work'), /^第 \d+ 轮结束（调了 4 次模型）：到了每轮 3 步的上限，第 4 步是收尾$/)
+    assert.deepEqual(h.game.said, [])
+  })
+
+  it('到了上限时今天的模型用量也到了上限：不再调模型收尾，照实写没有收尾；对话线拿到的是它这一轮最后写的话', async (t) => {
+    const h = makeAgent({ settings: { maxSteps: 2, dailyTokenLimit: 10_000 } })
+    t.after(h.cleanup)
+    h.llm.enqueue(reply('', [{ name: 'get_status' }]), () => {
+      h.usedTokens.value = 10_000
+      return reply('看了两次状态，都正常', [{ name: 'get_status' }])
+    })
+    h.agent.handleEvent(told('看看你现在什么情况'))
+    await waitFor('the talk line was told', () => relays(h, 'trouble').length === 1)
+    await h.agent.whenIdle()
+    assert.equal(h.llm.requests.length, 2)
+    assert.match(turnEnd(h, 'work'), /^第 \d+ 轮结束（调了 2 次模型）：到了每轮 2 步的上限，没有收尾$/)
+    assert.deepEqual(sentToTalk(h), ['干活线这一轮到了每轮 2 步的上限，被截断了。没有给它收尾的那一步（今天的模型用量到了上限）；它这一轮最后写的是：看了两次状态，都正常\n它停下来了（身体上没有它开的任务，也没有例程在跑）；要它接着做，带话给它（tell_worker）。'])
   })
 })

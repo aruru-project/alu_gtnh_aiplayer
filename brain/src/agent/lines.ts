@@ -828,7 +828,9 @@ export class Lines {
     const own = (await this.ownTasks(peek, now)).zh
     const lines: string[] = []
     if (state.turn) {
-      const doing = state.model.state === 'thinking' ? `正在想第 ${state.model.step ?? state.turn.steps + 1} 步` : `正在执行第 ${state.turn.steps} 步要的工具`
+      // 到了步数上限以后多给的那一步：它在写收尾的话，写完这一轮就结束
+      const closing = state.turn.steps >= state.turn.maxSteps ? `（到了每轮 ${state.turn.maxSteps} 步的上限，这是收尾的一步：不能调工具，写完这一轮就结束）` : ''
+      const doing = state.model.state === 'thinking' ? `正在想第 ${state.model.step ?? state.turn.steps + 1} 步${closing}` : `正在执行第 ${state.turn.steps} 步要的工具`
       lines.push(`干活线：在忙。第 ${state.turn.id} 轮（${ago(now, state.turn.startedAt)}开始，起因：${state.turn.about}），已经想完 ${state.turn.steps} 步，${doing}。`)
     } else if (state.model.outage) {
       lines.push(`干活线：模型接口故障（连着失败 ${state.model.outage.failures} 次：${firstLine(state.model.outage.lastError, 160)}），${state.pending > 0 ? `有 ${state.pending} 件事等着，` : ''}过一会儿自动再试。`)
@@ -861,7 +863,8 @@ export class Lines {
     const { state } = peek
     const out: string[] = []
     if (state.turn) {
-      const doing = state.model.state === 'thinking' ? `thinking about step ${state.model.step ?? state.turn.steps + 1}${state.model.since !== undefined ? ` for ${Math.round((now - state.model.since) / 1000)} s` : ''}` : `running the tools of step ${state.turn.steps}`
+      const closing = state.turn.steps >= state.turn.maxSteps ? ' (the step limit is reached: this is its closing step, with no tools, and the turn ends after it)' : ''
+      const doing = state.model.state === 'thinking' ? `thinking about step ${state.model.step ?? state.turn.steps + 1}${state.model.since !== undefined ? ` for ${Math.round((now - state.model.since) / 1000)} s` : ''}${closing}` : `running the tools of step ${state.turn.steps}`
       out.push(`Worker: busy. Turn ${state.turn.id}, started ${agoEn(now, state.turn.startedAt)}; ${state.turn.steps} of at most ${state.turn.maxSteps} steps done, now ${doing}.`, `What started the turn: ${state.turn.about}`)
       if (peek.steps.length > 0) {
         out.push(`Its last ${peek.steps.length} tool call(s) this turn${detail ? '' : ' (first line of each result; detail: true gives more)'}:`)

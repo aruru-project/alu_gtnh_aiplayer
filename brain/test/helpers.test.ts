@@ -273,6 +273,10 @@ describe('子思维：怎么结束', () => {
     assert.ok(seen.includes('  它交回的话（原样，只有你看得到）：\n结论：钢锭 64 个，还差 32 个；配方没查完。'))
     const record = h.helperStore.get('h1')!
     assert.deepEqual([record.status, record.steps, record.transcript.at(-1)!.final], ['limit', 4, true])
+    // 活动日志里也看得出哪一步是收尾（和两条线到了上限以后那一步一样标着）
+    const calls = h.log.recent(0, 500).filter((e) => e.agent === 'helper' && e.kind === 'model_call')
+    assert.deepEqual(calls.map((e) => [e.step, e.call?.final === true]), [[1, false], [2, false], [3, false], [4, true]])
+    assert.match(calls.at(-1)!.text, /^第 4 步（收尾）：/)
     // 不能调工具的那一步要的工具没有执行
     assert.equal(h.log.recent(0, 500).some((e) => e.kind === 'tool_call' && e.who === 'find_recipes'), false)
   })

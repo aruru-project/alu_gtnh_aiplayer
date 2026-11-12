@@ -19,13 +19,13 @@ import { speakInChat } from '../tools/chat.ts'
 import { clip, compactJson } from '../tools/format.ts'
 import type { DesignWorkspace } from '../design/index.ts'
 import type { PackData } from '../packdata/index.ts'
-import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
+import { LEGACY_TOOLS, QUERY_TOOLS, QuestProgressCache, SPEAKING_TOOLS, SurroundingsCache, modelToolSpecs, runTool } from '../tools/index.ts'
 import type { HelperAccess, LineName, ManualAccess, MemoryAccess, ProgramToolResult, ReminderAccess, Tool, ToolContext, ToolResult } from '../tools/index.ts'
 import { HARD_LIMIT_SHARE, compactHistory, contextTokens, estimateTokens, historyMessages } from './compaction.ts'
 import type { CompactResult, ContextGauge, TurnRange } from './compaction.ts'
 import { buildSnapshot, composeArrivals, composeTurnMessage, manualStatusLine, manualsInContext, talkClosing } from './context.ts'
 import type { PendingReminder } from './context.ts'
-import { describeEvent, eventLine, isHumanInput } from './events.ts'
+import { agoText, describeEvent, eventLine, isHumanInput } from './events.ts'
 import type { AgentEvent, SaidEvent, WorkerNote } from './events.ts'
 import { buildSystemPrompt } from './prompt.ts'
 import { RoutineRunner, describeRoutine } from './routine.ts'
@@ -283,7 +283,7 @@ export interface LastCall {
 
 /** model_call 那条日志的一行字。 */
 export function modelCallText(call: ActivityModelCall): string {
-  const what = call.purpose === 'compact' ? '压缩历史' : `第 ${call.step ?? '?'} 步`
+  const what = call.purpose === 'compact' ? '压缩历史' : `第 ${call.step ?? '?'} 步${call.final ? '（收尾）' : ''}`
   if (call.state === 'thinking') return `${what}：模型在想…`
   const seconds = `${((call.ms ?? 0) / 1000).toFixed(1)} 秒`
   if (call.state === 'failed') return `${what}：模型调用失败（${call.errorKind ?? 'unknown'}，${seconds}）：${call.error ?? ''}`
@@ -374,8 +374,8 @@ const PEEK_RESULT_CHARS = 600
 export const TEXT_NOT_SAID_NOTE =
   '[系统] 大脑升级了：从现在起，你写的字不再说进游戏聊天，只有主人在面板上看得到。要在游戏里说话，用 say（所有人都看到）或 whisper（只有那个人看到）。历史里在这之前的那些轮，那时写的字就是在公共聊天里说出去的话。'
 
+// 没叫到名字（not_addressed）的那一句带着对话窗口多长、他上次和它说上话是多久以前，由 notAddressedNote 写
 const NOT_WOKEN_NOTES: Partial<Record<WakeDecision['reason'], string>> = {
-  not_addressed: '没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内。',
   not_owner: '没有叫醒模型：说话的人不在主人名单里。',
   other_bot: '没有叫醒模型：这是另一个 bot 说的。',
   stale: '没有叫醒模型：这是断线期间的旧消息。',
@@ -384,8 +384,23 @@ const NOT_WOKEN_NOTES: Partial<Record<WakeDecision['reason'], string>> = {
   failure_streak: '没有叫醒模型：任务已经接连失败太多次，等人介入。',
 }
 
-const STEP_LIMIT_NOTE =
-  '[系统] 这一轮已经到了步数上限，到此为止。没做完的事等下次被叫醒再继续；不要指望这一轮里还能再调用工具。'
+/**
+ * 一轮到了步数上限：再给它一步收尾，这一步之后这一轮结束。这是接在最后那次工具结果后面的话。
+ * speaking 是这一步里还会执行的工具（对话线：say、whisper——它的字进不了游戏，游戏里的人要靠这两个才听得到；
+ * 干活线没有：它这一步写的字送给对话线）。who 是对话线那句“谁在跟你说话”（talkClosing），放在最后，离它下笔最近。
+ */
+function closingNote(max: number, speaking: readonly string[], who?: string): string {
+  const what =
+    speaking.length > 0
+      ? `这一步里只有 ${speaking.join('、')} 会执行（照常说进游戏），写的字照常只给主人在面板上看；调别的工具不会执行。`
+      : '这一步调不了工具（调了也不会执行）；写的字和一轮结束时留下的话一样，送给对话线。'
+  return `[系统] 这一轮到了每轮 ${max} 步的上限。再给你一步收尾，这一步之后这一轮就结束了，没做完的要等下次被叫醒才能接着做。${what}${who ? `\n${who}` : ''}`
+}
+
+/** 收尾那一步里调的、不在 speaking 里的工具：不执行，结果里照实说。 */
+function closingRefusal(speaking: readonly string[]): string {
+  return `Not executed: this was the one closing step given at the step limit, and in it ${speaking.length > 0 ? `only ${speaking.join(' and ')} run` : 'no tools run'}. The turn ended after that step.`
+}
 /**
  * 一轮里同时附带的图最多这么多张：再要新的，最早的那张换成占位文字。
  * 一轮结束后图一张都不留（见 HistoryStore.appendTurn），所以这只管一轮之内。
@@ -1164,12 +1179,18 @@ export class Agent {
     })
     // 清单按这条线、这一轮用的模型给：看图的工具只发给能看图的模型；库函数不在清单里，在 run_program 说明后面的索引里
     const toolSpecs = modelToolSpecs(this.deps.tools, { canSee, line: this.line })
+    // 到了步数上限以后的收尾那一步里还会执行的：这条线在游戏里说话的工具（对话线的 say、whisper；干活线没有）
+    const speaking = toolSpecs.filter((t) => SPEAKING_TOOLS.includes(t.name)).map((t) => t.name)
     const ctx = this.toolContext(settings.botName, canSee)
     let prior = this.priorMessages()
     this.turnSpoke = false
     let finalText = ''
+    /** 这一轮它最后写下的一段字（收尾那一步没写字时，告诉对话线的是它）。 */
+    let lastText = ''
     let steps = 0
     let hitLimit = false
+    /** 到了步数上限：下一步是多给的收尾（只有 speaking 里的工具会执行，没有就是 toolChoice none），那一步之后这一轮结束。 */
+    let closing = false
     let compactedForContext = false
 
     const saveTurn = () => {
@@ -1238,13 +1259,18 @@ export class Agent {
         this.log.add({ kind: 'error', turn: turnId, text: '今天的 token 用量到上限了，这一轮提前结束。' })
         break
       }
-      if (steps > 0) absorbArrivals()
+      // 收尾那一步不接新到的事：那一步里它做不了事（对话线只能说话，干活线只能写字），接进来就等于把它们算成这一轮办过了。
+      // 留在队里，这一轮结束后另开一轮
+      if (steps > 0 && !closing) absorbArrivals()
       // 后台写的交接记录回来了：从这一步起用新的历史。这一轮自己的消息不在历史里，不受影响
       if (this.adoptBackground()) prior = this.priorMessages()
 
       let result: GenerateResult
       try {
-        result = await this.callModel(llm, { system, messages: [...prior, ...keepLatestImages(turnMessages, LIVE_IMAGES_MAX)], tools: toolSpecs, signal }, { purpose: 'turn', turn: turnId, step: steps + 1 })
+        // 收尾那一步照旧发整份工具清单（历史里调过的工具都有定义，提示词缓存也还在），哪些会执行写在消息末尾；
+        // 一个说话的工具都没有的线（干活线）干脆不让它调工具
+        const request: GenerateRequest = { system, messages: [...prior, ...keepLatestImages(turnMessages, LIVE_IMAGES_MAX)], tools: toolSpecs, ...(closing && speaking.length === 0 ? { toolChoice: 'none' as const } : {}), signal }
+        result = await this.callModel(llm, request, { purpose: 'turn', turn: turnId, step: steps + 1, ...(closing ? { final: true } : {}) })
       } catch (e) {
         returnUnanswered()
         if (!(e instanceof LlmError)) throw e
@@ -1297,6 +1323,7 @@ export class Agent {
       if (text.length > 0) this.log.add(talk ? { kind: 'reply', turn: turnId, step: steps, who: settings.botName, text } : { kind: 'model_text', turn: turnId, step: steps, text })
       // 对话线写的字也进聊天记录（recent_chat）：干活线翻得到主人在面板上说了什么、她怎么回的
       if (talk && text.length > 0) this.deps.chatLog?.add({ time: this.now(), kind: 'replied', who: settings.botName, text })
+      if (text.length > 0) lastText = text
       if (calls.length === 0) {
         finalText = text
         break
@@ -1313,6 +1340,8 @@ export class Agent {
         let res: ToolResult
         if (signal.aborted) {
           res = { content: this.halting ? NOT_RUN_HALTED : NOT_RUN_SHUTDOWN, isError: true }
+        } else if (closing && !speaking.includes(call.name)) {
+          res = { content: closingRefusal(speaking), isError: true }
         } else if (result.stopReason === 'max_tokens') {
           res = {
             content:
@@ -1372,11 +1401,24 @@ export class Agent {
         this.deps.history.appendTurn({ id: turnId, startedAt, messages: turnMessages })
         return
       }
-      if (steps >= settings.maxSteps) {
-        appendNote(STEP_LIMIT_NOTE)
-        this.log.add({ kind: 'error', turn: turnId, text: `到了每轮 ${settings.maxSteps} 步的上限，这一轮被截断。` })
-        hitLimit = true
+      // 收尾的那一步就是最后一步（它在那一步调的工具上面已经照实回了结果）
+      if (closing) {
+        finalText = text
         break
+      }
+      // 到了步数上限：不再让它干活，但再给一步收尾——不然它做到一半、甚至做完了，人却一句话都收不到
+      // （对话线的字进不了游戏，说话要靠 say、whisper；干活线写的字送给对话线）。上限本身不动
+      if (steps >= settings.maxSteps) {
+        hitLimit = true
+        closing = true
+        const note = closingNote(settings.maxSteps, speaking, talk ? talkClosing(triggers) : undefined)
+        appendNote(note)
+        this.log.add({
+          kind: 'error',
+          turn: turnId,
+          text: `到了每轮 ${settings.maxSteps} 步的上限，这一轮被截断。再给它一步收尾（${speaking.length > 0 ? `只有 ${speaking.join('、')} 会执行，写的字给主人在面板上看` : '不能调工具，写的话送给对话线'}），之后这一轮结束。`,
+          detail: note,
+        })
       }
     }
 
@@ -1394,15 +1436,19 @@ export class Agent {
       if (talk && last !== undefined) this.lastExchange.set(last.toLowerCase(), now)
     }
 
+    // 收尾那一步调成了没有（到了上限以后今天的用量也正好到了上限时，就没有那一步）
+    const closed = hitLimit && steps > settings.maxSteps
     this.lastTurn = { id: turnId, endedAt: this.now(), steps, how: hitLimit ? 'limit' : 'ended' }
-    this.log.add({ kind: 'turn', turn: turnId, text: `第 ${turnId} 轮结束（调了 ${steps} 次模型${modelName ? `，${modelName}` : ''}）` })
+    // 到了上限的一轮，结束那一句的冒号后面照实写上（面板把它画在这一轮的头上）
+    const ending = hitLimit ? `：到了每轮 ${settings.maxSteps} 步的上限，${closed ? `第 ${steps} 步是收尾` : '没有收尾'}` : ''
+    this.log.add({ kind: 'turn', turn: turnId, text: `第 ${turnId} 轮结束（调了 ${steps} 次模型${modelName ? `，${modelName}` : ''}）${ending}` })
     this.turnNow = undefined
     // 干活线不对玩家说话：这一轮留下的文字送给对话线，由它决定怎么跟人说。到步数上限被截断的也让对话线知道。
     // 它停下来了（身体上没有它开的任务、没有例程、也没有等它处理的事）才叫醒对话线；它只是在等自己的任务或例程结束时
     // （那时它自己会被叫醒接着做），这句话只作背景送过去——不然对话线会以为它停在半路，回头来催，两条线互相叫醒个没完。
     if (!talk) {
       if (hitLimit) {
-        links?.toTalk?.('trouble', `干活线这一轮到了每轮 ${settings.maxSteps} 步的上限，被截断了，手上的事可能没做完。之后有任务结束之类的事叫醒它时它会接着想；要它现在就继续，带话给它（tell_worker）。`, { turn: turnId, step: steps })
+        links?.toTalk?.('trouble', this.limitReport(settings.maxSteps, closed, finalText, lastText), { turn: turnId, step: steps })
       } else if (finalText.length > 0) {
         const waiting = this.stillGoing()
         if (waiting !== undefined) links?.toTalk?.('progress', finalText, { turn: turnId, step: steps }, waiting)
@@ -1412,6 +1458,21 @@ export class Agent {
       this.turnEnded = { id: turnId, triggers }
     }
     await this.maybeCompact(llm, settings, signal, turnId)
+  }
+
+  /**
+   * 干活线一轮到了步数上限：程序替它告诉对话线的那段话。被截断了；收尾那一步（不能调工具）它写的话原样附上
+   * （那一步没写字就附它这一轮最后写的）；它现在是还在等自己的任务、例程（结束时它自己会被叫醒），还是停下来了。
+   */
+  private limitReport(max: number, closed: boolean, finalText: string, lastText: string): string {
+    const said = !closed
+      ? `没有给它收尾的那一步（今天的模型用量到了上限）${lastText ? `；它这一轮最后写的是：${lastText}` : '。'}`
+      : finalText.length > 0
+        ? `收尾的那一步（不能再调工具）它写的话：${finalText}`
+        : `收尾的那一步它没写字${lastText ? `；它这一轮最后写的是：${lastText}` : '，这一轮也没留下别的字。'}`
+    const waiting = this.stillGoing()
+    const now = waiting !== undefined ? `它还在干（${waiting}），这些结束时它自己会被叫醒接着做。` : '它停下来了（身体上没有它开的任务，也没有例程在跑）；要它接着做，带话给它（tell_worker）。'
+    return `干活线这一轮到了每轮 ${max} 步的上限，被截断了。${said}\n${now}`
   }
 
   /**
@@ -1449,13 +1510,13 @@ export class Agent {
    * 调一次模型。每一次在对话日志里是一条 model_call：开始想的时候就记下（面板上看得到“正在想第几步”），
    * 回来或者出错时原地改成结果（用时、token、缓存命中、怎么结束的）。
    */
-  private async callModel(llm: LlmClient, req: GenerateRequest, at: { purpose: 'turn' | 'compact'; turn?: number; step?: number; background?: boolean }): Promise<GenerateResult> {
+  private async callModel(llm: LlmClient, req: GenerateRequest, at: { purpose: 'turn' | 'compact'; turn?: number; step?: number; background?: boolean; final?: boolean }): Promise<GenerateResult> {
     const started = performance.now()
     const startedAt = this.now()
     // 在后台写交接记录的调用只记日志，不动这条线自己的这几项（它同时在跑自己的一轮）
     const own = at.background !== true
     const where = { ...(at.turn !== undefined ? { turn: at.turn } : {}), ...(at.step !== undefined ? { step: at.step } : {}) }
-    const begun: ActivityModelCall = { state: 'thinking', purpose: at.purpose, startedAt, ...(at.step !== undefined ? { step: at.step } : {}) }
+    const begun: ActivityModelCall = { state: 'thinking', purpose: at.purpose, startedAt, ...(at.step !== undefined ? { step: at.step } : {}), ...(at.final ? { final: true as const } : {}) }
     const entry = this.log.add({ kind: 'model_call', ...where, text: modelCallText(begun), call: begun })
     if (own) this.thinking = { ...where, since: startedAt, purpose: at.purpose }
     const settle = (end: Partial<ActivityModelCall>): void => {
@@ -2069,9 +2130,21 @@ export class Agent {
     if (this.background.length > BACKGROUND_MAX) this.background.splice(0, this.background.length - BACKGROUND_MAX)
   }
 
+  /**
+   * 一句没叫到名字、说话的人也不在对话窗口内的聊天：面板上写在这句话下面的原因。窗口多长、他上次和它说上话是多久以前
+   * （他的话叫醒了它，或者它在那一轮说了话；这次启动以来的）都照实写上：“同一个人过了一阵接着说，没带名字，它就没理”
+   * 是叫醒方式定的，不是故障。
+   */
+  private notAddressedNote(player: string): string {
+    const span = agoText(this.deps.settings().conversationWindowSec * 1000)
+    const last = this.lastExchange.get(player.toLowerCase())
+    const ago = last !== undefined ? `；${player} 上次和它说上话是 ${agoText(this.now() - last)}前` : ''
+    return `没有叫醒模型：没提到它的名字，说话的人也不在对话窗口内（窗口 ${span}${ago}）。`
+  }
+
   private logEvent(ev: AgentEvent, decision: WakeDecision): void {
     // 只有“本来可能要回应、但这次没叫醒模型”的情况才值得在面板上说明原因
-    const note = decision.wake ? undefined : NOT_WOKEN_NOTES[decision.reason]
+    const note = decision.wake ? undefined : decision.reason === 'not_addressed' && ev.type === 'chat' ? this.notAddressedNote(ev.player) : NOT_WOKEN_NOTES[decision.reason]
     const add = (entry: ActivityInput) => {
       if (note !== undefined) entry.detail = note
       this.log.add(entry)
