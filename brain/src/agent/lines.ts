@@ -172,6 +172,7 @@ export function lineOf(ev: AgentEvent): LineName | 'both' {
       return 'both'
     case 'task_started':
     case 'task_ended':
+    case 'machine_circuit':
     case 'hurt':
     case 'bot_message':
     case 'told':

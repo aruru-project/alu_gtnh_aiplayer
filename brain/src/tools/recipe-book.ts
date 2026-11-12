@@ -1224,8 +1224,11 @@ export function craftGrid(recipe: Recipe, have?: Carried): GridCell[] {
 }
 
 export interface ProcessPlan {
-  /** 要放进机器的东西：消耗的原料乘上轮数，模具模头这类不消耗的各 1 个。 */
-  inputs: { id: string; meta?: number; count: number }[]
+  /**
+   * 要放进机器的东西：消耗的原料乘上轮数，模具模头这类不消耗的各 1 个、带 stays（身体据此知道放下就走的那一批什么时候算做完：
+   * 不消耗的留在原料格里不算没做完）。
+   */
+  inputs: { id: string; meta?: number; count: number; stays?: true }[]
   /**
    * 配方要的编程电路号（不当物品去找，由 circuit 参数设）。GregTech 的配方不要电路的是 0（清掉）：机器上留着的电路会让同一批料
    * 凑成另一条配方（意见簿 f5：组装机留着电路 1，铁杆 + 铁环要做车轮，它拿铁杆按“铁杆 + 电路 1”做了铁栅栏）；没有电路设置的
@@ -1250,17 +1253,18 @@ export function processPlan(recipe: Recipe, rounds: number, have?: Carried, item
     if (slot.n === 0 && moldInside) continue
     // 模具、模头这类不消耗的放 1 个；消耗的乘上轮数
     const count = slot.n === 0 ? 1 : slot.n * rounds
+    const stays = slot.n === 0 ? { stays: true as const } : {}
     if (slot.kind === 'item') {
       // 配方点名的那个 id 身上不够、而同一个材料件矿辞名下的另一种够：放那一种（机器当它们是同一种东西）
       const ore = have && slot.meta !== ANY_META && have.of(slot.id, slot.meta) < count ? unifiedOre(items?.get(slot.id, slot.meta)) : undefined
       const twin = ore ? have!.underOre(ore).find((x) => x.count >= count && !(x.id === slot.id && x.meta === slot.meta)) : undefined
-      if (twin) plan.inputs.push({ id: twin.id, meta: twin.meta, count })
-      else plan.inputs.push({ id: slot.id, ...(slot.meta === ANY_META ? {} : { meta: slot.meta }), count })
+      if (twin) plan.inputs.push({ id: twin.id, meta: twin.meta, count, ...stays })
+      else plan.inputs.push({ id: slot.id, ...(slot.meta === ANY_META ? {} : { meta: slot.meta }), count, ...stays })
       continue
     }
     // 几种都行的（矿辞名或一组物品）：身上有哪种放哪种，都没有就写列出来的第一种
     const pick = slot.any.find(([id, meta]) => (have?.of(id, meta) ?? 0) > 0) ?? slot.any[0]
-    if (pick) plan.inputs.push({ id: pick[0], ...(pick[1] === ANY_META ? {} : { meta: pick[1] }), count })
+    if (pick) plan.inputs.push({ id: pick[0], ...(pick[1] === ANY_META ? {} : { meta: pick[1] }), count, ...stays })
   }
   for (const o of recipe.out) {
     // 有概率才出的不算进“一定要取回来的”

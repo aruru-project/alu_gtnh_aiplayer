@@ -11,6 +11,11 @@ export type AgentEvent =
   | { type: 'bot_message'; time: number; text: string }
   | { type: 'task_started'; time: number; task: TaskInfo }
   | { type: 'task_ended'; time: number; task: TaskInfo }
+  /**
+   * 放下就走（leave）的那一批做完了，身体把它设过的编程电路改回原值（restored），或者没改、为什么（reason：中途有人改过、机器没了）。
+   * at 是电路在的地方（单方块是机器，多方块是输入总线）；set 是那个任务设的，was 是原来的，now 是现在的。
+   */
+  | { type: 'machine_circuit'; time: number; task: string; at: { x: number; y: number; z: number }; machine?: { x: number; y: number; z: number }; set: number; was: number; now?: number; restored: boolean; reason?: string }
   | { type: 'hurt'; time: number; source: string; amount: number; health: number }
   | { type: 'death'; time: number; cause: string }
   | { type: 'spawned'; time: number }
@@ -84,6 +89,12 @@ function speakerOf(v: unknown): PlayerView | undefined {
   return view.block !== undefined || view.pos !== undefined ? view : undefined
 }
 
+function isPos(v: unknown): v is { x: number; y: number; z: number } {
+  if (v === null || typeof v !== 'object') return false
+  const p = v as Record<string, unknown>
+  return typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number'
+}
+
 function isTaskInfo(v: unknown): v is TaskInfo {
   if (v === null || typeof v !== 'object') return false
   const t = v as Record<string, unknown>
@@ -122,6 +133,21 @@ export function fromBridgeEvent(e: BridgeEvent, botName: string, now: number): A
       if (state === 'running') return { type: 'task_started', time, task: d.task }
       if (state === 'done' || state === 'failed' || state === 'canceled') return { type: 'task_ended', time, task: d.task }
       return undefined
+    }
+    case 'machine.circuit': {
+      if (!mine || !isPos(d.machine)) return undefined
+      return {
+        type: 'machine_circuit',
+        time,
+        task: s(d.task),
+        at: isPos(d.bus) ? d.bus : d.machine,
+        ...(isPos(d.bus) ? { machine: d.machine } : {}),
+        set: n(d.set),
+        was: n(d.was),
+        ...(typeof d.now === 'number' ? { now: d.now } : {}),
+        restored: d.restored === true,
+        ...(typeof d.reason === 'string' ? { reason: d.reason } : {}),
+      }
     }
     case 'bot.spawned':
       return mine ? { type: 'spawned', time } : undefined
@@ -204,6 +230,12 @@ export function describeEvent(ev: AgentEvent): string {
       return `任务 ${ev.task.id}（${ev.task.type}）开始执行`
     case 'task_ended':
       return describeTaskEnd(ev.task)
+    case 'machine_circuit': {
+      const where = `(${ev.at.x},${ev.at.y},${ev.at.z})${ev.machine ? `（输入总线，机器在 (${ev.machine.x},${ev.machine.y},${ev.machine.z})）` : ''}`
+      return ev.restored
+        ? `任务 ${ev.task} 放下就走的那一批做完了：${where} 的编程电路已经改回原来的 ${circuitWord(ev.was)}（这一批用的是 ${circuitWord(ev.set)}）`
+        : `任务 ${ev.task} 放下就走的那一批之后，${where} 的编程电路没有改回原来的 ${circuitWord(ev.was)}${ev.now !== undefined ? `（现在是 ${circuitWord(ev.now)}）` : ''}：${ev.reason ?? '原因没说'}`
+    }
     case 'hurt':
       return `你受到 ${ev.amount} 点伤害（来源：${ev.source}），剩余血量 ${ev.health}`
     case 'death':
@@ -256,6 +288,10 @@ export const HELPER_END_WORD: Record<HelperEnd, string> = {
   context: '上下文超出了模型的上限，停下了',
   budget: '停下了：今天的模型用量到了上限',
   interrupted: '没想完：大脑重启了，它想到的都没了',
+}
+
+function circuitWord(n: number): string {
+  return n === 0 ? '0（无）' : String(n)
 }
 
 /** 隔了多久，给模型看的一个词：秒、分钟、小时、天。 */

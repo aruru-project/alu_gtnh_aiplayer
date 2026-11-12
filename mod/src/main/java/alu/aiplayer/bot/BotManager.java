@@ -44,6 +44,9 @@ public final class BotManager implements TaskQueue.Listener {
     private File saveFile;
     private boolean dirty;
     private int ticksSinceSave;
+    /** Programmed circuits that process tasks with leave set, to be set back once their batch is done. */
+    private final List<alu.aiplayer.task.CircuitWatch> circuitWatches = new ArrayList<>();
+    private int ticksSinceWatch;
 
     public BotManager(ModConfig config, BridgeServer bridge) {
         this.config = config;
@@ -144,7 +147,54 @@ public final class BotManager implements TaskQueue.Listener {
                 }
             }
         }
+        if (++ticksSinceWatch >= 20) {
+            ticksSinceWatch = 0;
+            checkCircuitWatches();
+        }
         if (++ticksSinceSave >= 200 && dirty) save();
+    }
+
+    // ---- circuits to set back -------------------------------------------------------------------------------
+
+    /**
+     * Watches a circuit until its batch is done. One the same bot already watches at that place with the same
+     * setting takes the new batch's kinds instead: it sets the circuit back to what it was before both.
+     */
+    public void watchCircuit(alu.aiplayer.task.CircuitWatch w, List<alu.aiplayer.act.ItemFilter> usedUp) {
+        alu.aiplayer.task.CircuitWatch into = circuitWatchAt(w.bot, w.dim, w.at);
+        if (into == null || into.set != w.set) {
+            into = w;
+            circuitWatches.add(w);
+        }
+        for (alu.aiplayer.act.ItemFilter f : usedUp) into.addUsedUp(f);
+        dirty = true;
+    }
+
+    /** The circuit this bot is still to set back at that place (a machine, or a multiblock's input bus), if any. */
+    public alu.aiplayer.task.CircuitWatch circuitWatchAt(String bot, int dim, int[] at) {
+        for (alu.aiplayer.task.CircuitWatch w : circuitWatches) if (w.at(bot, dim, at)) return w;
+        return null;
+    }
+
+    private void checkCircuitWatches() {
+        if (circuitWatches.isEmpty()) return;
+        for (alu.aiplayer.task.CircuitWatch w : new ArrayList<>(circuitWatches)) {
+            JsonObject ended;
+            try {
+                ended = w.check();
+            } catch (Throwable t) {
+                AiPlayerMod.LOG.warn("Watching the circuit of task {} failed", w.task, t);
+                ended = new JsonObject();
+                ended.addProperty("bot", w.bot);
+                ended.addProperty("task", w.task);
+                ended.addProperty("restored", false);
+                ended.addProperty("reason", "internal error: " + t);
+            }
+            if (ended == null) continue;
+            circuitWatches.remove(w);
+            dirty = true;
+            bridge.emit("machine.circuit", ended);
+        }
     }
 
     public Bot spawn(String name, Integer dim, double[] pos, JsonObject skin) {
@@ -405,6 +455,7 @@ public final class BotManager implements TaskQueue.Listener {
 
     private void load() {
         bots.clear();
+        circuitWatches.clear();
         if (saveFile == null || !saveFile.isFile()) return;
         try {
             JsonObject root = J.parseObject(new String(Files.readAllBytes(saveFile.toPath()), StandardCharsets.UTF_8));
@@ -422,6 +473,14 @@ public final class BotManager implements TaskQueue.Listener {
                 b.skin = J.object(o, "skin");
                 b.tasks.load(J.array(o, "tasks"));
                 bots.put(name.toLowerCase(), b);
+            }
+            JsonArray watches = J.array(root, "circuitWatches");
+            if (watches != null) for (JsonElement e : watches) {
+                try {
+                    circuitWatches.add(alu.aiplayer.task.CircuitWatch.load(e.getAsJsonObject()));
+                } catch (RuntimeException bad) {
+                    AiPlayerMod.LOG.warn("Dropping an unreadable circuit watch: {}", e, bad);
+                }
             }
         } catch (Exception e) {
             // Keep the unreadable file: the next save would otherwise overwrite the only copy.
@@ -452,6 +511,9 @@ public final class BotManager implements TaskQueue.Listener {
         JsonArray gone = new JsonArray();
         for (String name : retired) gone.add(J.prim(name));
         root.add("retired", gone);
+        JsonArray watches = new JsonArray();
+        for (alu.aiplayer.task.CircuitWatch w : circuitWatches) watches.add(w.save());
+        if (watches.size() > 0) root.add("circuitWatches", watches);
         try {
             saveFile.getParentFile()
                 .mkdirs();

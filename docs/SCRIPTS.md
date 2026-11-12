@@ -156,7 +156,7 @@ AI 玩家可以写一段 JavaScript 让大脑在沙箱里跑。两个用处：
 
 **任务书的按钮**：`quest_book`（干活线的工具，例程里能调）的 `data` 是身体 `quest.submit` / `quest.check` / `quest.claim` 的原样回答（`{ pressed, quest: { id, name, state, was? }, tasks?, tasksDone?, lost?, gained?, dropped?, xp?, alsoComplete?, why?, choices?, note?, party? }`，见 `docs/PROTOCOL.md` 的“任务书的按钮”；里面的 `task`、`reward`、`choice` 从 0 数），带 `choice` 领奖时多一个 `chosen`，等过任务书标完成时多一个 `settled`（`{ state, ms }`，没等到是 `null`）。
 
-**放下就走的加工**：`process_items` 带 `leave: true` 时任务在机器开工后就结束，`data.result` 是 `{ put, left: true, machine?, circuit?: { now, was }, freeSlots }`（`machine` 是那一刻机器的状态，带 `progress` / `maxProgress`，单位 tick；身体读不懂的机器没有这一项），没有 `outputs`。产物留在机器里，之后 `withdraw_items` 取。
+**放下就走的加工**：`process_items` 带 `leave: true` 时任务在机器开工后就结束，`data.result` 是 `{ put, left: true, machine?, circuit?: { now, was, setBack? }, notPut?, inputSlots?, freeSlots }`（`machine` 是那一刻机器的状态，带 `progress` / `maxProgress`，单位 tick；身体读不懂的机器没有这一项），没有 `outputs`。产物留在机器里，之后 `withdraw_items` 取。`setBack` 是这一批做完后身体把电路改回 `was`（到时候来一条事件，例程不用管）。
 
 **产物是流体的加工**：例程里 `await tool("process_items", …)` 等到任务结束，`data.result` 里除了 `put`、`outputs`（这时是空的）还有 `fluids`：机器的罐（`[{ fluid, name, en?, amount, capacity }]`）或者多方块的输出仓（`[{ x, y, z, kind, capacity, fluid?, fluidName?, fluidEn?, amount? }]`）现在有什么。
 

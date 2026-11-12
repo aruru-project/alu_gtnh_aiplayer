@@ -163,6 +163,8 @@ export function decideWake(ev: AgentEvent, policy: WakePolicy, state: WakeState)
       if (ev.isBot === true || ev.wake !== true) return no('background')
       if (state.now - ev.time > policy.staleChatMs) return no('stale')
       return yes('player_join')
+    // 放下就走的那一批做完、电路改回去了（或者没改回去）：她知道就行，没有要她做的
+    case 'machine_circuit':
     case 'task_started':
     case 'bot_message':
     case 'spawned':

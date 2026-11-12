@@ -468,11 +468,11 @@ describe('process_items：照配方册里的配方用机器加工', () => {
       expect: [{ id: 'EnderIO:itemAlloy', meta: 6, count: 3 }],
       wait: 600,
     })
-    // 模具这类不消耗的只放 1 个，不乘轮数
+    // 模具这类不消耗的只放 1 个，不乘轮数，并告诉身体它留在机器里（放下就走的那一批做完时，原料格里剩着它不算没做完）
     assert.doesNotMatch((await s.run('process_items', { machine: { x: 1, y: 64, z: 1 }, recipe: 4, rounds: 5 })).content, /also needs/)
     assert.deepEqual(s.lastTask().inputs, [
       { id: 'gregtech:gt.metaitem.01', meta: 11305, count: 10 },
-      { id: 'gregtech:gt.metaitem.01', meta: 32301, count: 1 },
+      { id: 'gregtech:gt.metaitem.01', meta: 32301, count: 1, stays: true },
     ])
     // 这条配方不要编程电路：电路清成 0，免得机器上留着的电路让同一批料凑成另一条配方（意见簿 f5：组装机留着电路 1，铁杆 + 铁环做成了铁栅栏）
     assert.equal(s.lastTask().circuit, 0)

@@ -440,6 +440,24 @@ describe('agent 的一轮决策', () => {
     assert.equal(next.includes("系统消息：Home 'base2' set!"), false)
   })
 
+  it('放下就走的那一批做完、身体把编程电路改回原值（意见簿 f3：用完别人的机器要照原样还回去）：不叫醒她，下一轮的背景里写着改回去了；改不回去的写着为什么', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const turns = h.llm.requests.length
+    h.agent.handleBridgeEvent({ event: 'machine.circuit', time: Date.now(), data: { bot: 'Alu', task: 't7', machine: { x: -538, y: 69, z: 40 }, dim: 0, set: 9, was: 1, now: 1, restored: true } })
+    h.agent.handleBridgeEvent({ event: 'machine.circuit', time: Date.now(), data: { bot: 'Alu', task: 't8', machine: { x: -536, y: 69, z: 40 }, dim: 0, set: 0, was: 1, now: 24, restored: false, reason: 'it was set to 24 meanwhile, not by this task, so it is left as it is' } })
+    // 别的 bot 的不算
+    h.agent.handleBridgeEvent({ event: 'machine.circuit', time: Date.now(), data: { bot: 'Other', task: 't9', machine: { x: 0, y: 64, z: 0 }, set: 2, was: 0, restored: true } })
+    await sleep(50)
+    assert.equal(h.llm.requests.length, turns, 'she is not woken for it')
+    h.agent.handleEvent(told('看看卷板机'))
+    await h.agent.whenIdle()
+    const text = h.llm.lastUserText(turns)
+    assert.match(text, /任务 t7 放下就走的那一批做完了：\(-538,69,40\) 的编程电路已经改回原来的 1（这一批用的是 9）/)
+    assert.match(text, /任务 t8 放下就走的那一批之后，\(-536,69,40\) 的编程电路没有改回原来的 1（现在是 24）：it was set to 24 meanwhile, not by this task, so it is left as it is/)
+    assert.equal(text.includes('t9'), false)
+  })
+
   it('上线时服务器刷的一串欢迎语不会塞进给模型看的背景里', async (t) => {
     const h = makeAgent()
     t.after(h.cleanup)

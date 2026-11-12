@@ -1608,11 +1608,11 @@ function makingText(making: unknown, params: Record<string, unknown> | undefined
 }
 
 export function processLeftLines(result: Record<string, unknown>, params: Record<string, unknown> | undefined): string[] {
-  const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, making, ...rest } = result
+  const { put, cellsPoured, left: _left, note: _note, machine, circuit, freeSlots, making, notPut, inputSlots, ...rest } = result
   const batch = isRecord(params?.recipe) ? params.recipe : {}
   const rounds = typeof batch.rounds === 'number' && batch.rounds >= 1 ? batch.rounds : undefined
   const at = isRecord(params?.machine) && typeof params.machine.x === 'number' ? formatPos(params.machine as { x: number; y: number; z: number }) : undefined
-  let line = `put ${count(put)} item(s) into the machine${count(cellsPoured) > 0 ? `, poured ${count(cellsPoured)} cell(s) into it` : ''}`
+  let line = `put ${count(put)} item(s) into the machine${count(cellsPoured) > 0 ? `, poured ${count(cellsPoured)} cell(s) into it` : ''}${notPutText(notPut, inputSlots)}`
   if (isRecord(machine)) {
     line += '; it started, and the task ended there without waiting for it'
     const max = count(machine.maxProgress)
@@ -1630,7 +1630,13 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
   line += makingText(making, params)
   // 电路没变（配方不要电路、机器上本来就没有）就不提
   const circuitText = (n: number): string => (n === 0 ? '0 (none)' : String(n))
-  if (isRecord(circuit) && typeof circuit.now === 'number' && circuit.now !== count(circuit.was)) line += `. Programmed circuit: now ${circuitText(circuit.now)}, it was ${circuitText(count(circuit.was))}; it stays ${circuitText(circuit.now)} until someone sets it again`
+  if (isRecord(circuit) && typeof circuit.now === 'number' && circuit.now !== count(circuit.was)) {
+    line +=
+      circuit.setBack === true
+        ? // 身体在这一批做完后改回去（机器不跑配方了、原料格里没有这一批要消耗的东西了），改回去或者改不回去都会来一条消息
+          `. Programmed circuit: now ${circuitText(circuit.now)}, it was ${circuitText(count(circuit.was))}; it stays ${circuitText(circuit.now)} for the rounds still to come, and the body sets it back to ${circuitText(count(circuit.was))} once this batch is done (the machine runs no recipe and nothing this batch uses up is left in its input slots); you are told when it has, or why it could not`
+        : `. Programmed circuit: now ${circuitText(circuit.now)}, it was ${circuitText(count(circuit.was))}; it stays ${circuitText(circuit.now)} until someone sets it again`
+  }
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
   return [line]
@@ -1647,11 +1653,26 @@ function elsewhereText(p: Record<string, unknown>): string {
   return `${items} in${quoted(p, { block: true }) || ' a container'}${where}${against}`
 }
 
+/**
+ * 原料没放全：哪样没放进去多少、身上还有几个；没放进去时原料格里有什么（挡着的多半就是它们）。
+ * 身上已经不够的，是没带够，不是格子挡着。
+ */
+function notPutText(notPut: unknown, inputSlots: unknown): string {
+  const missing = kindList(notPut)
+  if (missing.length === 0) return ''
+  const parts = missing.map((o) => {
+    const carried = count((o as Record<string, unknown>).carried)
+    return `${kindText(o.count, o)} did not go in (you carry ${carried}${carried < count(o.count) ? ': not enough with you' : ''})`
+  })
+  const held = kindList(inputSlots)
+  return ` — NOT everything went in: ${parts.join('; ')}. Its input slots then held ${held.length > 0 ? held.map((o) => kindText(o.count, o)).join(', ') : 'nothing that could be read'}`
+}
+
 export function processResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, ...rest } = result
+  const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, notPut, inputSlots, ...rest } = result
   const got = kindList(outputs)
   const list = (v: unknown): string => kindList(v).map((o) => kindText(o.count, o)).join(', ')
-  let line = `put ${count(put)} item(s) into the machine`
+  let line = `put ${count(put)} item(s) into the machine${notPutText(notPut, inputSlots)}`
   // 机器自己记着的：这次看着它做完了几轮、做出了什么（和取回了多少是两件事：产物可能被它自己、覆盖板或管道送走）
   if (count(rounds) > 0) line += `; it finished ${count(rounds)} round(s) of a recipe${kindList(made).length > 0 ? `, making ${list(made)} in all` : ''}`
   line += `; took out: ${got.length > 0 ? list(outputs) : 'nothing'}`

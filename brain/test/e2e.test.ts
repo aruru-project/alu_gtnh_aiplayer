@@ -1764,7 +1764,7 @@ it('端到端：主人让它压 4 根精炼铁柄、别站在机器前干等 →
   // 交给身体的：带着 leave，和这一批是哪条配方的几轮（身体不用这一项，原样带回）；这条配方不要电路，电路清成 0
   const started = bridge.requestsOf('task.start').map((p) => p.task as Record<string, unknown>)
   assert.deepEqual(started.map((task) => task.type), ['withdraw', 'process', 'process', 'withdraw', 'withdraw', 'withdraw'])
-  assert.deepEqual(started[1], { type: 'process', machine: at(extruder), inputs: [stack(P.steelIngot, 36), stack(P.shaftShape, 1)], circuit: 0, expect: [stack(P.shaft, 4)], leave: true, recipe: { ref: R.shaft, rounds: 4, ticks: 1280 } })
+  assert.deepEqual(started[1], { type: 'process', machine: at(extruder), inputs: [stack(P.steelIngot, 36), { ...stack(P.shaftShape, 1), stays: true }], circuit: 0, expect: [stack(P.shaft, 4)], leave: true, recipe: { ref: R.shaft, rounds: 4, ticks: 1280 } })
   // 压模机一轮 1280 tick（64 秒），离开那一刻第一轮转了 1 秒：这一轮还剩 63 秒，四轮一共还要 4×64−1 = 255 秒
   const left = seen.find((x) => /结果：put 37 item/.test(x))!
   assert.match(left, /put 37 item\(s\) into the machine; it started, and the task ended there without waiting for it\. On this machine a round takes 1 min 4 s; the one running has about 1 min 3 s left, all 4 rounds about 4 min 15 s from now\. Nothing reports when it finishes: find_machines or inspect_block shows whether it is still busy, and set_reminder wakes you after the minutes you give\./)

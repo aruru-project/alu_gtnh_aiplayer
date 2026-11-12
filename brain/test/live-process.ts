@@ -6,7 +6,8 @@
 //      做完电路恢复成 1。
 //   2. 再来一次，但给 circuit: 1（模型自己设错了电路）：机器做的是铁栅栏，不是车轮——任务“失败了”，说做了什么、去了哪，
 //      还没放进配方的料取回来了，只损失开工那一轮的铁杆。
-//   3. 意见簿 f20：例程里放下就走（leave），用 setTimeout 隔一秒看一眼机器，不忙了从箱子里把车轮取回来。
+//   3. 意见簿 f20：例程里放下就走（leave），用 setTimeout 隔一秒看一眼机器，不忙了从箱子里把车轮取回来。放下就走时电路清成了 0，
+//      这一批做完身体把它改回 1，并告诉她（意见簿 f3：用完别人的机器照原样还回去）。
 // 模拟模型服务按脚本回应干活线，对话线只传话。大脑是真启动的进程（src/main.ts），连这一份检出的测试服（live-brain.ts）。
 //
 //   node test/live-process.ts --at x,y,z [--transcript /tmp/process-model.txt]
@@ -223,6 +224,8 @@ return looks + " looks; " + took.text`
       step((seen) => {
         expect(seen, /Routine r\d+ \("组装机做车轮，等做完再取"\) finished: the program finished\. \d+ tool call\(s\), 2 task\(s\), \d+ wait\(s\) of its own \([\d.]+ s in all\)/, '例程跑完了，写着等了几次')
         expect(seen, /It returned: \d+ looks; t\w+ withdraw \[done\] result=\{"moved":2\}/, '等做完以后从箱子里取回了 2 个车轮')
+        // 放下就走时电路清成了 0；这一批做完，身体把它改回 1，告诉她一声（只作背景）
+        expect(seen, new RegExp(`任务 t\\w+ 放下就走的那一批做完了：\\(${machine.x},${machine.y},${machine.z}\\) 的编程电路已经改回原来的 1（这一批用的是 0（无））`), '电路改回去了')
         return { text: '车轮取回来了。' }
       }),
     )
@@ -230,7 +233,7 @@ return looks + " looks; " + took.text`
     await idle(0, '第三段脚本用完、大脑空闲')
     w = await look()
     say(`第 3 段之后：身上铁杆 ${w.carried(ROD)}、铁环 ${w.carried(RING)}、车轮 ${w.carried(WHEEL)}；箱子里车轮 ${w.inChest(WHEEL)}；机器电路 ${w.circuit}`)
-    if (w.carried(WHEEL) !== 2 || w.inChest(WHEEL) !== 0 || w.carried(ROD) !== 3) throw new Error('第 3 段：世界里和预期不符（应是身上车轮 2、铁杆 3，箱子里没有车轮）')
+    if (w.carried(WHEEL) !== 2 || w.inChest(WHEEL) !== 0 || w.carried(ROD) !== 3 || w.circuit !== 1) throw new Error('第 3 段：世界里和预期不符（应是身上车轮 2、铁杆 3，箱子里没有车轮，电路改回了 1）')
     say(`✔ 走完了：干活线调了 ${calls} 次模型`)
   } catch (e) {
     code = 1

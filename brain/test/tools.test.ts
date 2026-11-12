@@ -820,6 +820,24 @@ describe('任务类工具', () => {
     assert.match(t1!, /set out to make 4× gregtech:gt\.metaitem\.01\/29804 "Obsidian Foil": NOT what this batch was for/)
   })
 
+  it('放下就走：电路这批做完后由身体改回原值，结果里照实说；原料没放全时说哪样没放进去、原料格里当时有什么（意见簿 f1：压模机里有别人的模头）', async (t) => {
+    const s = setup(t)
+    const M = { x: -538, y: 69, z: 40 }
+    const plates = [{ id: 'gregtech:gt.metaitem.01', meta: 17804, count: 9 }]
+    const machine = { x: -538, y: 69, z: 40, name: 'Advanced Bending Machine II', active: true, progress: 10, maxProgress: 112 }
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        { id: 't2', type: 'process', state: 'failed', finishedAt: 200, params: { type: 'process', machine: { x: -525, y: 69, z: 38 }, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 2 }, { id: 'gregtech:gt.metaitem.01', meta: 32350, count: 1, stays: true }] }, error: { code: 'invalid', message: 'the machine did not start: it may lack power, a programmed circuit or a fluid, or these inputs are not a recipe it runs. The inputs are back in the inventory.' }, result: { put: 2, outputs: [], notPut: [{ id: 'gregtech:gt.metaitem.01', meta: 32350, name: 'Extruder Shape (Plate)', count: 1, carried: 1 }], inputSlots: [{ id: 'gregtech:gt.metaitem.01', meta: 32351, name: 'Extruder Shape (Rod)', count: 1 }, { id: 'gregtech:gt.metaitem.01', meta: 11305, name: 'Steel Ingot', count: 2 }], freeSlots: 30 } },
+        { id: 't1', type: 'process', state: 'done', finishedAt: 100, params: { type: 'process', machine: M, inputs: plates, circuit: 9, leave: true }, result: { put: 9, left: true, machine, circuit: { now: 9, was: 1, setBack: true }, freeSlots: 20 } },
+      ],
+    })
+    const [t2, t1] = (await s.run('task_status')).content.split('\n').slice(-2)
+    assert.match(t1!, /\. Programmed circuit: now 9, it was 1; it stays 9 for the rounds still to come, and the body sets it back to 1 once this batch is done \(the machine runs no recipe and nothing this batch uses up is left in its input slots\); you are told when it has, or why it could not/)
+    assert.match(t2!, /partial result: put 2 item\(s\) into the machine — NOT everything went in: 1× gregtech:gt\.metaitem\.01\/32350 "Extruder Shape \(Plate\)" did not go in \(you carry 1\)\. Its input slots then held 1× gregtech:gt\.metaitem\.01\/32351 "Extruder Shape \(Rod\)", 2× gregtech:gt\.metaitem\.01\/11305 "Steel Ingot"; took out: nothing/)
+  })
+
   it('机器做的不是要的东西（意见簿 f5：组装机带着电路 1，铁杆 + 铁环做成了铁栅栏、被自动输出推进箱子）：任务是失败，取回来的没用上的原料不说成“又一些产物”，铁栅栏在哪写着', async (t) => {
     const s = setup(t)
     const M = { x: -536, y: 69, z: 40 }

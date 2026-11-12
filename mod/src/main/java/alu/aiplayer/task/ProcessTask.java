@@ -42,6 +42,10 @@ public final class ProcessTask extends Task {
 
     private final int[] at;
     private final List<ItemFilter> inputs;
+    /** Which inputs the recipe does not use up (a mould, a shape): {@code stays} on the input. */
+    private final boolean[] stays;
+    /** How many of each input are still to go in; after loading, what did not. */
+    private int[] inputsLeft;
     private final List<ItemFilter> fluids;
     private final int circuit;
     private final int[] wantedBus;
@@ -84,6 +88,16 @@ public final class ProcessTask extends Task {
             throw new IllegalArgumentException("inputs must list 1 to 9 items (fluids: up to 4 kinds of filled cells)");
         }
         for (ItemFilter f : inputs) if (f.count <= 0) throw new IllegalArgumentException("each input needs a count");
+        stays = new boolean[inputs.size()];
+        com.google.gson.JsonArray raw = J.array(params, "inputs");
+        for (int i = 0; i < stays.length && raw != null && i < raw.size(); i++) {
+            stays[i] = raw.get(i)
+                .isJsonObject() && J.bool(
+                    raw.get(i)
+                        .getAsJsonObject(),
+                    "stays",
+                    false);
+        }
         for (ItemFilter f : fluids) if (f.count <= 0) throw new IllegalArgumentException("each fluid needs a count");
         circuit = J.has(params, "circuit") ? J.i(params, "circuit", 0) : -1;
         if (circuit > 24) throw new IllegalArgumentException("circuit is a number from 0 (none) to 24");
@@ -179,7 +193,8 @@ public final class ProcessTask extends Task {
         } else {
             phase = multi ? "going to the input bus" : "going to the machine";
             trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
-            trip.session.deposit(plan(inputs));
+            inputsLeft = new int[inputs.size()];
+            trip.session.deposit(plan(inputs, inputsLeft));
             // Standing at it, before anything goes in: whether it is already running a recipe of its own, and the
             // moment a player clicks the circuit. Set afterwards, the machine could start on the first inputs with the
             // circuit it had (a bender set to 1 made foil).
@@ -191,6 +206,11 @@ public final class ProcessTask extends Task {
                 oldCircuit = where == null ? -1 : Machines.circuit(where);
                 // A machine with no circuit setting has none: clearing it (0) is already done.
                 if (oldCircuit < 0) return circuit == 0;
+                // The setting it has may be one an earlier batch of this bot's, left running, still needs: that
+                // batch's watch knows what it was before.
+                CircuitWatch prior = bot.manager()
+                    .circuitWatchAt(bot.name, bot.player().dimension, loadAt);
+                if (prior != null && prior.set == oldCircuit) joined = prior;
                 if (!Machines.setCircuit(where, circuit)) return false;
                 circuitSet = true;
                 return true;
@@ -207,7 +227,11 @@ public final class ProcessTask extends Task {
     }
 
     private static ContainerSession.DepositPlan plan(final List<ItemFilter> wanted) {
-        final int[] left = new int[wanted.size()];
+        return plan(wanted, new int[wanted.size()]);
+    }
+
+    /** {@code left} is filled with the wanted counts and counts down as things go in. */
+    private static ContainerSession.DepositPlan plan(final List<ItemFilter> wanted, final int[] left) {
         for (int i = 0; i < left.length; i++) left[i] = wanted.get(i).count;
         return new ContainerSession.DepositPlan() {
 
@@ -414,6 +438,7 @@ public final class ProcessTask extends Task {
                     return;
                 }
                 put = trip.session.moved;
+                noteLoading();
                 if (put <= 0) {
                     restoreCircuit();
                     fail(
@@ -439,8 +464,7 @@ public final class ProcessTask extends Task {
                 if (poured == 0) {
                     phase = "taking the inputs back";
                     notStarted = "no cell went into the input hatch: there is none in the inventory, or the hatch's slot is occupied";
-                    if (inputs.isEmpty()) trip = null;
-                    else collect(loadAt, true);
+                    takeBackOwn();
                     stage = 3;
                     return;
                 }
@@ -503,17 +527,7 @@ public final class ProcessTask extends Task {
                         // out at once, the way a player stops a machine seen making the wrong thing.
                         takenBack = true;
                         phase = "taking the inputs back: the machine is making something else";
-                        if (inputs.isEmpty()) {
-                            trip = null;
-                        } else {
-                            // Only what the bot put in, as many as it put in: a mould or anything else that was in
-                            // there before is someone else's and stays.
-                            trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
-                            List<ItemFilter> own = new ArrayList<>();
-                            for (ItemFilter f : inputs) own.add(new ItemFilter(f.id, f.meta, f.count));
-                            trip.session.withdraw(own)
-                                .fromInputSlots();
-                        }
+                        takeBackOwn();
                         stage = 9;
                         return;
                     }
@@ -531,7 +545,8 @@ public final class ProcessTask extends Task {
                     // It runs (a machine this mod cannot read is taken at its word once the things are in).
                     left = true;
                     leftState = plain ? null : Machines.describe(te);
-                    circuitSet = false; // the setting stays: the machine needs it for the rounds still to come
+                    // The setting stays: every round still to come needs it. Set back once the batch is done.
+                    watchCircuit();
                     done();
                     return;
                 }
@@ -539,13 +554,8 @@ public final class ProcessTask extends Task {
                     // It never started. Take the inputs back out rather than leave them sitting there.
                     phase = "taking the inputs back";
                     notStarted = multi ? Machines.idleReason(te) : null;
-                    if (inputs.isEmpty()) {
-                        stage = 3;
-                        trip = null;
-                    } else {
-                        collect(loadAt, true);
-                        stage = 3;
-                    }
+                    takeBackOwn();
+                    stage = 3;
                 } else if ((ran && idle > (multi ? 40 : 15) && inputsUsedUp()) || (ran && idle > 100) || waited > limitTicks) {
                     timedOut = waited > limitTicks;
                     phase = "collecting the output";
@@ -585,17 +595,15 @@ public final class ProcessTask extends Task {
                 }
                 // What the bot put in and the recipe did not use up (a mould, a surplus) comes back out too.
                 // Anything else in there was there before and stays.
-                trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
-                List<ItemFilter> own = new ArrayList<>();
-                for (ItemFilter f : inputs) own.add(new ItemFilter(f.id, f.meta, -1));
-                trip.session.withdraw(own)
-                    .fromInputSlots();
+                takeBackOwn();
                 stage = 4;
                 break;
             }
             case 4: {
-                ContainerTrip.Status st = trip.tick();
-                if (st == ContainerTrip.Status.WORKING) return;
+                if (trip != null) {
+                    ContainerTrip.Status st = trip.tick();
+                    if (st == ContainerTrip.Status.WORKING) return;
+                }
                 finish();
                 break;
             }
@@ -722,10 +730,15 @@ public final class ProcessTask extends Task {
         int now = where == null ? -1 : Machines.circuit(where);
         String setting;
         if (circuit >= 0 && oldCircuit >= 0) {
+            boolean earlier = joined != null && circuit == joined.set;
             setting = "; it ran with programmed circuit " + (circuit == 0 ? "none" : String.valueOf(circuit))
-                + " as this task set it (set back to "
-                + (oldCircuit == 0 ? "none" : String.valueOf(oldCircuit))
-                + " now)";
+                + " as this task set it ("
+                + (earlier
+                    ? "it stays so for the earlier batch left in this machine, and goes back to "
+                        + (joined.was == 0 ? "none" : String.valueOf(joined.was))
+                        + " once that is done"
+                    : "set back to " + (oldCircuit == 0 ? "none" : String.valueOf(oldCircuit)) + " now")
+                + ")";
         } else if (now >= 0) {
             setting = "; its programmed circuit is " + (now == 0 ? "none" : String.valueOf(now)) + ", which this task did not set";
         } else {
@@ -808,10 +821,84 @@ public final class ProcessTask extends Task {
             }
     }
 
+    /** An earlier batch of this bot's on the same circuit setting, still watched to be set back. */
+    private CircuitWatch joined;
+    /** What the circuit goes back to once this batch is done (leave), or -1. */
+    private int setBackTo = -1;
+
+    /**
+     * Leave: the circuit this task set stays for the rounds still to come; the body sets it back to what it was
+     * once the batch is done (CircuitWatch), and says so then (machine.circuit).
+     */
+    private void watchCircuit() {
+        if (!circuitSet) return;
+        circuitSet = false;
+        int was = joined != null && circuit == joined.set ? joined.was : oldCircuit;
+        if (was == circuit || was < 0) return;
+        List<ItemFilter> usedUp = new ArrayList<>();
+        for (int i = 0; i < inputs.size(); i++) if (!stays[i]) usedUp.add(inputs.get(i));
+        bot.manager()
+            .watchCircuit(new CircuitWatch(bot.name, id, bot.player().dimension, at, loadAt, circuit, was), usedUp);
+        setBackTo = was;
+    }
+
+    /**
+     * Takes back out of the input slots what the bot put in and the machine has not used, as many of each as it
+     * put in. What was in there before (a mould someone keeps there) is theirs and stays.
+     */
+    private void takeBackOwn() {
+        List<ItemFilter> own = new ArrayList<>();
+        for (int i = 0; i < inputs.size(); i++) {
+            int n = inputsLeft == null ? inputs.get(i).count : inputs.get(i).count - inputsLeft[i];
+            if (n > 0) own.add(new ItemFilter(inputs.get(i).id, inputs.get(i).meta, n));
+        }
+        if (own.isEmpty()) {
+            trip = null;
+            return;
+        }
+        trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
+        trip.session.withdraw(own)
+            .fromInputSlots();
+    }
+
+    /** What did not go in, each {id, meta, name, count, carried}; empty when everything did. */
+    private final JsonArray notPut = new JsonArray();
+    /** What the input slots held right after loading, when something did not go in: what may be in the way. */
+    private JsonArray slotsHeld;
+
+    private void noteLoading() {
+        if (inputsLeft == null) return;
+        for (int i = 0; i < inputs.size(); i++) {
+            if (inputsLeft[i] <= 0) continue;
+            ItemFilter f = inputs.get(i);
+            JsonObject o = Kinds.of(new ItemStack(f.item, 1, Math.max(0, f.meta)));
+            if (f.meta < 0) o.remove("meta");
+            o.addProperty("count", inputsLeft[i]);
+            int carried = 0;
+            for (ItemStack s : bot.player().inventory.mainInventory) if (f.matches(s)) carried += s.stackSize;
+            o.addProperty("carried", carried);
+            notPut.add(o);
+        }
+        if (notPut.size() == 0) return;
+        Kinds held = new Kinds();
+        TileEntity where = tile(loadAt);
+        int[] in = where == null ? null : Machines.inputSlots(where);
+        if (in != null && where instanceof IInventory) {
+            for (int i = 0; i < in[1]; i++) {
+                ItemStack st = ((IInventory) where).getStackInSlot(in[0] + i);
+                if (st != null && st.stackSize > 0) held.add(st, st.stackSize);
+            }
+        }
+        slotsHeld = held.toJson();
+    }
+
     /** Leaves the circuit setting the way it was found; someone else may rely on it. */
     private void restoreCircuit() {
         if (!circuitSet) return;
         circuitSet = false;
+        // An earlier batch of this bot's, left running, still needs the setting it found: that batch's watch sets
+        // it back once it is done, to what it was before both.
+        if (joined != null && circuit == joined.set) return;
         TileEntity where = tile(loadAt);
         if (where != null && oldCircuit >= 0) Machines.setCircuit(where, oldCircuit);
     }
@@ -886,6 +973,12 @@ public final class ProcessTask extends Task {
         return out;
     }
 
+    private void loadingFacts(JsonObject o) {
+        if (notPut.size() == 0) return;
+        o.add("notPut", notPut);
+        if (slotsHeld != null) o.add("inputSlots", slotsHeld);
+    }
+
     @Override
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
@@ -906,13 +999,16 @@ public final class ProcessTask extends Task {
             if (circuit >= 0 && oldCircuit >= 0) {
                 JsonObject c = new JsonObject();
                 c.addProperty("now", circuit);
-                c.addProperty("was", oldCircuit);
+                c.addProperty("was", setBackTo >= 0 ? setBackTo : oldCircuit);
+                if (setBackTo >= 0) c.addProperty("setBack", true);
                 o.add("circuit", c);
             }
+            loadingFacts(o);
             if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
             return o;
         }
         o.add("outputs", outputs);
+        loadingFacts(o);
         if (making != null && making.size() > 0) o.add("making", making);
         if (rounds > 0) o.addProperty("rounds", rounds);
         if (!made.isEmpty()) o.add("made", made.toJson());
