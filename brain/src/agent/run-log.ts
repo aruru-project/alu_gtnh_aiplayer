@@ -24,7 +24,9 @@ export type RunRecord =
   /** textLength：结果原来多长；只在 text 被裁短了（这次运行的记录已经很大）时有。 */
   | { t: 'call'; time: number; n: number; tool: string; input: unknown; ok: boolean; text: string; ms: number; task?: string; textLength?: number }
   | { t: 'log'; time: number; text: string }
-  | { t: 'end'; time: number; status: RunStatus; ending: string; calls: number; tasks: number; errors: number; value?: string }
+  /** 例程自己等了一次（wait、setTimeout）：ms 是它要等多久，ok 是等完了；没让等、等到一半被停的带 text（为什么）。 */
+  | { t: 'wait'; time: number; ms: number; ok: boolean; text?: string }
+  | { t: 'end'; time: number; status: RunStatus; ending: string; calls: number; tasks: number; errors: number; value?: string; waits?: number; waitedMs?: number }
 
 const KEEP_FILES = 300
 /** 一次调用的结果在记录文件里最多留这么长（整段给的大结果，比如一万字的清单，再长就截并写明）。 */
@@ -122,7 +124,7 @@ export class RunLogStore {
       if (!start || start.t !== 'start') continue
       const run: ActivityRun = { id: start.id, kind: start.kind, name: start.name, status: 'running', startedAt: start.time, calls: 0, tasks: 0, errors: 0, file }
       const end = this.last(file)
-      if (end && end.t === 'end') Object.assign(run, { status: end.status, endedAt: end.time, calls: end.calls, tasks: end.tasks, errors: end.errors })
+      if (end && end.t === 'end') Object.assign(run, { status: end.status, endedAt: end.time, calls: end.calls, tasks: end.tasks, errors: end.errors }, end.waits !== undefined ? { waits: end.waits, waitedMs: end.waitedMs ?? 0 } : {})
       out.push(run)
     }
     return out
@@ -155,7 +157,8 @@ const STATUS_WORD: Record<RunStatus, string> = { running: '在跑', done: '跑�
 export function runSummaryText(run: RunInfo, now: number): string {
   const seconds = Math.max(0, Math.round(((run.endedAt ?? now) - run.startedAt) / 1000))
   const who = `${KIND_WORD[run.kind]} ${run.id}${run.name && run.name !== run.id ? `（${run.name}）` : ''}`
-  const counts = `${run.status === 'running' ? '已调' : '调了'} ${run.calls} 次工具${run.tasks > 0 ? `，开了 ${run.tasks} 个任务` : ''}，${run.errors} 次出错，${seconds} 秒`
+  const waited = run.waits !== undefined && run.waits > 0 ? `，等了 ${run.waits} 次共 ${Math.round((run.waitedMs ?? 0) / 100) / 10} 秒` : ''
+  const counts = `${run.status === 'running' ? '已调' : '调了'} ${run.calls} 次工具${run.tasks > 0 ? `，开了 ${run.tasks} 个任务` : ''}，${run.errors} 次出错${waited}，${seconds} 秒`
   return `${who}：${STATUS_WORD[run.status]}，${counts}${run.status === 'running' && run.waiting ? `；正在等 ${run.waiting}` : ''}`
 }
 
@@ -229,6 +232,17 @@ export class RunRecorder {
     this.refresh(false)
   }
 
+  /** 例程自己等完了一次（或者没让等、等到一半被停了）。等不算工具调用，也不算出错。 */
+  waited(wait: { ms: number; ok: boolean; text?: string }): void {
+    delete this.info.waiting
+    if (wait.ok) {
+      this.info.waits = (this.info.waits ?? 0) + 1
+      this.info.waitedMs = (this.info.waitedMs ?? 0) + wait.ms
+    }
+    if (this.info.file) this.written += this.deps.store?.append(this.info.file, { t: 'wait', time: this.deps.now(), ms: wait.ms, ok: wait.ok, ...(wait.text !== undefined ? { text: wait.text } : {}) }) ?? 0
+    this.refresh(false)
+  }
+
   /** 程序 log 的一行（只进记录文件）。 */
   logLine(text: string): void {
     if (this.info.file) this.deps.store?.append(this.info.file, { t: 'log', time: this.deps.now(), text })
@@ -242,7 +256,7 @@ export class RunRecorder {
     this.info.endedAt = this.deps.now()
     delete this.info.waiting
     if (this.info.file) {
-      this.deps.store?.append(this.info.file, { t: 'end', time: this.info.endedAt, status, ending, calls: this.info.calls, tasks: this.info.tasks, errors: this.info.errors, ...(value !== undefined ? { value: clip(value, RECORD_TEXT_MAX) } : {}) })
+      this.deps.store?.append(this.info.file, { t: 'end', time: this.info.endedAt, status, ending, calls: this.info.calls, tasks: this.info.tasks, errors: this.info.errors, ...(value !== undefined ? { value: clip(value, RECORD_TEXT_MAX) } : {}), ...(this.info.waits !== undefined ? { waits: this.info.waits, waitedMs: this.info.waitedMs ?? 0 } : {}) })
     }
     this.refresh(true)
   }

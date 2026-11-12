@@ -397,6 +397,8 @@ function recordRow(rec) {
     return el
   }
   if (rec.t === 'log') return h('div', { class: 'run-log' }, h('span', { class: 'chip', text: 'log' }), h('span', { text: rec.text }))
+  // 例程自己等了一次（wait、setTimeout）；没让等、等到一半被停的写着为什么
+  if (rec.t === 'wait') return h('div', { class: 'run-log' }, h('span', { class: 'chip', text: '等' }), h('span', { text: rec.ok ? `等了 ${Math.round((Number(rec.ms) || 0) / 100) / 10} 秒` : `没等成：${rec.text ?? ''}` }))
   if (rec.t === 'end') return h('div', { class: 'run-log' }, h('span', { class: 'chip', text: '结束' }), h('span', { text: `${RUN_STATES[rec.status] ?? rec.status}：${rec.ending ?? ''}${rec.value !== undefined ? `；返回 ${rec.value}` : ''}` }))
   return null
 }

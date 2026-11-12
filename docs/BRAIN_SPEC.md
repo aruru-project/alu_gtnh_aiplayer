@@ -316,7 +316,8 @@ interface ProviderConfig {
              "status": "running",                 // running | done | failed | stopped | limit
              "startedAt": 1731300100000,          // 结束后多一项 endedAt
              "calls": 312, "tasks": 150, "errors": 0,
-             "waiting": "withdraw_items {\"container\":…}",   // 正等着的那一步；结束后没有
+             "waiting": "withdraw_items {\"container\":…}",   // 正等着的那一步（例程自己在等时是 "wait 5 s"）；结束后没有
+             "waits": 4, "waitedMs": 20000,       // 例程自己等了几次（wait、setTimeout）、一共多久；没等过的没有这两项，汇总那句话里是“，等了 4 次共 20 秒”
              "file": "routine-20261111-153012-r3.jsonl" } }   // 明细在哪个文件（见第 3 条）
   ```
 
@@ -330,7 +331,7 @@ interface ProviderConfig {
 
 **3. 程序运行的明细**（数据目录 `logs/runs/`，一次运行一个文件，留最近 300 次）。
 
-- `GET /api/runs?limit=<n>` → `{ runs: [{ file, id, kind, name, status, startedAt, endedAt?, calls, tasks, errors }] }`，新的在前。
+- `GET /api/runs?limit=<n>` → `{ runs: [{ file, id, kind, name, status, startedAt, endedAt?, calls, tasks, errors, waits?, waitedMs? }] }`，新的在前。
 - `GET /api/runs/records?file=<run.file>&after=<行号，默认 0>&limit=<n，默认 200，最多 1000>` → `{ file, total, next, records }`。也可以给 `id=r3`，取这个编号最近的一次。`next` 是下一页的 `after`；还在跑的运行文件在长，拿 `next` 接着读就是新追加的。`records` 一行一条：
 
   ```jsonc
@@ -339,7 +340,8 @@ interface ProviderConfig {
     "ok": true, "text": "结果全文（超过 2 万字符截并写明）", "ms": 35, "task": "t12" }   // task：这一步开了任务时才有
     // 一次运行的记录写过 20 MiB 以后，成功的结果只留开头 400 字符，并多一项 "textLength"（原来多长）；出错的照样留全
   { "t": "log",   "time": 1731300100060, "text": "slots below 128: 2" }                    // 程序自己 log 的一行
-  { "t": "end",   "time": 1731300164000, "status": "done", "ending": "the program finished", "calls": 4, "tasks": 3, "errors": 0, "value": "47" }
+  { "t": "wait",  "time": 1731300105060, "ms": 5000, "ok": true }                          // 例程自己等了一次（wait、setTimeout）；不让等、等到一半被停的 ok 为 false，带 text（为什么）
+  { "t": "end",   "time": 1731300164000, "status": "done", "ending": "the program finished", "calls": 4, "tasks": 3, "errors": 0, "value": "47" }   // 等过的多 waits、waitedMs
   ```
 
 **4. 状态** `GET /api/status`（不缓存，可以一秒一拉；`/api/overview` 原样保留）。`agents` 两项，固定顺序 `talk`、`work`；例程和身体只有一份，挂在干活线下面。

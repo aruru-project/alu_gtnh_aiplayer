@@ -6,7 +6,7 @@
 - 例程里调工具和你自己调是同一回事：同样的参数检查，每一步都记在日志里，主人在面板上看得到，也能随时停掉。
 
 # 怎么写
-- 代码是一个 async 函数的函数体，和 design 手册里说的一样（log、return 都能用）。
+- 代码是一个 async 函数的函数体，和 design 手册里说的一样（log、return 都能用；要等一会儿用 wait，见下面“等一会儿”）。
 - 调工具：`const r = await tool("工具名", { 参数 })`。参数和你自己调这个工具时完全一样。
 - 返回的 r 有三样：r.ok（成没成）、r.text（你自己调时会看到的那段文字）、r.data（同一个结果的数据，方便程序用；有些工具没有）。
 - 工具失败不会让程序出错，只是 r.ok 为 false：自己判断是跳过、重试还是 return 出去。
@@ -14,6 +14,30 @@
 - 一步一步来：一次 await 一个开任务的工具。不用传 queue。
 - 用 log 记下每一步的要紧结果（搬了什么、跳过了什么、为什么）。你被叫醒时主要靠这份日志知道发生了什么。
 - return 的值最多和一个工具结果一样长（和你直接调工具时看到的一样多），更长的只给开头，并写明一共多少字符、给了多少。日志一共留 4000 字符，满了以后的不留，也会写明。结果比这长时：从 r.data 里挑要的字段，用工具自己的筛选和 page 参数缩小，或者分几次返回 r.text 的不同段。
+
+# 等一会儿（等机器做完一批再去取）
+- 例程里 `await wait(秒)` 停那么久再往下走，可以写小数。JavaScript 的 `setTimeout` 也能用（毫秒）：`await new Promise((r) => setTimeout(r, 5000))` 和 `await wait(5)` 是一回事。`setInterval` 没有，要重复就写循环。
+- 等的时间算进例程能跑的时长（start_routine 的结果写着这一次给了多少分钟；要跑久的，启动时给 minutes），不算进程序自己的 20 秒计算时间；也不算一次工具调用（不限速，不算失败）。一次等会超过剩下的时长的，当场不让等：wait 抛错（setTimeout 是程序出错），消息写着还剩多少秒，程序接住了可以自己 return。
+- run_program 不能等：它在你这一轮里跑。等是例程的事；不写例程的话，任务结束会叫醒你，set_reminder 到点叫醒你。
+- 机器做完不会有消息来：隔一会儿看一眼（find_machines 的 data.machines 里每台有 x、y、z、active、progress、maxProgress；产物被送去的容器用 list_containers 看），没好再等。看一眼是一次工具调用，隔几秒看一次就够了。
+- 等的时候 routine_status 写着它在等、等了多久；它结束时叫醒你的消息里写着一共等了几次、多久。
+
+例子：放进机器就走，隔 5 秒看一眼，不忙了把产物取回来
+```js
+const machine = { x: -536, y: 69, z: 40 }
+const r = await tool("process_items", { machine, recipe: 109339, rounds: 2, leave: true })
+if (!r.ok) return "没开工：" + r.text
+let idle = false
+for (let i = 0; i < 60 && !idle; i++) {
+  await wait(5)
+  const m = (await tool("find_machines", { at: machine, radius: 1 })).data.machines.find((x) => x.x === machine.x && x.y === machine.y && x.z === machine.z)
+  idle = m !== undefined && !m.active
+}
+if (!idle) return "等了 5 分钟还在做"
+const took = await tool("withdraw_items", { container: machine, items: [{ id: "gregtech:gt.metaitem.01", meta: 32100, count: 2 }] })
+return took.text
+```
+机器开着自动输出的，产物不在机器里：去它推往的那个容器取（find_machines 写着 AUTO-OUTPUT 推到哪）。
 
 # 库函数
 - 有些“查一查、算一算”的函数不在你的工具清单里，叫库函数。run_program 的说明后面有一份索引（每个一行：名字、参数、data 里有什么）。在程序里和工具一样调：`await tool("名字", { 参数 })`，一样返回 r.ok、r.text、r.data。
@@ -71,7 +95,7 @@ return "搬完 " + moved + " 格"
 
 # 上限和停
 - 调多少次工具、开多少个任务没有上限：几千次调用、一口气搬一万多个东西的活可以放在一个例程里做完。
-- 管着它的是这几样：能跑多久（默认和最长是主人设的，start_routine 的结果里写着这一次能跑多少分钟；minutes 可以自己要，超过最长的给到最长）；连着 3 次工具失败会自动停下；程序自己的计算时间 20 秒（等工具结果的时间不算，不调工具的死循环会被停掉）；每秒调工具的次数有上限，超了的那次自动等一下再调，不算失败。
+- 管着它的是这几样：能跑多久（默认和最长是主人设的，start_routine 的结果里写着这一次能跑多少分钟；minutes 可以自己要，超过最长的给到最长）；连着 3 次工具失败会自动停下；程序自己的计算时间 20 秒（等工具结果、wait 的时间不算，不调工具的死循环会被停掉）；每秒调工具的次数有上限，超了的那次自动等一下再调，不算失败。
 - 每一步（参数、结果全文、用时）都记在这次运行的记录里，主人在面板上能逐步看。你被叫醒时拿到的是最近 12 次调用（每次一行）和程序 log 的最后 40 行：要带回来的数放进 return 或 log。
 - 同一时间只能有一个例程。它在跑的时候你还是会被别的事叫醒：routine_status 看它做到哪了，stop_routine 停掉它。
 - 例程在跑的时候不要自己再开任务：新任务会顶掉它正在做的那个，例程会因此停下。主人让你干别的急事时，先 stop_routine。

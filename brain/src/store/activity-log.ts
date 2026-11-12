@@ -59,8 +59,11 @@ export interface ActivityRun {
   calls: number
   tasks: number
   errors: number
-  /** 正等着的那一步（工具名和参数，截短了的）。 */
+  /** 正等着的那一步（工具名和参数，截短了的；例程自己在等时是 "wait 5 s"）。 */
   waiting?: string
+  /** 例程自己等了几次（wait、setTimeout）、一共等了多久（毫秒）；没等过的没有这两项。 */
+  waits?: number
+  waitedMs?: number
   /** 全量记录在 logs/runs/ 下的哪个文件里；没有落盘时没有这一项。 */
   file?: string
 }

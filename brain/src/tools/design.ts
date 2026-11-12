@@ -189,7 +189,7 @@ export const runProgramTool: Tool = {
 export const startRoutine: Tool = {
   name: 'start_routine',
   description:
-    'Start a JavaScript program that runs in the background and acts: it calls your tools with await tool(name, input), and a tool that starts a task returns when the task has ended. Many similar steps (moving every item of a list, a chain of crafts) fit in one routine instead of one tool call each: its calls cost no model call, and there is no limit on how many it makes. The library functions listed under run_program can be called here too. It returns at once; you are woken with its log when it finishes, fails or is stopped. Details: routines manual.',
+    'Start a JavaScript program that runs in the background and acts: it calls your tools with await tool(name, input), and a tool that starts a task returns when the task has ended; await wait(seconds) pauses it. Many similar steps (moving every item of a list, a chain of crafts) fit in one routine instead of one tool call each: its calls cost no model call, and there is no limit on how many it makes. The library functions listed under run_program can be called here too. It returns at once; you are woken with its log when it finishes, fails or is stopped. Details: routines manual.',
   inputSchema: obj(
     {
       code: str('The program: JavaScript statements (the body of an async function).', { maxLength: PROGRAM_MAX_CHARS }),

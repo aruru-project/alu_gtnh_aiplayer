@@ -92,6 +92,11 @@ export interface ProgramCallResult {
 export interface SandboxHooks {
   /** 程序调了一个工具：执行它，把结果给回去。没给这个钩子，程序就调不了工具。等结果的时间不算进程序的计算时限。 */
   onCall?(call: ProgramCall): Promise<ProgramCallResult>
+  /**
+   * 程序要等 ms 毫秒（wait、setTimeout）：等完了给回 ok，不让等（超过了剩下的时长、被停掉了）给回原因。等的时间和等工具结果一样不算进计算时限。
+   * 没给这个钩子，程序就不能等（run_program 的程序在模型的一轮里跑）。
+   */
+  onWait?(ms: number): Promise<{ ok: boolean; text: string }>
   /** 程序 log 了一行。 */
   onLog?(text: string): void
   /** 程序的日志满了（logChars）：这以后 log 的都不再留下。只报一次。 */
@@ -179,7 +184,7 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
     images: input.images,
     imagesDir,
     data,
-    limits: { ...input.program, timeoutMs: limits.timeoutMs, logChars: limits.logChars, tools: hooks.onCall !== undefined },
+    limits: { ...input.program, timeoutMs: limits.timeoutMs, logChars: limits.logChars, tools: hooks.onCall !== undefined, waits: hooks.onWait !== undefined },
   })
 
   return new Promise((resolve) => {
@@ -247,6 +252,18 @@ export function runProgram(input: SandboxInput, limits: SandboxLimits = DEFAULT_
         hooks.onLogFull?.()
       } else if (m.t === 'done') {
         done = m
+      } else if (m.t === 'wait' && typeof m.id === 'number' && typeof m.ms === 'number') {
+        // 程序要等一会儿：和等工具结果一样，表停下，等完把结果写回它的标准输入
+        const id = m.id
+        if (waitingCalls++ === 0) pauseClock()
+        const run = hooks.onWait ? hooks.onWait(Math.max(0, m.ms)) : Promise.resolve({ ok: false, text: 'this program cannot wait' })
+        run
+          .catch((e: unknown) => ({ ok: false, text: `the wait could not be done: ${errorText(e)}` }))
+          .then((result) => {
+            if (--waitingCalls === 0) resumeClock()
+            if (settled || child.stdin.destroyed) return
+            child.stdin.write(`${JSON.stringify({ t: 'result', id, ok: result.ok, text: result.text })}\n`)
+          })
       } else if (m.t === 'call' && typeof m.id === 'number' && typeof m.name === 'string') {
         // 程序调了一个工具：表停下，执行完把结果写回它的标准输入，表再走
         const call: ProgramCall = { id: m.id, name: m.name, input: m.input }

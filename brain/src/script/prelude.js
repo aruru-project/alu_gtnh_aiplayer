@@ -482,11 +482,11 @@
       return Promise.reject(new TypeError('tool: the input cannot be written as JSON'))
     }
     return new Promise((resolve) => {
-      waiting.set(id, resolve)
+      waiting.set(id, (message) => resolve(Object.freeze({ ok: message.ok === true, text: String(message.text ?? ''), data: message.data })))
       host('call', request)
     })
   }
-  /** 宿主把一个工具结果送回来（一个 JSON 字符串）。 */
+  /** 宿主把一个工具结果（或者“等完了”）送回来（一个 JSON 字符串）。 */
   function deliver(text) {
     let message
     try {
@@ -494,10 +494,61 @@
     } catch {
       return
     }
-    const resolve = waiting.get(message.id)
-    if (!resolve) return
+    const settle = waiting.get(message.id)
+    if (!settle) return
     waiting.delete(message.id)
-    resolve(Object.freeze({ ok: message.ok === true, text: String(message.text ?? ''), data: message.data }))
+    settle(message)
+  }
+
+  // ── 等 ──
+  // 例程里等一段时间（等机器做完一批再去取）：和调工具一样过宿主，由大脑那边计时。等的时候这个进程停着，不算进计算时限；
+  // 算进例程的总时长，等到超过剩下的时长的一次等，大脑当场拒绝并说还剩多少。run_program 的程序在模型的一轮里跑，不等。
+
+  const NO_WAIT =
+    'there is no waiting in this program: it runs inside your turn (run_program). A routine (start_routine) can wait with await wait(seconds); or end your turn: a task that ends wakes you, and set_reminder wakes you after the minutes you give'
+  function hostWait(ms) {
+    if (config.limits.waits !== true) return Promise.reject(new Error(NO_WAIT))
+    const id = nextCall++
+    return new Promise((resolve, reject) => {
+      waiting.set(id, (message) => (message.ok === true ? resolve() : reject(new Error(String(message.text ?? 'the wait did not happen')))))
+      host('wait', JSON.stringify({ id, ms }))
+    })
+  }
+  /** 等 seconds 秒（可以是小数）。 */
+  function wait(seconds) {
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return Promise.reject(new TypeError(`wait(seconds): give a number of seconds, 0 or more, not ${show(seconds)}`))
+    return hostWait(Math.round(seconds * 1000))
+  }
+  // setTimeout 照 JavaScript 的写法（毫秒），底下是同一个等：模型顺手写的 await new Promise((r) => setTimeout(r, 5000)) 照样能用。
+  // 回调里抛出来的（或者它返回的 promise 被拒绝）当成程序出错，和 Node 里没人接的异常一样让程序停下。
+  const timers = new Set()
+  let nextTimer = 1
+  function setTimeout(callback, ms, ...args) {
+    if (typeof callback !== 'function') throw new TypeError('setTimeout: the first argument must be a function')
+    if (config.limits.waits !== true) throw new Error(NO_WAIT)
+    const handle = nextTimer++
+    timers.add(handle)
+    hostWait(Math.max(0, Math.round(Number(ms) || 0))).then(
+      () => {
+        if (!timers.delete(handle)) return
+        try {
+          const r = callback(...args)
+          if (r !== null && typeof r === 'object' && typeof r.then === 'function') r.then(undefined, failed)
+        } catch (e) {
+          failed(e)
+        }
+      },
+      (e) => {
+        if (timers.delete(handle)) failed(e)
+      },
+    )
+    return handle
+  }
+  function clearTimeout(handle) {
+    timers.delete(handle)
+  }
+  function setInterval() {
+    throw new Error('setInterval is not available here: repeat in a loop with await wait(seconds)')
   }
 
   // ── 装到全局上 ──
@@ -507,9 +558,16 @@
     if (error instanceof Error) return { name: String(error.name), message: String(error.message), stack: String(error.stack ?? '') }
     return { name: 'Thrown', message: show(error), stack: '' }
   }
+  /** 程序在主体以外出了错（setTimeout 的回调里）：和主体出错一样结束。 */
+  function failed(error) {
+    if (outcome.state !== 'pending') return
+    outcome.state = 'failed'
+    outcome.error = describe(error)
+  }
   function finish(promise) {
     promise.then(
       (value) => {
+        if (outcome.state !== 'pending') return
         outcome.state = 'done'
         if (value !== undefined) {
           // 太长的只交开头那一段，连同原来一共多长：那一头好写明截了多少
@@ -519,14 +577,11 @@
         }
         outcome.drafts = [...saved.values()]
       },
-      (error) => {
-        outcome.state = 'failed'
-        outcome.error = describe(error)
-      },
+      failed,
     )
   }
 
-  const api = { log, blueprint: (width, height, length) => new Blueprint(width, height, length), image, images, palette, nearestBlock, data, tool }
+  const api = { log, blueprint: (width, height, length) => new Blueprint(width, height, length), image, images, palette, nearestBlock, data, tool, wait, setTimeout, clearTimeout, setInterval }
   for (const [name, value] of Object.entries(api)) Object.defineProperty(globalThis, name, { value, writable: false, configurable: false, enumerable: true })
   Object.defineProperty(globalThis, 'console', { value: Object.freeze({ log, info: log, warn: log, error: log, debug: log }), writable: false, configurable: false })
   Object.defineProperty(globalThis, config.finishName, { value: finish, writable: false, configurable: false })

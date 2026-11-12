@@ -75,6 +75,8 @@ export interface RoutineView {
   /** 调了多少次工具，其中开了多少个任务。 */
   calls: number
   actions: number
+  /** 程序自己等了几次（wait、setTimeout）、一共等了多久（毫秒）。没等过时没有。 */
+  waits?: { count: number; ms: number }
   /** 正等着的那一步。 */
   current?: { tool: string; input: string; since: number; taskId?: string }
   /** 最近的几次调用。 */
@@ -146,6 +148,8 @@ interface Running {
   record: RunRecorder
   /** 最近几次调用开始的时刻（毫秒，单调时钟）：限速用。 */
   stamps: number[]
+  /** 开始的时刻（单调时钟）：和总时长的那个定时器是同一只表，算“还剩多久”用。 */
+  startedMono: number
 }
 
 export class RoutineRunner {
@@ -229,6 +233,7 @@ export class RoutineRunner {
       ended: false,
       record: new RunRecorder({ log: this.deps.log, now: () => this.deps.now(), ...(this.deps.runs ? { store: this.deps.runs } : {}) }, { id, kind: 'routine', name: view.name, code }),
       stamps: [],
+      startedMono: performance.now(),
     }
     this.running = run
     view.run = run.record.view()
@@ -240,6 +245,7 @@ export class RoutineRunner {
         hooks: {
           signal: run.abort.signal,
           onCall: (call) => this.call(run, call),
+          onWait: (ms) => this.wait(run, ms),
           onLog: (text) => {
             run.record.logLine(text)
             view.logs.push(clip(text, LOG_LINE_CHARS))
@@ -339,6 +345,45 @@ export class RoutineRunner {
     return result
   }
 
+  /**
+   * 程序自己等一会儿（wait、setTimeout）。算进总时长（这一次给的分钟数），不算进程序自己的计算时间；不算工具调用：不限速、
+   * 不算进“连着几次失败”。一次等会超过剩下的时长的，当场不让等并说还剩多少（等到一半例程就被停了，程序连收尾的机会都没有）。
+   * 例程被停掉时等到一半也就不等了。
+   */
+  private async wait(run: Running, ms: number): Promise<{ ok: boolean; text: string }> {
+    if (run.ended) return { ok: false, text: 'the routine has been stopped' }
+    const said = `${secondsText(ms)} s`
+    const left = run.limits.wallMs - (performance.now() - run.startedMono)
+    if (ms > left) {
+      const text = `wait(${secondsText(ms)}): this routine may run ${Math.round(run.limits.wallMs / 60_000)} minute(s) in all and about ${Math.max(0, Math.floor(left / 1000))} s of that are left, so it would be stopped during this wait. Wait less, or have the program return what it has done (start_routine takes "minutes" for a longer run)`
+      run.record.waited({ ms, ok: false, text })
+      return { ok: false, text }
+    }
+    const since = this.deps.now()
+    const current = { tool: 'wait', input: said, since }
+    run.view.current = current
+    run.record.waiting('wait', said)
+    const finished = await new Promise<boolean>((resolve) => {
+      const stopped = (): void => {
+        clearTimeout(timer)
+        resolve(false)
+      }
+      const timer = setTimeout(() => {
+        run.abort.signal.removeEventListener('abort', stopped)
+        resolve(true)
+      }, ms)
+      run.abort.signal.addEventListener('abort', stopped, { once: true })
+    })
+    if (run.view.current === current) delete run.view.current
+    if (!finished) {
+      run.record.waited({ ms, ok: false, text: 'the routine was stopped while it waited' })
+      return { ok: false, text: 'the routine was stopped while it waited' }
+    }
+    run.view.waits = { count: (run.view.waits?.count ?? 0) + 1, ms: (run.view.waits?.ms ?? 0) + ms }
+    run.record.waited({ ms, ok: true })
+    return { ok: true, text: `waited ${said}` }
+  }
+
   /** 限速：最近一秒里调用已经到了上限，就等到最早那一次满一秒。 */
   private async pace(run: Running): Promise<void> {
     const perSecond = Math.max(1, Math.floor(run.limits.callsPerSecond))
@@ -432,13 +477,19 @@ export class RoutineRunner {
   }
 }
 
+/** 毫秒 → 秒，整数就不带小数。 */
+function secondsText(ms: number): string {
+  return String(Math.round(ms / 100) / 10)
+}
+
 const STATUS_WORDS: Record<RoutineStatus, string> = { running: 'is running', done: 'finished', failed: 'FAILED', stopped: 'was STOPPED', limit: 'was STOPPED at a limit' }
 
 /** 例程的情况写成一段话（英文，给模型看）：状态、做到哪了、最近几步、程序的日志。 */
 export function describeRoutine(view: RoutineView, now: number): string {
   const lines: string[] = []
   const took = Math.max(0, Math.round(((view.endedAt ?? now) - view.startedAt) / 1000))
-  lines.push(`Routine ${view.id} ("${view.name}") ${STATUS_WORDS[view.status]}${view.ending && view.status !== 'running' ? `: ${view.ending}` : ''}. ${view.calls} tool call(s), ${view.actions} task(s), ${took} s ${view.status === 'running' ? 'so far' : 'in all'}.`)
+  const waited = view.waits ? `, ${view.waits.count} wait(s) of its own (${secondsText(view.waits.ms)} s in all)` : ''
+  lines.push(`Routine ${view.id} ("${view.name}") ${STATUS_WORDS[view.status]}${view.ending && view.status !== 'running' ? `: ${view.ending}` : ''}. ${view.calls} tool call(s), ${view.actions} task(s)${waited}, ${took} s ${view.status === 'running' ? 'so far' : 'in all'}.`)
   if (view.current) lines.push(`Now waiting for: ${view.current.tool} ${view.current.input}${view.current.taskId ? ` (task ${view.current.taskId})` : ''}, for ${Math.round((now - view.current.since) / 1000)} s.`)
   if (view.value !== undefined) {
     // 返回值太长时只有开头：写明一共多少、给了多少、剩下的怎么拿

@@ -373,6 +373,77 @@ return [put.ok, put.data.result.clicks, put.data.result.lost[0].count]`,
     assert.ok(Number(lost[1]) >= 60 && Number(lost[1]) <= 62, lost[1])
   })
 
+  it('例程里等机器做完再取（意见簿 f20：它照 JavaScript 的习惯写 setTimeout，以前是 ReferenceError）：放下就走 → 隔一会儿看一眼机器 → 不忙了去取；等的时间不算程序自己的计算时间，叫醒它的消息和对话日志里写着等了几次、多久', async (t) => {
+    // 程序自己只许算 0.1 秒：等的这 2 秒要是算进去，它早就被停了
+    const h = setup(t, { computeMs: 100 })
+    const HAMMER = { x: 5, y: 64, z: 5 }
+    let looks = 0
+    h.game.handlers['world.machines'] = () => {
+      looks++
+      return { machines: [{ ...HAMMER, name: 'Steam Forge Hammer', id: 'gregtech:gt.blockmachines', meta: 1, recipes: 'Forge Hammer', active: looks < 4, dist: 0 }], total: 1 }
+    }
+    const code = `
+const r = await tool('process_items', { machine: ${JSON.stringify(HAMMER)}, inputs: [{ id: 'minecraft:cobblestone', count: 64 }], leave: true })
+if (!r.ok) return 'not started: ' + r.text
+let looked = 0
+for (let k = 0; k < 20; k++) {
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  looked++
+  const m = (await tool('find_machines', { at: ${JSON.stringify(HAMMER)}, radius: 1 })).data.machines[0]
+  if (!m.active) break
+}
+await wait(0.5)
+const w = await tool('withdraw_items', { container: ${JSON.stringify(HAMMER)}, items: [{ id: 'minecraft:gravel', count: 64 }] })
+return looked + ' looks, took ' + w.data.result.moved`
+    await modelCalls(h, 'start_routine', { code, name: '蒸汽锤分批造沙砾' })
+    await taskStarted(h, 1)
+    h.agent.handleEvent(taskEnded('t1', 'done', { type: 'process', result: { put: 64, left: true } }))
+    // 它在等的时候看进度：写着正在等、等了多久
+    await waitFor('it is waiting', () => h.agent.status().routine?.current?.tool === 'wait')
+    assert.match(await modelCalls(h, 'routine_status', {}, 'Alu 做到哪了'), /\nNow waiting for: wait 0\.5 s, for \d+ s\./)
+    await taskStarted(h, 2)
+    assert.deepEqual(h.game.callsOf('task.start')[1]!.task, { type: 'withdraw', container: HAMMER, items: [{ id: 'minecraft:gravel', count: 64 }] })
+    const turns = h.llm.requests.length
+    h.llm.enqueue(reply('取回来了。'))
+    h.agent.handleEvent(taskEnded('t2', 'done', { type: 'withdraw', result: { moved: 64 } }))
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done', 10_000)
+    assert.equal(h.agent.status().routine!.value, '4 looks, took 64')
+    await waitFor('the model was woken', () => h.llm.requests.length > turns)
+    // 看了四次机器、前面各等半秒（setTimeout），取之前再等半秒（wait）：五次共 2.5 秒
+    assert.match(h.llm.lastUserText(turns), /Routine r1 \("蒸汽锤分批造沙砾"\) finished: the program finished\. 6 tool call\(s\), 2 task\(s\), 5 wait\(s\) of its own \(2\.5 s in all\), \d+ s in all\./)
+    const summary = h.log.recent(0, 200).filter((e) => e.kind === 'run')
+    assert.match(summary[0]!.text, /^例程 r1（蒸汽锤分批造沙砾）：跑完了，调了 6 次工具，开了 2 个任务，0 次出错，等了 5 次共 2.5 秒，\d+ 秒$/)
+    // 这次运行的记录里每一次等都在（主人在面板上看得到它在哪里等了多久）
+    const records = h.runLogs.read(summary[0]!.run!.file!).records
+    assert.deepEqual(records.map((r) => (r.t === 'call' ? r.tool : r.t === 'wait' ? `wait ${r.ms}` : r.t)), ['start', 'process_items', 'wait 500', 'find_machines', 'wait 500', 'find_machines', 'wait 500', 'find_machines', 'wait 500', 'find_machines', 'wait 500', 'withdraw_items', 'end'])
+  })
+
+  it('等得比这个例程剩下的时长还久：当场不让等、说还剩多少，程序接住了可以自己收尾；等到一半被停掉就不等了', async (t) => {
+    const h = setup(t, { wallMs: 60_000 })
+    await modelCalls(h, 'start_routine', { code: `try { await wait(120) } catch (e) { return 'could not: ' + e.message }` })
+    await waitFor('the routine finished', () => h.agent.status().routine?.status === 'done')
+    assert.match(h.agent.status().routine!.value!, /^could not: wait\(120\): this routine may run 1 minute\(s\) in all and about 59 s of that are left, so it would be stopped during this wait\. Wait less, or have the program return what it has done/)
+
+    // 一次长等，主人中途在面板上停了它：马上停，不等到头
+    await h.agent.whenIdle()
+    await modelCalls(h, 'start_routine', { code: `await wait(40); return 'waited'` }, 'Alu 等一会儿')
+    await waitFor('it is waiting', () => h.agent.status().routine?.current?.tool === 'wait')
+    const stoppedAt = Date.now()
+    assert.equal(h.agent.stopRoutine(), true)
+    await waitFor('stopped', () => h.agent.status().routine?.status === 'stopped')
+    assert.ok(Date.now() - stoppedAt < 2000)
+  })
+
+  it('run_program 的程序不等（它在这一轮里跑）：等、setTimeout 都说清楚这里不能等、能怎么办', async (t) => {
+    const h = setup(t)
+    const res = await modelCalls(h, 'run_program', { code: `const out = []
+try { await wait(1) } catch (e) { out.push(e.message) }
+try { setTimeout(() => {}, 10) } catch (e) { out.push(e.message) }
+return out.join(' | ')` })
+    const why = 'there is no waiting in this program: it runs inside your turn \\(run_program\\)\\. A routine \\(start_routine\\) can wait with await wait\\(seconds\\); or end your turn: a task that ends wakes you, and set_reminder wakes you after the minutes you give'
+    assert.match(res, new RegExp(`^Returned: ${why} \\| ${why}$`, 'm'))
+  })
+
   it('run_program 的程序也能调工具，但只许查询的：结果当场回来；想开任务会被拒绝并指到 start_routine', async (t) => {
     const h = setup(t)
     const result = await modelCalls(h, 'run_program', {

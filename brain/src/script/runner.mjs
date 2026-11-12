@@ -116,6 +116,13 @@ function hostCall(op, arg) {
       send({ t: 'call', id: call.id, name: String(call.name), input: call.input })
       return 'V'
     }
+    if (op === 'wait') {
+      // 等一会儿：大脑计时，到了（或者不让等）结果从标准输入回来，和工具结果一样
+      if (request.limits.waits !== true) return 'Ethis program cannot wait'
+      const w = JSON.parse(arg)
+      send({ t: 'wait', id: Number(w.id), ms: Number(w.ms) })
+      return 'V'
+    }
     if (op === 'data') {
       const file = dataFiles.get(arg)
       if (!file) return `Ethe ${arg} data is not loaded on this brain; data.available() says what is`
