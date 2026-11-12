@@ -503,8 +503,17 @@ public final class ProcessTask extends Task {
                         // out at once, the way a player stops a machine seen making the wrong thing.
                         takenBack = true;
                         phase = "taking the inputs back: the machine is making something else";
-                        if (inputs.isEmpty()) trip = null;
-                        else collect(loadAt, true);
+                        if (inputs.isEmpty()) {
+                            trip = null;
+                        } else {
+                            // Only what the bot put in, as many as it put in: a mould or anything else that was in
+                            // there before is someone else's and stays.
+                            trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
+                            List<ItemFilter> own = new ArrayList<>();
+                            for (ItemFilter f : inputs) own.add(new ItemFilter(f.id, f.meta, f.count));
+                            trip.session.withdraw(own)
+                                .fromInputSlots();
+                        }
                         stage = 9;
                         return;
                     }
