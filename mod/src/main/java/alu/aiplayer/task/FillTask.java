@@ -109,7 +109,7 @@ public final class FillTask extends AreaTask {
                 detail.addProperty("missing", missing);
                 List<ItemFilter> want = new ArrayList<>();
                 want.add(new ItemFilter(item.id, item.meta, missing));
-                startSupply(want, "out of " + item.id + "; " + missing + " more needed", detail);
+                startSupply(want, "out of " + item.label() + "; " + missing + " more needed", detail);
                 return;
             }
             if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], "unreachable");

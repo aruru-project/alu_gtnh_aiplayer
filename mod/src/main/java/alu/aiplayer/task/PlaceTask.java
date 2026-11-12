@@ -53,7 +53,7 @@ public final class PlaceTask extends AreaTask {
                 detail.addProperty("missing", 1 + countSame(current[3]));
                 List<ItemFilter> want = new ArrayList<>();
                 want.add(new ItemFilter(item.id, item.meta, 1 + countSame(current[3])));
-                startSupply(want, "the bot has no " + item.id, detail);
+                startSupply(want, "the bot has no " + item.label(), detail);
                 return;
             }
             if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], "unreachable");

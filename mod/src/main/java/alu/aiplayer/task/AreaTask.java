@@ -30,6 +30,7 @@ import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.nav.Navigator;
 import alu.aiplayer.nav.Rules;
 import alu.aiplayer.util.J;
+import alu.aiplayer.util.Kinds;
 import alu.aiplayer.util.Names;
 import alu.aiplayer.world.WorldQueries;
 
@@ -298,6 +299,9 @@ abstract class AreaTask extends Task {
         // Placing while airborne would put the block where the feet are about to be.
         if (!p.onGround && !p.isInWater() && ++airborne < 100) return Act.BUSY;
         airborne = 0;
+        // The stack the block is placed from (the first that matches, as the placing itself picks it): which variant.
+        int from = Inventories.find(p, item);
+        ItemStack using = from < 0 ? null : p.inventory.mainInventory[from].copy();
         Placer.Result r;
         if (placeFromAbove && bot.blockY() < y) {
             // Standing too low. Find out what a walk up there would be for before setting off.
@@ -319,6 +323,7 @@ abstract class AreaTask extends Task {
         switch (r) {
             case PLACED:
                 placed++;
+                if (using != null) placedItems.add(using, 1);
                 cooldown = PLACE_COOLDOWN;
                 return Act.OK;
             case OCCUPIED:
@@ -345,6 +350,9 @@ abstract class AreaTask extends Task {
                 return Act.BUSY;
         }
     }
+
+    /** What the placed blocks were placed from, by kind: the variants that actually went in. */
+    private final Kinds placedItems = new Kinds();
 
     /** Removes and returns the target nearest to the bot's eyes; with {@code lowestFirst}, among the lowest layer. */
     protected int[] takeNearest(List<int[]> targets, boolean lowestFirst) {
@@ -658,6 +666,7 @@ abstract class AreaTask extends Task {
         JsonObject o = new JsonObject();
         o.addProperty("removed", removed);
         o.addProperty("placed", placed);
+        if (!placedItems.isEmpty()) o.add("placedItems", placedItems.toJson());
         if (!skipCounts.isEmpty()) {
             JsonObject s = new JsonObject();
             for (Map.Entry<String, Integer> e : skipCounts.entrySet()) s.addProperty(e.getKey(), e.getValue());

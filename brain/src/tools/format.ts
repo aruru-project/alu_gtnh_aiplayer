@@ -2,6 +2,7 @@
 
 import type {
   AttachedBlock,
+  AutoOutput,
   BlueprintByHand,
   BlueprintCheck,
   BlueprintEntry,
@@ -344,6 +345,8 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     // 放下就走（leave）的结果里没有产物，是“放进去了、机器开工了”和那一刻机器的状态
     if (result && result.left === true) out.result = processLeftLines(result, task.params)
     else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result, task.params)
+  } else if (task.type === 'place' || task.type === 'fill' || task.type === 'flatten') {
+    if (result && Array.isArray(result.placedItems)) out.result = areaResultLines(result)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   } else if (task.type === 'hold') {
@@ -896,6 +899,7 @@ const BLUEPRINT_NOW_KEYS = ['cells', 'done', 'toPlace', 'byHand', 'blocked', 'ex
 const BLUEPRINT_RESULT_KEYS = new Set([
   'removed',
   'placed',
+  'placedItems',
   'freeSlots',
   'skipped',
   'skippedExamples',
@@ -919,6 +923,8 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
     if (typeof result[key] === 'number') head.push(`${key} ${result[key]}`)
   }
   if (head.length > 0) lines.push(head.join(', '))
+  const from = placedFromText(result.placedItems)
+  if (from) lines.push(from)
   if (isRecord(result.skipped) && Object.keys(result.skipped).length > 0) {
     let s = `skipped ${compactJson(result.skipped, 300)}`
     const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isRecord) : []
@@ -952,6 +958,22 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
   const rest = Object.fromEntries(Object.entries(result).filter(([k]) => !BLUEPRINT_RESULT_KEYS.has(k)))
   if (Object.keys(rest).length > 0) lines.push(`other: ${compactJson(rest, 300)}`)
   return lines
+}
+
+/**
+ * 放方块的任务（place、fill、flatten、照图纸建）实际用的是哪几种物品：同一个 id 的不同 meta 是不同的方块，
+ * 放混了一眼看得出来。身体给的 placedItems 没有就是空的。
+ */
+function placedFromText(placedItems: unknown): string {
+  const kinds = kindList(placedItems)
+  return kinds.length > 0 ? `placed from: ${kinds.map((k) => kindText(k.count, k)).join(', ')}` : ''
+}
+
+/** 区域任务的结果：放了哪几种单独一句，其余字段照旧是紧凑 JSON。 */
+export function areaResultLines(result: Record<string, unknown>): string[] {
+  const { placedItems, ...rest } = result
+  const from = placedFromText(placedItems)
+  return [compactJson(withLocalNames(trimTaskResult(rest)), 600), ...(from ? [from] : [])]
 }
 
 /** blueprint 任务失败时的 detail：missing 是每种材料缺多少。 */
@@ -1356,6 +1378,8 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
   if (steam) parts.push('steam-powered (whether it has steam cannot be read)')
   else if (typeof m.storedEU === 'number') parts.push(m.storedEU > 0 ? `has power (${m.storedEU} EU stored)` : 'NO POWER (0 EU stored)')
   if (m.switchedOff === true) parts.push('SWITCHED OFF')
+  const auto = autoOutputText(isRecord(m.autoOutput) ? (m.autoOutput as AutoOutput) : undefined)
+  if (auto) parts.push(auto)
   if (m.active === true) {
     const done = count(m.maxProgress) > 0 ? ` (${Math.round((count(m.progress) * 100) / count(m.maxProgress))}% of the current item done)` : ''
     parts.push(`BUSY${done}`)
@@ -1363,6 +1387,20 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
     parts.push(typeof m.idleReason === 'string' && m.idleReason.length > 0 ? `idle (it says: ${m.idleReason})` : 'idle')
   }
   return parts.join(', ')
+}
+
+/**
+ * 单方块机器自己的自动输出（界面上的两个开关）：开着时，做出来的东西不留在它的产物格里，从输出面推给挨着的方块。
+ * 实测：压缩机输出面朝下、下面是输入总线，做出的钢块一个不剩全进了总线。
+ */
+export function autoOutputText(a: AutoOutput | undefined): string {
+  if (!a) return ''
+  const what = [a.items === true ? 'items' : '', a.fluids === true ? 'fluids' : ''].filter(Boolean).join(' and ')
+  if (!what) return ''
+  if (a.outputFaceIsFront === true) return `auto-output of ${what} on, but its output face is its front, so nothing is pushed out`
+  if (typeof a.side !== 'string') return `auto-output of ${what} on`
+  const to = a.to ? `${nameOf(a.to, { block: true }) ?? a.to.name ?? 'a block'} at ${formatPos(a.to)}` : 'nothing (no block stands there)'
+  return `AUTO-OUTPUT of ${what} on: what it makes leaves by its ${a.side} face, into ${to}`
 }
 
 /** 紧挨着一个容器、会自己送料抽料的方块：写出来提醒这是自动化的一环。 */
@@ -1536,11 +1574,44 @@ export function processLeftLines(result: Record<string, unknown>, params: Record
   return [line]
 }
 
+/** 产物被送到的一个容器（process 结果的 elsewhere 一项）：多少、哪个容器、挨着机器（多方块是输出总线）的哪个面。 */
+function elsewhereText(p: Record<string, unknown>): string {
+  const items = kindList(p.items)
+    .map((o) => kindText(o.count, o))
+    .join(', ')
+  const where = typeof p.x === 'number' ? ` at ${formatPos(p as { x: number; y: number; z: number })}` : ''
+  const bus = isRecord(p.bus) && typeof p.bus.x === 'number' ? ` of the output bus at ${formatPos(p.bus as { x: number; y: number; z: number })}` : ''
+  const against = typeof p.side === 'string' ? `, against the ${p.side} face${bus || ' of the machine'}` : bus ? `, reached from the output bus at ${formatPos(p.bus as { x: number; y: number; z: number })} through a hopper` : ', reached from the machine through a hopper'
+  return `${items} in${quoted(p, { block: true }) || ' a container'}${where}${against}`
+}
+
 export function processResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { put, outputs, timedOut, freeSlots, fluids, making, ...rest } = result
+  const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, ...rest } = result
   const got = kindList(outputs)
-  let line = `put ${count(put)} item(s) into the machine; took out: ${got.length > 0 ? got.map((o) => kindText(o.count, o)).join(', ') : 'nothing'}`
+  const list = (v: unknown): string => kindList(v).map((o) => kindText(o.count, o)).join(', ')
+  let line = `put ${count(put)} item(s) into the machine`
+  // 机器自己记着的：这次看着它做完了几轮、做出了什么（和取回了多少是两件事：产物可能被它自己、覆盖板或管道送走）
+  if (count(rounds) > 0) line += `; it finished ${count(rounds)} round(s) of a recipe${kindList(made).length > 0 ? `, making ${list(made)} in all` : ''}`
+  line += `; took out: ${got.length > 0 ? list(outputs) : 'nothing'}`
   line += makingText(making, params)
+  const places = (Array.isArray(elsewhere) ? elsewhere : []).filter(isRecord)
+  if (places.length > 0 && kindList(made).length > 0) {
+    line += `; ${got.length > 0 ? 'more of what it made' : 'what it made'} was moved on out of the machine while it worked, and is now in: ${places.map(elsewhereText).join('; ')}`
+  } else if (places.length > 0) {
+    // 身体读不懂的机器：它做了什么不知道，只知道它转的时候周围的容器里多了哪些不是原料的东西
+    line += `; while it ran, these turned up in the containers around it (not among the inputs; its recipes cannot be read, so that they came from it is likely, not certain): ${places.map(elsewhereText).join('; ')}`
+  } else if (got.length === 0 && count(rounds) > 0 && !Array.isArray(fluids)) {
+    line += '; nothing of what it made was left in the machine, and no container around it gained any: it went further than can be seen from the machine'
+  }
+  if (places.length > 0 || (got.length === 0 && count(rounds) > 0)) {
+    // 东西自己离开机器的路：它自己的自动输出，和接在它身上的管道、漏斗
+    const auto = autoOutputText(isRecord(autoOutput) ? (autoOutput as AutoOutput) : undefined)
+    if (auto) line += `; ${auto}`
+    const plumbed = attachedText(Array.isArray(attached) ? (attached as AttachedBlock[]) : undefined)
+    if (plumbed) line += `; ${plumbed}`
+    // 身体那句英文说明讲的是同一件事，上面已经说全了
+    delete rest.note
+  }
   if (Array.isArray(fluids)) {
     // 多方块给的是输出仓（带坐标），单方块给的是它自己的罐
     const hatches = fluids.some((f) => isRecord(f) && typeof f.x === 'number')
@@ -1554,7 +1625,12 @@ export function processResultLines(result: Record<string, unknown>, params?: Rec
     // 身体那句英文说明讲的是同一件事，上面已经说全了
     delete rest.note
   }
-  if (timedOut === true) line += '; timedOut: the wait ran out before it finished, the machine is still working on the rest'
+  if (timedOut === true) {
+    // 实测：等到头时身体把产物格里的和还没开始做的原料都取回来（算在 took out 里），机器只把手上那一轮做完，产物留在它里面
+    line += `; timedOut: the wait ran out before the machine was done. What was in its output slots and the inputs it had not started on were taken out (above); the recipe it is still on finishes in the machine, and what that makes stays in it`
+    // 身体的说明就是这一句
+    if (got.length === 0 && count(rounds) === 0) delete rest.note
+  }
   if (typeof freeSlots === 'number') line += `; freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `; other: ${compactJson(rest, 200)}`
   return [line]

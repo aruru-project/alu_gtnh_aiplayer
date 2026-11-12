@@ -313,6 +313,70 @@ return [sw.value, after.ok]` } }]),
   })
 })
 
+describe('格子是干什么的、画在哪', () => {
+  // 意见簿：部件加工台格 2 放绑定结模具、格 3 放圆石，产物格始终为空。格 2、3 是材料格，模具要放的 0、1 两格只收模具；模具不在身上时
+  // 身体拿圆石、煤这几样去试，都不收，就把它们报成了“什么都放不进”（大脑说成 OUTPUT）。下面是测试服上照它那样放完以后身体给的原样。
+  const PART_BUILDER = { x: -500, y: 64, z: 88 }
+  const PATTERN_SLOT = { class: 'SlotPattern', takes: [], accepts: [{ id: 'TConstruct:metalPattern', meta: 0, name: 'Ingot Cast' }, { id: 'TConstruct:clayPattern', meta: 0, name: 'Ingot Clay Cast' }, { id: 'TConstruct:Pattern', meta: 0, name: 'Shuriken Pattern' }, { id: 'TConstruct:Cast', meta: 0, name: 'Shuriken Cast' }] }
+  const OUT = { class: 'SlotOnlyTake', takesNothing: true }
+  const partBuilder = {
+    open: true,
+    screen: 'PartCrafterContainer',
+    slotCount: 44,
+    slots: [
+      { slot: 0, x: 40, y: 27, ...PATTERN_SLOT },
+      { slot: 1, x: 40, y: 45, ...PATTERN_SLOT },
+      { slot: 2, x: 58, y: 27, item: { id: 'TConstruct:woodPattern', meta: 9, count: 1, name: 'Tool Binding Pattern' } },
+      { slot: 3, x: 58, y: 45, item: { id: 'minecraft:cobblestone', meta: 0, count: 8, name: 'Cobblestone' } },
+      { slot: 4, x: 102, y: 27, ...OUT },
+      { slot: 5, x: 120, y: 27, ...OUT },
+      { slot: 6, x: 102, y: 45, ...OUT },
+      { slot: 7, x: 120, y: 45, ...OUT },
+    ],
+  }
+
+  it('部件加工台（意见簿：模具和圆石放进格 2、3，产物格始终是空的，分不清格子的用途）：只收模具的两格写着它的种类和它收哪一类东西，不再当成产物格；界面一行行怎么排（模具格、材料格、两个产物格）写在最后', async (t) => {
+    const h = setup(t)
+    h.game.handlers['screen.open'] = () => partBuilder
+    const lines = (await modelCalls(h, 'open_screen', { at: PART_BUILDER })).content.split('\n')
+    assert.deepEqual(lines, [
+      'Screen "PartCrafterContainer" is open (44 slots in all).',
+      'Its slots (8):',
+      '- slots 0–1 [SlotPattern] (takes only some things; of what you carry: none; it takes e.g. Ingot Cast [TConstruct:metalPattern], Ingot Clay Cast [TConstruct:clayPattern], Shuriken Pattern [TConstruct:Pattern], Shuriken Cast [TConstruct:Cast]): empty (2)',
+      '- slot 2: 1× Tool Binding Pattern [TConstruct:woodPattern/9]',
+      '- slot 3: 8× Cobblestone [minecraft:cobblestone]',
+      '- slot 4 [SlotOnlyTake] (OUTPUT: products appear here, nothing can be put in): empty',
+      '- slot 5 [SlotOnlyTake] (OUTPUT: products appear here, nothing can be put in): empty',
+      '- slot 6 [SlotOnlyTake] (OUTPUT: products appear here, nothing can be put in): empty',
+      '- slot 7 [SlotOnlyTake] (OUTPUT: products appear here, nothing can be put in): empty',
+      'Where the screen draws them (pixels from its top left; rows top to bottom, each left to right, slot numbers): y 27: 0 (x 40), 2 (x 58), 4–5 (x 102–120); y 45: 1 (x 40), 3 (x 58), 6–7 (x 102–120)',
+      'Your own inventory is empty.',
+      'Nothing on your cursor.',
+    ])
+  })
+
+  it('GregTech 的界面自己摆格子：身体不给位置，就不写“画在哪”那一行', async (t) => {
+    const h = setup(t)
+    h.game.handlers['screen.open'] = () => ({ open: true, screen: 'ModularContainer', slotCount: 40, slots: [{ slot: 0, class: 'MachineModularSlot', index: 5, role: 'input' }, { slot: 1, class: 'MachineModularSlot', index: 6, role: 'output', takesNothing: true }] })
+    const lines = (await modelCalls(h, 'open_screen', { at: EXTRACTOR })).content.split('\n')
+    assert.deepEqual(lines.slice(2, 5), ['Of these, by what the machine uses them for: 1 input (slot 0), 1 output (slot 1).', '- slot 0 [MachineModularSlot] (INPUT): empty', '- slot 1 [MachineModularSlot] (OUTPUT: products appear here): empty'])
+    assert.equal(lines.some((l) => l.startsWith('Where the screen draws them')), false)
+  })
+})
+
+describe('机器自己的自动输出', () => {
+  // 测试服上那台压缩机：物品自动输出开着，输出面朝下，下面是一个输入总线（身体给的原样）
+  const COMPRESSOR = { x: -532, y: 72, z: 58, name: 'Basic Compressor', id: 'gregtech:gt.blockmachines', meta: 241, recipes: 'Compressor', recipeKey: 'gt.recipe.compressor', tier: 'LV', inputSlots: 1, outputSlots: 1, active: false, storedEU: 2048, inputVoltage: 32, autoOutput: { items: true, fluids: false, side: 'down', to: { x: -532, y: 71, z: 58, name: 'Input Bus (LV)' } } }
+
+  it('find_machines：开着自动输出的机器写明做出来的东西从哪一面出去、进了什么里；输出面就是正面的照实说推不出去', async (t) => {
+    const h = setup(t)
+    h.game.handlers['world.machines'] = () => ({ machines: [COMPRESSOR, { ...COMPRESSOR, x: -530, autoOutput: { items: true, fluids: true, outputFaceIsFront: true } }], total: 2 })
+    const lines = (await modelCalls(h, 'find_machines', {})).content.split('\n')
+    assert.equal(lines[1], '- (-532,72,58) "Basic Compressor": runs Compressor recipes, tier LV, 1 input slot(s), 1 output slot(s), has power (2048 EU stored), AUTO-OUTPUT of items on: what it makes leaves by its down face, into Input Bus (LV) at (-532,71,58), idle')
+    assert.equal(lines[2], '- (-530,72,58) "Basic Compressor": runs Compressor recipes, tier LV, 1 input slot(s), 1 output slot(s), has power (2048 EU stored), auto-output of items and fluids on, but its output face is its front, so nothing is pushed out, idle')
+  })
+})
+
 describe('产物是流体的加工', () => {
   it('流体提取机化钢板：任务算做成，结果里说清没有物品出来、做出来的是流体、现在在机器的罐里有多少（中文名），以及流体不会自己到别处去', async (t) => {
     const h = setup(t)

@@ -19,12 +19,15 @@ import alu.aiplayer.act.ItemFilter;
 import alu.aiplayer.act.Machines;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.util.J;
+import alu.aiplayer.util.Kinds;
 import alu.aiplayer.util.Names;
 
 /**
  * Runs a batch through a GregTech machine: puts the given items in, waits while it works, and brings back what
  * comes out. If the machine does not start (no power, no such recipe, a missing circuit or fluid) the inputs are
- * taken out again and the task says so.
+ * taken out again and the task says so. What the machine made is counted as it works (the rounds it finishes, by its
+ * own record of each recipe), apart from what is brought back: its auto-output, a cover or a pipe may move the
+ * products on while it works, and then the task has still done its job and says where they turned up.
  * <p>
  * A single-block machine is loaded and emptied at the machine itself. A multiblock is named by its controller and
  * used the way a player uses one by hand: items into an input bus, cells of fluid into an input hatch, the
@@ -272,9 +275,122 @@ public final class ProcessTask extends Task {
         TileEntity te = machine();
         if (!plain && te instanceof IInventory) contents = fingerprint((IInventory) te);
         before = carried();
+        lookAround();
         phase = "waiting for the machine";
         stage = 1;
         waited = 0;
+    }
+
+    // ---- what the machine does while it is watched, and where its products go ------------------------------
+
+    /** Recipe runs the machine was seen to finish while the task watched it. */
+    private int rounds;
+    /** What those runs made, by the machine's own record of each recipe as it started it. */
+    private final Kinds made = new Kinds();
+    private int lastProgress, lastMax;
+    private Object lastToken;
+    private JsonArray lastMaking;
+
+    /**
+     * Called every tick while the machine works: a run has ended when the recipe it was on is gone, its progress went
+     * back, or it holds the products of a new recipe. A machine switched off or shut down (a multiblock out of power)
+     * loses its recipe without finishing it; that is no run.
+     */
+    private void watchRounds(TileEntity te) {
+        int max = Machines.maxProgress(te), progress = Machines.progress(te);
+        Object token = Machines.recipeToken(te);
+        boolean ended = lastMax > 0 && Machines.allowedToWork(te)
+            && (max == 0 || (progress >= 0 && progress < lastProgress) || (token != null && lastToken != null && token != lastToken));
+        if (ended) {
+            rounds++;
+            if (lastMaking != null) for (com.google.gson.JsonElement e : lastMaking) made.add(e.getAsJsonObject());
+        }
+        if (max <= 0) lastMaking = null;
+        else if (lastMaking == null || token != lastToken) lastMaking = Machines.making(te);
+        lastMax = max;
+        lastProgress = progress;
+        lastToken = token;
+    }
+
+    /**
+     * The containers around the machine (around a multiblock's output buses): where its products land when its
+     * auto-output, a cover or a pipe moves them on. Each {x, y, z, side, fromX, fromY, fromZ}, with what it held
+     * once the machine was loaded.
+     */
+    private final List<int[]> around = new ArrayList<>();
+    private final List<Map<String, JsonObject>> aroundBefore = new ArrayList<>();
+    /** Products found in those containers at the end: [{x, y, z, name, side?, bus?, items}]. */
+    private JsonArray elsewhere = new JsonArray();
+    /** It made things and none could be taken out: they were moved on while it worked. */
+    private boolean sentAway;
+
+    private void lookAround() {
+        around.clear();
+        aroundBefore.clear();
+        net.minecraft.world.World w = bot.player().worldObj;
+        java.util.Set<String> skip = new java.util.HashSet<>();
+        skip.add(at[0] + "," + at[1] + "," + at[2]);
+        for (int[] p : unloadAt) skip.add(p[0] + "," + p[1] + "," + p[2]);
+        for (int[] from : multi ? unloadAt : java.util.Collections.singletonList(at)) {
+            TileEntity source = tile(from);
+            if (source == null) continue;
+            for (int[] p : alu.aiplayer.world.WorldQueries.around(w, source)) {
+                if (!skip.add(p[0] + "," + p[1] + "," + p[2])) continue;
+                around.add(new int[] { p[0], p[1], p[2], p[3], from[0], from[1], from[2] });
+                aroundBefore.add(alu.aiplayer.world.WorldQueries.holds(w, w.getTileEntity(p[0], p[1], p[2])));
+            }
+        }
+    }
+
+    /**
+     * What turned up in the containers around the machine while it ran: the kinds it made (for a machine whose
+     * recipes cannot be read, any kind that is not one of the inputs), by how many more of each there are now.
+     */
+    private JsonArray foundAround() {
+        JsonArray out = new JsonArray();
+        net.minecraft.world.World w = bot.player().worldObj;
+        java.util.Set<String> kinds = new java.util.HashSet<>(made.keys());
+        if (making != null) for (com.google.gson.JsonElement e : making) kinds.add(Kinds.key(e.getAsJsonObject()));
+        for (int i = 0; i < around.size(); i++) {
+            int[] p = around.get(i);
+            TileEntity t = w.blockExists(p[0], p[1], p[2]) ? w.getTileEntity(p[0], p[1], p[2]) : null;
+            if (t == null) continue;
+            Map<String, JsonObject> was = aroundBefore.get(i);
+            JsonArray items = new JsonArray();
+            for (Map.Entry<String, JsonObject> e : alu.aiplayer.world.WorldQueries.holds(w, t)
+                .entrySet()) {
+                if (plain ? isInput(e.getKey()) : !kinds.contains(e.getKey())) continue;
+                JsonObject had = was.get(e.getKey());
+                int more = e.getValue()
+                    .get("count")
+                    .getAsInt()
+                    - (had == null ? 0
+                        : had.get("count")
+                            .getAsInt());
+                if (more <= 0) continue;
+                JsonObject item = new JsonObject();
+                for (Map.Entry<String, com.google.gson.JsonElement> f : e.getValue()
+                    .entrySet()) item.add(f.getKey(), f.getValue());
+                item.addProperty("count", more);
+                items.add(item);
+            }
+            if (items.size() == 0) continue;
+            JsonObject c = J.pos(p[0], p[1], p[2]);
+            String name = Machines.name(t);
+            c.addProperty(
+                "name",
+                name != null ? name : alu.aiplayer.world.WorldQueries.blockName(t.getBlockType(), t.getBlockMetadata()));
+            if (p[3] >= 0) c.addProperty("side", Machines.SIDES[p[3]]);
+            if (multi) c.add("bus", J.pos(p[4], p[5], p[6]));
+            c.add("items", items);
+            out.add(c);
+        }
+        return out;
+    }
+
+    private boolean isInput(String key) {
+        for (ItemFilter f : inputs) if (f.meta < 0 ? key.startsWith(f.id + "@") : key.equals(f.id + "@" + f.meta)) return true;
+        return false;
     }
 
     @Override
@@ -371,6 +487,7 @@ public final class ProcessTask extends Task {
                     active = ran && unchanged < 240;
                 } else {
                     active = Machines.isActive(te);
+                    watchRounds(te);
                     // What it set out to make, read while it runs a recipe: if something else got into the machine (a
                     // pipe feeding it, a circuit it still had), this says so.
                     if (Machines.working(te)) {
@@ -506,6 +623,7 @@ public final class ProcessTask extends Task {
     private void finish() {
         restoreCircuit();
         outputs = gained();
+        elsewhere = foundAround();
         if (outputs.size() == 0 && multi && passedTo.size() > 0) {
             // It ran, and the output bus is empty because it does not keep things. That is how this machine is
             // set up, not a failure; the products are for whoever asked to go and find.
@@ -517,15 +635,24 @@ public final class ProcessTask extends Task {
                 // a fluid. That stays where it is; the result says what is there now.
                 fluidsAfter = fluidState();
                 done();
+            } else if (outputs.size() == 0 && (rounds > 0 || elsewhere.size() > 0)) {
+                // It finished recipes, or things it makes turned up next to it, and nothing was left in it to take:
+                // its auto-output, a cover or a pipe moved them on while it worked. Made, not failed.
+                sentAway = true;
+                done();
+            } else if (outputs.size() == 0 && timedOut && sawWorking) {
+                // Still on its first round when the wait ran out: not failed either, just not done yet.
+                done();
             } else if (outputs.size() == 0) {
-            fail(
-                "invalid",
-                "the machine ran but nothing could be taken out of it"
-                    + (multi ? "; its products may be fluids, which stay in the output hatch" : ""),
-                plain ? null : Machines.describe(machine()));
-        } else {
-            done();
-        }
+                fail(
+                    "invalid",
+                    "the machine ran but nothing could be taken out of it"
+                        + (plain ? ", and nothing it might have made turned up next to it" : ", and it was not seen to finish a recipe")
+                        + (multi ? "; its products may be fluids, which stay in the output hatch" : ""),
+                    plain ? null : Machines.describe(machine()));
+            } else {
+                done();
+            }
     }
 
     /** Leaves the circuit setting the way it was found; someone else may rely on it. */
@@ -634,6 +761,34 @@ public final class ProcessTask extends Task {
         }
         o.add("outputs", outputs);
         if (making != null && making.size() > 0) o.add("making", making);
+        if (rounds > 0) o.addProperty("rounds", rounds);
+        if (!made.isEmpty()) o.add("made", made.toJson());
+        if (elsewhere.size() > 0) o.add("elsewhere", elsewhere);
+        if (sentAway || elsewhere.size() > 0) {
+            // How things leave this machine by themselves: its own auto-output, and what is plumbed into it.
+            TileEntity te = machine();
+            JsonObject auto = te == null ? null : Machines.autoOutput(te);
+            if (auto != null) o.add("autoOutput", auto);
+            JsonArray attached = te == null ? new JsonArray() : alu.aiplayer.world.WorldQueries.attached(te.getWorldObj(), te);
+            if (attached.size() > 0) o.add("attached", attached);
+        }
+        if (sentAway && plain) {
+            o.addProperty(
+                "note",
+                "nothing could be taken out of the machine, and while it ran, things that are not among the inputs turned"
+                    + " up in the containers around it (elsewhere). Its recipes cannot be read, so that they came from it"
+                    + " is likely, not certain");
+        } else if (sentAway) {
+            o.addProperty(
+                "note",
+                "the machine ran and made things, but none were left in it to take out: something moved them on while it"
+                    + " worked (its auto-output, a cover or a pipe). elsewhere lists the containers around it that gained"
+                    + " them; what is not there went further than can be seen from the machine");
+        } else if (timedOut && outputs.size() == 0 && rounds == 0) {
+            o.addProperty(
+                "note",
+                "the wait ran out while the machine was still on its first recipe; what it finishes stays in it");
+        }
         if (passedOn) {
             o.addProperty(
                 "note",

@@ -120,6 +120,37 @@ function roleSummary(slots: readonly ScreenSlot[], circuitControl: boolean): str
   return `Of these, by what the machine uses them for: ${parts.join(', ')}.${circuitControl && !by.has('circuit') ? ' The programmed circuit is not one of them: it is a setting of its own (the [programmed circuit] control below), so it takes no input slot.' : ''}`
 }
 
+/** 一件东西的名字和 id（格子收什么的那几句）。 */
+function kindName(t: { id: string; meta?: number; name?: string }): string {
+  return `${nameOf(t) ?? t.id} [${itemKey(t)}]`
+}
+
+/**
+ * 界面把它自己的格子画在哪：按行（y）从上到下，每行从左到右，编号连着、隔 18 像素挨着的并成一段。
+ * 玩家靠位置认格子：部件加工台一行里是模具格、材料格、两个产物格，放不对行就什么都不出。
+ * 自己摆格子的界面（GregTech 的）没有位置，不写。
+ */
+function layoutLine(slots: readonly ScreenSlot[]): string | undefined {
+  const placed = slots.filter((s): s is ScreenSlot & { x: number; y: number } => typeof s.x === 'number' && typeof s.y === 'number')
+  if (placed.length < 2) return undefined
+  const rows = new Map<number, (ScreenSlot & { x: number; y: number })[]>()
+  for (const s of placed) rows.set(s.y, [...(rows.get(s.y) ?? []), s])
+  const parts = [...rows.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([y, row]) => {
+      row.sort((a, b) => a.x - b.x)
+      const runs: string[] = []
+      for (let i = 0; i < row.length; ) {
+        let j = i
+        while (j + 1 < row.length && row[j + 1]!.slot === row[j]!.slot + 1 && row[j + 1]!.x - row[j]!.x === 18) j++
+        runs.push(j > i ? `${row[i]!.slot}–${row[j]!.slot} (x ${row[i]!.x}–${row[j]!.x})` : `${row[i]!.slot} (x ${row[i]!.x})`)
+        i = j + 1
+      }
+      return `y ${y}: ${runs.join(', ')}`
+    })
+  return `Where the screen draws them (pixels from its top left; rows top to bottom, each left to right, slot numbers): ${parts.join('; ')}`
+}
+
 /** 界面现在的样子：它自己的格子（原料格、产物格、只显示的）和你背包里的格子分开列，物品用中文名。 */
 export function formatScreen(state: ScreenState): string {
   if (state.open !== true) return 'No screen is open right now.'
@@ -127,16 +158,18 @@ export function formatScreen(state: ScreenState): string {
   const theirs = slots.filter((s) => s.own !== true)
   const mine = slots.filter((s) => s.own === true)
   const lines: string[] = [`Screen "${state.screen ?? 'unknown'}" is open${typeof state.slotCount === 'number' ? ` (${state.slotCount} slots in all)` : ''}.`]
+  // 格子在代码里的种类（类名）原样写在前面：它常常就说了这格是干什么的（SlotPattern、SlotOnlyTake）
   const tag = (s: ScreenSlot): string =>
-    s.role !== undefined && ROLE_TAGS[s.role] !== undefined
+    (s.class !== undefined ? ` [${s.class}]` : '') +
+    (s.role !== undefined && ROLE_TAGS[s.role] !== undefined
       ? ROLE_TAGS[s.role]!
       : s.ghost === true
         ? ' (display only: nothing real in it, e.g. a programmed-circuit setting)'
         : s.takesNothing === true
           ? ' (OUTPUT: products appear here, nothing can be put in)'
           : s.takes !== undefined
-            ? ` (takes only some things; of what you carry: ${s.takes.length > 0 ? s.takes.map((t) => `${nameOf(t) ?? t.id} [${itemKey(t)}]`).join(', ') : 'none'})`
-            : ''
+            ? ` (takes only some things; of what you carry: ${s.takes.length > 0 ? s.takes.map(kindName).join(', ') : 'none'}${(s.accepts ?? []).length > 0 ? `; it takes e.g. ${s.accepts!.map(kindName).join(', ')}` : ''})`
+            : '')
   const controls = state.controls ?? []
   if (theirs.length === 0) lines.push(controls.length > 0 ? 'It has no slots of its own.' : 'It has no slots of its own, and lists no other controls (a screen whose buttons are not listed cannot be pressed from here).')
   else {
@@ -145,6 +178,8 @@ export function formatScreen(state: ScreenState): string {
     if (roles) lines.push(roles)
     lines.push(...slotLines(theirs.slice(0, SLOTS_SHOWN), tag))
     if (theirs.length > SLOTS_SHOWN) lines.push(`- … and ${theirs.length - SLOTS_SHOWN} more slots not shown`)
+    const layout = layoutLine(theirs.slice(0, SLOTS_SHOWN))
+    if (layout) lines.push(layout)
   }
   if (controls.length > 0) lines.push(...controlLines(controls))
   lines.push(mine.length > 0 ? `Your own inventory (only the slots holding something):` : 'Your own inventory is empty.')

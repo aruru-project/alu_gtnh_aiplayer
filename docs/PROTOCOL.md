@@ -310,7 +310,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 |---|---|---|
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
-| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,outputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,dist}], total}`。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
+| `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,outputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,autoOutput?,dist}], total}`。`autoOutput` 是单方块机器界面上的自动输出开着时（两个开关都关着不带）：`{items, fluids, side?, to?:{x,y,z,name}, outputFaceIsFront?}`，开着的那几样做出来就从输出面 `side` 推给挨着的 `to`，不留在产物格；`outputFaceIsFront` 时输出面就是它的正面，什么都推不出去。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,cover?,side?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
 `recipe.find` 的结果：
@@ -386,7 +386,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 | `screen.set` | `{bot, key, panel?, value}` | 把一个开关、数字、文字或选项设成 `value`。只读的控件 `denied` |
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
 
-Slot：`{slot, own?, item?:Item, takesNothing?, takes?, ghost?, index?, role?}`。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`takes:[{id,meta,name}]` 是只收某些东西的空格子（燃料格、只收装流体的单元和桶的格子、工具格）收 bot 身上的哪几种（最多 8 种，可能一种都没有）；圆石、bot 身上的东西、几样代表（煤、空桶、水桶、铁镐、空单元）都不收的才算 `takesNothing`；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
+Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?, ghost?, index?, role?}`。界面自己的格子带 `x`、`y`：界面把它画在哪（从界面左上角数的像素），玩家靠位置认格子；自己摆格子的界面（GregTech 的）没有这两项。`class` 是这一格在代码里的种类（类名，如 `SlotPattern`、`SlotOnlyTake`），普通的格子不带。实测（匠魂的部件加工台）：0、1 号 `SlotPattern`（x 40，y 27 / 45），2、3 号材料格（x 58），4–7 号 `SlotOnlyTake`（x 102、120）。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`takes:[{id,meta,name}]` 是只收某些东西的空格子（燃料格、只收装流体的单元和桶的格子、工具格、模具格）收 bot 身上的哪几种（鼠标上拿着的也算；最多 8 种，可能一种都没有）；一种都没有时 `accepts:[{id,meta,name}]` 是游戏的物品表里它收的几样（最多 4 样，各取 meta 0），看得出是哪一类东西；圆石、bot 身上的东西、几样代表（煤、空桶、水桶、铁镐、空单元）和物品表里的每一种都不收的才算 `takesNothing`；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
 
 常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 
@@ -516,7 +516,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, takes?, ghost?, index?, role?}`�
 | `follow` | `{player, distance?=3}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等 |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
 | `dig` | `{blocks:[{x,y,z}]}`，≤256 | 逐个挖掉，由近到远。点名的方块里装着东西（箱子、抽屉、机器）也照样挖，像玩家挖一样，里面的东西掉出来；区域类任务（`clear` `flatten` 和图纸的清障）碰到装着东西的方块是跳过的（`has contents`） |
-| `place` | `{blocks:[{x,y,z,item,meta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿 |
+| `place` | `{blocks:[{x,y,z,item,meta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿。给了 `meta` 就只用这个 meta 的物品放（用完了去 `supply` 取这一种，取不到以 `no_material` 停下）；不给是这个 id 的哪种都行，背包里先找到哪种用哪种，可能混着放（`fill` 同） |
 | `clear` | `{x1,y1,z1,x2,y2,z2, dropoff?, overflow?}`，体积 ≤ 32768 | 把盒子里所有方块挖掉，一层一层从上往下 |
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周 |
 | `flatten` | `{x1,z1,x2,z2, y, fill?=true, fillItems?:[id], maxFillDepth?=3, dropoff?, supply?, overflow?}`，≤64×64 | 把区域整成地面顶层在 y 的平地：挖掉 y 以上的一切，再把 y 及以下的坑由低到高填上 |
@@ -589,7 +589,10 @@ Slot：`{slot, own?, item?:Item, takesNothing?, takes?, ghost?, index?, role?}`�
     - 流体产物留在输出仓里，不取。
   - 机器没开工（单方块 3 秒、多方块 10 秒）就把原料取回来，以 `invalid` 失败，`error.message` 里带原因（多方块是它界面上的说法，如 `No valid recipe found`），`error.detail` 是这台机器的状态。可能是没电、缺电路或流体、没有这个配方、炉温或电压不够、输出口被占着。
   - 原料一样都放不进去（输入格、输入总线满了）也以 `invalid` 失败。输入总线带 `attached` 时多半是被自动喂料占满的，这要主人决定怎么办。
-  - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], timedOut?, note?, passedTo?, freeSlots}`；等到 `wait` 还没做完时取走已有的产物并带 `timedOut:true`，机器里剩下的原料会继续加工。
+  - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], rounds?, made?, elsewhere?, autoOutput?, attached?, timedOut?, note?, passedTo?, freeSlots}`。`outputs` 是取回到身上的（产物，和没被消耗的模具、没用完的原料）。等到 `wait` 还没做完时取走已有的产物和还没开始做的原料并带 `timedOut:true`；机器只把手上那一轮做完，产物留在它里面（实测：54 个钢锭进压缩机、等 5 秒，取回 36 个钢锭，之后机器里多了 2 个钢块）。一个东西都没取到、可看见机器在跑配方的，也是 `done` 带 `timedOut`。
+  - **机器做了什么**（GregTech 机器，身体看着它转时读的）：`rounds` 是这次看着它做完了几轮配方，`made` 是这几轮一共做出了什么（机器开始每一轮时自己记着的产物）。和 `outputs` 是两件事：做出来的可能没留在机器里。
+  - **产物被送走了**：机器自己的自动输出、覆盖板、管道可能边做边把产物送走，产物格里什么都不剩。身体在放完料时把机器（多方块是各个输出总线）周围的容器——挨着它各面、有物品栏的方块（机器、总线、管道也算）和它的漏斗通往的箱子——记下里面有什么，做完再看一遍：`elsewhere:[{x,y,z,name,side?,bus?,items}]` 是多了它做的那几种东西的容器、多了多少（`side` 是它挨着机器——多方块是 `bus` 那个输出总线——的哪一面，经过漏斗才到的没有 `side`）；身体读不懂的机器不知道它做什么，是多了的不是原料的东西。这时还带 `autoOutput`（同 `world.machines`）和 `attached`（接在机器上的漏斗、管道）。
+  - 一个产物都没取到，但看到它做完了配方（`rounds` > 0）或者周围的容器里多了它做的东西：做成了、产物被送走了，任务是 `done`，带 `note`。都没有才以 `invalid` 失败（`the machine ran but nothing could be taken out of it, and it was not seen to finish a recipe`）。实测：LV 压缩机物品自动输出开着、输出面朝下、下面是一个输入总线，54 个钢锭 → `done`，`rounds` 6、`made` 6 个钢块、`outputs` 空、`elsewhere` 是那个总线（`side:"down"`）里的 6 个钢块；奇点压缩机（一轮只要一两 tick）同样 7 轮都数到了；原版熔炉下面接漏斗、漏斗通到箱子，3 个圆石烧成的 3 个石头在那个箱子里。
   - **`leave:true`：放进去就走。** 不给它时这个任务从放料一直占着身体到取完产物（机器要转几分钟，身体就站几分钟）。给了它：原料放进去、电路设好、看到机器开工，任务就以 `done` 结束，身体可以去做别的；机器自己接着转。结果是 `{put, cellsPoured?, left:true, note, machine?, circuit?:{now, was}, freeSlots}`——`machine` 是结束那一刻这台机器的状态（同 `world.machines` 的一项，带 `progress`/`maxProgress`，单位 tick），身体不认识的机器没有这一项。
     - 产物、没消耗掉的模具都留在机器里，之后像从容器里取东西一样取：`withdraw` 的 `container` 给这台机器（产物格；`fromInputs:true` 是原料格，模具在那里）；多方块取输出总线。
     - 电路**不恢复**（后面几轮还要用），`circuit.was` 是原来的值；要恢复得之后自己设回去。
@@ -604,7 +607,7 @@ Slot：`{slot, own?, item?:Item, takesNothing?, takes?, ghost?, index?, role?}`�
 
 结果 `result`：
 
-- 区域任务：`{removed, placed, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], freeSlots}`，`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。
+- 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], freeSlots}`，`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
   为了够到高处垫的方块，任务结束前会拆掉；够不着拆的个数在 `climbingBlocksLeftStanding`。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。

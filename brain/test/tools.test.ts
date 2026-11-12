@@ -499,9 +499,18 @@ describe('任务类工具', () => {
       s.game.callsOf('task.start').map((p) => p.task),
       [
         { type: 'goto', x: -60, z: -60 },
-        { type: 'place', blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:cobblestone' }], supply: [{ x: 5, y: 64, z: 5 }] },
+        { type: 'place', blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:cobblestone', meta: 0 }], supply: [{ x: 5, y: 64, z: 5 }] },
       ],
     )
+  })
+
+  it('放方块不给 meta 就是 0（意见簿：说明写着默认 0，身体收到的却是“哪种都行”，把钢管道方块混进了钢机械方块）：fill_area、place_blocks 交给身体的每一格都带着 meta，给了的照给的', async (t) => {
+    const s = setup(t)
+    await s.run('fill_area', { x1: 0, y1: 64, z1: 0, x2: 8, y2: 65, z2: 0, item: 'gregtech:gt.blockcasings2' })
+    await s.run('fill_area', { x1: 0, y1: 64, z1: 0, x2: 8, y2: 65, z2: 0, item: 'gregtech:gt.blockcasings2', meta: 13 })
+    await s.run('place_blocks', { blocks: [{ x: 1, y: 65, z: 1, item: 'gregtech:gt.blockcasings2' }, { x: 2, y: 65, z: 1, item: 'gregtech:gt.blockcasings2', meta: 13 }] })
+    const tasks = s.game.callsOf('task.start').map((p) => p.task as { meta?: number; blocks?: { meta?: number }[] })
+    assert.deepEqual([tasks[0]!.meta, tasks[1]!.meta, tasks[2]!.blocks!.map((b) => b.meta)], [0, 13, [0, 13]])
   })
 
   it('顶掉旧任务时，把身体报告的被取消任务告诉上层和模型', async (t) => {
@@ -522,7 +531,7 @@ describe('任务类工具', () => {
     const tasks = s.game.callsOf('task.start').map((p) => p.task)
     assert.deepEqual(tasks, [
       { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, fill: false, maxFillDepth: 2, dropoff: [{ x: 1, y: 65, z: 1 }] },
-      { type: 'fill', x1: 0, y1: 64, z1: 0, x2: 4, y2: 66, z2: 4, item: 'minecraft:cobblestone', shape: 'walls' },
+      { type: 'fill', x1: 0, y1: 64, z1: 0, x2: 4, y2: 66, z2: 4, item: 'minecraft:cobblestone', shape: 'walls', meta: 0 },
       { type: 'haul', from: { x: 1, y: 64, z: 1 }, to: { x: 9, y: 64, z: 9 }, items: [{ id: 'minecraft:iron_ingot', count: 64 }] },
       { type: 'follow', player: 'Steve', distance: 4 },
       { type: 'home', name: 'base' },

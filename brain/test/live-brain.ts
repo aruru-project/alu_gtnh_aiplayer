@@ -5,6 +5,7 @@
 import { execFile, spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import type { MockReply, RecordedLlmRequest } from './mock-llm.ts'
 import { RESERVED_PORTS } from './ports.ts'
@@ -12,20 +13,23 @@ import { RESERVED_PORTS } from './ports.ts'
 export const BRAIN_ROOT = path.resolve(import.meta.dirname, '..')
 export const REPO_ROOT = path.resolve(BRAIN_ROOT, '..')
 
-/**
- * 测试服的 bridge 端口：环境变量 AIPLAYER_TEST_BRIDGE_PORT，或者 tools/local.env 里的同名一行（另一份检出、git worktree
- * 有自己的测试服，见 tools/testserver），都没有就是 25591。
- */
-function testserverBridgePort(): number {
-  let value = process.env.AIPLAYER_TEST_BRIDGE_PORT
+/** 环境变量里的，或者 tools/local.env 里的同名一行（另一份检出、git worktree 有自己的测试服，见 tools/testserver）。 */
+function localSetting(key: string): string | undefined {
+  let value = process.env[key]
   if (!value) {
     try {
-      const line = fs.readFileSync(path.join(REPO_ROOT, 'tools', 'local.env'), 'utf8').split('\n').find((l) => l.startsWith('AIPLAYER_TEST_BRIDGE_PORT='))
+      const line = fs.readFileSync(path.join(REPO_ROOT, 'tools', 'local.env'), 'utf8').split('\n').find((l) => l.startsWith(`${key}=`))
       value = line?.slice(line.indexOf('=') + 1).trim().replace(/^"|"$/g, '')
     } catch {
       // 没有 local.env：用默认的
     }
   }
+  return value || undefined
+}
+
+/** 测试服的 bridge 端口：AIPLAYER_TEST_BRIDGE_PORT（见 localSetting），都没有就是 25591。 */
+function testserverBridgePort(): number {
+  const value = localSetting('AIPLAYER_TEST_BRIDGE_PORT')
   const port = Number(value || 25591)
   if (!Number.isInteger(port) || (RESERVED_PORTS.includes(port) && port !== 25591)) throw new Error(`不是测试服的 bridge 端口：${String(value)}`)
   return port
@@ -56,8 +60,50 @@ export function run(cmd: string, args: string[], timeoutMs: number): Promise<{ c
   })
 }
 
-/** tools/testserver rcon：它自己从 tools/local.env 读这一份检出的测试服的端口。 */
+/** tools/testserver rcon：它自己从 tools/local.env 读这一份检出的测试服的端口。一条指令起一个进程，不要同时发好几条。 */
 export const rcon = (command: string) => run(path.join(REPO_ROOT, 'tools', 'testserver'), ['rcon', command], 15_000)
+
+/**
+ * 一条一直开着的 rcon 连接，指令一条接一条发：摆场景要发几百条 setblock 时用它。同时开好几个 rcon 连接会被服务器断掉、回答也会串
+ * （实测 24 个并发，两个 connection closed，别的回答里夹着别人的）。端口是 AIPLAYER_TEST_RCON_PORT（默认 25576），口令在 testserver/.rcon-password。
+ */
+export async function openRcon(): Promise<{ send(command: string): Promise<string>; close(): void }> {
+  const port = Number(localSetting('AIPLAYER_TEST_RCON_PORT') ?? 25576)
+  if (!Number.isInteger(port) || (RESERVED_PORTS.includes(port) && port !== 25576)) throw new Error(`不是测试服的 rcon 端口：${port}`)
+  const password = fs.readFileSync(path.join(REPO_ROOT, 'testserver', '.rcon-password'), 'utf8').trim()
+  const socket = net.createConnection({ host: '127.0.0.1', port })
+  await new Promise<void>((resolve, reject) => socket.once('connect', resolve).once('error', reject))
+  let buffer = Buffer.alloc(0)
+  const waiting: ((body: string) => void)[] = []
+  socket.on('data', (chunk) => {
+    buffer = Buffer.concat([buffer, chunk])
+    while (buffer.length >= 4 && buffer.length >= 4 + buffer.readInt32LE(0)) {
+      const length = buffer.readInt32LE(0)
+      const body = buffer.subarray(12, 4 + length - 2).toString('utf8')
+      buffer = buffer.subarray(4 + length)
+      waiting.shift()?.(body)
+    }
+  })
+  let id = 0
+  let chain = Promise.resolve('')
+  const packet = (kind: number, body: string): Promise<string> => {
+    const payload = Buffer.from(body, 'utf8')
+    const out = Buffer.alloc(14 + payload.length)
+    out.writeInt32LE(10 + payload.length, 0)
+    out.writeInt32LE(++id, 4)
+    out.writeInt32LE(kind, 8)
+    payload.copy(out, 12)
+    return new Promise<string>((resolve) => {
+      waiting.push(resolve)
+      socket.write(out)
+    })
+  }
+  await packet(3, password)
+  return {
+    send: (command) => (chain = chain.then(() => packet(2, command))),
+    close: () => socket.end(),
+  }
+}
 
 // ── 模拟模型：从请求里取出“最后给模型看的内容”，两种线格式都认 ──
 

@@ -147,6 +147,11 @@ export interface MockMachine {
   controls?: MockControl[]
   /** fluidAutoOutput 这个开关打开以后，它罐里的流体进到哪台机器的罐里（真的机器是朝它的输出面推）。 */
   autoOutputTo?: { x: number; y: number; z: number }
+  /**
+   * 物品自动输出开着：做出来的东西从这一面推进挨着的那个容器（containers 里同一位置的那个），不留在产物格里。
+   * 和真的身体一样，world.machines 里带 autoOutput，process 的结果里产物不在 outputs 里，在 elsewhere 里。
+   */
+  itemAutoOutput?: { side: string; to: { x: number; y: number; z: number; name: string } }
   /** 它能把哪些东西化成流体（process 放进这种东西，没有物品出来，罐里多出流体）。 */
   melts?: { id: string; meta: number; fluid: string; name: string; mb: number }[]
   /** 被按过的按钮（测试看用）。 */
@@ -1788,9 +1793,11 @@ export class MockBridge {
         return
       }
     }
-    if (task.type === 'fill' && typeof p.item === 'string' && !bot.inventory.some((i) => i.id === p.item)) {
+    // 和真的身体一样：给了 meta 就只认那一种
+    const meta = typeof p.meta === 'number' ? p.meta : undefined
+    if (task.type === 'fill' && typeof p.item === 'string' && !bot.inventory.some((i) => i.id === p.item && (meta === undefined || i.meta === meta))) {
       this.endTask(bot, task, 'failed', {
-        error: { code: 'no_material', message: `out of ${p.item}; 1 more needed`, detail: { item: { id: p.item }, missing: 1 } },
+        error: { code: 'no_material', message: `out of ${p.item}${meta === undefined ? '' : `:${meta}`}; 1 more needed`, detail: { item: { id: p.item, ...(meta === undefined ? {} : { meta }) }, missing: 1 } },
         result: { removed: 0, placed: 0, freeSlots: 36 - bot.inventory.length },
       })
       return
@@ -2460,11 +2467,24 @@ export class MockBridge {
     const put = plan.given.reduce((n, g) => n + g.count, 0)
     if (task.params.leave === true) return { result: this.processAndLeave(bot, task, plan, put) }
     const outputs: Json[] = []
+    // 机器自己记着的：做完了几轮、一共做出了什么（真的身体看着机器转时读的）
+    const made: Json[] = []
+    // 物品自动输出开着：产物进了输出面挨着的那个容器，一个也不留在产物格里
+    const away = plan.machine.itemAutoOutput
+    const into = away ? this.containers.find((c) => c.x === away.to.x && c.y === away.to.y && c.z === away.to.z) : undefined
     for (const out of (plan.recipe.outputs ?? []) as Json[]) {
-      const made = { id: String(out.id), meta: Number(out.meta ?? 0), name: String(out.name ?? out.id), count: Number(out.count) * plan.rounds }
-      putInInventory(bot, made, made.count)
-      outputs.push(made)
+      const item = { id: String(out.id), meta: Number(out.meta ?? 0), name: String(out.name ?? out.id), count: Number(out.count) * plan.rounds }
+      made.push(item)
+      if (away) {
+        const stack = into?.items.find((i) => i.id === item.id && i.meta === item.meta)
+        if (stack) stack.count += item.count
+        else into?.items.push({ ...item })
+        continue
+      }
+      putInInventory(bot, item, item.count)
+      outputs.push(item)
     }
+    const watched = plan.rounds > 0 && made.length > 0 ? { rounds: plan.rounds, made } : {}
     for (const need of (plan.recipe.inputs ?? []) as Json[]) {
       const fits = (i: { id: string; meta: number }) => i.id === need.id && i.meta === Number(need.meta ?? 0)
       const g = plan.given.find((x) => x.id === need.id && (x.meta === undefined || x.meta === need.meta))
@@ -2493,7 +2513,20 @@ export class MockBridge {
         },
       }
     }
-    return { result: { put, outputs, freeSlots: 36 - bot.inventory.length } }
+    if (away) {
+      return {
+        result: {
+          put,
+          outputs,
+          ...watched,
+          ...(into ? { elsewhere: [{ ...away.to, side: away.side, items: made }] } : {}),
+          autoOutput: { items: true, fluids: false, side: away.side, to: away.to },
+          note: 'the machine ran and made things, but none were left in it to take out: something moved them on while it worked (its auto-output, a cover or a pipe). elsewhere lists the containers around it that gained them; what is not there went further than can be seen from the machine',
+          freeSlots: 36 - bot.inventory.length,
+        },
+      }
+    }
+    return { result: { put, outputs, ...watched, freeSlots: 36 - bot.inventory.length } }
   }
 
   /**
@@ -2802,8 +2835,19 @@ export function sampleResult(task: MockTask): Json {
     case 'clear':
       return { removed: 120, placed: 0, freeSlots: 12, clearedDownTo: Math.min(Number(p.y1 ?? 0), Number(p.y2 ?? 0)) }
     case 'fill':
-    case 'place':
-      return { removed: 0, placed: 64, freeSlots: 30 }
+      // 放下去的方块是从哪种物品放的（真的身体照放的时候手里那一组记）
+      return { removed: 0, placed: 64, ...(typeof p.item === 'string' ? { placedItems: [{ id: p.item, meta: typeof p.meta === 'number' ? p.meta : 0, count: 64 }] } : {}), freeSlots: 30 }
+    case 'place': {
+      const kinds = new Map<string, { id: string; meta: number; count: number }>()
+      for (const b of (Array.isArray(p.blocks) ? p.blocks : []) as Json[]) {
+        const key = `${String(b.item)}/${typeof b.meta === 'number' ? b.meta : 0}`
+        const kind = kinds.get(key) ?? { id: String(b.item), meta: typeof b.meta === 'number' ? b.meta : 0, count: 0 }
+        kind.count++
+        kinds.set(key, kind)
+      }
+      const placed = [...kinds.values()].reduce((n, k) => n + k.count, 0)
+      return { removed: 0, placed, ...(placed > 0 ? { placedItems: [...kinds.values()] } : {}), freeSlots: 30 }
+    }
     case 'dig':
       return { removed: Array.isArray(p.blocks) ? p.blocks.length : 0, placed: 0, freeSlots: 28 }
     case 'deposit':
@@ -2847,6 +2891,7 @@ function describeMachine(m: MockMachine): Json {
     storedEU: m.storedEU,
     inputVoltage: m.inputVoltage,
     ...(m.switchedOff ? { switchedOff: true } : {}),
+    ...(m.itemAutoOutput ? { autoOutput: { items: true, fluids: false, side: m.itemAutoOutput.side, to: m.itemAutoOutput.to } } : {}),
     ...(m.id !== undefined ? { id: m.id, meta: m.meta ?? 0 } : {}),
     ...(m.recipeKey !== undefined ? { recipeKey: m.recipeKey } : {}),
     ...(m.more ?? {}),

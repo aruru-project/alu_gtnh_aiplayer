@@ -636,10 +636,79 @@ describe('agent 的一轮决策', () => {
     await h.agent.whenIdle()
     assert.match(h.llm.lastUserText(2), /has power \(6400 EU stored\), idle\. It has power and is idle, so the cause is the recipe: a missing programmed circuit or mold, a missing fluid/)
 
-    // 等到头还没做完：做好的取回来了，剩下的还在机器里
-    h.agent.handleEvent(taskEnded('t16', 'done', { type: 'process', result: { put: 64, outputs: [{ id: GT, meta: 23305, name: 'Steel Rod', count: 20 }], timedOut: true, freeSlots: 19 } }))
+    // 等到头还没做完：做好的取回来了，还没开始做的原料也取回来了（测试服上实测：54 个钢锭等 5 秒，取回 36 个），机器只把手上那一轮做完
+    h.agent.handleEvent(taskEnded('t16', 'done', { type: 'process', result: { put: 64, outputs: [{ id: GT, meta: 23305, name: 'Steel Rod', count: 20 }, { id: GT, meta: 11305, name: 'Steel Ingot', count: 43 }], timedOut: true, freeSlots: 19 } }))
     await h.agent.whenIdle()
-    assert.match(h.llm.lastUserText(3), /took out: 20× gregtech:gt\.metaitem\.01\/23305 "Steel Rod"; timedOut: the wait ran out before it finished, the machine is still working on the rest; freeSlots 19/)
+    assert.match(h.llm.lastUserText(3), /took out: 20× gregtech:gt\.metaitem\.01\/23305 "Steel Rod", 43× gregtech:gt\.metaitem\.01\/11305 "Steel Ingot"; timedOut: the wait ran out before the machine was done\. What was in its output slots and the inputs it had not started on were taken out \(above\); the recipe it is still on finishes in the machine, and what that makes stays in it; freeSlots 19/)
+  })
+
+  it('放方块的任务（意见簿：fill_area 报放了 18 个，实际先放了 10 个钢管道方块）：模型看到这些方块是从哪几种物品放的；只放要的那种、不够就停时，缺的是哪个 meta', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const CASING = 'gregtech:gt.blockcasings2'
+    // 测试服上身体给的原样：不带 meta 时两种都放了；带 meta 0 时只放 meta 0，放完 8 个以 no_material 停下
+    h.agent.handleEvent(
+      taskEnded('t40', 'done', {
+        type: 'fill',
+        result: { removed: 0, placed: 18, placedItems: [{ id: CASING, meta: 13, count: 10, name: 'Steel Pipe Casing' }, { id: CASING, meta: 0, count: 8, name: 'Solid Steel Machine Casing' }], freeSlots: 35 },
+      }),
+    )
+    await h.agent.whenIdle()
+    assert.match(h.llm.lastUserText(0), /任务 t40（fill）完成了。 结果：\n {2}\{"removed":0,"placed":18,"freeSlots":35\}\n {2}placed from: 10× gregtech:gt\.blockcasings2\/13 "Steel Pipe Casing", 8× gregtech:gt\.blockcasings2 "Solid Steel Machine Casing"\n/)
+
+    h.agent.handleEvent(
+      taskEnded('t41', 'failed', {
+        type: 'fill',
+        error: { code: 'no_material', message: 'out of gregtech:gt.blockcasings2:0; 10 more needed', detail: { item: { id: CASING, meta: 0 }, missing: 10 } },
+        result: { removed: 0, placed: 8, placedItems: [{ id: CASING, meta: 0, count: 8, name: 'Solid Steel Machine Casing' }], freeSlots: 35 },
+      }),
+    )
+    await h.agent.whenIdle()
+    const stopped = h.llm.lastUserText(1)
+    assert.match(stopped, /任务 t41（fill）失败了：no_material — out of gregtech:gt\.blockcasings2:0; 10 more needed/)
+    assert.match(stopped, /已完成的部分：\n {2}\{"removed":0,"placed":8,"freeSlots":35\}\n {2}placed from: 8× gregtech:gt\.blockcasings2 "Solid Steel Machine Casing"\n/)
+  })
+
+  it('产物被机器自己的自动输出送走了（意见簿：压缩机把 6 个钢块推进了下面的输入总线，以前报“没法取出”的失败）：模型看到任务做成了、跑了几轮、做了什么、取回零个、东西现在在哪个容器挨着哪一面、机器的自动输出朝哪', async (t) => {
+    const h = makeAgent()
+    t.after(h.cleanup)
+    const BLOCK = { id: 'gregtech:gt.blockmetal6', meta: 13, name: 'Block of Steel' }
+    const bus = { x: -532, y: 71, z: 58, name: 'Input Bus (LV)' }
+    // 测试服上这一趟身体给的原样（坐标换成了意见簿里那台）：54 个钢锭进 LV 压缩机，输出面朝下、物品自动输出开着
+    h.agent.handleEvent(
+      taskEnded('t30', 'done', {
+        type: 'process',
+        params: { machine: { x: -532, y: 72, z: 58 }, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 11305, count: 54 }] },
+        result: {
+          put: 54,
+          outputs: [],
+          making: [{ ...BLOCK, count: 1 }],
+          rounds: 6,
+          made: [{ ...BLOCK, count: 6 }],
+          elsewhere: [{ ...bus, side: 'down', items: [{ ...BLOCK, count: 6 }] }],
+          autoOutput: { items: true, fluids: false, side: 'down', to: bus },
+          note: 'the machine ran and made things, but none were left in it to take out: something moved them on while it worked (its auto-output, a cover or a pipe). elsewhere lists the containers around it that gained them; what is not there went further than can be seen from the machine',
+          freeSlots: 36,
+        },
+      }),
+    )
+    await h.agent.whenIdle()
+    assert.equal(
+      h.llm.lastUserText(0).match(/任务 t30（process）.*/)?.[0],
+      '任务 t30（process）完成了。 结果：put 54 item(s) into the machine; it finished 6 round(s) of a recipe, making 6× gregtech:gt.blockmetal6/13 "Block of Steel" in all; took out: nothing; when it started it set out to make 1× gregtech:gt.blockmetal6/13 "Block of Steel"; what it made was moved on out of the machine while it worked, and is now in: 6× gregtech:gt.blockmetal6/13 "Block of Steel" in "Input Bus (LV)" at (-532,71,58), against the down face of the machine; AUTO-OUTPUT of items on: what it makes leaves by its down face, into Input Bus (LV) at (-532,71,58); freeSlots 36',
+    )
+
+    // 输出面接的是管道：做出来了，周围哪个容器都没多出来。照实说去了看不到的地方，接在它身上的管道写出来
+    const pipe = { x: -532, y: 71, z: 58, name: 'Steel Item Pipe', kind: 'item pipe' }
+    h.agent.handleEvent(
+      taskEnded('t31', 'done', {
+        type: 'process',
+        result: { put: 9, outputs: [], rounds: 1, made: [{ ...BLOCK, count: 1 }], autoOutput: { items: true, fluids: false, side: 'down', to: pipe }, attached: [pipe], note: 'the machine ran and made things, but none were left in it', freeSlots: 36 },
+      }),
+    )
+    await h.agent.whenIdle()
+    const piped = h.llm.lastUserText(1)
+    assert.match(piped, /任务 t31（process）完成了。 结果：put 9 item\(s\) into the machine; it finished 1 round\(s\) of a recipe, making 1× gregtech:gt\.blockmetal6\/13 "Block of Steel" in all; took out: nothing; nothing of what it made was left in the machine, and no container around it gained any: it went further than can be seen from the machine; AUTO-OUTPUT of items on: what it makes leaves by its down face, into Steel Item Pipe at \(-532,71,58\); AUTOMATED: Steel Item Pipe at \(-532,71,58\) feeds or drains it; freeSlots 36/)
   })
 
   it('放下就走的加工任务（leave）：结束时模型看到料放进去了、机器开工了，这一轮和全部几轮大概还要多久，产物和模具留在机器里怎么取，电路现在是几原来是几', async (t) => {

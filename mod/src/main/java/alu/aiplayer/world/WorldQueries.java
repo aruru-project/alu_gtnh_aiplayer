@@ -368,6 +368,35 @@ public final class WorldQueries {
     }
 
     /**
+     * Where a block can hand things on without anyone carrying them: every block with an inventory against one of its
+     * faces (machines, buses and pipes included), then the containers its hoppers lead on to (as {@link #passesTo}).
+     * Each as {x, y, z, side}: the face of {@code from} it stands against, -1 for one further on.
+     */
+    public static List<int[]> around(World w, TileEntity from) {
+        List<int[]> out = new ArrayList<>();
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        seen.add(packed(from.xCoord, from.yCoord, from.zCoord));
+        for (int side = 0; side < SIDES.length; side++) {
+            int x = from.xCoord + SIDES[side][0], y = from.yCoord + SIDES[side][1], z = from.zCoord + SIDES[side][2];
+            if (y < 0 || y > 255 || !w.blockExists(x, y, z)) continue;
+            if (w.getTileEntity(x, y, z) instanceof IInventory && seen.add(packed(x, y, z))) out.add(new int[] { x, y, z, side });
+        }
+        for (TileEntity t : passesTo(w, from)) {
+            if (seen.add(packed(t.xCoord, t.yCoord, t.zCoord))) out.add(new int[] { t.xCoord, t.yCoord, t.zCoord, -1 });
+        }
+        return out;
+    }
+
+    /** What a container holds, by kind ("id@meta"), each with its name and count; drawers by their real counts. */
+    public static Map<String, JsonObject> holds(World w, TileEntity te) {
+        Map<String, JsonObject> out = new LinkedHashMap<>();
+        if (!(te instanceof IInventory)) return out;
+        JsonArray items = describeContainer(w, te, Integer.MAX_VALUE).getAsJsonArray("items");
+        for (com.google.gson.JsonElement e : items) out.put(alu.aiplayer.util.Kinds.key(e.getAsJsonObject()), e.getAsJsonObject());
+        return out;
+    }
+
+    /**
      * Every drawer a controller manages (or the drawers of one block), slot by slot, with what each really holds.
      *
      * @param below only slots holding something, and fewer than this; 0 for all slots, empty ones included

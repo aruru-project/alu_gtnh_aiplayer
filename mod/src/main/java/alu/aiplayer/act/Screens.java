@@ -11,6 +11,7 @@ import com.google.gson.JsonObject;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.bot.Motion;
 import alu.aiplayer.bridge.RpcException;
+import alu.aiplayer.util.Kinds;
 import alu.aiplayer.util.Names;
 
 /**
@@ -137,21 +138,36 @@ public final class Screens {
                 j.add("item", item);
             }
             if (!own) {
+                // Where the screen draws it (pixels from its top left corner) and what kind of slot its code made it:
+                // a player reads a screen by its layout, and the kind's name often says what the slot is for.
+                // (Screens that lay their slots out themselves, GregTech's among them, leave these at a stand-in value.)
+                if (Math.abs(s.xDisplayPosition) < 10000 && Math.abs(s.yDisplayPosition) < 10000) {
+                    j.addProperty("x", s.xDisplayPosition);
+                    j.addProperty("y", s.yDisplayPosition);
+                }
+                if (s.getClass() != Slot.class) j.addProperty("class", s.getClass().getSimpleName());
+                String role = null;
                 if (gt && Machines.ownSlot(block, s)) {
                     // The slot's place in the machine's own inventory, and what that place is for. Slots of a cover
                     // shown on the same screen hold the cover's things; their numbers are the cover's.
                     j.addProperty("index", s.getSlotIndex());
-                    String role = Machines.slotRole(block, s.getSlotIndex());
+                    role = Machines.slotRole(block, s.getSlotIndex());
                     if (role != null) j.addProperty("role", role);
                 }
                 if (ContainerSession.isGhostSlot(s)) j.addProperty("ghost", true);
                 else if (ContainerSession.slotTakesNothing(s, shown != null ? shown : probe)) {
-                    // A slot for some things only (fuel, fluid containers, tools) is told from one that takes nothing
-                    // by what the bot carries, and by a few things of those kinds: the kinds of what the bot carries
-                    // that it would take are listed (maybe none).
+                    // A slot for some things only (fuel, fluid containers, tools, patterns) is told from one that takes
+                    // nothing by what the bot carries, by a few things of those kinds, and failing those by the game's
+                    // whole list of items: the kinds of what the bot carries that it would take are listed (maybe
+                    // none), and when none fit, a few of the game's items that it takes.
                     JsonArray takes = shown != null ? new JsonArray() : carriedThatFit(p, s);
-                    if (takes.size() > 0 || (shown == null && takesSomeKind(s))) j.add("takes", takes);
-                    else j.addProperty("takesNothing", true);
+                    JsonArray accepts = shown != null || takes.size() > 0 || "output".equals(role) ? new JsonArray() : anyThatFit(s);
+                    if (takes.size() > 0 || (shown == null && takesSomeKind(s)) || accepts.size() > 0) {
+                        j.add("takes", takes);
+                        if (accepts.size() > 0) j.add("accepts", accepts);
+                    } else {
+                        j.addProperty("takesNothing", true);
+                    }
                 }
             }
             // Empty slots of the bot's own inventory say nothing anyone needs; leave them out.
@@ -192,22 +208,52 @@ public final class Screens {
         return false;
     }
 
-    /** The kinds of thing the bot carries that a slot would take: [{id, meta, name}], at most 8. */
+    /** One of every item the game has (each at meta 0), to ask a slot whether it takes anything at all. */
+    private static ItemStack[] everyItem;
+
+    /** A few of the game's items an empty slot takes, when the bot carries none: [{id, meta, name}], at most 4. */
+    private static JsonArray anyThatFit(Slot s) {
+        if (everyItem == null) {
+            java.util.List<ItemStack> all = new java.util.ArrayList<>();
+            for (Object o : net.minecraft.item.Item.itemRegistry) {
+                if (o instanceof net.minecraft.item.Item) all.add(new ItemStack((net.minecraft.item.Item) o, 1, 0));
+            }
+            everyItem = all.toArray(new ItemStack[0]);
+        }
+        JsonArray out = new JsonArray();
+        for (ItemStack each : everyItem) {
+            try {
+                if (!s.isItemValid(each)) continue;
+                JsonObject item = Kinds.of(each);
+                // A meta that names no real item of its kind shows only its untranslated key; not an example.
+                if (item.get("name")
+                    .getAsString()
+                    .endsWith(".name")) continue;
+                out.add(item);
+            } catch (Throwable t) {
+                continue;
+            }
+            if (out.size() >= 4) break;
+        }
+        return out;
+    }
+
+    /**
+     * The kinds of thing the bot carries that a slot would take: [{id, meta, name}], at most 8. What it holds on the
+     * cursor counts first: picked up to be put down somewhere, it is the one asked about.
+     */
     private static JsonArray carriedThatFit(EntityPlayerMP p, Slot s) {
         JsonArray out = new JsonArray();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < Inventories.CARRY_SLOTS && out.size() < 8; i++) {
-            ItemStack carried = p.inventory.mainInventory[i];
+        for (int i = -1; i < Inventories.CARRY_SLOTS && out.size() < 8; i++) {
+            ItemStack carried = i < 0 ? p.inventory.getItemStack() : p.inventory.mainInventory[i];
             if (carried == null || !seen.add(Names.itemId(carried.getItem()) + "/" + carried.getItemDamage())) continue;
             try {
                 if (!s.isItemValid(carried)) continue;
             } catch (Throwable t) {
                 continue;
             }
-            JsonObject item = Names.describe(carried);
-            item.remove("count");
-            item.remove("durability");
-            out.add(item);
+            out.add(Kinds.of(carried));
         }
         return out;
     }

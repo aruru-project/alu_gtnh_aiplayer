@@ -477,10 +477,17 @@ export interface ScreenSlot {
   /** bot 自己背包里的格子（自己的空格不列）。 */
   own?: boolean
   item?: Item
+  /** 界面把它画在哪（从界面左上角数的像素）：玩家靠位置读一个界面（一行里的模具格、材料格、产物格）。自己摆格子的界面（GregTech 的）没有。 */
+  x?: number
+  y?: number
+  /** 这一格在代码里是哪一种格子（类名，如 SlotPattern、SlotOnlyTake）；普通的格子不带。 */
+  class?: string
   /** 放不进东西的格子：机器出产物的地方。 */
   takesNothing?: boolean
-  /** 只收某些东西的空格子（燃料格、装流体的格子、工具格）：bot 身上的东西里它收的那几种（可能一种都没有）。 */
+  /** 只收某些东西的空格子（燃料格、装流体的格子、工具格、模具格）：bot 身上的东西里它收的那几种（可能一种都没有）。 */
   takes?: { id: string; meta?: number; name?: string }[]
+  /** takes 是空的时候：游戏的物品表里它收的几样（最多 4 样，各取 meta 0），说明它收的是哪一类东西。 */
+  accepts?: { id: string; meta?: number; name?: string }[]
   /** 只显示、里面没有真东西的格子（编程电路的设置）。 */
   ghost?: boolean
   /** GregTech 机器、总线的界面：这一格在机器自己的格子里是第几个。 */
@@ -573,12 +580,26 @@ export interface MachineInfo {
   inputVoltage?: number
   /** 被人关掉了（软锤敲过，或者盖板控制着）。 */
   switchedOff?: boolean
+  /** 单方块机器界面上的自动输出开着时：物品、流体各开没开，从哪个面推出去、那一面挨着什么。 */
+  autoOutput?: AutoOutput
   unreadable?: boolean
   dist?: number
   /** 它各个面上的覆盖板（模具常放在“槽位扩展”这种覆盖板里）。 */
   covers?: Cover[]
   /** 它的流体罐里现在有什么（单方块机器的输入罐、输出罐）。没有这一项：这台机器的罐读不到。 */
   tanks?: Tank[]
+}
+
+/**
+ * 单方块机器自己的自动输出（界面上那两个开关）：开着的那几样，做出来就从输出面推给挨着的方块。
+ * side 是输出面；outputFaceIsFront 时输出面就是它的正面，什么都推不出去。
+ */
+export interface AutoOutput {
+  items?: boolean
+  fluids?: boolean
+  side?: string
+  outputFaceIsFront?: boolean
+  to?: { x: number; y: number; z: number; name?: string }
 }
 
 /** world.stock 要找的一样东西：一种物品（可以不限 meta），或者一个矿辞名。 */

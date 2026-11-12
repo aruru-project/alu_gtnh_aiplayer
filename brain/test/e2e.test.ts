@@ -1238,7 +1238,7 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   llm.fallback = (req) => (JSON.stringify(req.body.messages.at(-1)).includes('任务 t3（process）失败了') ? { text: '钢杆车好了两根；组装机没电，开不了。' } : { text: '' })
   bridge.completeTask('Alu')
   await waitFor('second process task ended', () => bridge.bots.get('Alu')?.recent.some((x) => x.id === 't3'), 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.match(seen(4), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
+  assert.match(seen(4), /任务 t2（process）完成了。 结果：put 2 item\(s\) into the machine; it finished 2 round\(s\) of a recipe, making 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\" in all; took out: 2× gregtech:gt\.metaitem\.01\/23305 \\"Steel Rod\\", 4× gregtech:gt\.metaitem\.01\/1305 \\"Small Pile of Steel Dust\\"; freeSlots \d+/)
 
   // 3. 没电的机器：任务以 invalid 失败，它看到机器状态，告诉主人
   await waitFor('brain told Steve', () => bridge.commandLog.length === 1, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
@@ -2359,6 +2359,62 @@ it('端到端：主人说模具在流体固化器的覆盖板里 → 它搜库�
   const looked = seen(3)
   assert.match(looked, /\(20,65,-8\): gregtech:gt\.blockmachines "Basic Fluid Solidifier" \[solid, tileEntity, inventory\] hardness 2\ntank: 144 of 16000 mB Molten Steel \[fluid molten\.steel\]\ncover on its west face: Basic Item Holder \[gregtech:gt\.metaitem\.01\/32380\], 0\/9 slots used: empty\n/)
   assert.match(looked, /What it says of itself \(as to a scanner\):\n {2}Fluid Solidifier\n {2}Progress: 0 s \/ 0 s\nIts own saved data, whole \(class gregtech\.api\.metatileentity\.BaseMetaTileEntity\); the keys are its internal names, the values raw:\n {2}mActive: 0\n {2}mFluid: \{"FluidName":"molten\.steel","Amount":144\}\n {2}gt\.covers: \[\{"side":4,"items":\[\{"item":"gregtech:gt\.metaitem\.01","meta":32322,"count":1,"name":"Mold \(Ring\)"\}\]\}\]/)
+
+  brain.child.kill('SIGTERM')
+  assert.equal(await brain.exited, 0, diag())
+})
+
+it('端到端：压缩机的物品自动输出开着，做出的钢块全进了下面的输入总线（意见簿：两个 bot 都报过“机器转了却取不出”）→ 加工算做成，结果里写着做了几个、现在在哪 → 它从那个总线里取回来', async (t) => {
+  const tmp = tmpDir('aiplayer-e2e-')
+  const bridge = new MockBridge({ bots: ['Alu'] })
+  const llm = new MockLlm()
+  const talk = relayTalk()
+  const GT = 'gregtech:gt.metaitem.01'
+  const BLOCK = { id: 'gregtech:gt.blockmetal6', meta: 13, name: 'Block of Steel' }
+  const COMPRESSOR = { x: 10, y: 65, z: -8 }
+  const BUS = { x: 10, y: 64, z: -8, name: 'Input Bus (LV)' }
+  bridge.recipeBook.push({ ...BLOCK, machines: [{ machine: 'Compressor', tier: 'ULV', eut: 2, seconds: 5.6, inputs: [{ id: GT, meta: 11305, name: 'Steel Ingot', count: 9 }], outputs: [{ ...BLOCK, count: 1 }] }] })
+  bridge.machines = [{ ...COMPRESSOR, name: 'Basic Compressor', recipes: 'Compressor', tier: 'LV', inputSlots: 1, storedEU: 2048, inputVoltage: 32, itemAutoOutput: { side: 'down', to: BUS } }]
+  bridge.containers.push({ ...BUS, id: 'gregtech:gt.blockmachines', slots: 1, items: [] })
+  await bridge.start()
+  await llm.start()
+  await talk.start()
+  fs.writeFileSync(path.join(tmp.dir, 'config.json'), JSON.stringify({ providers: [{ id: 'mock', label: 'mock', kind: 'anthropic-messages', baseUrl: llm.anthropicBaseUrl, apiKey: 'k', model: 'claude-e2e' }], activeProviderId: 'mock' }), { mode: 0o600 })
+  const brain = startBrain(tmp.dir, bridge, { talk })
+  t.after(async () => {
+    if (brain.child.exitCode === null) brain.child.kill('SIGKILL')
+    await bridge.stop()
+    await llm.stop()
+    await talk.stop()
+    tmp.cleanup()
+  })
+  const diag = () => `\n--- brain output ---\n${brain.output()}`
+  await waitFor('bridge connected', () => bridge.connectedClients === 1, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+  const alu = bridge.bots.get('Alu')!
+  alu.inventory = [{ slot: 0, id: GT, meta: 11305, count: 54, name: 'Steel Ingot' }]
+  const seen = (n: number): string => {
+    const last = llm.requests[n]!.body.messages.at(-1)
+    return (last.content as { type: string; text?: string; content?: unknown }[]).map((b) => (typeof b.text === 'string' ? b.text : typeof b.content === 'string' ? b.content : JSON.stringify(b.content))).join('\n')
+  }
+  const all = () => llm.requests.map((_, n) => seen(n)).join('\n---\n')
+
+  // 1. 54 个钢锭进压缩机
+  llm.enqueue({ toolCalls: [{ name: 'process_items', input: { machine: COMPRESSOR, inputs: [{ id: GT, meta: 11305, count: 54 }] } }] }, { text: '' })
+  bridge.whisper('Alu', 'Steve', '把钢锭压成钢块')
+  await waitFor('the first turn ended', () => llm.requests.length === 2, 15_000).catch((e) => assert.fail(`${e.message}${diag()}`))
+
+  // 2. 做完：任务是“完成”，结果里做了 6 个、一个没取回、在下面的输入总线里。它照结果里的位置去取，取完说一句
+  llm.enqueue(
+    { toolCalls: [{ name: 'withdraw_items', input: { container: { x: BUS.x, y: BUS.y, z: BUS.z }, items: [{ id: BLOCK.id, meta: BLOCK.meta, count: 6 }] } }] },
+    { text: '' },
+    { text: '做好了 6 个钢块，压缩机把它们推进了下面的输入总线，我取回来了。' },
+  )
+  bridge.completeTask('Alu')
+  await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('我取回来了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))
+  const text = all()
+  assert.match(text, /任务 t1（process）完成了。 结果：put 54 item\(s\) into the machine; it finished 6 round\(s\) of a recipe, making 6× gregtech:gt\.blockmetal6\/13 "Block of Steel" in all; took out: nothing; what it made was moved on out of the machine while it worked, and is now in: 6× gregtech:gt\.blockmetal6\/13 "Block of Steel" in "Input Bus \(LV\)" at \(10,64,-8\), against the down face of the machine; AUTO-OUTPUT of items on: what it makes leaves by its down face, into Input Bus \(LV\) at \(10,64,-8\); freeSlots \d+/)
+  assert.equal(alu.inventory.filter((i) => i.id === BLOCK.id && i.meta === BLOCK.meta).reduce((n, i) => n + i.count, 0), 6)
+  assert.deepEqual(bridge.containers.find((c) => c.x === BUS.x && c.y === BUS.y && c.z === BUS.z)!.items, [])
 
   brain.child.kill('SIGTERM')
   assert.equal(await brain.exited, 0, diag())

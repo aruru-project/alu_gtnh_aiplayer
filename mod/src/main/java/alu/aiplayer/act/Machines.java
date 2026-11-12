@@ -390,6 +390,98 @@ public final class Machines {
         }
     }
 
+    /** How far into its recipe it is, in ticks (negative while it waits after running out of power); 0 if unreadable. */
+    public static int progress(TileEntity te) {
+        try {
+            return meta(te) == null ? 0 : (Integer) progress.invoke(te);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** How long the recipe it is running takes, in ticks; 0 when it runs none (or this cannot be read). */
+    public static int maxProgress(TileEntity te) {
+        try {
+            return meta(te) == null ? 0 : (Integer) maxProgress.invoke(te);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** Whether it may work: false once it has been switched off, or has shut itself down (a multiblock losing power). */
+    public static boolean allowedToWork(TileEntity te) {
+        try {
+            return meta(te) != null && (Boolean) allowed.invoke(te);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Something that stays the same while the machine runs one recipe and is another object for the next: the first
+     * product it keeps for that recipe (a fresh copy every time it starts one). Null when it keeps none.
+     */
+    public static Object recipeToken(TileEntity te) {
+        Object m = meta(te);
+        if (m == null) return null;
+        try {
+            Object[] items = (Object[]) m.getClass()
+                .getField("mOutputItems")
+                .get(m);
+            if (items != null) for (Object o : items) if (o != null) return o;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /**
+     * A single-block machine's auto-output, as its screen's two switches set it: whether it pushes the items and the
+     * fluids it makes out of its output face by itself, which face that is and what stands against it. Null for
+     * anything else, and when both switches are off.
+     */
+    public static JsonObject autoOutput(TileEntity te) {
+        Object m = meta(te);
+        if (m == null || !basicClass.isInstance(m)) return null;
+        try {
+            boolean items = (Boolean) m.getClass()
+                .getMethod("doesAutoOutput")
+                .invoke(m);
+            boolean fluids = (Boolean) m.getClass()
+                .getMethod("doesAutoOutputFluids")
+                .invoke(m);
+            if (!items && !fluids) return null;
+            JsonObject o = new JsonObject();
+            o.addProperty("items", items);
+            o.addProperty("fluids", fluids);
+            Object front = te.getClass()
+                .getMethod("getFrontFacing")
+                .invoke(te);
+            Object main = m.getClass()
+                .getField("mMainFacing")
+                .get(m);
+            int side = front instanceof Enum ? ((Enum<?>) front).ordinal() : -1;
+            if (side < 0 || side > 5) return o;
+            // The machine pushes nothing while its output face is the face it shows its front on.
+            if (front == main) {
+                o.addProperty("outputFaceIsFront", true);
+                return o;
+            }
+            o.addProperty("side", SIDES[side]);
+            net.minecraftforge.common.util.ForgeDirection d = net.minecraftforge.common.util.ForgeDirection.getOrientation(side);
+            int x = te.xCoord + d.offsetX, y = te.yCoord + d.offsetY, z = te.zCoord + d.offsetZ;
+            net.minecraft.world.World w = te.getWorldObj();
+            if (w != null && w.blockExists(x, y, z) && !w.isAirBlock(x, y, z)) {
+                JsonObject to = J.pos(x, y, z);
+                TileEntity there = w.getTileEntity(x, y, z);
+                String name = there == null ? null : name(there);
+                to.addProperty("name", name != null ? name : alu.aiplayer.world.WorldQueries.blockName(w.getBlock(x, y, z), w.getBlockMetadata(x, y, z)));
+                o.add("to", to);
+            }
+            return o;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /**
      * Whether it is running a recipe right now: active and with a recipe's length set. The active flag alone lingers
      * a moment after a recipe ends, so a machine that just finished one looks busy before it has started the next.
@@ -498,6 +590,8 @@ public final class Machines {
             o.addProperty("storedEU", (Long) storedEu.invoke(te));
             o.addProperty("inputVoltage", (Long) inputVoltage.invoke(te));
             if (!(Boolean) allowed.invoke(te)) o.addProperty("switchedOff", true);
+            JsonObject auto = autoOutput(te);
+            if (auto != null) o.add("autoOutput", auto);
         } catch (Throwable t) {
             o.addProperty("unreadable", true);
         }

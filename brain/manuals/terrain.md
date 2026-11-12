@@ -12,6 +12,7 @@
 - **工具只认匠魂的。** 这个整合包里原版工具和 GregTech 的镐、铲、斧都挖不动东西，能用的是匠魂（Tinkers' Construct，物品 id 以 TConstruct: 开头）的镐、铲、斧。没有匠魂镐去挖石头，任务会以 no_tool 失败。缺工具就向人要匠魂工具，不要拿别的工具硬试。拿不准手里的工具行不行，用库函数 probe_block 看（不在工具清单里，run_program 写一行：`return (await tool("probe_block", { x, y, z })).text`）。
 - 一次挖一片的工具（匠魂的锤、挖掘铲、伐木斧）你不会用，免得挖到范围外面去。工具会磨损。
 - 放方块要背包里有，而且旁边要有方块可以依附；没处依附的会被跳过。材料不够时会去 supply 给的容器取，都没有就以 no_material 失败（detail 里有缺什么、缺多少）：去取，或者问人。
+- 同一个 id 的不同 meta 是不同的方块（gregtech:gt.blockcasings2 的 0 是坚固钢机械方块，13 是钢管道方块）。fill_area、place_blocks 只放给的那个 meta，不给就是 0；这一种用完了就以 no_material 停下，不拿别的变体顶。结果里 placed from 写着放下去的方块是从哪几种物品放的。
 
 # 大小和时间
 - 一次任务的上限：flatten_area 64×64，clear_area / fill_area 32768 格，dig_blocks / place_blocks 256 个。超了就分块排队（queue: true，队列最多 32 个）。

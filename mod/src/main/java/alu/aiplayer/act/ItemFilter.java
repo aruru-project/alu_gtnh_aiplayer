@@ -35,6 +35,11 @@ public final class ItemFilter {
         return stack != null && stack.getItem() == item && (meta < 0 || Names.meta(stack) == meta);
     }
 
+    /** The id, with ":meta" when only one meta matches: how messages name what is wanted. */
+    public String label() {
+        return meta < 0 ? id : id + ":" + meta;
+    }
+
     public JsonObject toJson() {
         JsonObject o = new JsonObject();
         o.addProperty("id", id);

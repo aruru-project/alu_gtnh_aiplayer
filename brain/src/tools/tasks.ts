@@ -117,6 +117,12 @@ export async function startTask(
   return `Task ${t.id} (${t.type}) started.${dropped} It runs in the game on its own: when it ends, the outcome comes to you by itself (waking you if your turn has ended), so there is nothing to wait or poll for; a look at its progress is one model call each time.`
 }
 
+/**
+ * 放方块时 meta 的说法（fill_area、place_blocks 共用）。同一个 id 的不同 meta 是不同的方块（钢机械方块和钢管道方块），
+ * 所以不给就是 0，只放这一种；身上和 supply 里没有这一种了，任务以 no_material 停下，不拿别的变体顶。
+ */
+const META_WORDS = 'default 0; only blocks of that meta are placed'
+
 function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }): number {
   return (Math.abs(b.x2 - b.x1) + 1) * (Math.abs(b.y2 - b.y1) + 1) * (Math.abs(b.z2 - b.z1) + 1)
 }
@@ -326,7 +332,7 @@ export const fillArea: Tool = {
     {
       ...boxProps,
       item: str('Item id of the block to place.'),
-      meta: int('Its meta (default 0).', { min: 0 }),
+      meta: int(`Its meta (${META_WORDS}).`, { min: 0 }),
       shape: str('solid (default), hollow (only the six faces) or walls (only the four sides).', { enum: ['solid', 'hollow', 'walls'] }),
       supply: supply('the block'),
       queue,
@@ -337,7 +343,8 @@ export const fillArea: Tool = {
     const volume = boxVolume(i)
     if (volume > BOX_MAX_VOLUME) return fail(`box volume is ${volume}; at most ${BOX_MAX_VOLUME} per task. Split it and queue the pieces.`)
     const { queue: q, ...params } = i
-    return startTask(ctx, { type: 'fill', ...params }, q)
+    // 身体收到不带 meta 的是“哪种都行”，会把同一个 id 的几种方块混着放；说明里写的默认 0 要真的交给它
+    return startTask(ctx, { type: 'fill', ...params, meta: i.meta ?? 0 }, q)
   },
 }
 
@@ -354,7 +361,7 @@ export const placeBlocks: Tool = {
   inputSchema: obj(
     {
       blocks: arr(
-        'Each {x, y, z, item, meta?}: item is the block\'s item id, meta defaults to 0.',
+        `Each {x, y, z, item, meta?}: item is the block's item id, meta its meta (${META_WORDS}).`,
         obj({ x: int(), y: int(undefined, { min: 0, max: 255 }), z: int(), item: str(), meta: int(undefined, { min: 0 }) }, ['x', 'y', 'z', 'item']),
         { min: 1, max: BLOCK_LIST_MAX },
       ),
@@ -363,8 +370,8 @@ export const placeBlocks: Tool = {
     },
     ['blocks'],
   ),
-  run: (ctx, i: { blocks: unknown[]; supply?: unknown[]; queue?: boolean }) =>
-    startTask(ctx, { type: 'place', blocks: i.blocks, supply: i.supply }, i.queue),
+  run: (ctx, i: { blocks: { meta?: number }[]; supply?: unknown[]; queue?: boolean }) =>
+    startTask(ctx, { type: 'place', blocks: i.blocks.map((b) => ({ ...b, meta: b.meta ?? 0 })), supply: i.supply }, i.queue),
 }
 
 // ── 搬运 ──
