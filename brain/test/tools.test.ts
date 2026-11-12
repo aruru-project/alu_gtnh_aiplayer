@@ -417,6 +417,23 @@ describe('观察', () => {
     assert.equal(chest.content, '(-51,99,-87): minecraft:chest/3 "Chest" [solid, tileEntity, inventory] hardness 2.5')
   })
 
+  it('probe_block：出生点保护里的一格，工具挖得动也照实说服务器不让动：是什么、出生点在哪、范围多大、对谁；不说“你能挖”', async (t) => {
+    const s = setup(t)
+    // 测试服上身体给的原样（spawn-protection=1，出生点 (-136, 154)）
+    s.game.handlers['bot.probe'] = () => ({
+      id: 'TConstruct:ToolStationBlock', meta: 10, name: 'Stencil Table', air: false, solid: true, hardness: 2, tileEntity: true, inventory: true,
+      canDig: true, digTicks: 14, toolSlot: 0, inReach: true,
+      candidates: [{ slot: 0, item: 'TConstruct:hatchet:16', harvest: true, ticks: 14 }],
+      protection: { by: 'spawn protection', spawn: { x: -136, z: 154 }, range: 1, x1: -137, z1: 153, x2: -135, z2: 155 },
+    })
+    const lines = (await s.run('probe_block', { x: -136, y: 70, z: 153 })).content.split('\n')
+    assert.equal(
+      lines[1],
+      "The server refuses your hand on this block: the server's spawn protection covers it: in the overworld, within 1 block(s) of the world spawn (-136, 154), that is x -137 to -135 and z 153 to 155 at every height, a player who is not a server operator can neither click, dig nor place, and you are not an operator. Digging it, clicking it or placing against it ends in denied.",
+    )
+    assert.equal(lines.length, 2)
+  })
+
   it('probe_block：说明现在能不能挖、用哪件工具、要多久', async (t) => {
     const s = setup(t)
     s.game.handlers['bot.probe'] = () => ({

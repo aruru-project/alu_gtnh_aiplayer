@@ -71,9 +71,7 @@ public final class Screens {
         } finally {
             if (sneak) p.setSneaking(was);
         }
-        if (bot.clickWasRefused(at[0], at[1], at[2])) {
-            throw RpcException.denied("opening that was refused; it may be protected");
-        }
+        if (bot.clickWasRefused(at[0], at[1], at[2])) throw RpcException.denied(bot.refused("opening that"));
         opened(bot, at);
         return look(bot);
     }
@@ -99,9 +97,7 @@ public final class Screens {
             }
             Motion.face(p, at[0] + 0.5, at[1] + 0.5, at[2] + 0.5);
             ContainerSession.clickEmptyHanded(bot, at[0], at[1], at[2]);
-            if (bot.clickWasRefused(at[0], at[1], at[2])) {
-                throw RpcException.denied("opening that was refused; it may be protected");
-            }
+            if (bot.clickWasRefused(at[0], at[1], at[2])) throw RpcException.denied(bot.refused("opening that"));
         }
         opened(bot, item != null ? null : at);
         return look(bot);

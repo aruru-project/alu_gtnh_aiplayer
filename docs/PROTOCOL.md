@@ -229,7 +229,7 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `bot.command` | `{bot, command}` | `{output:[string]}`。以该玩家身份执行指令（不带 `/`，连斜杠最多 100 字符，超出返回 `bad_request`）。`output` 是执行当下服务器回给它的消息；之后才到的走 `bot.message` 事件。指令必须以 mod 配置 `allowedCommands` 里某一项的全部单词开头，否则 `denied`。短时间内说话和指令加起来超过大约 8 条也返回 `denied`（再多会被服务器当刷屏踢掉），等几秒再试 |
 | `bot.look` | `{bot, x,y,z}` | `{}` |
 | `bot.drop` | `{bot, items:[ItemFilter]\|all:true}` | `{dropped:n}`，丢在面前 |
-| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, candidates:[{slot,item,harvest,strength,ticks}]}`：它现在能不能挖这个方块、用哪件工具、要多久 |
+| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, candidates:[{slot,item,harvest,strength,ticks}], protection?}`：它现在能不能挖这个方块、用哪件工具、要多久；`protection` 是服务器自己的保护不让它动这一格（见“任务”下面的“服务器自己的保护”），这时工具挖得动也一样 |
 
 `allowedCommands` 默认：`home`、`sethome`、`delhome`、`homes`、`spawn`、`back`、`tell`、`msg`、`w`、`tpa`、`tpaccept`、`team join`。
 一项可以是几个词：`team join` 只放行 `team join …`，不放行 `team leave`。`home` 任务也受这个列表约束。
@@ -379,7 +379,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被领地拒绝是 `denied`，身上没有那件东西是 `no_material` |
+| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被拒绝是 `denied`（消息里写着是什么：服务器的出生点保护连范围一起写，领地这类别的 mod 只说被拒绝了），身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
 | `screen.press` | `{bot, key, panel?, button?=0, shift?=false}` | 按一下界面上格子以外的东西（见下面“界面上的控件”）：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格照鼠标上拿着的容器装或倒（`button` 0 左键、1 右键）。结果同 `screen.look`。界面没有这个控件、或者它只是显示用的，照实拒绝 |
@@ -499,7 +499,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | `no_material` | 要放的方块不够 | `missing`，`item` 或 `items` | 去取或问人 |
 | `inventory_full` | 背包满且没有指定卸货箱 | | 去存东西再重启任务 |
 | `container_full` | 目标箱子放不下 | | 换箱子或问人 |
-| `denied` | 被领地保护或其他 mod 拒绝（挖不动、放不下、箱子打不开），或指令不在允许列表里 | 可能有 `block`、`x y z` | 问人 |
+| `denied` | 被服务器的出生点保护、领地或其他 mod 拒绝（挖不动、放不下、点不动、箱子打不开），或指令不在允许列表里 | 可能有 `block`、`x y z`；服务器自己的保护拒绝的带 `protection` | 问人 |
 | `invalid` | 参数不合法，或服务器拒绝了指令 | | 修正参数 |
 | `interrupted` | bot 下线、死亡，或被带到了别的维度 | | – |
 | `internal` | mod 内部出错 | | 报告给人 |
@@ -538,6 +538,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   没有合适工具时，一挖就碎的东西（雪、草）徒手挖，石头之类则以 `no_tool` 失败。
   不动带数据的方块（箱子、机器）、液体、基岩和紧挨岩浆的方块，记入 `result.skipped`。
 - **放**：必须有相邻的方块可以依附，够得着，自己不能站在那一格。没处依附的记入 skipped。
+- **服务器自己的保护**：原版服务器会不出声地丢掉玩家对它保护的方块的点击、挖掘和对着它的放置（没有事件，什么都不变，该开的界面也不开）。身体在每一次右键、挖、对着方块放之前先问服务器（`isBlockProtected`）；受保护就不点出去，这一下以 `denied` 收场：任务失败，`screen.open` 返回错误。消息写明是什么、多大范围，`error.detail.protection` 是同样的数：`{x,y,z, by:"spawn protection", spawn:{x,z}, range, x1,z1,x2,z2}`——被拒绝的那一格（放方块时是对着放的那一格），主世界里离出生点 `range` 格以内（x、z 两个方向里大的那个）、所有高度；服务器有 op 时，不是 op 的玩家在这里点、挖、放都被拒绝。`by` 是 `"the server"` 的，是服务器拒绝了、但不在出生点那一块里（别的 mod 改了规则）。实测（测试服 spawn-protection=1，出生点 (-136, 154)，范围 x -137..-135、z 153..155）：打开那里的部件加工台、空手右键、左键、挖、对着那里的方块放、往那里的箱子里放东西都以 `denied` 收场，都在 0.6 秒内；`fill` 跨进这块时外面的两格照放，碰到里面的那一格停下。
 - **走路时**先找不改动地形的路；确实走不通才挖开或垫脚。
 - **走路时**只会自己挖开“天然方块”（mod 配置 `naturalBlocks`：泥土、草方块、沙子、沙砾、雪、树叶、花草等；不含石头和木头，因为人也拿它们盖房子）和任务指定要清掉的区域内的方块，不会为了抄近路拆别的东西，也不会挖掉本任务刚放下的方块。
   够不着高处时会用填充方块（配置 `fillerBlocks`：泥土、圆石等）垫脚往上搭；去箱子存取的路上不垫脚，免得把货用掉。

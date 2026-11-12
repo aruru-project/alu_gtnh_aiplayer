@@ -84,7 +84,7 @@ public final class HaulTask extends Task {
         ContainerTrip.Status st = trip.tick();
         if (st == ContainerTrip.Status.WORKING) return;
         if (st == ContainerTrip.Status.FAILED) {
-            fail(trip.failCode, trip.failMessage);
+            fail(trip);
             return;
         }
         if (!delivering) {

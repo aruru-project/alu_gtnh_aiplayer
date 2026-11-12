@@ -110,7 +110,7 @@ public final class DepositTask extends Task {
         if (trip == null) return;
         ContainerTrip.Status st = trip.tick();
         progressDone = trip.session.moved;
-        if (st == ContainerTrip.Status.FAILED) fail(trip.failCode, trip.failMessage);
+        if (st == ContainerTrip.Status.FAILED) fail(trip);
         else if (st == ContainerTrip.Status.DONE) {
             if (trip.session.containerFull) fail("container_full", "not everything fit into the container");
             else done();

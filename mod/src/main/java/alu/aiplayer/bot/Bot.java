@@ -365,6 +365,60 @@ public final class Bot implements BotConnection.Listener {
         clickZ = z;
         clickRefused = refused;
         clickTick = ticksOnline;
+        refusedBy = null;
+    }
+
+    /** What refused the bot's last click or dig when it was the server's own protection; with when and where. */
+    private JsonObject refusedBy;
+    private int[] refusedAt;
+    private long refusedTick = -1;
+
+    @Override
+    public void onRefused(int x, int y, int z, boolean dig, JsonObject why) {
+        if (dig) notePunch(x, y, z, true);
+        else noteInteraction(x, y, z, true);
+        refusedBy = why;
+        refusedAt = new int[] { x, y, z };
+        refusedTick = ticksOnline;
+    }
+
+    /**
+     * The server's own protection that refused a click or dig of this bot in the last few ticks: the block's
+     * position and what protects it ({@link alu.aiplayer.act.Protection#of}). Null when none did.
+     */
+    public JsonObject serverRefusal() {
+        if (refusedBy == null || ticksOnline - refusedTick > 10) return null;
+        JsonObject o = J.pos(refusedAt[0], refusedAt[1], refusedAt[2]);
+        for (java.util.Map.Entry<String, com.google.gson.JsonElement> e : refusedBy.entrySet()) o.add(e.getKey(), e.getValue());
+        return o;
+    }
+
+    /** The same, only when it was the block at x, y, z that the server refused. */
+    public JsonObject serverRefusal(int x, int y, int z) {
+        return refusedAt != null && refusedAt[0] == x && refusedAt[1] == y && refusedAt[2] == z ? serverRefusal() : null;
+    }
+
+    /**
+     * A refused task's detail: the block it was about, and when the server's own protection refused the bot's hand
+     * (on that block, or on the one clicked to place against), {@code protection}: that block and what protects it.
+     */
+    public JsonObject refusalDetail(int x, int y, int z) {
+        JsonObject detail = J.pos(x, y, z);
+        JsonObject by = serverRefusal();
+        if (by != null) detail.add("protection", by);
+        return detail;
+    }
+
+    /**
+     * How a refused click or dig is told: "{what} was refused: " and what refused it. The server's own protection
+     * says what it is and how far it reaches; anything else refused it by cancelling the click's event, which carries
+     * no reason.
+     */
+    public String refused(String what) {
+        if (refusedBy != null && ticksOnline - refusedTick <= 10) {
+            return what + " was refused: " + alu.aiplayer.act.Protection.words(refusedBy, refusedAt[0], refusedAt[1], refusedAt[2]);
+        }
+        return what + " was refused: a mod on the server cancelled it (land claims do this), without giving a reason";
     }
 
     /** Whether this bot's most recent click on that block, within the last few ticks, was refused. */
@@ -383,6 +437,7 @@ public final class Bot implements BotConnection.Listener {
         punchZ = z;
         punchRefused = refused;
         punchTick = ticksOnline;
+        refusedBy = null;
     }
 
     /** Whether this bot's most recent left-click on that block, within the last few ticks, was refused. */

@@ -364,6 +364,20 @@ describe('格子是干什么的、画在哪', () => {
   })
 })
 
+describe('服务器自己的保护', () => {
+  it('出生点保护里的方块打不开（以前身体只报“没有界面”）：模型看到身体的原话——是服务器的出生点保护、出生点和范围；补充的那句只说再试一样，不说别的玩家做得了', async (t) => {
+    const h = setup(t)
+    // 测试服上身体的原话（spawn-protection=1，出生点 (-136, 154)）
+    const said =
+      "opening that was refused: the server's spawn protection covers the block at (-137,70,154): in the overworld, within 1 block(s) of the world spawn (-136, 154), that is x -137 to -135 and z 153 to 155 at every height, a player who is not a server operator can neither click, dig nor place, and the bot is not an operator"
+    h.game.handlers['screen.open'] = () => {
+      throw new BridgeError('denied', said)
+    }
+    const res = await modelCalls(h, 'open_screen', { at: { x: -137, y: 70, z: 154 } })
+    assert.deepEqual([res.isError, res.content], [true, `denied: ${said} (The server refused this; asking again gives the same answer.)`])
+  })
+})
+
 describe('机器自己的自动输出', () => {
   // 测试服上那台压缩机：物品自动输出开着，输出面朝下，下面是一个输入总线（身体给的原样）
   const COMPRESSOR = { x: -532, y: 72, z: 58, name: 'Basic Compressor', id: 'gregtech:gt.blockmachines', meta: 241, recipes: 'Compressor', recipeKey: 'gt.recipe.compressor', tier: 'LV', inputSlots: 1, outputSlots: 1, active: false, storedEU: 2048, inputVoltage: 32, autoOutput: { items: true, fluids: false, side: 'down', to: { x: -532, y: 71, z: 58, name: 'Input Bus (LV)' } } }

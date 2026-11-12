@@ -424,7 +424,7 @@ const BRIDGE_HINTS: Record<string, string> = {
   disconnected: 'The brain is not connected to the game server right now. Nothing in the game can be done until it reconnects.',
   timeout: 'The game server did not answer in time; it may be lagging. Try again later.',
   offline: 'The bot is not in the game world right now.',
-  denied: 'The server refused this; asking again gives the same answer. A player can do it, or can allow you to.',
+  denied: 'The server refused this; asking again gives the same answer.',
   not_found: 'Check the name or id.',
   bad_request: 'The arguments were rejected; fix them before trying again.',
   too_large: 'The request is too big; split it into smaller pieces.',

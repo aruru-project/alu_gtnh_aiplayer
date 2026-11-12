@@ -319,6 +319,9 @@ public final class BridgeApi {
                 }
                 o.addProperty("inReach", Reach.canReach(b.player(), x, y, z));
                 o.add("candidates", Tools.explain(b.player(), b.world(), x, y, z));
+                // Whatever the tools say, the server's own protection refuses the bot's hand on this block.
+                JsonObject by = alu.aiplayer.act.Protection.of(b.player(), x, y, z);
+                if (by != null) o.add("protection", by);
             }
             return o;
         });

@@ -17,6 +17,7 @@ import {
   itemKey,
   mergeItems,
   nameOf,
+  protectionText,
   tanksText,
 } from './format.ts'
 import { guideNote, itemOfBlock } from './guide.ts'
@@ -286,6 +287,8 @@ export const probeBlock: Tool = {
     const lines = [describeBlock(input, p)]
     if (p.loaded === false || typeof p.id !== 'string') return { content: lines[0]!, data: p }
     if (p.air) return { content: `${lines[0]!}\nNothing to dig there.`, data: p }
+    // 工具挖得动也没用：服务器自己的保护不让你动这一格
+    if (p.protection) return { content: `${lines[0]!}\nThe server refuses your hand on this block: ${protectionText(p.protection)}. Digging it, clicking it or placing against it ends in denied.`, data: p }
     const candidates = p.candidates ?? []
     // excluded：一次挖多格的工具（匠魂锤、挖掘铲、伐木斧等），身体不会用它们
     const usable = candidates.filter((c) => !c.excluded && c.harvest !== false && typeof c.ticks === 'number' && c.ticks > 0)

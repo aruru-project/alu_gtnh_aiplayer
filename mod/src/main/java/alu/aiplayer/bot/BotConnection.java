@@ -25,6 +25,12 @@ public final class BotConnection extends NetHandlerPlayServer {
     public interface Listener {
 
         void onMessage(IChatComponent component);
+
+        /**
+         * The server's own protection refuses the bot's hand on that block ({@link alu.aiplayer.act.Protection}):
+         * asked before the click or dig, which is then not made. {@code dig} for a dig, else a right-click.
+         */
+        void onRefused(int x, int y, int z, boolean dig, com.google.gson.JsonObject why);
     }
 
     private static final Field CHAT_COMPONENT = findChatField();
@@ -141,7 +147,19 @@ public final class BotConnection extends NetHandlerPlayServer {
     }
 
     public void startDigging(int x, int y, int z, int face) {
+        if (refused(x, y, z, true)) return;
         processPlayerDigging(ClientPackets.digging(ClientPackets.DIG_START, x, y, z, face));
+    }
+
+    /**
+     * Whether the server protects the block from this player. The server would drop the click or dig without a word
+     * (no event, nothing changes); so it is not made, and the bot is told what refused it.
+     */
+    private boolean refused(int x, int y, int z, boolean dig) {
+        com.google.gson.JsonObject why = alu.aiplayer.act.Protection.of(playerEntity, x, y, z);
+        if (why == null) return false;
+        listener.onRefused(x, y, z, dig, why);
+        return true;
     }
 
     public void finishDigging(int x, int y, int z, int face) {
@@ -154,6 +172,7 @@ public final class BotConnection extends NetHandlerPlayServer {
 
     /** Right-clicks a block face with the held item: places a block or activates the clicked block. */
     public void useOnBlock(int x, int y, int z, int side, float hitX, float hitY, float hitZ) {
+        if (refused(x, y, z, false)) return;
         ItemStack held = playerEntity.inventory.getCurrentItem();
         processPlayerBlockPlacement(ClientPackets.placement(x, y, z, side, held, hitX, hitY, hitZ));
     }

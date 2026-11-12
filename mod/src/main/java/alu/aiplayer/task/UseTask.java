@@ -166,6 +166,16 @@ public final class UseTask extends Task {
         return true;
     }
 
+    /**
+     * Whether the server's own protection refused the click on the block (it was then not made, and nothing could
+     * come of it); the task fails saying what protects the block.
+     */
+    private boolean refusedByServer() {
+        if (on == null || bot.serverRefusal(on[0], on[1], on[2]) == null) return false;
+        fail("denied", bot.refused(left ? "left-clicking it" : "right-clicking it"), bot.refusalDetail(on[0], on[1], on[2]));
+        return true;
+    }
+
     private static float[] middle(int face) {
         switch (face) {
             case 0:
@@ -236,6 +246,7 @@ public final class UseTask extends Task {
                     else fail("no_material", "the bot carries no such item");
                     return;
                 }
+                if (refusedByServer()) return;
                 stage = 1;
                 wait = 0;
                 break;

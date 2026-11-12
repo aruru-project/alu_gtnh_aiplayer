@@ -401,7 +401,7 @@ public final class ProcessTask extends Task {
                 if (st == ContainerTrip.Status.WORKING) return;
                 if (st == ContainerTrip.Status.FAILED) {
                     restoreCircuit();
-                    fail(trip.failCode, trip.failMessage);
+                    fail(trip);
                     return;
                 }
                 TileEntity te = machine();
@@ -427,7 +427,7 @@ public final class ProcessTask extends Task {
                 ContainerTrip.Status st = trip.tick();
                 if (st == ContainerTrip.Status.WORKING) return;
                 if (st == ContainerTrip.Status.FAILED) {
-                    fail(trip.failCode, trip.failMessage);
+                    fail(trip);
                     return;
                 }
                 lastPoured = trip.session.moved;
@@ -538,7 +538,7 @@ public final class ProcessTask extends Task {
                 if (st == ContainerTrip.Status.FAILED && unloadIndex + 1 >= unloadAt.size() + passedTo.size()) {
                     outputs = gained();
                     restoreCircuit();
-                    fail(trip.failCode, trip.failMessage);
+                    fail(trip);
                     return;
                 }
                 if (++unloadIndex < unloadAt.size()) {

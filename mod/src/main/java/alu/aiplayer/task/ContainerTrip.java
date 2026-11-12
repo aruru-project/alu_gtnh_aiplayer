@@ -24,6 +24,7 @@ final class ContainerTrip {
     private final int x, y, z;
     String failCode;
     String failMessage;
+    com.google.gson.JsonObject failDetail;
     /**
      * Done once on arriving, before anything is put in or taken out: what a player sets on a machine before
      * loading it (its programmed circuit). Returning false ends the trip as failed with failCode "invalid".
@@ -105,6 +106,7 @@ final class ContainerTrip {
         if (st == ContainerSession.Status.FAILED) {
             failCode = "out_of_reach".equals(session.failCode) ? "unreachable" : session.failCode;
             failMessage = session.failMessage;
+            failDetail = session.failDetail;
             return Status.FAILED;
         }
         return Status.DONE;

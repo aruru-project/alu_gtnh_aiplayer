@@ -89,6 +89,8 @@ public final class ContainerSession {
     public boolean inventoryFull;
     public String failCode;
     public String failMessage;
+    /** With a refusal: the container's position, and what protects it when it was the server's own protection. */
+    public com.google.gson.JsonObject failDetail;
 
     /** When set, the screen is the one a carried item opens when used (a backpack), not a block's. */
     private final ItemFilter opener;
@@ -218,9 +220,7 @@ public final class ContainerSession {
                 return Status.WORKING;
             }
             case 1:
-                if (bot.clickWasRefused(x, y, z)) {
-                    return fail("denied", "opening the container was refused; it may be protected");
-                }
+                if (bot.clickWasRefused(x, y, z)) return refused("opening the container");
                 if (p.openContainer != p.inventoryContainer) {
                     TileEntity te = w.getTileEntity(x, y, z);
                     if (hasOwnSlots(p)) {
@@ -278,9 +278,7 @@ public final class ContainerSession {
             case 5: {
                 TileEntity te = w.getTileEntity(x, y, z);
                 if (!Drawers.is(te)) return fail("invalid", "the container is gone");
-                if (bot.clickWasRefused(x, y, z) || bot.punchWasRefused(x, y, z)) {
-                    return fail("denied", "using the drawer was refused; it may be protected");
-                }
+                if (bot.clickWasRefused(x, y, z) || bot.punchWasRefused(x, y, z)) return refused("using the drawer");
                 if (++wait < interval) return Status.WORKING;
                 wait = 0;
                 if (!drawerStep(p, te)) phase = 4;
@@ -641,6 +639,13 @@ public final class ContainerSession {
         failMessage = message;
         abort();
         return Status.FAILED;
+    }
+
+    /** The bot's hand on the container was refused: says what refused it, and where. */
+    private Status refused(String what) {
+        Status st = fail("denied", bot.refused(what));
+        failDetail = bot.refusalDetail(x, y, z);
+        return st;
     }
 
     // ---- through the container's screen -----------------------------------------------------------------------

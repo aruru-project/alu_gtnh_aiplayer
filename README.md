@@ -114,6 +114,7 @@ AIPLAYER_BRAIN_PACKDATA=/path/to/brain/packdata
 
 - **工具**：GTNH 里原版镐铲和 GregTech 的镐铲都挖不动东西，要给它匠魂（Tinkers' Construct）工具，和玩家一样。扔在它脚边它会捡，或者放进箱子让它取。
 - **领地**：它在 ServerUtilities 眼里是普通玩家。要在已认领的区块里动手，队伍主人执行 `/team status <名字> ally` 把它设成盟友即可（队伍默认允许盟友挖、放、开箱子）；想让它成为正式成员则执行 `/team status <名字> invited`，再让它执行 `team join <队伍>`。
+- **出生点保护**：server.properties 的 `spawn-protection` 范围里（主世界出生点周围几格、所有高度），服务器有 op 时，不是 op 的玩家点不了、挖不了、也不能对着方块放，bot 也一样。它碰到时照实说是出生点保护、出生点在哪、范围多大。
 - **白名单**：服务器开着白名单时，mod 会在它第一次上线时把它加进白名单，否则其他 mod 不承认它。
 - **皮肤**：`skin <名字> set <正版用户名>`（服务器已有的 PierceSkinRestorer）。想让每个新建的 bot 都自动用同一个皮肤，在 mod 配置里写 `"newBotCommands": ["skin {name} set 正版用户名"]`。
 - **图纸**：把 `.schematic` 放进服务器的 `config/aiplayer/schematics/`（或在面板里上传），或者让它自己设计。带内容或朝向的方块（箱子、抽屉、楼梯、机器、管道）它现在还不放，会列出来留给人。

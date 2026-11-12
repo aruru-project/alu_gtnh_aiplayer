@@ -19,6 +19,7 @@ import type {
   MachineInfo,
   MachineRecipe,
   PlayerView,
+  Protection,
   QuestDetail,
   QuestHit,
   QuestItem,
@@ -1401,6 +1402,15 @@ export function autoOutputText(a: AutoOutput | undefined): string {
   if (typeof a.side !== 'string') return `auto-output of ${what} on`
   const to = a.to ? `${nameOf(a.to, { block: true }) ?? a.to.name ?? 'a block'} at ${formatPos(a.to)}` : 'nothing (no block stands there)'
   return `AUTO-OUTPUT of ${what} on: what it makes leaves by its ${a.side} face, into ${to}`
+}
+
+/**
+ * 服务器自己的保护（原版的出生点保护）用一句话说：是什么、范围多大、对谁。身体在任务失败的消息里说的是同一件事。
+ * 只陈述事实：怎么办由模型自己定。
+ */
+export function protectionText(p: Protection): string {
+  if (p.by !== 'spawn protection' || !p.spawn) return 'the server protects it from you (its own block protection; it is not the spawn area)'
+  return `the server's spawn protection covers it: in the overworld, within ${p.range} block(s) of the world spawn (${p.spawn.x}, ${p.spawn.z}), that is x ${p.x1} to ${p.x2} and z ${p.z1} to ${p.z2} at every height, a player who is not a server operator can neither click, dig nor place, and you are not an operator`
 }
 
 /** 紧挨着一个容器、会自己送料抽料的方块：写出来提醒这是自动化的一环。 */

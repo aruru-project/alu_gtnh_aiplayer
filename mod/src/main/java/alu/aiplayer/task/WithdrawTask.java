@@ -52,7 +52,7 @@ public final class WithdrawTask extends Task {
         if (trip == null) return;
         ContainerTrip.Status st = trip.tick();
         progressDone = trip.session.moved;
-        if (st == ContainerTrip.Status.FAILED) fail(trip.failCode, trip.failMessage);
+        if (st == ContainerTrip.Status.FAILED) fail(trip);
         else if (st == ContainerTrip.Status.DONE) {
             if (trip.session.inventoryFull) fail("inventory_full", "the bot's inventory filled up");
             else done();

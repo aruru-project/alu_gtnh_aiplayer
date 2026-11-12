@@ -133,7 +133,7 @@ public final class CraftTask extends Task {
             }
             case 2:
                 if (bot.clickWasRefused(table[0], table[1], table[2])) {
-                    fail("denied", "using the crafting table was refused; it may be protected");
+                    fail("denied", bot.refused("using the crafting table"), bot.refusalDetail(table[0], table[1], table[2]));
                 } else if (p.openContainer != p.inventoryContainer) {
                     if (!findGrid(p.openContainer) || gridWidth < 3) {
                         bot.conn()

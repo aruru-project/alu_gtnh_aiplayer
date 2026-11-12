@@ -208,7 +208,7 @@ abstract class AreaTask extends Task {
             return Act.SKIPPED;
         }
         if ("no_tool".equals(code) || "denied".equals(code)) {
-            JsonObject detail = J.pos(x, y, z);
+            JsonObject detail = "denied".equals(code) ? bot.refusalDetail(x, y, z) : J.pos(x, y, z);
             detail.addProperty("block", digger.failBlock);
             fail(code, digger.failMessage, detail);
             return Act.FAILED;
@@ -334,7 +334,7 @@ abstract class AreaTask extends Task {
                 return Act.SKIPPED;
             case REJECTED:
                 if (bot.placementWasRefused()) {
-                    fail("denied", "placing a block here was refused; the area may be protected", J.pos(x, y, z));
+                    fail("denied", bot.refused("placing a block at (" + x + "," + y + "," + z + ")"), bot.refusalDetail(x, y, z));
                     return Act.FAILED;
                 }
                 if (bump(x, y, z) >= 2) {
@@ -407,7 +407,7 @@ abstract class AreaTask extends Task {
             return true;
         }
         if (incomplete && tripIsDropoff) {
-            if (st == ContainerTrip.Status.FAILED) fail(finished.failCode, finished.failMessage);
+            if (st == ContainerTrip.Status.FAILED) fail(finished);
             else fail("container_full", "the drop-off containers are full");
             return true;
         }

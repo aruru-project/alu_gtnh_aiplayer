@@ -109,6 +109,11 @@ public abstract class Task {
         result = summary();
     }
 
+    /** Ends the task with the failure a trip to a container ended in. */
+    final void fail(ContainerTrip trip) {
+        fail(trip.failCode, trip.failMessage, trip.failDetail);
+    }
+
     public final void failExternally(String code, String message) {
         fail(code, message, null);
     }

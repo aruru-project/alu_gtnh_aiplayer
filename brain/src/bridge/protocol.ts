@@ -71,7 +71,8 @@ export interface TaskInfo {
    * 失败码和 detail：unreachable（走不到，或比步行上限 256 格还远；可能有 x y z）、stuck、
    * no_tool（block、x y z）、no_material（missing，item 或 items；blueprint 任务的 missing 是
    * [{id,meta,name,count}]，每种缺多少，可能另有 supplyProblem）、inventory_full、container_full、
-   * denied（领地保护等：挖不动、放不下、箱子打不开；可能有 block、x y z）、
+   * denied（服务器的出生点保护、领地或别的 mod 拒绝了：挖不动、放不下、箱子打不开；可能有 block、x y z，
+   * 是服务器自己的保护时有 protection，见 Protection）、
    * invalid（参数不合法，或服务器拒绝了指令，比如不存在的 home）、
    * interrupted（下线、死亡、被带到别的维度）、internal、busy（配方索引还在建）。
    * craft 任务以 no_material 失败时 missing 是 [RecipeIngredient]（每样还差多少，没有 have）。
@@ -845,6 +846,27 @@ export interface ProbeResult extends BlockInfo {
   inReach?: boolean
   /** excluded：一次挖多格的工具（配置 excludedTools），身体不会用。 */
   candidates?: { slot: number; item: string; harvest?: boolean; strength?: number; ticks?: number; excluded?: boolean }[]
+  /** 服务器自己的保护不让 bot 动这一格（点、挖、对着它放都会被拒绝）：工具挖得动也一样。 */
+  protection?: Protection
+}
+
+/**
+ * 服务器自己的保护：原版的出生点保护是主世界里离出生点 range 格以内（x、z 两个方向里大的那个）、所有高度的方块，
+ * 服务器有 op 时，不是 op 的玩家点不了、挖不了、也不能对着它放方块。x1..x2、z1..z2 是那一块的范围。
+ * by 是 "the server" 时服务器拒绝了，但不在出生点那一块里（别的 mod 改了规则）。
+ * 任务以 denied 失败时 detail.protection 也是它，另带被拒绝的那一格的 x、y、z。
+ */
+export interface Protection {
+  by: 'spawn protection' | 'the server' | (string & {})
+  spawn?: { x: number; z: number }
+  range?: number
+  x1?: number
+  z1?: number
+  x2?: number
+  z2?: number
+  x?: number
+  y?: number
+  z?: number
 }
 
 /** task.start 的 task 字段：type 加上该类型自己的参数。 */

@@ -133,6 +133,8 @@ public final class Digger {
         Motion.face(p, x + 0.5, y + 0.5, z + 0.5);
         bot.conn()
             .startDigging(x, y, z, face);
+        // The server's own protection refuses the dig before it starts (nothing would ever break): say so at once.
+        if (bot.serverRefusal(x, y, z) != null) return fail("denied", bot.refused("digging it"));
         bot.conn()
             .swingArm();
         if (w.getBlock(x, y, z) != target || w.getBlock(x, y, z)

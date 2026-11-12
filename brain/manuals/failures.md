@@ -8,7 +8,9 @@
 - no_material：要放、要用的东西不够（detail.missing 是缺多少或缺哪些）。去箱子或抽屉里取，或者问人。
 - inventory_full：背包满了又没指定卸货的容器。先用 deposit_items 把东西存进箱子，再用同样的参数重启任务；以后记得给 dropoff。
 - container_full：目标箱子或抽屉放不下（抽屉只收它已经装着的那几种，或者放进还没指定物品的空格）。换个容器，或者问人。
-- denied：被领地保护或别的 mod 拒绝（挖不动、放不下、箱子打不开、抽屉封了箱）。不要重试，告诉对方这里你动不了。如果是主人自己的领地，请他把你邀请进队伍（他执行 /team status 你的名字 invited），再用 run_command 发 `team join 队伍名` 加入。
+- denied：服务器或别的 mod 不让你动这一格（挖、放、右键、开箱子、用抽屉都可能），同样的动作再做一遍结果一样。消息里写着是什么拒绝的：
+  - 服务器的出生点保护：消息写明出生点和范围（主世界里离出生点几格以内、x 和 z 从几到几、所有高度），detail.protection 是同样的数。服务器有 op 时，不是 op 的玩家在这个范围里点、挖、对着方块放都会被拒绝，你不是 op。probe_block 看得出一格在不在里面。
+  - 领地（ServerUtilities）、封了箱的抽屉这类是别的 mod 拒绝的，只知道被拒绝了。ServerUtilities 的领地里，领地主人设成盟友或队员的玩家能挖、放、开箱子（他执行 /team status 你的名字 ally 或 invited；入队是 run_command 发 `team join 队伍名`）。
 - invalid：参数不合法，或者服务器拒绝了指令（比如 go_home 去一个不存在的 home）。看消息，改正了再来。
 - interrupted：你下线、死亡，或者被带到了别的维度。先看状态，再决定要不要重启任务。
 - internal：身体那边自己出了错，不是你的问题。告诉人，不要反复重试。
