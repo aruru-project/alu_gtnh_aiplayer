@@ -1110,7 +1110,9 @@ describe('面板：对话、AI 玩家、记忆', () => {
       ],
       (x, y) => (y === 0 ? 1 : x === 0 ? 2 : x === 2 ? 3 : 0),
     )
-    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ wall: WALL })
+    // other0…other9：查看器那边读的别的图纸
+    const DOT = mockBlueprint('dot', { x: 1, y: 1, z: 1 }, [{ id: 'minecraft:wool', meta: 4, name: 'Yellow Wool' }], () => 1)
+    s.game.handlers['blueprint.read'] = blueprintReadAnswer({ wall: WALL, ...Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`other${n}`, DOT])) })
     const view = await s.call('GET', '/api/blueprints/view?name=wall')
     assert.equal(view.status, 200, view.text)
     const v = view.json
@@ -1161,31 +1163,39 @@ describe('面板：对话、AI 玩家、记忆', () => {
     const again = await s.call('GET', '/api/blueprints/view?name=wall')
     assert.deepEqual([s.game.callsOf('blueprint.read').length, again.json.version], [4, v.version])
 
-    // 游戏里的图纸换了（上传了同名的）：留着的不要了，列表里不带版本号的小图重新读，查看得到新的版本号
-    const thumb = async () => {
-      const res = await fetch(`${s.origin}/api/blueprints/picture?name=wall&plain=1&size=96&view=layer&layer=1`, { headers: { cookie: s.cookie() } })
+    // 列表里的小图：带着列表上的“尺寸-方块数”。头一次读，之后一直用画好的那张，不再问游戏——
+    // 查看器那边读了再多别的图纸（留着的格子早被挤掉了）也一样，没有过期
+    const thumb = async (t: string) => {
+      const res = await fetch(`${s.origin}/api/blueprints/picture?name=wall&plain=1&size=96&view=layer&layer=1&t=${encodeURIComponent(t)}`, { headers: { cookie: s.cookie() } })
       return decodePng(Buffer.from(await res.arrayBuffer()))
     }
-    assert.ok(count(await thumb(), BLUE) > 0)
-    const before = s.game.callsOf('blueprint.read').length
-    await thumb()
-    assert.equal(s.game.callsOf('blueprint.read').length, before)
-    WALL.cells.fill(0, 3, 6)
-    s.game.handlers['blueprint.put'] = () => ({ name: 'wall', size: WALL.size, blocks: 3 })
-    s.game.handlers['blueprint.list'] = () => ({ blueprints: [{ name: 'wall', size: WALL.size, blocks: 3 }], folder: 'config/aiplayer/schematics' })
-    assert.equal((await s.call('POST', '/api/blueprints', { name: 'wall', data: 'AAAA' })).status, 200)
-    assert.equal(count(await thumb(), BLUE), 0)
-    const changed = await s.call('GET', '/api/blueprints/view?name=wall')
-    assert.deepEqual([changed.json.blocks, changed.json.version !== v.version], [3, true])
+    const reads = () => s.game.callsOf('blueprint.read').length
+    let before = reads()
+    assert.ok(count(await thumb('3×2×1-5'), BLUE) > 0)
+    assert.equal(reads(), before + 2)
+    for (let n = 0; n < 10; n++) assert.equal((await s.call('GET', `/api/blueprints/view?name=other${n}`)).status, 200)
+    before = reads()
+    assert.ok(count(await thumb('3×2×1-5'), BLUE) > 0)
+    assert.equal(reads(), before)
 
-    // 不是经面板换的（它自己 publish_draft 覆盖了同名的）：列表里的小图带着它知道的“尺寸-方块数”，和留着的对不上就重新读
-    const stamped = async (t: string) => decodePng(Buffer.from(await (await fetch(`${s.origin}/api/blueprints/picture?name=wall&plain=1&size=96&view=layer&layer=1&t=${encodeURIComponent(t)}`, { headers: { cookie: s.cookie() } })).arrayBuffer()))
-    assert.equal(count(await stamped('3×2×1-3'), BLUE), 0)
-    const reads = s.game.callsOf('blueprint.read').length
+    // 图纸在面板以外换了（它自己用 publish_draft 覆盖了同名的）：列表上的方块数没变就还用画好的，变了才重新读
+    WALL.cells[3] = 0
+    assert.ok(count(await thumb('3×2×1-5'), BLUE) > 0)
+    assert.equal(reads(), before)
+    assert.equal(count(await thumb('3×2×1-4'), BLUE), 0)
+    assert.equal(reads(), before + 2)
+
+    // 面板上传了同名的：画好的、读过的都作废，下一次小图（尺寸、方块数正好一样也）重新读，查看得到新的版本号
     WALL.cells[3] = 2
-    assert.equal(s.game.callsOf('blueprint.read').length, reads)
-    assert.ok(count(await stamped('3×2×1-4'), BLUE) > 0)
-    assert.equal(s.game.callsOf('blueprint.read').length, reads + 2)
+    WALL.cells[5] = 0
+    s.game.handlers['blueprint.put'] = () => ({ name: 'wall', size: WALL.size, blocks: 4 })
+    s.game.handlers['blueprint.list'] = () => ({ blueprints: [{ name: 'wall', size: WALL.size, blocks: 4 }], folder: 'config/aiplayer/schematics' })
+    assert.equal((await s.call('POST', '/api/blueprints', { name: 'wall', data: 'AAAA' })).status, 200)
+    before = reads()
+    assert.ok(count(await thumb('3×2×1-4'), BLUE) > 0)
+    assert.equal(reads(), before + 2)
+    const changed = await s.call('GET', '/api/blueprints/view?name=wall')
+    assert.deepEqual([changed.json.blocks, changed.json.version !== v.version], [4, true])
   })
 
   it('图纸的查看：超过一次能读的格子数分几次读并写明；比每边 256 格宽的先给一块、写明是哪一块；没连上游戏、没有这张图纸、名字和范围不对时照实说', async (t) => {
@@ -1216,6 +1226,15 @@ describe('面板：对话、AI 玩家、记忆', () => {
     assert.deepEqual([tooWide.status, tooWide.json.error.message], [400, '一次最多看每边 256 格，x 0 到 299 是 300 格'])
     assert.equal((await s.call('GET', '/api/blueprints/view?name=road&x1=400')).status, 400)
     assert.equal((await s.call('GET', '/api/blueprints/view?name=road&x1=-1')).status, 400)
+
+    // 列表里不给大图纸、太宽的图纸画小图：不问游戏，说清楚点“查看”才读
+    const before = s.game.callsOf('blueprint.read').length
+    for (const [name, t] of [['tower', '70×60×70-2100'], ['road', '300×1×3-450']]) {
+      const res = await s.call('GET', `/api/blueprints/picture?name=${name}&plain=1&size=96&t=${encodeURIComponent(t)}`)
+      assert.deepEqual([res.status, res.json.error.code], [400, 'too_large'], name)
+      assert.match(res.json.error.message, /列表里不画小图：点“查看”才读/)
+    }
+    assert.equal(s.game.callsOf('blueprint.read').length, before)
 
     // 没有这张图纸：身体的原话；名字带路径：400；没连上游戏：503，说清楚是游戏那头
     const missing = await s.call('GET', '/api/blueprints/view?name=nope')

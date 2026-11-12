@@ -1,8 +1,10 @@
 // 面板“建造 → 图纸”页的“查看”：游戏服务器上的一张图纸长什么样。和草稿的查看是同一套：大脑画的四种简图（和模型用
 // view_draft 看到的是同一种图，render/views.ts）、三维预览的数据（render/scene.ts）、每种方块的颜色和数量。
-// 格子问身体要（tools/blueprint.ts 的 readPlanCells：一次读不完的分几次读）；读到的留一会儿，换着角度看、一层层翻、
-// 列表里的小图不用每次再问游戏。“查看”那一下总是重新读，并给出这一份的版本号，之后的图和三维数据都带着它。
+// 格子问身体要（tools/blueprint.ts 的 readPlanCells：一次读不完的分几次读）；读到的留一会儿，换着角度看、一层层翻不用每次再问游戏。
+// “查看”那一下总是重新读，并给出这一份的版本号，之后的图和三维数据都带着它。
 // 一次最多看每边 256 格（和草稿一样大）：更宽的图纸先给最低角那一块，写明是哪一块、怎么换。
+// 列表里的小图：只给一次读得完的图纸画（不超过 262,144 格、每边不超过 256 格），画好的留在内存里，
+// 图纸列表上它的“尺寸-方块数”没变就一直用，不过期；变了才重新读。身体的 blueprint.read 跑在游戏的主线程上，开页面不该每次都去读。
 //
 // 和 server.ts 分开放：server.ts 里只有几行路由指到这里。
 
@@ -64,7 +66,7 @@ export interface BlueprintViewDeps {
   now(): number
 }
 
-/** 没带版本号的请求（列表里的小图）用多久以前读的还算数。 */
+/** 既没带版本号、也不是列表里的小图的请求，用多久以前读的还算数。 */
 const UNVERSIONED_FRESH_MS = 5 * 60_000
 /** 读过的图纸留几份（一份最多 256×256×256 格的盒子）。 */
 const LOADED_KEPT = 8
@@ -77,6 +79,13 @@ export class BlueprintViews {
   /** 键是“名字 + 地址里给的范围”。放的是 Promise：同一张图纸同时来几个请求，只问游戏一次。 */
   private readonly loaded = new Map<string, Promise<Loaded>>()
   private readonly pictures = new Map<string, Buffer>()
+  /**
+   * 列表里的小图：名字 → 画的时候那张图纸的“尺寸-方块数”，和画好的图（按怎么画分）。只在内存里，只留 PNG（不留格子），
+   * 大脑重启了重新读一轮。
+   */
+  private readonly thumbs = new Map<string, { stamp: string; pngs: Map<string, Buffer> }>()
+  /** 正在为小图读的（名字 + 尺寸-方块数）：同时来的请求等同一次。 */
+  private readonly thumbReads = new Map<string, Promise<Loaded>>()
 
   constructor(deps: BlueprintViewDeps) {
     this.deps = deps
@@ -86,6 +95,7 @@ export class BlueprintViews {
   forget(name: string): void {
     for (const key of [...this.loaded.keys()]) if (key.split('\n')[0] === name) this.loaded.delete(key)
     for (const key of [...this.pictures.keys()]) if (JSON.parse(key)[0] === name) this.pictures.delete(key)
+    this.thumbs.delete(name)
   }
 
   /**
@@ -122,8 +132,12 @@ export class BlueprintViews {
     }
   }
 
-  /** GET /api/blueprints/picture?name=&v=&x1..z2&view=&from=&layer=&size=&plain=：图（PNG），和模型用 view_draft 要到的同一种。 */
+  /**
+   * GET /api/blueprints/picture?name=&v=&x1..z2&view=&from=&layer=&size=&plain=：图（PNG），和模型用 view_draft 要到的同一种。
+   * 不带 v、带着 t（列表里的“尺寸-方块数”）的是列表里的小图（thumbnail）。
+   */
   async picture(q: URLSearchParams): Promise<Buffer> {
+    if (!q.has('v') && q.has('t')) return this.thumbnail(q)
     const got = await this.load(q, { version: q.get('v') ?? undefined })
     const { spec, size, plain } = pictureRequest(q, [got.box.y1, got.box.y2], this.deps.reject)
     const key = JSON.stringify([got.head.name, got.version, got.box, spec, size, plain])
@@ -141,6 +155,52 @@ export class BlueprintViews {
     return png
   }
 
+  /**
+   * 列表里的小图（整张）：t 是列表上这张图纸的“尺寸-方块数”（如 11×12×12-496）。一次读不完的（超过 262,144 格）、
+   * 比每边 256 格宽的不画：不问游戏，回 400 too_large。画过、而 t 没变的直接给，不再问游戏，也不过期。
+   */
+  private async thumbnail(q: URLSearchParams): Promise<Buffer> {
+    const reject = this.deps.reject
+    const name = this.planName(q)
+    const stamp = q.get('t') ?? ''
+    const m = /^(\d+)×(\d+)×(\d+)-(\d+)$/.exec(stamp)
+    if (!m) return reject(400, 'bad_request', '小图的地址里 t 要写成列表里的“尺寸-方块数”，如 11×12×12-496')
+    const [x, y, z] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    if (x * y * z > BLUEPRINT_READ_MAX_CELLS || Math.max(x, y, z) > PLAN_PICTURE_MAX_SIDE) {
+      return reject(400, 'too_large', `大图纸（${x}×${y}×${z}，${x * y * z} 格），列表里不画小图：点“查看”才读`)
+    }
+    const { spec, size, plain } = pictureRequest(q, [0, Math.max(0, y - 1)], reject)
+    const how = JSON.stringify([spec, size, plain])
+    const kept = this.thumbs.get(name)
+    const drawn = kept?.stamp === stamp ? kept.pngs.get(how) : undefined
+    if (drawn) return drawn
+    const key = `${name}\n${stamp}`
+    let reading = this.thumbReads.get(key)
+    if (!reading) {
+      const started = this.read(name, {})
+      reading = started
+      this.thumbReads.set(key, started)
+      started.then(
+        () => this.thumbReads.delete(key),
+        () => this.thumbReads.delete(key),
+      )
+    }
+    const got = await reading
+    let png: Buffer
+    try {
+      png = renderView(got.grid, this.deps.looks(), spec, { maxSize: size, plain, title: /^[\x20-\x7e]+$/.test(got.head.name) ? `Blueprint "${got.head.name}"` : 'Blueprint' }).png
+    } catch (e) {
+      if (e instanceof GridError) return reject(400, 'bad_request', e.message)
+      throw e
+    }
+    // 记在读到的那一份的“尺寸-方块数”下（列表要是旧的，下次带着新的来就对上了）
+    const real = `${got.head.size.x}×${got.head.size.y}×${got.head.size.z}-${got.head.blocks}`
+    const entry = this.thumbs.get(name)?.stamp === real ? this.thumbs.get(name)! : { stamp: real, pngs: new Map<string, Buffer>() }
+    entry.pngs.set(how, png)
+    this.thumbs.set(name, entry)
+    return png
+  }
+
   /** GET /api/blueprints/model?name=&v=&x1..z2：三维预览要的数据（和草稿的同一种）。 */
   async model(q: URLSearchParams): Promise<unknown> {
     const got = await this.load(q, { version: q.get('v') ?? undefined })
@@ -153,15 +213,20 @@ export class BlueprintViews {
     return (kind) => nameOf({ id: kind.id, meta: kind.meta, name: given.get(kindKey(kind)) }) ?? this.deps.localName(kind) ?? given.get(kindKey(kind))
   }
 
+  /** 地址里的图纸名（不带路径；带着 .schematic 的去掉）。 */
+  private planName(q: URLSearchParams): string {
+    const name = (q.get('name') ?? '').trim().replace(/\.schematic$/i, '')
+    if (name.length === 0 || name.length > NAME_MAX_CHARS || name.includes('..') || /[/\\]/.test(name)) return this.deps.reject(400, 'bad_request', '需要图纸的名字（不带路径）')
+    return name
+  }
+
   /**
    * 拿一张图纸的一块：fresh 时总是重新问游戏；带着版本号、而留着的那一份正是这个版本时直接用；
-   * 都没带时留着的不超过五分钟就用——地址里带着 t（列表里的小图：它知道的“尺寸-方块数”）而和留着的对不上时不用
-   * （图纸换过了，比如它自己用 publish_draft 覆盖了同名的）。正在读的那一份，后来的请求等它，不再问一次。
+   * 都没带时留着的不超过五分钟就用。正在读的那一份，后来的请求等它，不再问一次。
    */
   private async load(q: URLSearchParams, opts: { fresh?: boolean; version?: string | undefined }): Promise<Loaded> {
     const reject = this.deps.reject
-    const name = (q.get('name') ?? '').trim().replace(/\.schematic$/i, '')
-    if (name.length === 0 || name.length > NAME_MAX_CHARS || name.includes('..') || /[/\\]/.test(name)) return reject(400, 'bad_request', '需要图纸的名字（不带路径）')
+    const name = this.planName(q)
     const asked: Partial<Record<keyof PlanBox, number>> = {}
     for (const k of ['x1', 'x2', 'y1', 'y2', 'z1', 'z2'] as const) {
       const text = q.get(k)
@@ -174,9 +239,7 @@ export class BlueprintViews {
     const kept = this.loaded.get(key)
     if (kept && !opts.fresh) {
       const got = await kept.catch(() => undefined)
-      const stamp = q.get('t')
-      const same = (g: Loaded): boolean => stamp === null || stamp === `${g.head.size.x}×${g.head.size.y}×${g.head.size.z}-${g.head.blocks}`
-      if (got && (opts.version !== undefined ? got.version === opts.version : this.deps.now() - got.at < UNVERSIONED_FRESH_MS && same(got))) return got
+      if (got && (opts.version !== undefined ? got.version === opts.version : this.deps.now() - got.at < UNVERSIONED_FRESH_MS)) return got
     }
     const reading = this.read(name, asked)
     this.keep(key, reading)

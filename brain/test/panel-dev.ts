@@ -967,7 +967,11 @@ let statusHeldUntil = 0
 const proxy = http.createServer((req, res) => {
   void (async () => {
     const url = new URL(req.url ?? '/', 'http://dev.local')
-    if (url.pathname === '/__dev' && req.method === 'GET') return json(res, 200, { shape: SHAPE, lines: LINES, scene, entries: entries.length, password: readPassword() })
+    // blueprintReads：模拟身体到现在一共答了几次 blueprint.read（看开页面、看小图时问了游戏几次）
+    if (url.pathname === '/__dev' && req.method === 'GET') {
+      const blueprintReads = bridge.requests.filter((r) => r.method === 'blueprint.read').length
+      return json(res, 200, { shape: SHAPE, lines: LINES, scene, entries: entries.length, blueprintReads, password: readPassword() })
+    }
     if (url.pathname === '/__dev/scene' && req.method === 'POST') {
       const body = await readBody(req)
       setScene(String(body.name ?? 'idle'))

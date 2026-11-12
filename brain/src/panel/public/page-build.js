@@ -394,6 +394,8 @@ function renderBlueprints(data) {
   const maxBytes = data.maxBytes ?? 2 * 1024 * 1024
   /** 一次最多看每边多少格（和草稿一样）；更宽的图纸查看时先看一块，没有小图。 */
   const maxSide = 256
+  /** 游戏一次最多读多少格：读一次读不完的大图纸不画小图（读图纸占着游戏的主线程），点“查看”才读。 */
+  const readMax = 262144
 
   // 上传
   const file = h('input', { id: 'bp-file', type: 'file', accept: '.schematic' })
@@ -458,9 +460,12 @@ function renderBlueprints(data) {
       const next = await act(delBtn, () => api('DELETE', '/blueprints', { name: b.name }), `已删除 ${b.name}`)
       if (next) renderBlueprints(next)
     })
-    // 小图：大脑去游戏里读这张图纸画的（地址里带着尺寸和方块数，图纸换了就换）；太宽的一次看不全，不画小图
+    // 小图：大脑去游戏里读一次这张图纸画的，之后留在大脑的内存里；地址里带着尺寸和方块数，列表上这两样变了才重新读。
+    // 一次读不完的大图纸、比 256 格宽的不画小图（开页面不该去读它们），写明点“查看”才读
+    const big = usable && b.size.x * b.size.y * b.size.z > readMax
+    const wide = usable && !big && Math.max(b.size.x, b.size.z) > maxSide
     let thumb = h('span', { class: 'draft-thumb' })
-    if (usable && b.size.x <= maxSide && b.size.z <= maxSide) {
+    if (usable && !big && !wide) {
       thumb = h('img', { class: 'draft-thumb', alt: '', loading: 'lazy', src: `/api/blueprints/picture?${new URLSearchParams({ name: b.name, plain: '1', size: '96', t: `${sizeText(b.size)}-${b.blocks}` })}` })
       thumb.addEventListener('click', () => open(viewBtn))
       // 小图没出来（游戏断了、图纸读不出来）：空着就好，点“查看”会说原因
@@ -471,6 +476,8 @@ function renderBlueprints(data) {
       { class: `wrap with-thumb${viewing?.kind === 'blueprint' && viewing.data.name === b.name ? ' current' : ''}` },
       thumb,
       h('div', { class: 'grow' }, h('span', { class: 'mono', text: b.name }), usable ? null : h('div', { class: 'error', text: `读不了：${b.error ?? '游戏那边没给出尺寸'}` })),
+      big ? h('span', { class: 'hint', title: `${num(b.size.x * b.size.y * b.size.z)} 格，游戏一次最多读 ${num(readMax)} 格`, text: '大图纸，点“查看”才读' }) : null,
+      wide ? h('span', { class: 'hint', text: `比 ${maxSide} 格宽，点“查看”一块块看` }) : null,
       usable ? h('span', { class: 'muted', title: '东西向（x）× 高（y）× 南北向（z）', text: `${sizeText(b.size)}，${num(b.blocks)} 个方块` }) : badge('读不了', 'bad'),
       viewBtn,
       materialsBtn,
