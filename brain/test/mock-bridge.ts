@@ -304,6 +304,10 @@ const CHAT_BURST = 9
 const CHAT_BURST_WINDOW_MS = 1000
 /** 步行上限（配置 maxTravel）。 */
 const MAX_TRAVEL = 256
+/** 假世界里能拿在手里放下的方块物品（use 对着方块右键时会放进一格）。 */
+const MOCK_BLOCK_ITEM = /stairs|slab|minecraft:log|planks|minecraft:stone$|cobblestone|minecraft:dirt$|ladder|blockcasings/
+/** GregTech 的扳手（gt.metatool.01 的一种）：假世界里拆机器外壳的工具。 */
+const MOCK_WRENCH = 'gregtech:gt.metatool.01'
 /** 任务队列上限。 */
 const MAX_QUEUE = 32
 
@@ -1434,20 +1438,24 @@ export class MockBridge {
         const bot = this.onlineBot(p.bot)
         const block = this.blockAt(this.num(p, 'x'), this.num(p, 'y'), this.num(p, 'z'))
         if (block.loaded === false || block.air === true) return { ...block, canDig: false, digTicks: 0, toolSlot: -1, inReach: true, candidates: [] }
-        // 石头要匠魂镐；泥土草地徒手也行，有铲子更快
+        // 石头要匠魂镐；泥土草地徒手也行，有铲子更快；GregTech 的机器外壳要扳手（它自己说的工具类别 wrench，2 级）
         const stone = block.id === 'minecraft:stone'
+        const casing = typeof block.id === 'string' && block.id.startsWith('gregtech:gt.blockcasings')
+        const needs = casing ? { tool: 'wrench', level: 2, toolRequired: true } : stone ? { tool: 'pickaxe', level: 0, toolRequired: true } : { tool: 'shovel', level: 0, toolRequired: false }
+        const levelOf = (id: string): number => (id === 'TConstruct:pickaxe' ? (needs.tool === 'pickaxe' ? 3 : -1) : id === 'TConstruct:shovel' ? (needs.tool === 'shovel' ? 3 : -1) : id === MOCK_WRENCH ? 3 : -1)
         const candidates = [
-          { slot: -1, item: 'hand', harvest: !stone, strength: 0.05, ticks: stone ? 0 : 18 },
+          { slot: -1, item: 'hand', harvest: !stone && !casing, strength: 0.05, ticks: stone || casing ? 0 : 18 },
           ...bot.inventory
-            .filter((i) => i.id.startsWith('TConstruct:'))
+            .filter((i) => i.id.startsWith('TConstruct:') || i.id === MOCK_WRENCH)
             .map((i) => {
-              const right = stone ? i.id === 'TConstruct:pickaxe' : i.id === 'TConstruct:shovel'
-              return { slot: i.slot, item: `${i.id}:0`, harvest: stone ? i.id === 'TConstruct:pickaxe' : true, strength: right ? 0.4 : 0.05, ticks: right ? (stone ? 8 : 3) : stone ? 0 : 18 }
+              const right = casing ? i.id === MOCK_WRENCH : stone ? i.id === 'TConstruct:pickaxe' : i.id === 'TConstruct:shovel'
+              const harvest = casing ? right : stone ? i.id === 'TConstruct:pickaxe' : true
+              return { slot: i.slot, item: `${i.id}:${i.meta}`, harvest, strength: right ? 0.4 : harvest ? 0.05 : 0, ticks: right ? (stone ? 8 : 3) : harvest ? 18 : 0, level: levelOf(i.id) }
             }),
         ]
         const usable = candidates.filter((c) => c.harvest && c.ticks > 0).sort((a, b) => a.ticks - b.ticks)
         const best = usable[0]
-        return { ...block, canDig: best !== undefined, digTicks: best?.ticks ?? 0, toolSlot: best?.slot ?? -1, inReach: true, candidates }
+        return { ...block, canDig: best !== undefined, digTicks: best?.ticks ?? 0, toolSlot: best?.slot ?? -1, inReach: true, needs, candidates }
       }
       case 'task.start':
         return this.taskStart(p, after)
@@ -1774,6 +1782,34 @@ export class MockBridge {
         return
       }
       if (on) this.clickLog.push({ bot: bot.name, on, item: held.id, ...clicked, ...(p.hit !== undefined ? { hit: p.hit as Json } : {}) })
+      if (on && MOCK_BLOCK_ITEM.test(held.id)) {
+        // 手里是方块：放进点的那个面外面的一格（和真的身体一样报那一格点之前、现在是什么，没放进去的写原因）
+        const side = typeof p.side === 'string' ? p.side : 'north'
+        const d = ({ down: [0, -1, 0], up: [0, 1, 0], north: [0, 0, -1], south: [0, 0, 1], west: [-1, 0, 0], east: [1, 0, 0] } as Record<string, number[]>)[side] ?? [0, 1, 0]
+        const cell = { x: on.x + d[0]!, y: on.y + d[1]!, z: on.z + d[2]! }
+        const there = this.blockAt(cell.x, cell.y, cell.z)
+        const before = `${String(there.id)}/${Number(there.meta ?? 0)}`
+        const blockBefore = (() => {
+          const b = this.blockAt(on.x, on.y, on.z)
+          return `${String(b.id)}/${Number(b.meta ?? 0)}`
+        })()
+        let notPlaced: string | undefined
+        if (there.air !== true) notPlaced = `the cell the block would go into, (${cell.x},${cell.y},${cell.z}), is taken by ${before} "${String(there.name ?? '')}"`
+        else if (held.id === 'minecraft:ladder' && side === 'up') notPlaced = `the block's own rule says it cannot stand in (${cell.x},${cell.y},${cell.z}) placed against that face (some blocks need a solid block behind them, or a certain ground)`
+        const lost: Json[] = []
+        if (notPlaced === undefined) {
+          this.changedBlocks.set(`${cell.x},${cell.y},${cell.z}`, { id: held.id, meta: 0, name: held.name })
+          held.count -= 1
+          lost.push({ id: held.id, meta: held.meta, name: held.name, count: 1 })
+          bot.inventory = bot.inventory.filter((i) => i.count > 0)
+        }
+        const after = this.blockAt(cell.x, cell.y, cell.z)
+        const placeCell = { ...cell, before, now: `${String(after.id)}/${Number(after.meta ?? 0)}` }
+        this.endTask(bot, task, 'done', {
+          result: { used: held.name, ...clicked, blockBefore, blockNow: blockBefore, placeCell, ...(notPlaced ? { notPlaced } : {}), gained: [], lost, health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length },
+        })
+        return
+      }
       const effect = this.usable.get(held.id) ?? {}
       const lost: Json[] = []
       if (effect.food !== undefined || effect.wear === true) {

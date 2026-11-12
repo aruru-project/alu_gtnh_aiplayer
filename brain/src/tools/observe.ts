@@ -1,6 +1,6 @@
 import { boxPieces, pieceCount } from './reach.ts'
 import { BridgeError } from '../bridge/protocol.ts'
-import type { BlockInfo, BlockPos } from '../bridge/protocol.ts'
+import type { BlockInfo, BlockPos, ProbeCandidate, ProbeNeeds } from '../bridge/protocol.ts'
 import {
   compactJson,
   COVER_NOTE,
@@ -275,10 +275,36 @@ export const inspectBlock: Tool = {
   },
 }
 
+/** 方块要什么工具，照它自己说的（Forge 的工具类别和等级）。 */
+export function needsText(n: ProbeNeeds): string {
+  if (n.toolRequired === false) return 'no tool: a bare hand harvests it (a fitting tool is only faster)'
+  if (typeof n.tool === 'string') return `a tool of class "${n.tool}" at level ${n.level ?? 0} or higher (what the block itself names)`
+  if (n.unreadable === true) return 'a tool, but the block could not say which'
+  return 'a tool, and the block names no tool class: whether a tool harvests it is that tool\'s own call'
+}
+
+/** 身上一件工具（或空手）对这个方块：多少 tick，或者为什么不行。 */
+function candidateText(c: ProbeCandidate, needs: ProbeNeeds | undefined): string {
+  const what = c.slot < 0 ? 'hand' : c.item
+  const classes = c.classes && Object.keys(c.classes).length > 0 ? ` (a tool of class ${Object.entries(c.classes).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''
+  if (c.excluded) return `${what} is never used (it breaks several blocks at once)`
+  if (c.harvest !== false) return `${what}${classes} ${c.ticks} ticks`
+  const tool = needs?.tool
+  let why = 'cannot harvest it'
+  if (c.slot >= 0 && typeof tool === 'string' && typeof c.level === 'number') {
+    if (c.level < 0) why = `cannot harvest it: not a "${tool}"`
+    else if (c.level < (needs?.level ?? 0)) why = `cannot harvest it: as a "${tool}" it is level ${c.level}, ${needs?.level ?? 0} needed`
+    else if ((c.strength ?? 0) <= 0) why = 'cannot harvest it: it makes no progress on this block at all'
+  } else if (c.slot >= 0 && (c.strength ?? 0) <= 0) {
+    why = 'cannot harvest it: it makes no progress on this block at all'
+  }
+  return `${what}${classes} ${why}`
+}
+
 /** 库函数（不在发给模型的清单里）。data 是身体的原样回答（bot.probe）。 */
 export const probeBlock: Tool = {
   name: 'probe_block',
-  brief: '{x, y, z}: can you dig it, with what, how long -> canDig, digTicks, candidates[]',
+  brief: '{x, y, z}: can you dig it, with what, how long, what tool it needs -> canDig, digTicks, needs, candidates[]',
   description:
     'Check whether you could dig a block right now: which of your tools would be used, how long it takes, and whether it is within reach. Use it before a digging task when you are unsure your tools can break that kind of block.',
   inputSchema: obj({ x: int('x'), y: int('y', { min: 0, max: 255 }), z: int('z') }, ['x', 'y', 'z']),
@@ -290,6 +316,8 @@ export const probeBlock: Tool = {
     // 工具挖得动也没用：服务器自己的保护不让你动这一格
     if (p.protection) return { content: `${lines[0]!}\nThe server refuses your hand on this block: ${protectionText(p.protection)}. Digging it, clicking it or placing against it ends in denied.`, data: p }
     const candidates = p.candidates ?? []
+    // 这个方块要哪一类工具、几级（方块自己说的）；老的身体没有这一项
+    if (p.needs) lines.push(`It needs ${needsText(p.needs)}.`)
     // excluded：一次挖多格的工具（匠魂锤、挖掘铲、伐木斧等），身体不会用它们
     const usable = candidates.filter((c) => !c.excluded && c.harvest !== false && typeof c.ticks === 'number' && c.ticks > 0)
     if (p.canDig) {
@@ -304,17 +332,14 @@ export const probeBlock: Tool = {
       )
     }
     if (p.inReach === false) lines.push('It is out of reach from where you stand (a task walks there by itself).')
-    const others = candidates.filter((c) => c.slot !== p.toolSlot && typeof c.ticks === 'number')
+    // 挖不了时每一件都列出来（为什么不行）；挖得了时列除了要用的那件以外的
+    const others = candidates.filter((c) => (!p.canDig || c.slot !== p.toolSlot) && typeof c.ticks === 'number')
     if (others.length > 0) {
       lines.push(
-        `Other options: ${others
+        `${p.canDig ? 'Other options' : 'What you have'}: ${others
           .slice(0, 6)
-          .map((c) => {
-            const what = c.slot < 0 ? 'hand' : c.item
-            if (c.excluded) return `${what} is never used (it breaks several blocks at once)`
-            return `${what} ${c.harvest === false ? 'cannot harvest it' : `${c.ticks} ticks`}`
-          })
-          .join('; ')}`,
+          .map((c) => candidateText(c, p.needs))
+          .join('; ')}${others.length > 6 ? `; and ${others.length - 6} more (data.candidates)` : ''}`,
       )
     }
     return { content: lines.join('\n'), data: p }

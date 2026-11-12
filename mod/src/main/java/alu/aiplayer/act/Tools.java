@@ -99,6 +99,123 @@ public final class Tools {
         return a.strength > b.strength * 1.05F;
     }
 
+    /**
+     * What the block asks of a tool, as the game has it (Forge): the kind of tool ({@code getHarvestTool(meta)}: a
+     * class name such as "pickaxe", "axe", "shovel", or a mod's own such as GregTech's "wrench") and the level
+     * ({@code getHarvestLevel(meta)}), and whether its material needs a tool at all. A block that names no kind of
+     * tool leaves it to each tool to say whether it can harvest the block (vanilla tools go by the block's material).
+     */
+    public static com.google.gson.JsonObject needs(Block block, int meta) {
+        com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+        String tool = null;
+        int level = -1;
+        try {
+            tool = block.getHarvestTool(meta);
+            level = block.getHarvestLevel(meta);
+        } catch (Throwable t) {
+            o.addProperty("unreadable", true);
+        }
+        if (tool != null && !tool.isEmpty()) {
+            o.addProperty("tool", tool);
+            o.addProperty("level", level);
+        }
+        boolean anyTool;
+        try {
+            anyTool = !block.getMaterial()
+                .isToolNotRequired();
+        } catch (Throwable t) {
+            anyTool = true;
+        }
+        o.addProperty("toolRequired", anyTool);
+        return o;
+    }
+
+    /** The same in words: "a wrench (tool class "wrench") of level 2 or higher". */
+    public static String needsText(Block block, int meta) {
+        com.google.gson.JsonObject n = needs(block, meta);
+        if (!n.get("toolRequired")
+            .getAsBoolean()) return "no tool: a bare hand harvests it";
+        if (!n.has("tool")) {
+            return "a tool the block does not name (it gives no tool class; whether a tool can harvest it is that tool's own call)";
+        }
+        return "tool class \"" + n.get("tool")
+            .getAsString() + "\" of level " + n.get("level")
+                .getAsInt() + " or higher";
+    }
+
+    /**
+     * The bot's tools against the block, in words, for a no_tool message: what each says it is in the block's tool
+     * class and what the game made of it ("minecraft:iron_pickaxe:0 is not that class; gregtech:gt.metatool.01:16
+     * level 0, too low"). Empty when the bot carries no tool.
+     */
+    public static String carriedText(EntityPlayerMP p, World w, int x, int y, int z) {
+        Block block = w.getBlock(x, y, z);
+        int meta = w.getBlockMetadata(x, y, z);
+        String tool;
+        int need;
+        try {
+            tool = block.getHarvestTool(meta);
+            need = block.getHarvestLevel(meta);
+        } catch (Throwable t) {
+            tool = null;
+            need = -1;
+        }
+        boolean named = tool != null && !tool.isEmpty();
+        StringBuilder sb = new StringBuilder();
+        for (com.google.gson.JsonElement e : explain(p, w, x, y, z)) {
+            com.google.gson.JsonObject c = e.getAsJsonObject();
+            if (c.get("slot")
+                .getAsInt() < 0) continue;
+            String what = c.get("item")
+                .getAsString();
+            String verdict;
+            if (c.has("excluded")) verdict = "never used (it breaks several blocks at once)";
+            else if (c.get("harvest")
+                .getAsBoolean()) verdict = "can harvest it";
+            else if (named && c.has("level") && c.get("level")
+                .getAsInt() < 0) verdict = "is not that class";
+            else if (named && c.has("level") && c.get("level")
+                .getAsInt() < need) verdict = "level " + c.get("level")
+                    .getAsInt() + ", too low";
+            else if (c.get("strength")
+                .getAsFloat() <= 0.0F) verdict = "makes no progress on it at all";
+            else verdict = "cannot harvest it (its own rule)";
+            sb.append(sb.length() == 0 ? "" : "; ")
+                .append(what)
+                .append(' ')
+                .append(verdict);
+        }
+        return sb.length() == 0 ? "you carry no tools" : "your tools: " + sb;
+    }
+
+    /**
+     * One carried item against the block's needs: its level in the block's tool class ({@code getHarvestLevel(stack,
+     * class)}, -1 when it is not that kind of tool) and the kinds of tool it calls itself.
+     */
+    private static void describeTool(com.google.gson.JsonObject o, ItemStack s, Block block, int meta) {
+        if (s == null) return;
+        String tool = null;
+        try {
+            tool = block.getHarvestTool(meta);
+        } catch (Throwable t) {
+            // unreadable
+        }
+        try {
+            if (tool != null && !tool.isEmpty()) o.addProperty("level", s.getItem()
+                .getHarvestLevel(s, tool));
+            java.util.Set<String> classes = s.getItem()
+                .getToolClasses(s);
+            if (classes != null && !classes.isEmpty()) {
+                com.google.gson.JsonObject c = new com.google.gson.JsonObject();
+                for (String k : new java.util.TreeSet<>(classes)) c.addProperty(k, s.getItem()
+                    .getHarvestLevel(s, k));
+                o.add("classes", c);
+            }
+        } catch (Throwable t) {
+            // a tool that cannot answer
+        }
+    }
+
     /** Every carried candidate with how it would do against the block; for diagnosis. */
     public static com.google.gson.JsonArray explain(EntityPlayerMP p, World w, int x, int y, int z) {
         com.google.gson.JsonArray out = new com.google.gson.JsonArray();
@@ -121,6 +238,7 @@ public final class Tools {
                 if (excluded) o.addProperty("excluded", true);
                 o.addProperty("harvest", c.harvest);
                 o.addProperty("strength", c.strength);
+                describeTool(o, s, block, meta);
                 o.addProperty("ticks", c.ticks() == Integer.MAX_VALUE ? -1 : c.ticks());
                 out.add(o);
             }

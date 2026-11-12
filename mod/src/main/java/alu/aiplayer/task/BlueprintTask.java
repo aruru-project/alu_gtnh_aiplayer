@@ -26,8 +26,9 @@ import alu.aiplayer.world.BlueprintPlan;
 /**
  * Builds what a blueprint draws: first digs out the blocks that are in the way and that the caller offered up,
  * top layer first, then places the drawn blocks from the bottom up, fetching material from the supply containers
- * as it runs out. Blocks that need a player's hand (anything with contents, anything that faces a direction) are
- * left alone and reported, as is everything in the way that was not offered up.
+ * as it runs out. A block that faces one way or another by how it is placed (stairs, logs, slabs) is placed so that
+ * it comes out as drawn. Blocks that need a player's hand (anything with contents, a block whose placing code the
+ * body cannot foresee) are left alone and reported, as is everything in the way that was not offered up.
  * <p>
  * Like the other area tasks it keeps no progress: started again, it looks at the world and does what is left.
  */
@@ -143,7 +144,8 @@ public final class BlueprintTask extends ClearTask {
             int[] c = it.next();
             String id = Names.blockId(w.getBlock(c[0], c[1], c[2]));
             if (!noToolFor.contains(id)) continue;
-            skip(c[0], c[1], c[2], "no tool for " + id);
+            String why = noToolWhy.get(id);
+            skip(c[0], c[1], c[2], why != null ? why : "no tool for " + id);
             it.remove();
         }
         return cells;
@@ -204,7 +206,8 @@ public final class BlueprintTask extends ClearTask {
                     waiting.add(current);
                 } else {
                     int before = placed;
-                    Act a = placeCell(x, y, z, kind.item);
+                    // A block that comes out one way or another by how it is placed is placed to come out as drawn.
+                    Act a = placeCell(x, y, z, kind.item, kind.facing ? kind.meta : -1);
                     if (a == Act.BUSY || a == Act.FAILED) return;
                     if (a == Act.NEED_MATERIAL) {
                         needMaterial(kind);
@@ -239,7 +242,7 @@ public final class BlueprintTask extends ClearTask {
                 deferred = new ArrayList<>();
                 progressSinceDeferral = false;
             } else {
-                for (int[] d : deferred) skip(d[0], d[1], d[2], "nothing to place against");
+                for (int[] d : deferred) skip(d[0], d[1], d[2], why(d[0], d[1], d[2], "nothing to place against"));
                 deferred.clear();
                 stage = 4;
                 return;
@@ -266,7 +269,7 @@ public final class BlueprintTask extends ClearTask {
     }
 
     private void tooFar(int[] cell) {
-        skip(cell[0], cell[1], cell[2], "unreachable");
+        skip(cell[0], cell[1], cell[2], why(cell[0], cell[1], cell[2], "unreachable"));
         if (Rules.scaffold(bot.player()) == null) needsClimbingBlocks = true;
         if (cell[1] != failingLayer) {
             failingLayer = cell[1];

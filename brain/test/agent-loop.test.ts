@@ -524,7 +524,7 @@ describe('agent 的一轮决策', () => {
     const text = h.llm.lastUserText(0)
     assert.match(text, /任务 t9（blueprint）完成了/)
     assert.match(text, /removed 4019, placed 3823, freeSlots 12/)
-    assert.match(text, /skipped \{"unreachable":12\}, e\.g\. \(-580,88,90\) unreachable/)
+    assert.match(text, /skipped 12 cell\(s\), by reason:\s+- 12× unreachable \(at \(-580,88,90\); 11 more not listed\)/)
     assert.match(text, /needsClimbingBlocks: true/)
     assert.match(text, /now \(the world compared with the blueprint\): cells 5294, done 3833, toPlace 12, byHand 2, blocked 265, extra 14/)
     // 第一种和最后一种材料都在：没有被中途截断

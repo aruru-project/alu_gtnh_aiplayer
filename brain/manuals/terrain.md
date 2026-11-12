@@ -9,9 +9,16 @@
 - 用哪个工具：flatten_area 把一块地整成某个高度的平地（挖掉上面的、填上下面的坑）；clear_area 把一个盒子里的方块全挖掉；fill_area 在盒子里的空位放上某种方块，可以只做外壳（hollow）或四面墙（walls）；零散的几个方块用 dig_blocks、place_blocks。
 
 # 工具和材料
-- **工具只认匠魂的。** 这个整合包里原版工具和 GregTech 的镐、铲、斧都挖不动东西，能用的是匠魂（Tinkers' Construct，物品 id 以 TConstruct: 开头）的镐、铲、斧。没有匠魂镐去挖石头，任务会以 no_tool 失败。缺工具就向人要匠魂工具，不要拿别的工具硬试。拿不准手里的工具行不行，用库函数 probe_block 看（不在工具清单里，run_program 写一行：`return (await tool("probe_block", { x, y, z })).text`）。
+- **挖一格要什么工具，是那个方块自己说的：** 一类工具（pickaxe 镐、axe 斧、shovel 铲，GregTech 的 wrench 扳手……）加一个最低等级。拿不准就用库函数 probe_block 看（不在工具清单里，run_program 写一行：`return (await tool("probe_block", { x, y, z })).text`）：它写着这一格要哪一类、几级，身上每件工具为什么不行（不是这一类、等级不够、一点进度都没有）。挖的任务以 no_tool 失败时，消息里也写着这些。
+  - 石头、矿石这一类用匠魂（Tinkers' Construct，id 以 TConstruct: 开头）的镐。这个整合包里原版的铁镐挖石头一点进度都没有（实测 probe：它自报 pickaxe 3 级，进度 0）。
+  - GregTech 的机器外壳、机器、总线、仓、管道要的是扳手（wrench 类）：实测钢管道方块要 wrench 2 级，输入总线 wrench 0 级；铁镐、匠魂镐都不是扳手。GregTech 的扳手是 gregtech:gt.metatool.01 的一种，等级看它的材料（钢扳手 3 级）；/give 出来没有材料的扳手是 0 级。
+  - 缺工具就去仓库找那一类（find_in_storage 可以按矿辞查，扳手是 craftingToolWrench），找不到问人；不要拿不是那一类的工具硬试。
 - 一次挖一片的工具（匠魂的锤、挖掘铲、伐木斧）你不会用，免得挖到范围外面去。工具会磨损。
-- 放方块要背包里有，而且旁边要有方块可以依附；没处依附的会被跳过。材料不够时会去 supply 给的容器取，都没有就以 no_material 失败（detail 里有缺什么、缺多少）：去取，或者问人。
+- 放方块要背包里有，而且旁边要有方块可以依附；没处依附的会被跳过。
+- **朝向**：楼梯朝哪边升、原木横着还是竖着、台阶放上半还是下半，是 place_blocks 每一格的 blockMeta：写成放好以后 inspect_block 读到的那个 meta（楼梯 0 往东升、1 往西、2 往南、3 往北，加 4 是倒着的；原木 0–3 竖、加 4 东西向、加 8 南北向；台阶加 8 是上半）。照着一个已经放好的抄 meta 最稳。身体自己找站位、点哪个面，让它这样出来（玩家放楼梯，楼梯往远离人的方向升；原木顺着点的那个面）。
+  - 给了 blockMeta 就不用给 meta（用哪种物品由身体挑：云杉原木横放 /5 用的是物品 log/1）。
+  - 放不出来的格子在结果的 skipped 里写着原因：要点在哪个邻格上而那里没有方块（先放个能点的方块，或者换个顺序）、要朝哪看站在哪边而找不到那样的站位、这种物品怎么点都放不出这个 meta。放下去了却不是这个 meta 的（身体预料不到放法的方块）在 cameOutDifferent 里，挖掉重放或者告诉主人。
+  - 不给 blockMeta 时朝向由站位决定，放出来是什么样就是什么样。材料不够时会去 supply 给的容器取，都没有就以 no_material 失败（detail 里有缺什么、缺多少）：去取，或者问人。
 - 同一个 id 的不同 meta 是不同的方块（gregtech:gt.blockcasings2 的 0 是坚固钢机械方块，13 是钢管道方块）。fill_area、place_blocks 只放给的那个 meta，不给就是 0；这一种用完了就以 no_material 停下，不拿别的变体顶。结果里 placed from 写着放下去的方块是从哪几种物品放的。
 
 # 大小和时间

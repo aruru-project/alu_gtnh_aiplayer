@@ -836,6 +836,8 @@ export interface BlueprintMaterial {
   meta?: number
   name?: string
   need: number
+  /** 放它用的物品和方块的 meta 不同时（楼梯、台阶、原木按朝向放）：要取、要数的是这一种。 */
+  item?: { id: string; meta?: number }
   have?: number
 }
 
@@ -915,10 +917,38 @@ export interface ProbeResult extends BlockInfo {
   /** 会用的那件工具所在的格子；-1 是空手。 */
   toolSlot?: number
   inReach?: boolean
-  /** excluded：一次挖多格的工具（配置 excludedTools），身体不会用。 */
-  candidates?: { slot: number; item: string; harvest?: boolean; strength?: number; ticks?: number; excluded?: boolean }[]
+  /**
+   * 这个方块要什么工具（Forge 的 getHarvestTool(meta) / getHarvestLevel(meta)）：tool 是工具类别（pickaxe、axe、shovel，
+   * GregTech 的 wrench……），level 是最低等级；方块没说类别时没有这两项。toolRequired 为 false 是空手也能挖下来。
+   */
+  needs?: ProbeNeeds
+  /**
+   * excluded：一次挖多格的工具（配置 excludedTools），身体不会用。level：这件工具对 needs.tool 那一类自报的等级
+   * （getHarvestLevel(stack, 类别)，-1 是不算这一类；GregTech 的工具对任何类别都报自己的等级，挖不挖得动看 harvest）。
+   * classes：它自认是哪几类工具、各几级。strength 为 0 是挖它一点进度都没有。
+   */
+  candidates?: ProbeCandidate[]
   /** 服务器自己的保护不让 bot 动这一格（点、挖、对着它放都会被拒绝）：工具挖得动也一样。 */
   protection?: Protection
+}
+
+export interface ProbeNeeds {
+  tool?: string
+  level?: number
+  toolRequired?: boolean
+  /** 方块回答这些时出了错。 */
+  unreadable?: boolean
+}
+
+export interface ProbeCandidate {
+  slot: number
+  item: string
+  harvest?: boolean
+  strength?: number
+  ticks?: number
+  excluded?: boolean
+  level?: number
+  classes?: Record<string, number>
 }
 
 /**

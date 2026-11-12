@@ -11,6 +11,8 @@ import com.google.gson.JsonObject;
 
 import alu.aiplayer.act.Inventories;
 import alu.aiplayer.act.ItemFilter;
+import alu.aiplayer.act.Orientation;
+import alu.aiplayer.act.Placer;
 import alu.aiplayer.act.Reach;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.bot.Motion;
@@ -66,6 +68,15 @@ public final class UseTask extends Task {
     private Map<String, String> dataEarly, dataBefore;
     private boolean dataTaken;
     private int dataWait;
+    /**
+     * The cell the first right-click on a block would put a block into (the clicked block itself when it gives way,
+     * else the cell on the face clicked), what was there before, and whether the held item places blocks.
+     */
+    private int[] placeAt;
+    private String placeBefore;
+    private boolean heldPlacesBlock;
+    /** Why the block in the hand did not go in, by the game's own checks; null when it did or nothing is known. */
+    private String notPlaced;
 
     public UseTask(JsonObject params) {
         super("use", params);
@@ -157,8 +168,29 @@ public final class UseTask extends Task {
                 clicks++;
                 return true;
             }
+            boolean first = clicks == 0;
+            ItemStack held = p.inventory.getCurrentItem();
+            ItemStack heldCopy = held == null ? null : held.copy();
+            if (first) {
+                placeAt = Placer.targetOfClick(p.worldObj, on[0], on[1], on[2], face);
+                placeBefore = blockAt(p, placeAt);
+                heldPlacesBlock = heldCopy != null && Orientation.blockOf(heldCopy.getItem()) != null;
+            }
             bot.conn()
                 .useOnBlock(on[0], on[1], on[2], face, at[0], at[1], at[2]);
+            // A block in the hand that did not go in: why, by the game's own checks, while the world is as it was.
+            if (first && heldPlacesBlock
+                && placeBefore.equals(blockAt(p, placeAt))
+                && blockBefore != null
+                && blockBefore.equals(blockAt(p, on))) {
+                ItemStack now = p.inventory.getCurrentItem();
+                if (p.openContainer != p.inventoryContainer && !p.isSneaking()) {
+                    // A block with a screen takes a right-click for itself unless the player sneaks.
+                    notPlaced = "the click went to the block clicked, which opened its screen, instead of placing (a block with a screen takes the click; sneaking places against it)";
+                } else if (now != null && now.stackSize == heldCopy.stackSize) {
+                    notPlaced = Placer.whyNotPlaced(bot, heldCopy, placeAt[0], placeAt[1], placeAt[2], face);
+                }
+            }
         }
         bot.conn()
             .swingArm();
@@ -368,6 +400,19 @@ public final class UseTask extends Task {
             if (blockBefore != null) {
                 o.addProperty("blockBefore", blockBefore);
                 o.addProperty("blockNow", blockAt(p, on));
+            }
+            // The cell a block from the hand goes into: with a block in the hand, or whenever it changed.
+            if (!left && placeAt != null && placeBefore != null) {
+                String there = blockAt(p, placeAt);
+                boolean same = placeAt[0] == on[0] && placeAt[1] == on[1] && placeAt[2] == on[2];
+                if (heldPlacesBlock || !there.equals(placeBefore)) {
+                    JsonObject cell = J.pos(placeAt[0], placeAt[1], placeAt[2]);
+                    if (same) cell.addProperty("clicked", true);
+                    cell.addProperty("before", placeBefore);
+                    cell.addProperty("now", there);
+                    o.add("placeCell", cell);
+                }
+                if (notPlaced != null) o.addProperty("notPlaced", notPlaced);
             }
             dataChanges(p, o);
         }

@@ -34,6 +34,7 @@ import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
 
 import alu.aiplayer.act.ItemFilter;
+import alu.aiplayer.act.Orientation;
 import alu.aiplayer.util.Names;
 
 /**
@@ -58,6 +59,11 @@ public final class Blueprint {
         public final int maxStack;
         /** Why placing this is left to a player, or null if the bot can do it. */
         public final String byHand;
+        /**
+         * Whether which meta it comes out with depends on how it is placed (a stair's facing, a log's axis, a slab's
+         * half): the bot then stands and clicks so that it comes out as drawn.
+         */
+        public final boolean facing;
         public final String name;
         /** How many cells of the plan hold this kind. */
         public int count;
@@ -71,25 +77,42 @@ public final class Blueprint {
             ItemFilter filter = null;
             int stack = 64;
             String label = blockId;
+            boolean facing = false;
             if (block == null) {
                 why = "this server has no such block";
             } else {
                 label = WorldQueries.blockName(block, meta);
                 Item it = Item.getItemFromBlock(block);
+                int damage = meta;
                 if (it == null) {
                     why = "there is no item that places it";
                 } else if (block.hasTileEntity(meta)) {
                     why = "it holds contents or settings";
-                } else if (faces(block)) {
-                    why = "which way it faces depends on how it is placed";
-                } else if (!(it instanceof ItemBlock) || ((ItemBlock) it).getMetadata(meta) != meta) {
-                    // The item cannot be told which variant to become. (What the block drops when broken says
-                    // nothing here: carved glowstone drops dust and is still placed as itself.)
+                } else if (!(it instanceof ItemBlock)) {
                     why = "its variant depends on how it is placed";
+                } else if (!faces(block) && ((ItemBlock) it).getMetadata(meta) == meta && plain(block, meta)) {
+                    // The item becomes this variant whatever face is clicked and wherever the bot stands.
+                    // (What the block drops when broken says nothing here: carved glowstone drops dust and is
+                    // still placed as itself.)
                 } else {
-                    filter = new ItemFilter(Names.itemId(it), meta, -1);
+                    // Which way it comes out depends on the click: the bot stands and clicks so that it is as drawn,
+                    // when the block's placing code is one it can foresee and some click gives this meta.
+                    damage = facingDamage(block, it, meta);
+                    if (Orientation.rule(block) == Orientation.Rule.UNKNOWN) {
+                        why = "which way it comes out is decided by its own placing code ("
+                            + Orientation.placedByClass(block)
+                                .getSimpleName()
+                            + "), which the body cannot foresee";
+                    } else if (damage < 0) {
+                        why = "no click with its item gives this meta";
+                    } else {
+                        facing = true;
+                    }
+                }
+                if (why == null) {
+                    filter = new ItemFilter(Names.itemId(it), damage, -1);
                     try {
-                        stack = Math.max(1, new ItemStack(it, 1, meta).getMaxStackSize());
+                        stack = Math.max(1, new ItemStack(it, 1, damage).getMaxStackSize());
                     } catch (Throwable t) {
                         stack = 64;
                     }
@@ -99,11 +122,66 @@ public final class Blueprint {
             this.maxStack = stack;
             this.byHand = why;
             this.name = label;
+            this.facing = facing;
         }
 
         public boolean empty() {
             return index == 0;
         }
+    }
+
+    /**
+     * Whether the item comes out as {@code meta} whatever the click: neither the face clicked nor the look changes
+     * it, as far as the block's code tells without a world around it. A block whose placing code cannot be foreseen
+     * counts as plain here (as before: the bot places it, and one that comes out otherwise is taken out again).
+     */
+    private static boolean plain(Block b, int meta) {
+        Orientation.Rule r = Orientation.rule(b);
+        if (r == Orientation.Rule.UNKNOWN) return true;
+        // A top slab (8) drops, and is placed from, the plain slab item (0): the item of damage 8 is not one anybody
+        // carries, although the slab item would turn it into meta 8 whatever the click.
+        try {
+            if (b.damageDropped(meta) != meta) return false;
+        } catch (Throwable t) {
+            // a block that cannot say: judge by the clicks alone
+        }
+        java.util.List<Orientation.Way> ways = Orientation.ways(null, 0, 64, 0, b, meta);
+        // A block that reads its neighbours to place itself (torches, ladders) cannot answer without a world.
+        if (ways.size() < 10) return false;
+        java.util.Set<Integer> all = Orientation.allOutcomes(r, ways);
+        return all.size() == 1 && all.contains(meta);
+    }
+
+    /**
+     * The item damage that places a block which must come out as {@code meta}: what the block drops first, then the
+     * meta itself, then the rest; the first whose clicks can give it (judged without a world: a block that reads
+     * its neighbours is given the benefit of the doubt). -1 when none can.
+     */
+    private static int facingDamage(Block b, Item it, int meta) {
+        Orientation.Rule r = Orientation.rule(b);
+        java.util.List<Integer> order = new java.util.ArrayList<>();
+        try {
+            order.add(b.damageDropped(meta));
+        } catch (Throwable t) {
+            // a block that cannot say
+        }
+        if (!order.contains(meta)) order.add(meta);
+        for (int d = 0; d < 16; d++) if (!order.contains(d)) order.add(d);
+        int doubt = -1;
+        for (int d : order) {
+            if (d < 0 || (d > 0 && !it.getHasSubtypes())) continue;
+            int pm;
+            try {
+                pm = ((ItemBlock) it).getMetadata(d);
+            } catch (Throwable t) {
+                continue;
+            }
+            java.util.List<Orientation.Way> ways = Orientation.ways(null, 0, 64, 0, b, pm);
+            if (Orientation.allOutcomes(r, ways)
+                .contains(meta)) return d;
+            if (ways.size() < 10 && doubt < 0) doubt = d;
+        }
+        return doubt;
     }
 
     private static boolean faces(Block b) {

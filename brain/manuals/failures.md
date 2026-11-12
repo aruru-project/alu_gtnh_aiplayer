@@ -4,7 +4,7 @@
 任务失败时会带一个错误码和一句原因：
 - unreachable：走不到目标，或者目标太远（消息里会写 teleport closer first）。太远就先 go_home 传送到附近；否则换一个能到的目标，或者问人。
 - stuck：试了多次没有进展。先 get_status、look_around 看看情况再重试一次；还不行就问人。
-- no_tool：没有能挖这种方块的工具（detail 里有是什么方块、在哪个坐标）。这个整合包里只有匠魂（TConstruct）的镐、铲、斧能用：去箱子里找，找不到就问人要。
+- no_tool：没有能挖这种方块的工具。消息里写着这个方块要哪一类工具、几级（比如 GregTech 的机器外壳要 "wrench" 扳手 2 级），和你身上每件工具为什么不行；detail 里有方块、坐标和 needs。去仓库找那一类工具（find_in_storage 可以按矿辞查，扳手是 craftingToolWrench），找不到就问人要。石头矿石这一类用匠魂（TConstruct）的镐，见 terrain 手册。
 - no_material：要放、要用的东西不够（detail.missing 是缺多少或缺哪些）。去箱子或抽屉里取，或者问人。
 - inventory_full：背包满了又没指定卸货的容器。先用 deposit_items 把东西存进箱子，再用同样的参数重启任务；以后记得给 dropoff。
 - container_full：目标箱子或抽屉放不下（抽屉只收它已经装着的那几种，或者放进还没指定物品的空格）。换个容器，或者问人。

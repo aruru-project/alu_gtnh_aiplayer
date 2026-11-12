@@ -347,7 +347,9 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     if (result && result.left === true) out.result = processLeftLines(result, task.params)
     else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result, task.params)
   } else if (task.type === 'place' || task.type === 'fill' || task.type === 'flatten') {
-    if (result && Array.isArray(result.placedItems)) out.result = areaResultLines(result)
+    // 一格也没放上的 place、fill 也走这里：跳过的原因是整句话，放进 JSON 会被截掉
+    const placeLike = task.type !== 'flatten' && result !== undefined && (isRecord(result.skipped) || count(result.cameOutDifferent) > 0)
+    if (result && (Array.isArray(result.placedItems) || placeLike)) out.result = areaResultLines(result)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   } else if (task.type === 'hold') {
@@ -761,7 +763,9 @@ function capKinds<T>(items: readonly T[], limit: number, line: (item: T) => stri
 }
 
 function materialText(m: BlueprintMaterial | Record<string, unknown>): string {
-  return `${kindText(m.need, m)}${typeof m.have === 'number' ? ` (you carry ${m.have})` : ''}`
+  // 放它用的是另一种物品（朝南的楼梯是普通的楼梯物品，上半砖是普通的台阶物品）：取的、数的都是那一种
+  const item = isRecord(m.item) && typeof m.item.id === 'string' ? ` (placed with [${itemKey({ id: m.item.id, meta: typeof m.item.meta === 'number' ? m.item.meta : 0 })}])` : ''
+  return `${kindText(m.need, m)}${item}${typeof m.have === 'number' ? ` (you carry ${m.have})` : ''}`
 }
 
 function byHandText(b: BlueprintByHand | Record<string, unknown>): string {
@@ -904,6 +908,8 @@ const BLUEPRINT_RESULT_KEYS = new Set([
   'freeSlots',
   'skipped',
   'skippedExamples',
+  'cameOutDifferent',
+  'cameOutExamples',
   'needsClimbingBlocks',
   'climbingBlocksLeftStanding',
   'now',
@@ -926,18 +932,7 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
   if (head.length > 0) lines.push(head.join(', '))
   const from = placedFromText(result.placedItems)
   if (from) lines.push(from)
-  if (isRecord(result.skipped) && Object.keys(result.skipped).length > 0) {
-    let s = `skipped ${compactJson(result.skipped, 300)}`
-    const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isRecord) : []
-    if (examples.length > 0) {
-      s += `, e.g. ${examples
-        .slice(0, SKIPPED_EXAMPLES_SHOWN)
-        .map((e) => `(${String(e.x)},${String(e.y)},${String(e.z)}) ${String(e.reason ?? '')}`.trim())
-        .join('; ')}`
-      if (examples.length > SKIPPED_EXAMPLES_SHOWN) s += `; ${examples.length - SKIPPED_EXAMPLES_SHOWN} more examples not shown`
-    }
-    lines.push(s)
-  }
+  lines.push(...skippedLines(result), ...cameOutLines(result))
   if (result.needsClimbingBlocks === true) {
     lines.push('needsClimbingBlocks: true (some spots were too high to reach and you carry no dirt or cobblestone to climb on)')
   }
@@ -970,11 +965,43 @@ function placedFromText(placedItems: unknown): string {
   return kinds.length > 0 ? `placed from: ${kinds.map((k) => kindText(k.count, k)).join(', ')}` : ''
 }
 
-/** 区域任务的结果：放了哪几种单独一句，其余字段照旧是紧凑 JSON。 */
+const pointText = (e: Record<string, unknown>): string => `(${String(e.x)},${String(e.y)},${String(e.z)})`
+
+/**
+ * 区域任务跳过的格子：每种原因一行，几格、举几个坐标。原因可能是一整句话（要朝某个方向放的格子写着缺什么），
+ * 放在 JSON 里会被截断，所以单独成行；例子里的原因和那一行重复，只写坐标。
+ */
+function skippedLines(result: Record<string, unknown>): string[] {
+  const skipped = isRecord(result.skipped) ? result.skipped : undefined
+  if (!skipped || Object.keys(skipped).length === 0) return []
+  const examples = Array.isArray(result.skippedExamples) ? result.skippedExamples.filter(isRecord) : []
+  const total = Object.values(skipped).reduce((n: number, v) => n + count(v), 0)
+  const lines = [`skipped ${total} cell(s), by reason:`]
+  for (const [reason, n] of Object.entries(skipped)) {
+    const at = examples.filter((e) => e.reason === reason)
+    const shown = at.slice(0, SKIPPED_EXAMPLES_SHOWN).map(pointText)
+    const more = count(n) > shown.length && shown.length > 0 ? `; ${count(n) - shown.length} more not listed` : ''
+    lines.push(`- ${String(n)}× ${reason}${shown.length > 0 ? ` (at ${shown.join(', ')}${more})` : ''}`)
+  }
+  return lines
+}
+
+/** 放下去了、但朝向（meta）和要的不一样的格子。 */
+function cameOutLines(result: Record<string, unknown>): string[] {
+  const n = count(result.cameOutDifferent)
+  if (n === 0) return []
+  const examples = Array.isArray(result.cameOutExamples) ? result.cameOutExamples.filter(isRecord) : []
+  const shown = examples.map((e) => `${pointText(e)} wanted /${String(e.want)}, came out /${String(e.got)}${typeof e.why === 'string' ? ` (${e.why})` : ''}`)
+  return [`cameOutDifferent ${n} (placed, but not as the blockMeta asked): ${shown.join('; ')}${n > shown.length ? `; ${n - shown.length} more` : ''}`]
+}
+
+/**
+ * 区域任务的结果：挖了放了多少等照旧是紧凑 JSON；放了哪几种、跳过了什么（按原因）、哪些放出来朝向不对，各自成行。
+ */
 export function areaResultLines(result: Record<string, unknown>): string[] {
-  const { placedItems, ...rest } = result
+  const { placedItems, skipped, skippedExamples, cameOutDifferent, cameOutExamples, ...rest } = result
   const from = placedFromText(placedItems)
-  return [compactJson(withLocalNames(trimTaskResult(rest)), 600), ...(from ? [from] : [])]
+  return [compactJson(withLocalNames(rest), 600), ...(from ? [from] : []), ...skippedLines(result), ...cameOutLines(result)]
 }
 
 /** blueprint 任务失败时的 detail：missing 是每种材料缺多少。 */
@@ -1180,7 +1207,7 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, ...rest } = result
+  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, placeCell, notPlaced, ...rest } = result
   const item = isRecord(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
@@ -1204,6 +1231,15 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   if (typeof blockBefore === 'string' && typeof blockNow === 'string') {
     parts.push(blockChanged ? `the block there was ${block(blockBefore)}, now ${block(blockNow)}` : `the block there is still ${block(blockNow)}`)
   }
+  // 手里的方块放进的是点的那个面外面的一格（点的是草、薄雪这类一碰就让开的东西时是它自己那一格）：那一格点之前、现在是什么
+  let placeChanged = false
+  if (isRecord(placeCell) && typeof placeCell.before === 'string' && typeof placeCell.now === 'string') {
+    const at = `(${String(placeCell.x)},${String(placeCell.y)},${String(placeCell.z)})`
+    placeChanged = placeCell.before !== placeCell.now
+    const where = placeCell.clicked === true ? `the clicked block gives way, so a block from the hand goes into its own cell ${at}` : `the cell on that face, ${at}, where a block from the hand goes,`
+    parts.push(placeChanged ? `${where} was ${block(placeCell.before)}, now ${block(placeCell.now)}` : `${where} is still ${block(placeCell.now)}`)
+  }
+  if (typeof notPlaced === 'string') parts.push(`the block in your hand did not go in: ${notPlaced}`)
   // 点的那个方块自己存的数据（朝向、覆盖板、设置）哪些值变了；点之前就在自己变的（进度、电量）身体已经去掉了
   const dataMoved = Array.isArray(dataChanged) && dataChanged.length > 0
   if (Array.isArray(dataChanged)) {
@@ -1214,7 +1250,7 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   }
   parts.push(`gained: ${list(got)}`, `lost: ${list(gone)}`)
   if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
-  else if (got.length === 0 && gone.length === 0) parts.push(blockChanged || dataMoved ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
+  else if (got.length === 0 && gone.length === 0) parts.push(blockChanged || dataMoved || placeChanged ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)
   if (typeof food === 'number') parts.push(`food ${food}`)
   if (typeof freeSlots === 'number') parts.push(`freeSlots ${freeSlots}`)

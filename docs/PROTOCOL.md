@@ -229,7 +229,11 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `bot.command` | `{bot, command}` | `{output:[string]}`。以该玩家身份执行指令（不带 `/`，连斜杠最多 100 字符，超出返回 `bad_request`）。`output` 是执行当下服务器回给它的消息；之后才到的走 `bot.message` 事件。指令必须以 mod 配置 `allowedCommands` 里某一项的全部单词开头，否则 `denied`。短时间内说话和指令加起来超过大约 8 条也返回 `denied`（再多会被服务器当刷屏踢掉），等几秒再试 |
 | `bot.look` | `{bot, x,y,z}` | `{}` |
 | `bot.drop` | `{bot, items:[ItemFilter]\|all:true}` | `{dropped:n}`，丢在面前 |
-| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, candidates:[{slot,item,harvest,strength,ticks}], protection?}`：它现在能不能挖这个方块、用哪件工具、要多久；`protection` 是服务器自己的保护不让它动这一格（见“任务”下面的“服务器自己的保护”），这时工具挖得动也一样 |
+| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, needs, candidates:[{slot,item,harvest,strength,ticks,level?,classes?,excluded?}], protection?}`：它现在能不能挖这个方块、用哪件工具、要多久，见下；`protection` 是服务器自己的保护不让它动这一格（见“任务”下面的“服务器自己的保护”），这时工具挖得动也一样 |
+
+`bot.probe` 的 `needs` 是这个方块自己说要什么工具（Forge 的 `getHarvestTool(meta)`、`getHarvestLevel(meta)`）：`{tool?, level?, toolRequired}`。`tool` 是工具类别的名字（`pickaxe`、`axe`、`shovel`，GregTech 的 `wrench`、`cutter`……），`level` 是最低等级；方块不说类别时没有这两项，能不能挖由每件工具自己判断（原版工具按方块的材质）。`toolRequired:false` 是空手也挖得下来（有合适的工具只是更快）。读不出来时带 `unreadable:true`。
+`candidates` 是空手和身上每件不能叠放的东西各自对这一格的结果：`harvest` 是游戏判定挖下来有没有掉落（Forge 的 `canHarvestBlock`，再要求有进度），`strength` 是每 tick 挖掉的比例（0 是一点进度都没有：这个整合包把原版的铁镐这类工具关掉了，就是这样），`ticks` 是要多久（-1 挖不动）；`level` 是这件工具对 `needs.tool` 那一类自报的等级（`getHarvestLevel(stack, 类别)`，-1 是不算这一类；**GregTech 的工具对任何类别都报自己的等级**，挖不挖得动看 `harvest`），`classes` 是它自认是哪几类工具、各几级（GregTech 的工具不报）。
+实测（测试服）：钢管道方块（`gregtech:gt.blockcasings2` 13）`needs` 是 `wrench` 2 级；铁镐 `classes {pickaxe:3}`、`level -1`、挖不动；没有材料数据的扳手（`/give` 出来的）`level 0`、挖不动；钢扳手 `level 3`、25 tick。石头是 `pickaxe` 0 级，铁镐 `level 3` 但 `strength 0`。
 
 `allowedCommands` 默认：`home`、`sethome`、`delhome`、`homes`、`spawn`、`back`、`tell`、`msg`、`w`、`tpa`、`tpaccept`、`team join`。
 一项可以是几个词：`team join` 只放行 `team join …`，不放行 `team leave`。`home` 任务也受这个列表约束。
@@ -517,7 +521,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   "extra":2581,        // 图纸上是空的位置有方块
   "willRemove":4019,   // blocked 和 extra 里，clear 允许挖、也确实挖得动的
   "unloaded":0,        // 所在区块没加载、看不到的格子（为 0 时省略）；不为 0 时结果不完整，让 bot 走近些
-  "materials":[{"id":"chisel:nucrete","meta":7,"name":"Structural Concrete","need":1874,"have":0}],  // 要放的方块；have 只在给了 bot 时有
+  "materials":[{"id":"chisel:nucrete","meta":7,"name":"Structural Concrete","need":1874,"have":0}],  // 要放的方块；have 只在给了 bot 时有；放它用的物品 meta 不同时带 item:{id,meta}（have 数的是它）
   "byHandBlocks":[{"id":"minecraft:chest","meta":3,"name":"Chest","count":2,"why":"it holds contents or settings"}],
   "blockedBy":[{"id":"minecraft:dirt","name":"Dirt","count":1196,"removable":1196,"natural":true}],
   "extraBlocks":[{"id":"gregtech:gt.blockmachines","name":"…","count":14,"removable":0,"holdsData":14}],
@@ -527,7 +531,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 `blockedBy` / `extraBlocks` 按世界里的方块种类统计：`removable` 是按现在的 `clear` 会被挖掉的个数，`holdsData` 是带数据（机器、箱子）谁也不会动的个数。列表各最多 30 种，没有时省略。
 
-**bot 能放的**是“放下去就是图纸要的样子”的方块：普通建筑方块及其变体。带内容或设置的（箱子、抽屉、GT 管道和机器）、朝向取决于怎么放的（楼梯、原木、火把）不放，算作 `byHand`。
+**bot 能放的**是普通建筑方块及其变体，和朝向取决于怎么放的方块（楼梯、原木、台阶的上下半、火把、梯子这类）：后者照图纸里那一格的 meta 放，见“任务”下面的“放成指定的 meta”；材料表里放它用的物品和方块的 meta 不同时带 `item`（朝南的楼梯用的是普通的楼梯物品 0，上半台阶用的是普通的台阶物品）。不放、算作 `byHand` 的：带内容或设置的（箱子、抽屉、GT 管道和机器），没有放它的物品的，放它的物品不是普通方块物品的（门、告示牌），方块类自己另写了放法、身体预料不到的，以及哪种点法都放不出这个 meta 的。以前楼梯、原木都算 `byHand`；上半台阶不算，可要的物品是根本没有的 `stone_slab` 8，取不到。
 
 ### 任务
 
@@ -559,7 +563,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 |---|---|---|---|
 | `unreachable` | 走不到目标，或目标比步行上限（配置 `maxTravel`，默认 256 格）还远 | 可能有 `x y z` | 太远就先 `home` 传送到附近；否则换目标或问人 |
 | `stuck` | 多次尝试后仍无进展 | | 看状态后重试或问人 |
-| `no_tool` | 没有能挖这种方块的工具 | `block`、`x y z` | 找工具或问人 |
+| `no_tool` | 没有能挖这种方块的工具。消息写着它要什么（工具类别和等级，同 `bot.probe` 的 `needs`）和身上每件工具为什么不行 | `block`、`x y z`、`needs` | 找工具或问人 |
 | `no_material` | 要放的方块不够 | `missing`，`item` 或 `items` | 去取或问人 |
 | `inventory_full` | 背包满且没有指定卸货箱 | | 去存东西再重启任务 |
 | `container_full` | 目标箱子放不下 | | 换箱子或问人 |
@@ -580,7 +584,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | `follow` | `{player, distance?=3}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等 |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
 | `dig` | `{blocks:[{x,y,z}]}`，≤256 | 逐个挖掉，由近到远。点名的方块里装着东西（箱子、抽屉、机器）也照样挖，像玩家挖一样，里面的东西掉出来；区域类任务（`clear` `flatten` 和图纸的清障）碰到装着东西的方块是跳过的（`has contents`） |
-| `place` | `{blocks:[{x,y,z,item,meta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿。给了 `meta` 就只用这个 meta 的物品放（用完了去 `supply` 取这一种，取不到以 `no_material` 停下）；不给是这个 id 的哪种都行，背包里先找到哪种用哪种，可能混着放（`fill` 同） |
+| `place` | `{blocks:[{x,y,z,item,meta?,blockMeta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿。给了 `meta` 就只用这个 meta 的物品放（用完了去 `supply` 取这一种，取不到以 `no_material` 停下）；不给是这个 id 的哪种都行，背包里先找到哪种用哪种，可能混着放（`fill` 同）。`blockMeta`（0–15）是放下去以后那一格方块的 meta（`world.block` 读到的那个）：楼梯朝哪边升、原木横竖、台阶上半下半。给了就照它放，见下面“放成指定的 meta”；给了 `blockMeta` 不给 `meta` 时用哪种物品由身体挑（能放出这个 meta 的那种：云杉原木横放 `blockMeta` 5 用的是物品 `log` 1） |
 | `clear` | `{x1,y1,z1,x2,y2,z2, dropoff?, overflow?}`，体积 ≤ 32768 | 把盒子里所有方块挖掉，一层一层从上往下 |
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周 |
 | `flatten` | `{x1,z1,x2,z2, y, fill?=true, fillItems?:[id], maxFillDepth?=3, dropoff?, supply?, overflow?}`，≤64×64 | 把区域整成地面顶层在 y 的平地：挖掉 y 以上的一切，再把 y 及以下的坑由低到高填上 |
@@ -599,9 +603,14 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 规则和边界：
 
 - **挖**：走原版挖掘流程，时间、工具耐久、掉落都照算。自动选背包里最快的工具，但不用一次挖多格的工具（配置 `excludedTools`：匠魂锤、挖掘铲、伐木斧等），它们会波及任务范围之外。
-  没有合适工具时，一挖就碎的东西（雪、草）徒手挖，石头之类则以 `no_tool` 失败。
+  没有合适工具时，一挖就碎的东西（雪、草）徒手挖，石头之类则以 `no_tool` 失败，消息写着方块要的工具类别和等级、身上每件工具为什么不行（不是这一类、等级不够、一点进度都没有），`detail.needs` 同 `bot.probe`。区域任务碰到这种方块跳过时，原因里也写着要的类别和等级。
   不动带数据的方块（箱子、机器）、液体、基岩和紧挨岩浆的方块，记入 `result.skipped`。
 - **放**：必须有相邻的方块可以依附，够得着，自己不能站在那一格。没处依附的记入 skipped。
+- **放成指定的 meta**（`place` 的 `blockMeta`、`blueprint` 里朝向由放法决定的方块）：游戏里决定的是方块自己的两段代码。先是 `onBlockPlaced`，看点的是哪个面、点在面上哪一点（原木顺着点的那个面的轴；台阶和楼梯点在侧面上半是倒的）——身体对任何方块都原样调它；再是 `onBlockPlacedBy`，看放的人：朝哪看（楼梯往远离人的方向升，熔炉、箱子正面朝人），活塞、发射器还看人站得多近多高——这一段身体认得原版的那些方块类，所以也认得继承它们的方块（各个 mod 的楼梯）。方块类自己另写了这一段的，身体预料不到：照平常的放法放，放完对照，不对就记在 `cameOutDifferent` 里（见结果）。
+  - 玩家放的时候视线就是从眼睛到点的那一点的方向，所以身体先算出哪几种点法（点哪个邻格的哪个面、上半还是下半）能放出这个 meta，再走到一个站位：够得着、点的那个面朝着眼睛、从那里看过去的方向给这个 meta（离两个方向的分界至少 10 度）。站好以后转头、蹲着点。
+  - 哪种点法都放不出来：记入 skipped，原因写着放出来会是哪几种（`no click gives /9 with minecraft:spruce_stairs:0: placed in this cell it comes out as /0, …, /7`）。能放出来、但要点的那个邻格没有方块：原因写着要点在哪（`to come out as /8 it has to be placed by clicking the upper half of the side of a block north, south, west or east of it; or the underside of the block above it; there is no such block there`），像没处依附一样，别的格放好以后再试一遍。找不到那样的站位：原因写着要朝哪看、站在哪边（`unreachable: found nowhere to stand that is in reach and gives /2 (looking south as it clicks, so standing north of the point it clicks)`）。那一格已经是同一种方块、meta 不对：不动它，记入 skipped。
+  - 点同一种台阶的上表面（或上半台阶的下表面）在游戏里是把两块合成一个双台阶，这种点法不算。
+  - 实测（测试服）：一条一格宽、两边是墙、下面悬空的梯道里，四级云杉木楼梯 `blockMeta 2`（往南升）四级都是 /2；平地上四级 /0、/1、/2、/3 各是各的；原木 /4 点了它西边那块石头的侧面；云杉原木 /5 不给 `meta` 用了 `log` 1；只有地面时上半台阶 /8、倒楼梯 /4 记着要点侧面上半或上面那块的底面。
 - **服务器自己的保护**：原版服务器会不出声地丢掉玩家对它保护的方块的点击、挖掘和对着它的放置（没有事件，什么都不变，该开的界面也不开）。身体在每一次右键、挖、对着方块放之前先问服务器（`isBlockProtected`）；受保护就不点出去，这一下以 `denied` 收场：任务失败，`screen.open` 返回错误。消息写明是什么、多大范围，`error.detail.protection` 是同样的数：`{x,y,z, by:"spawn protection", spawn:{x,z}, range, x1,z1,x2,z2}`——被拒绝的那一格（放方块时是对着放的那一格），主世界里离出生点 `range` 格以内（x、z 两个方向里大的那个）、所有高度；服务器有 op 时，不是 op 的玩家在这里点、挖、放都被拒绝。`by` 是 `"the server"` 的，是服务器拒绝了、但不在出生点那一块里（别的 mod 改了规则）。实测（测试服 spawn-protection=1，出生点 (-136, 154)，范围 x -137..-135、z 153..155）：打开那里的部件加工台、空手右键、左键、挖、对着那里的方块放、往那里的箱子里放东西都以 `denied` 收场，都在 0.6 秒内；`fill` 跨进这块时外面的两格照放，碰到里面的那一格停下。
 - **走路时**先找不改动地形的路；确实走不通才挖开或垫脚。
 - **走路时**只会自己挖开“天然方块”（mod 配置 `naturalBlocks`：泥土、草方块、沙子、沙砾、雪、树叶、花草等；不含石头和木头，因为人也拿它们盖房子）和任务指定要清掉的区域内的方块，不会为了抄近路拆别的东西，也不会挖掉本任务刚放下的方块。
@@ -639,7 +648,8 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - `sneak:true` 是蹲着右键，有些东西蹲着用是另一个意思（比如穿到身上而不是打开）。
   - **点哪里**（只在给了 `on` 时有意义）：`side` 是 `down`/`up`/`north`/`south`/`west`/`east` 之一，指方块的哪个面；给了水平的面，它会先走到那个面的正前方（走不到就 `out_of_reach`）。不给 `side` 时点朝着它的那个面。`hit` 是点在方块里的哪一点，三个数各 0–1、从方块最低的角算起，和游戏自己发的一样；不给是那个面的正中间。只认正面、按点的位置分格子的方块（抽屉的每一格、面板上的按钮）靠这两个参数。
   - **连点**：`times` 是右键几下，`every` 是两下之间隔几 tick——就是玩家按住右键。手里的东西中途用光了，后面几下照样点（手里是空的）。中途打开了界面就不再点。例：手里拿着一组东西对抽屉正面 `times:2`，第二下是“双击”，身上所有同类的都放进去。
-  - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。对着方块点的，还有 `blockBefore`、`blockNow`（`注册名/meta`）：点之前和现在那一格是什么，方块变了、没了都看得出。那一格有方块实体（机器、箱子）时还有 `dataChanged:[{key, was?, now?}]`：它自己存的数据（NBT，摊平成 `mFacing`、`gt.covers[0].d` 这样的路径）里点完以后变了的值，最多 30 个（多的数在 `dataChangedMore`）；点之前两 tick 里就在自己变的（进度、电量）不算，去掉了几个写在 `dataMovingLeftOut`。实测：扳手点输出总线上表面中间 `mFacing` 5 → 1。
+  - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。
+  - **手里是方块时**（以及点完那一格变了时），结果里还有 `placeCell:{x,y,z, before, now, clicked?}`：手里的方块会进的那一格，点之前和现在是什么。游戏放进的是点的那个面外面的一格；点的方块自己一碰就让开（草、薄雪、藤蔓）时是它自己那一格（`clicked:true`）。拿着方块点了、那一格没变时，`notPlaced` 照游戏放方块前自己做的检查依次写明是哪一条没过：点的方块有界面、又没蹲着时点击给了它（它打开了界面，蹲着点才是对着它放）、那一格被什么占着、有什么站在那一格里、方块自己的规矩说它不能立在那里（梯子要贴着实心方块、火把要有地方挂）、服务器或别的 mod 拒绝了，都不是时照实说看不出原因。实测：意见簿 f16 那一下（拿着梯子点墙的西面），梯子其实放进了西边那一格，以前结果只写着“点的那一格还是混凝土”，模型以为放了个空。对着方块点的，还有 `blockBefore`、`blockNow`（`注册名/meta`）：点之前和现在那一格是什么，方块变了、没了都看得出。那一格有方块实体（机器、箱子）时还有 `dataChanged:[{key, was?, now?}]`：它自己存的数据（NBT，摊平成 `mFacing`、`gt.covers[0].d` 这样的路径）里点完以后变了的值，最多 30 个（多的数在 `dataChangedMore`）；点之前两 tick 里就在自己变的（进度、电量）不算，去掉了几个写在 `dataMovingLeftOut`。实测：扳手点输出总线上表面中间 `mFacing` 5 → 1。
   - 实测：凿子左键结构混凝土，凿子界面输入格里放着 /3 时那一格变成 /3；输入格空着时是同组下一种（/7 → /8）。
   - **`left:true` 是左键**（要给 `on`）：按下马上松开，像玩家点一下。对按下有反应的东西照样反应（拿着凿子左键方块就是在原地凿成凿子里选好的样子；一碰就碎的方块会碎），要挖一会儿的方块不会被挖掉。空手左键要快捷栏里有空格（没有是 `inventory_full`）。结果里带 `left:true`。
 - **`process`**：
@@ -672,7 +682,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 结果 `result`：
 
-- 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], freeSlots}`，`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
+- 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], cameOutDifferent?, cameOutExamples?:[{x,y,z,want,got,why?}], freeSlots}`，`cameOutDifferent` 是放下去了、但 meta 和要的不一样的格数（身体预料不到放法的方块，`why` 写着），`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
   为了够到高处垫的方块，任务结束前会拆掉；够不着拆的个数在 `climbingBlocksLeftStanding`。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。

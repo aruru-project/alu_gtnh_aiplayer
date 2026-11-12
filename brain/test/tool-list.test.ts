@@ -253,7 +253,10 @@ describe('模型拿到的工具清单', () => {
   //   任务书的按钮之后（意见簿 f23，任务书界面打不开）：干活线实际 57,239、上限 56,400 → 57,400（+1,000；和上面看图纸那次合在一起：实际 57,399、上限 57,600）。多的是 quest_book（898）：
   //           替自己按任务书上的检测/提交、勾选框、领取（挑一样的奖励带 choice）。任务书的界面只画在客户端里，服务器上没有，open_screen
   //           打不开；不给这个工具就交不了要收走东西的子任务、打不了勾、领不了奖。三个按钮并在一个工具里，没有各做一个。对话线没变。
-  for (const [line, ceiling] of [['work', 57_600], ['talk', 29_200]] as const) {
+  //   放方块能指定朝向之后（意见簿 f16，楼梯）：干活线实际 56,532、上限 56,400 → 56,600（+200；和上面图纸、任务书两次合在一起：实际 57,590、上限 57,800）。多的是 place_blocks 每一格的 blockMeta
+  //           （+245：放下去以后方块的 meta 要是几，身体自己找站位和点的面让它这样出来），和库函数索引里 probe_block 那一行写上了
+  //           needs（+27：这一格要哪一类工具、几级）。做不到的原因写在结果里，不占说明。对话线没变。
+  for (const [line, ceiling] of [['work', 57_800], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

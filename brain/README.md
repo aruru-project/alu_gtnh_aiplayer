@@ -545,6 +545,8 @@ npm run live:testserver -- --transcript /tmp/live.txt   # 把每次给模型看�
 
 另有 `node test/live-tasks.ts --at x,y,z [--transcript 文件]`：同样的做法，走一遍意见簿里身体的三件事——压缩机开着物品自动输出、做出的钢块全进了下面的输入总线（加工算做成，照结果里的位置去取）；身上两种 meta 的机械方块时 `fill_area` 不给 meta 只放 meta 0、不够就停；匠魂的部件加工台照意见簿里那样放错格子时界面怎么写、照格子的排布重放做出木绑定结。场景由脚本用 rcon 摆在 `--at` 周围（先把一个 11×3×7 的盒子清空），不要放在出生点保护的范围里。约一分钟。摆场景用的 `openRcon`（`test/live-brain.ts`）是一条一直开着的 rcon 连接：同时开好几个 rcon 连接会被服务器断掉。
 
+另有 `node test/live-place.ts --at x,y,z [--transcript 文件]`：同样的做法，走一遍放方块和挖方块（意见簿 f16 和拍视频时的工具缺口）——一条一格宽、两边是墙、下面悬空的梯道里，`place_blocks` 每格给 `blockMeta 2`，四级云杉木楼梯都朝南升、梯道里没多别的方块；拿着楼梯点地面，结果写明楼梯进的是上面那一格；拿着梯子点空地，结果写明没放进去、为什么；`probe_block` 一格钢管道方块，写着要 wrench 2 级、铁镐不是扳手、没材料的扳手是 0 级；`dig_blocks` 以 `no_tool` 失败、消息里写着同样的事。场景摆在 `--at` 周围（先把一个 13×7×13 的盒子清空）。约一分半。面板用 28775、两个模拟模型用 25622 和 25623。走上楼梯是寻路的事（意见簿 f17），这里不测。
+
 联调脚本连的是这一份检出的测试服：bridge 端口取环境变量或 `tools/local.env` 里的 `AIPLAYER_TEST_BRIDGE_PORT`（另一份检出、git worktree 有自己的测试服，见 `tools/testserver`），都没有就是 25591。共用的几样（起大脑、等事情、rcon）在 `test/live-brain.ts`。
 
 ## 作为后台服务运行

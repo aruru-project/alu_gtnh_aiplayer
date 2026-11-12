@@ -472,6 +472,75 @@ describe('观察', () => {
     assert.match(hammer.content, /TConstruct:hammer:0 is never used \(it breaks several blocks at once\)/)
   })
 
+  it('probe_block 写明这一格要什么工具、几级，身上每件工具为什么不行（拍视频时：钢管道方块只给了 harvest:false，它不知道要的是扳手）', async (t) => {
+    const s = setup(t)
+    // 测试服上身体给的原样：铁镐、没有材料的扳手（0 级）、钢扳手（3 级）对着钢管道方块
+    const casing = { id: 'gregtech:gt.blockcasings2', meta: 13, name: 'Steel Pipe Casing', air: false, solid: true, hardness: 5, inReach: false, needs: { tool: 'wrench', level: 2, toolRequired: true } }
+    s.game.handlers['bot.probe'] = () => ({
+      ...casing, canDig: false, digTicks: 500, toolSlot: -1,
+      candidates: [
+        { slot: -1, item: 'hand', harvest: false, strength: 0.002, ticks: 500 },
+        { slot: 7, item: 'minecraft:iron_pickaxe:0', harvest: false, strength: 0, level: -1, classes: { pickaxe: 3 }, ticks: -1 },
+        { slot: 8, item: 'gregtech:gt.metatool.01:16', harvest: false, strength: 0, level: 0, ticks: -1 },
+      ],
+    })
+    const no = (await s.run('probe_block', { x: -567, y: 69, z: 149 })).content
+    assert.ok(no.includes('It needs a tool of class "wrench" at level 2 or higher (what the block itself names).'), no)
+    assert.ok(no.includes('You cannot dig it: nothing you carry can break this block.'), no)
+    assert.ok(no.includes('What you have: hand cannot harvest it; minecraft:iron_pickaxe:0 (a tool of class pickaxe 3) cannot harvest it: not a "wrench"; gregtech:gt.metatool.01:16 cannot harvest it: as a "wrench" it is level 0, 2 needed'), no)
+    s.game.handlers['bot.probe'] = () => ({
+      ...casing, canDig: true, digTicks: 25, toolSlot: 9,
+      candidates: [
+        { slot: -1, item: 'hand', harvest: false, strength: 0.002, ticks: 500 },
+        { slot: 7, item: 'minecraft:iron_pickaxe:0', harvest: false, strength: 0, level: -1, classes: { pickaxe: 3 }, ticks: -1 },
+        { slot: 9, item: 'gregtech:gt.metatool.01:16', harvest: true, strength: 0.04, level: 3, ticks: 25 },
+      ],
+    })
+    const ok = (await s.run('probe_block', { x: -567, y: 69, z: 149 })).content
+    assert.ok(ok.includes('You can dig it in about 1.25 s (25 ticks) using gregtech:gt.metatool.01:16 (slot 9).'), ok)
+    assert.ok(ok.includes('Other options: hand cannot harvest it; minecraft:iron_pickaxe:0 (a tool of class pickaxe 3) cannot harvest it: not a "wrench"'), ok)
+    // 有的方块不说类别、有的徒手就行：照实说
+    s.game.handlers['bot.probe'] = () => ({ ...casing, needs: { toolRequired: true }, canDig: false, toolSlot: -1, candidates: [] })
+    assert.ok((await s.run('probe_block', { x: 0, y: 60, z: 0 })).content.includes("It needs a tool, and the block names no tool class: whether a tool harvests it is that tool's own call."))
+    s.game.handlers['bot.probe'] = () => ({ ...casing, needs: { tool: 'shovel', level: 0, toolRequired: false }, canDig: true, digTicks: 18, toolSlot: -1, candidates: [{ slot: -1, item: 'hand', harvest: true, ticks: 18 }] })
+    assert.ok((await s.run('probe_block', { x: 0, y: 60, z: 0 })).content.includes('It needs no tool: a bare hand harvests it (a fitting tool is only faster).'))
+  })
+
+  it('use_item 拿着方块对一个面右键：结果写明方块进的是哪一格、那一格之前和现在是什么；没进去时写明原因（意见簿 f16：梯子其实放上了，结果只说“点的那一格还是混凝土”，它以为放了个空）', async (t) => {
+    const s = setup(t)
+    // 正式服那一下的原样，加上现在身体多报的那一格
+    const ladder = { used: 'Ladder', clicks: 1, side: 'west', blockBefore: 'chisel:cobblestone/14', blockNow: 'chisel:cobblestone/14', placeCell: { x: -622, y: 69, z: 134, before: 'minecraft:air/0', now: 'minecraft:ladder/5' }, gained: [], lost: [{ id: 'minecraft:ladder', meta: 0, name: 'Ladder', count: 1 }], health: 20, food: 20, freeSlots: 15 }
+    const refused = { used: 'Ladder', clicks: 1, side: 'up', blockBefore: 'minecraft:stone/0', blockNow: 'minecraft:stone/0', placeCell: { x: 22, y: 131, z: -110, before: 'minecraft:air/0', now: 'minecraft:air/0' }, notPlaced: "the block's own rule says it cannot stand in (22,131,-110) placed against that face (some blocks need a solid block behind them, or a certain ground)", gained: [], lost: [], health: 20, food: 20, freeSlots: 15 }
+    const grass = { used: 'Stone', clicks: 1, side: 'up', blockBefore: 'minecraft:tallgrass/1', blockNow: 'minecraft:stone/0', placeCell: { x: 5, y: 64, z: 5, clicked: true, before: 'minecraft:tallgrass/1', now: 'minecraft:stone/0' }, gained: [], lost: [{ id: 'minecraft:stone', meta: 0, name: 'Stone', count: 1 }], health: 20, food: 20, freeSlots: 15 }
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        { id: 't3', type: 'use', state: 'done', finishedAt: 300, params: { type: 'use', item: { id: 'minecraft:stone' }, on: { x: 5, y: 64, z: 5 }, side: 'up' }, result: grass },
+        { id: 't2', type: 'use', state: 'done', finishedAt: 200, params: { type: 'use', item: { id: 'minecraft:ladder' }, on: { x: 22, y: 130, z: -110 }, side: 'up' }, result: refused },
+        { id: 't1', type: 'use', state: 'done', finishedAt: 100, params: { type: 'use', item: { id: 'minecraft:ladder' }, on: { x: -621, y: 69, z: 134 }, side: 'west' }, result: ladder },
+      ],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    assert.ok(lines.at(-1)!.includes('the block there is still [chisel:cobblestone/14]; the cell on that face, (-622,69,134), where a block from the hand goes, was [minecraft:air/0], now [minecraft:ladder/5]; gained: nothing; lost: 1× minecraft:ladder "Ladder"'), lines.at(-1))
+    assert.ok(lines.at(-2)!.includes("the cell on that face, (22,131,-110), where a block from the hand goes, is still [minecraft:air/0]; the block in your hand did not go in: the block's own rule says it cannot stand in (22,131,-110) placed against that face"), lines.at(-2))
+    assert.ok(lines.at(-3)!.includes('the clicked block gives way, so a block from the hand goes into its own cell (5,64,5) was [minecraft:tallgrass/1], now [minecraft:stone/0]'), lines.at(-3))
+  })
+
+  it('check_blueprint：图纸里朝向由放法决定的方块（楼梯、半砖、原木）现在由身体照图放，材料写着要取的是哪一种物品（朝南的楼梯是普通的楼梯物品 meta 0，上半砖是普通的台阶物品）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['blueprint.check'] = () => ({
+      name: 'cabin', origin: { x: 30, y: 65, z: 30 }, cells: 12, done: 0, toPlace: 12, byHand: 0, blocked: 0, extra: 0, willRemove: 0,
+      materials: [
+        { id: 'minecraft:spruce_stairs', meta: 2, name: 'Spruce Wood Stairs', need: 4, have: 8, item: { id: 'minecraft:spruce_stairs', meta: 0 } },
+        { id: 'minecraft:stone_slab', meta: 8, name: 'Stone Slab', need: 8, have: 0, item: { id: 'minecraft:stone_slab', meta: 0 } },
+      ],
+    })
+    const text = (await s.run('check_blueprint', { name: 'cabin', x: 30, y: 65, z: 30 })).content
+    assert.ok(text.includes('4× minecraft:spruce_stairs/2 "Spruce Wood Stairs" (placed with [minecraft:spruce_stairs]) (you carry 8)'), text)
+    assert.ok(text.includes('8× minecraft:stone_slab/8 "Stone Slab" (placed with [minecraft:stone_slab]) (you carry 0)'), text)
+  })
+
   it('get_player_position：不在线时说明谁在线', async (t) => {
     const s = setup(t)
     const there = await s.run('get_player_position', { player: 'steve' })
@@ -528,6 +597,60 @@ describe('任务类工具', () => {
     await s.run('place_blocks', { blocks: [{ x: 1, y: 65, z: 1, item: 'gregtech:gt.blockcasings2' }, { x: 2, y: 65, z: 1, item: 'gregtech:gt.blockcasings2', meta: 13 }] })
     const tasks = s.game.callsOf('task.start').map((p) => p.task as { meta?: number; blocks?: { meta?: number }[] })
     assert.deepEqual([tasks[0]!.meta, tasks[1]!.meta, tasks[2]!.blocks!.map((b) => b.meta)], [0, 13, [0, 13]])
+  })
+
+  it('place_blocks 每一格可以说放下去要是哪个 meta（意见簿 f16：楼梯的朝向由站位定，模型指定不了）：blockMeta 原样交给身体；给了 blockMeta 没给 meta 时不替它填 0（用哪种物品由身体挑），两个都没给的照旧是 0', async (t) => {
+    const s = setup(t)
+    await s.run('place_blocks', {
+      blocks: [
+        { x: -623, y: 69, z: 130, item: 'minecraft:spruce_stairs', blockMeta: 2 },
+        { x: -623, y: 70, z: 131, item: 'minecraft:log', meta: 1, blockMeta: 5 },
+        { x: -623, y: 71, z: 132, item: 'minecraft:planks', meta: 1 },
+        { x: -623, y: 72, z: 133, item: 'minecraft:planks' },
+      ],
+    })
+    assert.deepEqual((s.game.callsOf('task.start')[0]!.task as { blocks: unknown[] }).blocks, [
+      { x: -623, y: 69, z: 130, item: 'minecraft:spruce_stairs', blockMeta: 2 },
+      { x: -623, y: 70, z: 131, item: 'minecraft:log', meta: 1, blockMeta: 5 },
+      { x: -623, y: 71, z: 132, item: 'minecraft:planks', meta: 1 },
+      { x: -623, y: 72, z: 133, item: 'minecraft:planks', meta: 0 },
+    ])
+    const bad = await s.run('place_blocks', { blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:spruce_stairs', blockMeta: 16 }] })
+    assert.equal(bad.content, 'Invalid arguments for place_blocks: blocks[0].blockMeta must be <= 15')
+  })
+
+  it('放方块的结果：跳过的原因是一整句话时每种一行、不被截断，写着几格、在哪；放下去了但朝向不对的也列出来；一格没放上的也这样说', async (t) => {
+    const s = setup(t)
+    // 测试服上身体给的原样（一格没处点、一格楼梯要 /9）
+    const needs = 'to come out as /8 it has to be placed by clicking the upper half of the side of a block north, south, west or east of it; or the underside of the block above it; there is no such block there'
+    const never = 'no variant of minecraft:spruce_stairs can come out as /9 in this cell (minecraft:spruce_stairs:0 comes out as /0, /1, /2, /3, /4, /5, /6, /7)'
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't2', type: 'place', state: 'done', finishedAt: 200,
+          result: {
+            removed: 0, placed: 3,
+            placedItems: [{ id: 'minecraft:stone_slab', meta: 0, name: 'Stone Slab', count: 3 }],
+            skipped: { [needs]: 2, [never]: 1 },
+            skippedExamples: [{ x: 22, y: 131, z: -114, reason: needs }, { x: 23, y: 131, z: -114, reason: needs }, { x: 20, y: 131, z: -112, reason: never }],
+            cameOutDifferent: 1,
+            cameOutExamples: [{ x: 20, y: 131, z: -110, want: 2, got: 3, why: 'which way it comes out is decided by its own placing code (BlockOddStairs), which the body cannot foresee' }],
+            freeSlots: 30,
+          },
+        },
+        { id: 't1', type: 'place', state: 'done', finishedAt: 100, result: { removed: 0, placed: 0, skipped: { [needs]: 1 }, skippedExamples: [{ x: 22, y: 131, z: -114, reason: needs }], freeSlots: 30 } },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.ok(text.includes('- t2 place [done]; result: {"removed":0,"placed":3,"freeSlots":30}; placed from: 3× minecraft:stone_slab "Stone Slab"; skipped 3 cell(s), by reason:; '), text)
+    assert.ok(text.includes(`- 2× ${needs} (at (22,131,-114), (23,131,-114))`), text)
+    assert.ok(text.includes(`- 1× ${never} (at (20,131,-112))`), text)
+    assert.ok(text.includes('cameOutDifferent 1 (placed, but not as the blockMeta asked): (20,131,-110) wanted /2, came out /3 (which way it comes out is decided by its own placing code (BlockOddStairs), which the body cannot foresee)'), text)
+    // 一格没放上（没有 placedItems）的也不当 JSON 截掉
+    assert.ok(text.includes(`- t1 place [done]; result: {"removed":0,"placed":0,"freeSlots":30}; skipped 1 cell(s), by reason:; - 1× ${needs} (at (22,131,-114))`), text)
+    assert.equal(text.includes('…'), false, 'nothing was cut off')
   })
 
   it('顶掉旧任务时，把身体报告的被取消任务告诉上层和模型', async (t) => {

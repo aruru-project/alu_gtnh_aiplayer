@@ -361,8 +361,11 @@ export const placeBlocks: Tool = {
   inputSchema: obj(
     {
       blocks: arr(
-        `Each {x, y, z, item, meta?}: item is the block's item id, meta its meta (${META_WORDS}).`,
-        obj({ x: int(), y: int(undefined, { min: 0, max: 255 }), z: int(), item: str(), meta: int(undefined, { min: 0 }) }, ['x', 'y', 'z', 'item']),
+        `Each {x, y, z, item, meta?, blockMeta?}: item is the block's item id, meta its meta (${META_WORDS}). blockMeta: the meta it must end up with (as inspect_block shows: how stairs, logs, slabs face).`,
+        obj(
+          { x: int(), y: int(undefined, { min: 0, max: 255 }), z: int(), item: str(), meta: int(undefined, { min: 0 }), blockMeta: int(undefined, { min: 0, max: 15 }) },
+          ['x', 'y', 'z', 'item'],
+        ),
         { min: 1, max: BLOCK_LIST_MAX },
       ),
       supply: supply('blocks'),
@@ -370,8 +373,17 @@ export const placeBlocks: Tool = {
     },
     ['blocks'],
   ),
-  run: (ctx, i: { blocks: { meta?: number }[]; supply?: unknown[]; queue?: boolean }) =>
-    startTask(ctx, { type: 'place', blocks: i.blocks.map((b) => ({ ...b, meta: b.meta ?? 0 })), supply: i.supply }, i.queue),
+  run: (ctx, i: { blocks: { meta?: number; blockMeta?: number }[]; supply?: unknown[]; queue?: boolean }) =>
+    startTask(
+      ctx,
+      {
+        type: 'place',
+        // 给了 blockMeta 不给 meta：用哪种物品放由身体挑（能放出这个朝向的那种，比如云杉原木横放 /5 用的是物品 log:1）；否则默认 0
+        blocks: i.blocks.map((b) => (b.meta === undefined && b.blockMeta !== undefined ? b : { ...b, meta: b.meta ?? 0 })),
+        supply: i.supply,
+      },
+      i.queue,
+    ),
 }
 
 // ── 搬运 ──

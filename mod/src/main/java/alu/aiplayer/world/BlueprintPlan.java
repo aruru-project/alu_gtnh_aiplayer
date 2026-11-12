@@ -386,6 +386,9 @@ public final class BlueprintPlan {
         m.addProperty("id", k.item != null ? k.item.id : k.blockId);
         m.addProperty("meta", k.meta);
         m.addProperty("name", k.name);
+        // Placed with another variant of the item than the block's meta (a stair facing south is the plain stair
+        // item; a top slab the slab item): that is what to fetch.
+        if (k.item != null && k.item.meta != k.meta) m.add("item", k.item.toJson());
         return m;
     }
 

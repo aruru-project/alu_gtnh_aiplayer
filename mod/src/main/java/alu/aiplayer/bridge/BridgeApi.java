@@ -339,6 +339,14 @@ public final class BridgeApi {
                     o.addProperty("toolSlot", best.slot);
                 }
                 o.addProperty("inReach", Reach.canReach(b.player(), x, y, z));
+                // What the block asks of a tool (kind and level), next to what each carried tool is.
+                o.add(
+                    "needs",
+                    Tools.needs(
+                        b.world()
+                            .getBlock(x, y, z),
+                        b.world()
+                            .getBlockMetadata(x, y, z)));
                 o.add("candidates", Tools.explain(b.player(), b.world(), x, y, z));
                 // Whatever the tools say, the server's own protection refuses the bot's hand on this block.
                 JsonObject by = alu.aiplayer.act.Protection.of(b.player(), x, y, z);

@@ -40,6 +40,8 @@ public final class Digger {
     public String failCode;
     public String failMessage;
     public String failBlock;
+    /** With no_tool: what the block asks of a tool ({@link Tools#needs}). */
+    public com.google.gson.JsonObject failNeeds;
 
     public Digger(Bot bot) {
         this.bot = bot;
@@ -59,6 +61,7 @@ public final class Digger {
         failCode = null;
         failMessage = null;
         failBlock = null;
+        failNeeds = null;
     }
 
     public Status tick() {
@@ -124,7 +127,17 @@ public final class Digger {
         Tools.Choice choice = Tools.best(p, w, x, y, z);
         if (choice == null) return fail("unbreakable", "the block cannot be broken");
         if (!choice.worthwhile()) {
-            return fail("no_tool", "no carried tool can harvest " + Names.blockId(block));
+            int meta = w.getBlockMetadata(x, y, z);
+            failNeeds = Tools.needs(block, meta);
+            String carried = Tools.carriedText(p, w, x, y, z);
+            return fail(
+                "no_tool",
+                "no carried tool can harvest " + Names.blockId(block)
+                    + "/"
+                    + meta
+                    + ": it needs "
+                    + Tools.needsText(block, meta)
+                    + (carried.isEmpty() ? "" : "; " + carried));
         }
         Tools.hold(bot, choice);
         target = block;

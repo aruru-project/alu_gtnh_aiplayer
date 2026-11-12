@@ -191,6 +191,8 @@ abstract class AreaTask extends Task {
 
     /** Kinds of block that turned out to need a tool the bot does not carry. */
     protected final Set<String> noToolFor = new HashSet<>();
+    /** For each of those, the reason as written in the result (what tool it needs). */
+    protected final Map<String, String> noToolWhy = new HashMap<>();
 
     /**
      * Whether meeting a block the bot has no tool for ends the task. It does where digging is the whole job;
@@ -204,18 +206,29 @@ abstract class AreaTask extends Task {
         String code = digger.failCode;
         if ("no_tool".equals(code) && !stopsWithoutTool()) {
             noToolFor.add(digger.failBlock);
-            skip(x, y, z, "no tool for " + digger.failBlock);
+            String why = "no tool for " + digger.failBlock + needsWords(digger.failNeeds);
+            noToolWhy.put(digger.failBlock, why);
+            skip(x, y, z, why);
             return Act.SKIPPED;
         }
         if ("no_tool".equals(code) || "denied".equals(code)) {
             JsonObject detail = "denied".equals(code) ? bot.refusalDetail(x, y, z) : J.pos(x, y, z);
             detail.addProperty("block", digger.failBlock);
+            if ("no_tool".equals(code) && digger.failNeeds != null) detail.add("needs", digger.failNeeds);
             fail(code, digger.failMessage, detail);
             return Act.FAILED;
         }
         if ("out_of_reach".equals(code)) return Act.BUSY; // moved since the check; the next tick walks closer
         skip(x, y, z, code == null ? "failed" : code);
         return Act.SKIPPED;
+    }
+
+    /** " (needs tool class "wrench" level 2)", for a skip reason; empty when the block names no tool class. */
+    private static String needsWords(JsonObject needs) {
+        if (needs == null || !needs.has("tool")) return "";
+        return " (needs tool class \"" + needs.get("tool")
+            .getAsString() + "\" level " + needs.get("level")
+                .getAsInt() + ")";
     }
 
     private Act walkFailed(int x, int y, int z) {
@@ -278,6 +291,40 @@ abstract class AreaTask extends Task {
 
     /** Places one block, walking within reach (and out of the way) first if need be. */
     protected Act placeCell(int x, int y, int z, ItemFilter item) {
+        return placeCell(x, y, z, item, -1);
+    }
+
+    /**
+     * Why cells could not be done, beyond the plain words: kept per cell for the ones a task gives up on at the end
+     * (nothing to place against, unreachable), so the result says what a cell that must face a certain way needed.
+     */
+    private final Map<Long, String> cellWhy = new HashMap<>();
+
+    /** What went wrong with this cell, in words, or {@code plain} when nothing more is known. */
+    protected String why(int x, int y, int z, String plain) {
+        String w = cellWhy.get(key(x, y, z));
+        return w == null ? plain : w;
+    }
+
+    /** Placed blocks that came out with another meta than the one wanted: {x, y, z, want, got}. */
+    private final JsonArray cameOut = new JsonArray();
+    private int cameOutCount;
+
+    private void cameOut(int x, int y, int z, int want, int got, String why) {
+        cameOutCount++;
+        if (cameOut.size() >= 12) return;
+        JsonObject o = J.pos(x, y, z);
+        o.addProperty("want", want);
+        o.addProperty("got", got);
+        if (why != null) o.addProperty("why", why);
+        cameOut.add(o);
+    }
+
+    /**
+     * Places one block that has to come out with meta {@code want} (-1: any): the bot stands where its look and
+     * the face it clicks give that meta. A cell where no click can give it is skipped with the reason.
+     */
+    protected Act placeCell(int x, int y, int z, ItemFilter item, int want) {
         EntityPlayerMP p = bot.player();
         if (p.isInWater()) bot.motion.jump = true;
         if (cooldown > 0) {
@@ -303,7 +350,18 @@ abstract class AreaTask extends Task {
         int from = Inventories.find(p, item);
         ItemStack using = from < 0 ? null : p.inventory.mainInventory[from].copy();
         Placer.Result r;
-        if (placeFromAbove && bot.blockY() < y) {
+        Placer.Facing facing = new Placer.Facing();
+        if (want >= 0) {
+            World w = p.worldObj;
+            if (w.blockExists(x, y, z) && !Placer.isReplaceable(w, x, y, z)
+                && w.getBlockMetadata(x, y, z) != want
+                && using != null
+                && w.getBlock(x, y, z) == alu.aiplayer.act.Orientation.blockOf(using.getItem())) {
+                skip(x, y, z, "the same block is already there, as /" + w.getBlockMetadata(x, y, z) + " (not /" + want + ")");
+                return Act.SKIPPED;
+            }
+            r = Placer.placeAs(bot, x, y, z, item, want, facing, placeFromAbove && bot.blockY() < y);
+        } else if (placeFromAbove && bot.blockY() < y) {
             // Standing too low. Find out what a walk up there would be for before setting off.
             World w = p.worldObj;
             if (!w.blockExists(x, y, z)) r = Placer.Result.OUT_OF_REACH;
@@ -319,18 +377,30 @@ abstract class AreaTask extends Task {
             recentre = 6;
             return Act.BUSY;
         }
+        // Off the middle of its cell the look from there is not quite the one the way needs: to the middle first.
+        if (r == Placer.Result.OFF_CENTRE && recentred < 3) {
+            recentred++;
+            recentre = 6;
+            return Act.BUSY;
+        }
         recentred = 0;
         switch (r) {
             case PLACED:
+            case WRONG:
                 placed++;
                 if (using != null) placedItems.add(using, 1);
                 cooldown = PLACE_COOLDOWN;
+                if (r == Placer.Result.WRONG) cameOut(x, y, z, want, facing.got, facing.why);
                 return Act.OK;
             case OCCUPIED:
                 return Act.OK;
             case NO_ITEM:
                 return Act.NEED_MATERIAL;
+            case NO_WAY:
+                skip(x, y, z, facing.why);
+                return Act.SKIPPED;
             case NO_SUPPORT:
+                if (facing.why != null) cellWhy.put(key(x, y, z), facing.why);
                 return Act.SKIPPED;
             case REJECTED:
                 if (bot.placementWasRefused()) {
@@ -343,9 +413,22 @@ abstract class AreaTask extends Task {
                 }
                 cooldown = PLACE_COOLDOWN;
                 return Act.BUSY;
-            default: // OUT_OF_REACH, IN_THE_WAY
+            default: // OUT_OF_REACH, IN_THE_WAY, OFF_CENTRE
                 if (bump(x, y, z) > MAX_ATTEMPTS_PER_CELL) return Act.UNREACHABLE;
-                nav.go(placeFromAbove ? Goal.reachFromAbove(x, y, z) : Goal.reach(x, y, z, true), rule);
+                Goal goal = null;
+                if (want >= 0 && using != null) {
+                    goal = Placer.facingGoal(p.worldObj, x, y, z, using, want, placeFromAbove);
+                    if (goal != null) {
+                        String look = Placer.lookNeeded(p.worldObj, x, y, z, using, want);
+                        cellWhy.put(
+                            key(x, y, z),
+                            "unreachable: found nowhere to stand that is in reach and gives /" + want
+                                + (look == null ? "" : " (" + look + ")")
+                                + (placeFromAbove ? ", with the feet no lower than the block" : ""));
+                    }
+                }
+                if (goal == null) goal = placeFromAbove ? Goal.reachFromAbove(x, y, z) : Goal.reach(x, y, z, true);
+                nav.go(goal, rule);
                 walking = true;
                 return Act.BUSY;
         }
@@ -667,6 +750,10 @@ abstract class AreaTask extends Task {
         o.addProperty("removed", removed);
         o.addProperty("placed", placed);
         if (!placedItems.isEmpty()) o.add("placedItems", placedItems.toJson());
+        if (cameOutCount > 0) {
+            o.addProperty("cameOutDifferent", cameOutCount);
+            o.add("cameOutExamples", cameOut);
+        }
         if (!skipCounts.isEmpty()) {
             JsonObject s = new JsonObject();
             for (Map.Entry<String, Integer> e : skipCounts.entrySet()) s.addProperty(e.getKey(), e.getValue());
