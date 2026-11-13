@@ -1207,7 +1207,7 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
-  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, placeCell, notPlaced, ...rest } = result
+  const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, placeCell, notPlaced, lookedAt, liquid, crosshair, crosshairNone, fluidContainer, alsoInAir, looking, lookingAtNothing, faceUnseen, ...rest } = result
   const item = isRecord(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对
   const what = nameOf({ id: item?.id, meta: item?.meta, name: used }, { block: typeof item?.meta !== 'number' }) ?? (typeof item?.id === 'string' ? idText(item) : 'the item')
@@ -1220,12 +1220,30 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   // 身体比左键旧：参数它不认，点的是右键
   if (params?.left === true && left !== true) parts.push('this was a RIGHT click: the body on the game server is older than left clicks')
   if (typeof clicks === 'number' && (clicks !== 1 || typeof side === 'string')) parts.push(`${clicks} click(s)${typeof side === 'string' ? ` on the ${side} face` : ''}`)
+  // 找不到看得见那个面的地方：点击隔着挡在前面的东西也到了，东西自己沿视线做的事碰到的是挡着的东西
+  if (faceUnseen === true) parts.push('you found nowhere to stand with that face in sight, so you clicked it from within reach through what is in front of it (the server takes such a click; what an item does along your look, such as a bucket pouring, meets what is in front)')
   // 点的那一格点之前、现在是什么：方块变了、被带走了，在这里看得出
   const block = (v: unknown): string => {
     const m = typeof v === 'string' ? /^(.+)\/(\d+)$/.exec(v) : null
     if (!m) return String(v)
     const name = nameOf({ id: m[1], meta: Number(m[2]) }, { block: true })
     return `${name ? `${name} ` : ''}[${m[1]}/${m[2]}]`
+  }
+  const hitText = (h: Record<string, unknown>): string => `${block(h.block)} at (${String(h.x)},${String(h.y)},${String(h.z)}), its ${String(h.side)} face`
+  // 对着液体：没有哪一下点击能瞄准液体，玩家是看着它右键；准星落在它后面、下面的实心方块上（或者够得着的地方什么都没有）
+  if (typeof lookedAt === 'string') {
+    const l = isRecord(liquid) ? liquid : {}
+    const what = typeof l.name === 'string' ? l.name : 'liquid'
+    const kind = l.source === false ? 'flowing, not a source block: buckets and cells take only source blocks (meta 0)' : 'a source block'
+    parts.push(`you looked at the ${lookedAt} face of the ${what} (${kind}) and right-clicked, as a player does (no click is aimed at a liquid)`)
+    if (isRecord(crosshair)) parts.push(`the click went to the block under the crosshair, ${hitText(crosshair)}`)
+    else if (crosshairNone === true) parts.push('nothing solid was under the crosshair within reach, so the item was only used in the air')
+  }
+  // 点方块没起任何作用时，玩家的游戏会再对着视线方向用一次手里的东西（桶装水、倒水、吃东西都是这一下）
+  if (typeof alsoInAir === 'number' && alsoInAir > 0) {
+    const met = isRecord(looking) ? `its look met ${hitText(looking)}` : lookingAtNothing === true ? 'its look met nothing within reach' : ''
+    const after = crosshairNone === true ? 'the item was used in the air' : 'the click on the block came to nothing, so the item was also used in the air along your look, as a player\'s game does'
+    parts.push(`${after} (${alsoInAir} time(s))${met ? `; ${met}` : ''}`)
   }
   const blockChanged = typeof blockBefore === 'string' && typeof blockNow === 'string' && blockBefore !== blockNow
   if (typeof blockBefore === 'string' && typeof blockNow === 'string') {
@@ -1249,6 +1267,13 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
     parts.push(changes.length > 0 ? `its saved data changed: ${changes.join(', ')}${more}${moving}` : `its saved data did not change${moving}`)
   }
   parts.push(`gained: ${list(got)}`, `lost: ${list(gone)}`)
+  // 对着液体用了、背包没变：游戏的流体登记里这件东西装这种液体是什么样（一个空桶装了水是水桶），照实说
+  if (got.length === 0 && gone.length === 0 && isRecord(fluidContainer)) {
+    const filled = isRecord(fluidContainer.filledIs) ? fluidContainer.filledIs : undefined
+    if (filled) parts.push(`the game knows a filled form of this item for that liquid, ${kindText(1, filled)}, yet nothing was taken this time`)
+    else if (fluidContainer.holdsFluidItself === true) parts.push('this item keeps fluid in itself, yet nothing was taken this time')
+    else parts.push("the game's fluid registry knows no form of this item holding that liquid: it is not a container for it")
+  }
   if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
   else if (got.length === 0 && gone.length === 0) parts.push(blockChanged || dataMoved || placeChanged ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)

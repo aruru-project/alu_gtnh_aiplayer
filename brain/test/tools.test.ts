@@ -541,6 +541,38 @@ describe('观察', () => {
     assert.ok(text.includes('8× minecraft:stone_slab/8 "Stone Slab" (placed with [minecraft:stone_slab]) (you carry 0)'), text)
   })
 
+  it('use_item 对着水（意见簿 f24：空单元点水源 8 下、桶点水源 1 下都没反应）：结果写明是看着水的哪个面右键的、准星落在哪、东西又对着视线用了一次、它看到的是那格水；装上了照实说；对着流动的水、拿着装不了水的东西也照实说', async (t) => {
+    const s = setup(t)
+    // 测试服（正式服存档的副本）上身体给的原样：同一桶、同一格水源
+    const water = { fluid: 'water', name: 'Water', source: true }
+    const bucket = { used: 'Bucket', clicks: 1, lookedAt: 'west', liquid: water, crosshairNone: true, fluidContainer: { filledIs: { id: 'minecraft:water_bucket', meta: 0, name: 'Water Bucket' } }, blockBefore: 'minecraft:water/0', blockNow: 'minecraft:flowing_water/1', alsoInAir: 1, looking: { x: -484, y: 62, z: 79, side: 'west', block: 'minecraft:water/0' }, gained: [{ id: 'minecraft:water_bucket', meta: 0, name: 'Water Bucket', count: 1 }], lost: [{ id: 'minecraft:bucket', meta: 0, name: 'Bucket', count: 1 }], health: 20, food: 20, freeSlots: 34 }
+    const cells = { used: 'Empty Cell', clicks: 8, lookedAt: 'up', liquid: water, crosshair: { x: -523, y: 62, z: 30, side: 'west', block: 'minecraft:ice/0' }, fluidContainer: { filledIs: { id: 'IC2:itemCellEmpty', meta: 1, name: 'Water Cell' } }, blockBefore: 'minecraft:water/0', blockNow: 'minecraft:water/1', alsoInAir: 7, looking: { x: -523, y: 62, z: 30, side: 'west', block: 'minecraft:ice/0' }, gained: [{ id: 'IC2:itemCellEmpty', meta: 1, name: 'Water Cell', count: 1 }], lost: [{ id: 'IC2:itemCellEmpty', meta: 0, name: 'Empty Cell', count: 1 }], health: 20, food: 20, freeSlots: 33 }
+    const flowing = { used: 'Bucket', clicks: 1, lookedAt: 'south', liquid: { ...water, source: false }, crosshair: { x: -483, y: 62, z: 78, side: 'west', block: 'minecraft:ice/0' }, blockBefore: 'minecraft:water/1', blockNow: 'minecraft:flowing_water/3', alsoInAir: 1, looking: { x: -484, y: 62, z: 79, side: 'west', block: 'minecraft:water/0' }, gained: [{ id: 'minecraft:water_bucket', meta: 0, name: 'Water Bucket', count: 1 }], lost: [{ id: 'minecraft:bucket', meta: 0, name: 'Bucket', count: 1 }], health: 20, food: 20, freeSlots: 34 }
+    const stick = { used: 'Stick', clicks: 1, lookedAt: 'up', liquid: water, crosshair: { x: -481, y: 62, z: 84, side: 'east', block: 'minecraft:grass/0' }, fluidContainer: { none: true }, blockBefore: 'minecraft:water/0', blockNow: 'minecraft:water/0', alsoInAir: 1, looking: { x: -480, y: 62, z: 84, side: 'up', block: 'minecraft:water/0' }, gained: [], lost: [], health: 20, food: 20, freeSlots: 35 }
+    const pour = { used: 'Water Bucket', clicks: 1, side: 'up', blockBefore: 'minecraft:grass/0', blockNow: 'minecraft:grass/0', placeCell: { x: -482, y: 63, z: 81, before: 'minecraft:air/0', now: 'minecraft:flowing_water/0' }, alsoInAir: 1, looking: { x: -482, y: 62, z: 81, side: 'up', block: 'minecraft:grass/0' }, gained: [{ id: 'minecraft:bucket', meta: 0, name: 'Bucket', count: 1 }], lost: [{ id: 'minecraft:water_bucket', meta: 0, name: 'Water Bucket', count: 1 }], health: 20, food: 20, freeSlots: 34 }
+    const task = (id: string, at: number, item: string, result: Record<string, unknown>) => ({ id, type: 'use', state: 'done', finishedAt: at, params: { type: 'use', item: { id: item }, on: { x: 0, y: 62, z: 0 } }, result })
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [task('t5', 500, 'minecraft:water_bucket', pour), task('t4', 400, 'minecraft:stick', stick), task('t3', 300, 'minecraft:bucket', flowing), task('t2', 200, 'IC2:itemCellEmpty', cells), task('t1', 100, 'minecraft:bucket', bucket)],
+    })
+    const lines = (await s.run('task_status')).content.split('\n')
+    const [l1, l2, l3, l4, l5] = [lines.at(-1)!, lines.at(-2)!, lines.at(-3)!, lines.at(-4)!, lines.at(-5)!]
+    assert.ok(l1.includes('you looked at the west face of the Water (a source block) and right-clicked, as a player does (no click is aimed at a liquid); nothing solid was under the crosshair within reach, so the item was only used in the air; the item was used in the air (1 time(s)); its look met [minecraft:water/0] at (-484,62,79), its west face; the block there was [minecraft:water/0], now [minecraft:flowing_water/1]; gained: 1× minecraft:water_bucket'), l1)
+    assert.ok(l2.includes('8 click(s); you looked at the up face of the Water (a source block)'), l2)
+    assert.ok(l2.includes('the click went to the block under the crosshair, [minecraft:ice/0] at (-523,62,30), its west face'), l2)
+    assert.ok(l2.includes('the click on the block came to nothing, so the item was also used in the air along your look, as a player\'s game does (7 time(s)); its look met [minecraft:ice/0] at (-523,62,30), its west face; the block there was [minecraft:water/0], now [minecraft:water/1]; gained: 1× IC2:itemCellEmpty/1'), l2)
+    assert.ok(l3.includes('the Water (flowing, not a source block: buckets and cells take only source blocks (meta 0))'), l3)
+    assert.ok(l3.includes('its look met [minecraft:water/0] at (-484,62,79), its west face'), l3)
+    assert.ok(l4.includes("gained: nothing; lost: nothing; the game's fluid registry knows no form of this item holding that liquid: it is not a container for it"), l4)
+    assert.ok(l5.includes('1 click(s) on the up face; the click on the block came to nothing, so the item was also used in the air along your look, as a player\'s game does (1 time(s)); its look met [minecraft:grass/0] at (-482,62,81), its up face; the block there is still [minecraft:grass/0]; the cell on that face, (-482,63,81), where a block from the hand goes, was [minecraft:air/0], now [minecraft:flowing_water/0]'), l5)
+    // 装上了的不再说流体登记那一句
+    assert.equal(l1.includes('filled form'), false)
+    // 找不到看得见那个面的地方：照实说点击是隔着东西点的
+    s.game.handlers['task.list'] = () => ({ active: null, queue: [], recent: [task('t6', 600, 'minecraft:water_bucket', { ...pour, faceUnseen: true })] })
+    assert.ok((await s.run('task_status')).content.includes('1 click(s) on the up face; you found nowhere to stand with that face in sight, so you clicked it from within reach through what is in front of it'))
+  })
+
   it('get_player_position：不在线时说明谁在线', async (t) => {
     const s = setup(t)
     const there = await s.run('get_player_position', { player: 'steve' })

@@ -431,6 +431,8 @@ export class MockBridge {
   readonly blueprints = new Map<string, MockBlueprintFile>([['hut', hutBlueprint('hut')]])
   /** blueprint 任务放下或挖掉的方块，盖在假地形上："x,y,z" → 方块；null 是挖成了空气。 */
   readonly changedBlocks = new Map<string, { id: string; meta: number; name: string } | null>()
+  /** 测试里放的液体（"x,y,z" → 水、岩浆；meta 0 是源方块）。 */
+  readonly liquids = new Map<string, { id: string; meta: number; name: string; fluid: string }>()
   autoFinishMs: number | undefined
 
   private readonly host: string
@@ -869,6 +871,8 @@ export class MockBridge {
     if (this.craftingTables.some((t) => t.x === x && t.y === y && t.z === z)) {
       return { x, y, z, id: 'minecraft:crafting_table', meta: 0, name: 'Crafting Table', air: false, solid: true, liquid: false, replaceable: false, hardness: 2.5, tileEntity: false, inventory: false }
     }
+    const liquid = this.liquids.get(`${x},${y},${z}`)
+    if (liquid) return { x, y, z, id: liquid.id, meta: liquid.meta, name: liquid.name, air: false, solid: false, liquid: true, replaceable: true, hardness: 100, tileEntity: false, inventory: false }
     const changed = this.changedBlocks.get(`${x},${y},${z}`)
     if (changed) {
       return { x, y, z, id: changed.id, meta: changed.meta, name: changed.name, air: false, solid: true, liquid: false, replaceable: false, hardness: 2, tileEntity: false, inventory: false }
@@ -1782,6 +1786,38 @@ export class MockBridge {
         return
       }
       if (on) this.clickLog.push({ bot: bot.name, on, item: held.id, ...clicked, ...(p.hit !== undefined ? { hit: p.hit as Json } : {}) })
+      const liquid = on ? this.liquids.get(`${on.x},${on.y},${on.z}`) : undefined
+      if (on && liquid) {
+        // 对着液体：像真的身体那样看着它的上表面右键，准星落在下面的方块上，没起作用就对着视线再用一次；空桶、空单元在源方块上装满
+        const filledIs = held.id === 'minecraft:bucket' ? { id: `minecraft:${liquid.fluid}_bucket`, meta: 0, name: `${liquid.name} Bucket` } : held.id === 'IC2:itemCellEmpty' && held.meta === 0 ? { id: 'IC2:itemCellEmpty', meta: 1, name: `${liquid.name} Cell` } : undefined
+        const before = `${liquid.id}/${liquid.meta}`
+        const gained: Json[] = []
+        const lost: Json[] = []
+        if (filledIs && liquid.meta === 0) {
+          held.count -= 1
+          lost.push({ id: held.id, meta: held.meta, name: held.name, count: 1 })
+          gained.push({ ...filledIs, count: 1 })
+          const have = bot.inventory.find((i) => i.id === filledIs.id && i.meta === filledIs.meta)
+          if (have) have.count += 1
+          else bot.inventory.push({ slot: 35, id: filledIs.id, meta: filledIs.meta, count: 1, name: filledIs.name })
+          bot.inventory = bot.inventory.filter((i) => i.count > 0)
+          this.liquids.delete(`${on.x},${on.y},${on.z}`)
+        }
+        const now = this.blockAt(on.x, on.y, on.z)
+        const below = this.blockAt(on.x, on.y - 1, on.z)
+        this.endTask(bot, task, 'done', {
+          result: {
+            used: held.name, clicks: 1, lookedAt: 'up',
+            liquid: { fluid: liquid.fluid, name: liquid.name, source: liquid.meta === 0 },
+            crosshair: { x: on.x, y: on.y - 1, z: on.z, side: 'up', block: `${String(below.id)}/${Number(below.meta ?? 0)}` },
+            fluidContainer: filledIs ? { filledIs } : { none: true },
+            blockBefore: before, blockNow: `${String(now.id)}/${Number(now.meta ?? 0)}`,
+            alsoInAir: 1, looking: { ...on, side: 'up', block: before },
+            gained, lost, health: bot.health, food: bot.food, freeSlots: 36 - bot.inventory.length,
+          },
+        })
+        return
+      }
       if (on && MOCK_BLOCK_ITEM.test(held.id)) {
         // 手里是方块：放进点的那个面外面的一格（和真的身体一样报那一格点之前、现在是什么，没放进去的写原因）
         const side = typeof p.side === 'string' ? p.side : 'north'

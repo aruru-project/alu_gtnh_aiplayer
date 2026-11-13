@@ -4,6 +4,8 @@
 //      四级都是 /2，梯道里没有多出别的方块。（走上去是寻路的事，意见簿 f17：现在的寻路不会走楼梯的半格台阶，这里不测。）
 //   2. 同一条里的另一半：拿着楼梯点地面的上表面，结果写明楼梯进的是上面那一格（以前只说“点的那一格还是石头”）；
 //      拿着梯子点空地的上表面，结果写明没放进去、为什么（梯子要贴着墙）。
+//   4. 意见簿 f24：空桶对水源右键没反应。地面里嵌着两格水源、一个一格深的坑。空桶对第一格水源用：身体看着水面右键，桶装满；
+//      装满的水桶对着坑底用：水倒进坑里；空单元对第二格水源用：装成水单元。
 //   3. 拍视频时的工具缺口：一格钢管道方块（gregtech:gt.blockcasings2 的 13），身上是铁镐和一把没有材料的扳手（0 级）。
 //      probe_block 写明要的是 wrench 类、2 级，每件工具为什么不行；dig_blocks 以 no_tool 失败，消息里写着同样的事。
 // 模拟模型服务按脚本回应干活线：每一步看了上一步的结果再定下一步，对话线只传话。大脑是真启动的进程（src/main.ts），
@@ -44,6 +46,9 @@ async function main(): Promise<number> {
   const casing = { x: cx - 3, y: cy, z: cz + 3 }
   const stairFloor = { x: cx - 1, y: cy - 1, z: cz - 3 }
   const ladderFloor = { x: cx - 3, y: cy - 1, z: cz - 3 }
+  const pool = { x: cx - 5, y: cy - 1, z: cz - 5 }
+  const pool2 = { x: cx - 5, y: cy - 1, z: cz - 1 }
+  const pitFloor = { x: cx - 3, y: cy - 2, z: cz - 5 }
 
   const observer = new BridgeClient({
     address: () => ({ host: '127.0.0.1', port: TESTSERVER_BRIDGE_PORT }),
@@ -128,7 +133,25 @@ async function main(): Promise<number> {
     step(waiting('试着挖。')),
     step((seen) => {
       expect(seen, /任务 \w+（dig）失败了：no_tool — no carried tool can harvest gregtech:gt\.blockcasings2\/13: it needs tool class "wrench" of level 2 or higher; your tools: [^\n]*gregtech:gt\.metatool\.01:16 level 0, too low/, 'no_tool 的消息写着要什么、身上的为什么不行')
-      return { text: '楼梯四级都朝南放好了；钢管道方块要 2 级以上的扳手，我身上的扳手是 0 级的。' }
+      return call('use_item', { id: 'minecraft:bucket', on: pool })
+    }),
+    // ── 4. 水 ──
+    step(waiting('拿空桶装水。')),
+    step((seen) => {
+      expect(seen, /you looked at the up face of the [^;]* \(a source block\) and right-clicked/, '看着水面右键')
+      expect(seen, /gained: 1× minecraft:water_bucket/, '桶装满了')
+      return call('use_item', { id: 'minecraft:water_bucket', on: pitFloor, side: 'up' })
+    }),
+    step(waiting('把水倒进坑里。')),
+    step((seen) => {
+      expect(seen, new RegExp(`the cell on that face, ${at({ ...pitFloor, y: pitFloor.y + 1 })}, where a block from the hand goes, was [^;]*\\[minecraft:air/0\\], now [^;]*\\[minecraft:(flowing_)?water/0\\]`), '水倒进了坑里')
+      expect(seen, /gained: 1× minecraft:bucket/, '水桶变回空桶')
+      return call('use_item', { id: 'IC2:itemCellEmpty', meta: 0, on: pool2 })
+    }),
+    step(waiting('拿空单元装水。')),
+    step((seen) => {
+      expect(seen, /gained: 1× IC2:itemCellEmpty\/1/, '装成了水单元')
+      return { text: '楼梯四级都朝南放好了；钢管道方块要 2 级以上的扳手，我身上的扳手是 0 级的；桶和单元都装上了水。' }
     }),
   )
   const scripted = llm.remaining
@@ -152,18 +175,21 @@ async function main(): Promise<number> {
       for (let y = cy - 1; y <= cy + 5; y++) for (let x = cx - 6; x <= cx + 6; x++) for (let z = cz - 6; z <= cz + 6; z++) await set(x, y, z, y === cy - 1 ? 'minecraft:stone' : 'minecraft:air')
       for (const wx of [cx + 2, cx + 4]) for (let z = cz - 4; z <= cz + 3; z++) for (let y = cy; y <= cy + 4; y++) await set(wx, y, z, 'minecraft:stone')
       for (let z = cz + 1; z <= cz + 3; z++) await set(cx + 3, cy + 3, z, 'minecraft:stone')
+      for (const w of [pool, pool2]) await set(w.x, w.y, w.z, 'minecraft:water')
+      await set(pitFloor.x, pitFloor.y, pitFloor.z, 'minecraft:stone')
+      await set(pitFloor.x, pitFloor.y + 1, pitFloor.z, 'minecraft:air')
       const placed = await set(casing.x, casing.y, casing.z, CASING, 13)
       if (!/placed/i.test(placed)) throw new Error(`摆钢管道方块：${placed}`)
       say(await rcon.send(`tp ${BOT} ${cx} ${cy} ${cz}`))
       await rcon.send(`clear ${BOT}`)
-      for (const give of [`${STAIRS} 8 0`, 'minecraft:ladder 2 0', 'minecraft:iron_pickaxe 1 0', 'gregtech:gt.metatool.01 1 16']) say(await rcon.send(`give ${BOT} ${give}`))
+      for (const give of [`${STAIRS} 8 0`, 'minecraft:ladder 2 0', 'minecraft:iron_pickaxe 1 0', 'gregtech:gt.metatool.01 1 16', 'minecraft:bucket 1 0', 'IC2:itemCellEmpty 1 0']) say(await rcon.send(`give ${BOT} ${give}`))
     } finally {
       rcon.close()
     }
     await sleep(1000)
 
     say('面板上对它说：在梯道里放四级朝南升的楼梯上二楼，再看看那块钢管道方块拆不拆得动')
-    await brain.call('POST', '/command', { text: '在东边那条梯道里放四级往南升的云杉木楼梯通到二楼；再试试放楼梯和梯子；最后看看那块钢管道方块拆不拆得动。' })
+    await brain.call('POST', '/command', { text: '在东边那条梯道里放四级往南升的云杉木楼梯通到二楼；再试试放楼梯和梯子；再看看那块钢管道方块拆不拆得动；最后拿桶和空单元装点水。' })
     await until('脚本用完、大脑空闲', async () => {
       if (problems.length > 0) return true
       if (llm.remaining !== 0) return false
@@ -191,6 +217,9 @@ async function main(): Promise<number> {
     }
     const status = await game.botStatus(BOT)
     say(`${BOT} 现在在 ${JSON.stringify(status.block)}`)
+    const pit = await game.worldBlock({ ...pitFloor, y: pitFloor.y + 1 })
+    say(`坑里：${pit.id}/${pit.meta}`)
+    if (pit.id !== 'minecraft:water' && pit.id !== 'minecraft:flowing_water') throw new Error('坑里没有水')
     const casingNow = await game.worldBlock(casing)
     if (casingNow.id !== CASING) throw new Error('钢管道方块不见了')
     say(`✔ 走完了：干活线调了 ${calls} 次模型（脚本 ${scripted} 步）`)

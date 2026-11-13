@@ -77,6 +77,33 @@ public final class UseTask extends Task {
     private boolean heldPlacesBlock;
     /** Why the block in the hand did not go in, by the game's own checks; null when it did or nothing is known. */
     private String notPlaced;
+    /**
+     * The block clicked is a liquid. No click can be aimed at a liquid: a player looks at it from where it is seen,
+     * the crosshair falls on the solid block behind it (or on nothing), and an item that takes liquids (a bucket, a
+     * cell) finds the liquid with a look of its own. So does the bot.
+     */
+    private boolean liquid;
+    /**
+     * No place to stand was found from where the face to click is in sight (a player clicks only what it sees): the
+     * click was made from within reach as before, through whatever is in front of the face; an item's own look (a
+     * bucket pouring) meets what is in front.
+     */
+    private boolean faceUnseen;
+    private Goal fallbackGoal;
+    private boolean recentredForSight;
+    private int recentring;
+    /** The point of the liquid looked at: {face, x, y, z}, each of x, y, z 0..1 from the block's lowest corner. */
+    private double[] lookPoint;
+    /** For a liquid: what the first click went to (the crosshair's block), or nothing within reach. */
+    private JsonObject crosshair;
+    private boolean crosshairNone;
+    /** Clicks after which the item was also used in the air, as a player's client does when its click came to nothing. */
+    private int inAir;
+    /** What the item's own look met at the first of those: the first block or liquid source. */
+    private JsonObject looking;
+    private boolean lookingAtNothing;
+    /** The item in the hand at the first click. */
+    private ItemStack heldAtFirst;
 
     public UseTask(JsonObject params) {
         super("use", params);
@@ -122,8 +149,20 @@ public final class UseTask extends Task {
             if (!withinTravel(on[0], on[2])) return;
             phase = "going there";
             nav = new Navigator(bot);
+            net.minecraft.world.World w = bot.player().worldObj;
+            liquid = !left && w.blockExists(on[0], on[1], on[2]) && w.getBlock(on[0], on[1], on[2])
+                .getMaterial()
+                .isLiquid();
             // A face is clicked from the side it looks at.
-            Goal goal = side >= 2 ? Goal.reachFacing(on[0], on[1], on[2], side) : Goal.reach(on[0], on[1], on[2], false);
+            Goal near = side >= 2 ? Goal.reachFacing(on[0], on[1], on[2], side) : Goal.reach(on[0], on[1], on[2], false);
+            Goal goal;
+            if (left) {
+                goal = near;
+            } else {
+                // A player clicks what it sees: somewhere the face (a liquid: the liquid) is in sight, within reach.
+                goal = alu.aiplayer.act.Sight.seeing(w, on[0], on[1], on[2], side, liquid);
+                if (!liquid) fallbackGoal = near;
+            }
             nav.go(goal, Rules.NATURAL_ONLY, false);
         }
     }
@@ -146,9 +185,18 @@ public final class UseTask extends Task {
         if (on == null) {
             bot.conn()
                 .useItem();
+        } else if (liquid) {
+            clickLiquid(p);
+            clicks++;
+            return true;
         } else {
             int face = side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2]);
             float[] at = hit != null ? hit : side >= 0 ? middle(face) : new float[] { 0.5F, 0.5F, 0.5F };
+            if (!left && lookPoint != null) {
+                // The face and the point of it that is in sight.
+                face = (int) lookPoint[0];
+                at = new float[] { (float) lookPoint[1], (float) lookPoint[2], (float) lookPoint[3] };
+            }
             Motion.face(p, on[0] + at[0], on[1] + at[1], on[2] + at[2]);
             if (left) {
                 if (item == null && !Inventories.holdNothing(bot)) return false;
@@ -172,10 +220,12 @@ public final class UseTask extends Task {
             ItemStack held = p.inventory.getCurrentItem();
             ItemStack heldCopy = held == null ? null : held.copy();
             if (first) {
+                heldAtFirst = heldCopy;
                 placeAt = Placer.targetOfClick(p.worldObj, on[0], on[1], on[2], face);
                 placeBefore = blockAt(p, placeAt);
                 heldPlacesBlock = heldCopy != null && Orientation.blockOf(heldCopy.getItem()) != null;
             }
+            String before = trace(p);
             bot.conn()
                 .useOnBlock(on[0], on[1], on[2], face, at[0], at[1], at[2]);
             // A block in the hand that did not go in: why, by the game's own checks, while the world is as it was.
@@ -191,6 +241,7 @@ public final class UseTask extends Task {
                     notPlaced = Placer.whyNotPlaced(bot, heldCopy, placeAt[0], placeAt[1], placeAt[2], face);
                 }
             }
+            alsoInAir(p, before, first);
         }
         bot.conn()
             .swingArm();
@@ -199,11 +250,116 @@ public final class UseTask extends Task {
     }
 
     /**
+     * A right-click at a liquid, as a player makes it: looking at the point of it that is seen, the click goes to the
+     * block the crosshair is on (liquids are looked through; it may be the block behind or under the liquid, or
+     * nothing within reach), and when that comes to nothing the item is used in the air, where a bucket or a cell
+     * finds the liquid along the look.
+     */
+    private void clickLiquid(EntityPlayerMP p) {
+        boolean first = clicks == 0;
+        Motion.face(p, on[0] + lookPoint[1], on[1] + lookPoint[2], on[2] + lookPoint[3]);
+        net.minecraft.util.MovingObjectPosition mo = alu.aiplayer.act.Sight.crosshair(p);
+        ItemStack held = p.inventory.getCurrentItem();
+        if (first) {
+            heldAtFirst = held == null ? null : held.copy();
+            if (mo == null) crosshairNone = true;
+            else crosshair = alu.aiplayer.act.Sight.json(p.worldObj, mo);
+            heldPlacesBlock = held != null && Orientation.blockOf(held.getItem()) != null;
+            if (mo != null && heldPlacesBlock) {
+                // A block in the hand goes against the block under the crosshair.
+                placeAt = Placer.targetOfClick(p.worldObj, mo.blockX, mo.blockY, mo.blockZ, mo.sideHit);
+                placeBefore = blockAt(p, placeAt);
+            }
+        }
+        String before = trace(p);
+        if (mo != null) {
+            float hx = (float) (mo.hitVec.xCoord - mo.blockX), hy = (float) (mo.hitVec.yCoord - mo.blockY),
+                hz = (float) (mo.hitVec.zCoord - mo.blockZ);
+            if (item == null) {
+                alu.aiplayer.act.ContainerSession.clickEmptyHanded(bot, mo.blockX, mo.blockY, mo.blockZ, mo.sideHit, hx, hy, hz);
+                return;
+            }
+            bot.conn()
+                .useOnBlock(mo.blockX, mo.blockY, mo.blockZ, mo.sideHit, hx, hy, hz);
+        }
+        if (item == null) return;
+        if (mo == null) {
+            // Nothing under the crosshair: the client only uses the item in the air.
+            useInAir(p, first);
+        } else {
+            alsoInAir(p, before, first);
+        }
+        bot.conn()
+            .swingArm();
+    }
+
+    /**
+     * After a click on a block with an item in the hand: when nothing at all came of it, the item is also used in the
+     * air, along the same look. A player's client does that whenever its click on a block came to nothing (a bucket
+     * fills or empties that way, food is eaten that way).
+     */
+    private void alsoInAir(EntityPlayerMP p, String before, boolean first) {
+        if (p.inventory.getCurrentItem() == null || !before.equals(trace(p))) return;
+        useInAir(p, first || inAir == 0);
+    }
+
+    private void useInAir(EntityPlayerMP p, boolean record) {
+        if (record && looking == null && !lookingAtNothing) {
+            net.minecraft.util.MovingObjectPosition mo = alu.aiplayer.act.Sight.itemRay(p);
+            if (mo == null) lookingAtNothing = true;
+            else looking = alu.aiplayer.act.Sight.json(p.worldObj, mo);
+        }
+        inAir++;
+        bot.conn()
+            .useItem();
+    }
+
+    /** Everything a click could visibly change: what the bot carries and holds, the blocks concerned, a screen. */
+    private String trace(EntityPlayerMP p) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(carried(p));
+        ItemStack h = p.inventory.getCurrentItem();
+        if (h != null) {
+            net.minecraft.nbt.NBTTagCompound t = new net.minecraft.nbt.NBTTagCompound();
+            h.writeToNBT(t);
+            sb.append(t);
+        }
+        sb.append(blockAt(p, on));
+        if (placeAt != null) sb.append(blockAt(p, placeAt));
+        if (crosshair != null) sb.append(blockAt(p, new int[] { crosshair.get("x").getAsInt(), crosshair.get("y").getAsInt(), crosshair.get("z").getAsInt() }));
+        sb.append(p.openContainer != p.inventoryContainer)
+            .append(p.isUsingItem());
+        Map<String, String> d = data(p);
+        if (d != null) sb.append(d);
+        return sb.toString();
+    }
+
+    /** Why the bot found no place to look at the liquid from. */
+    private String unseen(EntityPlayerMP p) {
+        net.minecraft.world.World w = p.worldObj;
+        StringBuilder sb = new StringBuilder("found nowhere to stand within reach from where the liquid at (" + on[0] + "," + on[1] + "," + on[2] + ") can be seen");
+        sb.append(" (a liquid is used by looking at it, as a player fills a bucket: a face of it must be in sight with nothing in front");
+        if (side >= 0) sb.append(", here its ").append(SIDES[side]).append(" face");
+        sb.append(")");
+        if (w.blockExists(on[0], on[1] + 1, on[2]) && w.getBlock(on[0], on[1] + 1, on[2]) == w.getBlock(on[0], on[1], on[2])) {
+            sb.append("; the block above it is the same liquid, so this one lies under the surface: a block at the surface can be seen");
+        }
+        return sb.toString();
+    }
+
+    /**
      * Whether the server's own protection refused the click on the block (it was then not made, and nothing could
      * come of it); the task fails saying what protects the block.
      */
     private boolean refusedByServer() {
-        if (on == null || bot.serverRefusal(on[0], on[1], on[2]) == null) return false;
+        if (on == null) return false;
+        if (liquid && crosshair != null) {
+            int cx = crosshair.get("x").getAsInt(), cy = crosshair.get("y").getAsInt(), cz = crosshair.get("z").getAsInt();
+            if (bot.serverRefusal(cx, cy, cz) == null) return false;
+            fail("denied", bot.refused("right-clicking the block under the crosshair"), bot.refusalDetail(cx, cy, cz));
+            return true;
+        }
+        if (bot.serverRefusal(on[0], on[1], on[2]) == null) return false;
         fail("denied", bot.refused(left ? "left-clicking it" : "right-clicking it"), bot.refusalDetail(on[0], on[1], on[2]));
         return true;
     }
@@ -241,14 +397,41 @@ public final class UseTask extends Task {
                     Navigator.Status st = nav.tick();
                     if (st == Navigator.Status.WORKING) return;
                     if (st == Navigator.Status.FAILED) {
-                        fail(nav.failCode, "cannot get there: " + nav.failMessage);
+                        if (fallbackGoal != null) {
+                            // Nowhere it is seen from: within reach will do, as before; the result says so.
+                            faceUnseen = true;
+                            nav.go(fallbackGoal, Rules.NATURAL_ONLY, false);
+                            fallbackGoal = null;
+                            return;
+                        }
+                        fail(nav.failCode, liquid ? unseen(p) : "cannot get there: " + nav.failMessage);
                         return;
                     }
-                    if (!Reach.canReach(p, on[0], on[1], on[2])) {
+                    if (!left) {
+                        lookPoint = alu.aiplayer.act.Sight.lookPoint(p, on[0], on[1], on[2], side, hit, liquid);
+                        if (lookPoint == null && !faceUnseen) {
+                            // Off the middle of its cell the look differs from the one planned: to the middle once.
+                            if (!recentredForSight) {
+                                recentredForSight = true;
+                                recentring = 10;
+                            }
+                            if (recentring-- > 0) {
+                                bot.motion.moveToward(p, bot.blockX() + 0.5, bot.blockZ() + 0.5);
+                                return;
+                            }
+                        }
+                        if (lookPoint == null && !liquid) faceUnseen = true;
+                    }
+                    if (liquid) {
+                        if (lookPoint == null) {
+                            fail("out_of_reach", unseen(p));
+                            return;
+                        }
+                    } else if (!Reach.canReach(p, on[0], on[1], on[2])) {
                         fail("out_of_reach", "the block is out of reach");
                         return;
                     }
-                    if (side >= 0 && !alu.aiplayer.act.Drawers.inFront(p, on[0], on[1], on[2], side)) {
+                    if (!liquid && lookPoint == null && side >= 0 && !alu.aiplayer.act.Drawers.inFront(p, on[0], on[1], on[2], side)) {
                         fail("out_of_reach", "the bot could not get to where the " + SIDES[side] + " face of that block can be clicked");
                         return;
                     }
@@ -359,6 +542,56 @@ public final class UseTask extends Task {
         if (moving > 0) o.addProperty("dataMovingLeftOut", moving);
     }
 
+    /** The liquid clicked: which fluid, and whether it is a source (meta 0) or flowing. */
+    private JsonObject liquidJson(net.minecraft.world.World w) {
+        JsonObject o = new JsonObject();
+        net.minecraft.block.Block b = w.getBlock(on[0], on[1], on[2]);
+        String was = blockBefore == null ? null : blockBefore;
+        net.minecraftforge.fluids.Fluid f = net.minecraftforge.fluids.FluidRegistry.lookupFluidForBlock(b);
+        if (f == null && was != null) {
+            net.minecraft.block.Block old = Names.block(was.substring(0, was.lastIndexOf('/')));
+            if (old != null) f = net.minecraftforge.fluids.FluidRegistry.lookupFluidForBlock(old);
+        }
+        if (f != null) {
+            o.addProperty("fluid", f.getName());
+            o.addProperty("name", f.getLocalizedName());
+        }
+        if (was != null) o.addProperty("source", was.endsWith("/0"));
+        return o;
+    }
+
+    /**
+     * Whether the game knows the item in the hand as a container of that liquid: the filled item its fluid registry
+     * gives for it (an empty bucket and water give a water bucket), or the item keeping fluid in itself. Null when
+     * the hand was empty or the liquid is no registered fluid.
+     */
+    private JsonObject fillJson() {
+        if (heldAtFirst == null || blockBefore == null) return null;
+        net.minecraft.block.Block b = Names.block(blockBefore.substring(0, blockBefore.lastIndexOf('/')));
+        net.minecraftforge.fluids.Fluid f = b == null ? null : net.minecraftforge.fluids.FluidRegistry.lookupFluidForBlock(b);
+        if (f == null) return null;
+        JsonObject o = new JsonObject();
+        try {
+            ItemStack one = heldAtFirst.copy();
+            one.stackSize = 1;
+            ItemStack filled = net.minecraftforge.fluids.FluidContainerRegistry
+                .fillFluidContainer(new net.minecraftforge.fluids.FluidStack(f, net.minecraftforge.fluids.FluidContainerRegistry.BUCKET_VOLUME), one);
+            if (filled != null) {
+                JsonObject k = new JsonObject();
+                k.addProperty("id", Names.itemId(filled.getItem()));
+                k.addProperty("meta", filled.getItemDamage());
+                k.addProperty("name", Names.displayName(filled));
+                o.add("filledIs", k);
+            }
+        } catch (Throwable t) {
+            // a container the registry cannot answer for
+        }
+        if (heldAtFirst.getItem() instanceof net.minecraftforge.fluids.IFluidContainerItem) o.addProperty("holdsFluidItself", true);
+        if (o.entrySet()
+            .isEmpty()) o.addProperty("none", true);
+        return o;
+    }
+
     private static String blockAt(EntityPlayerMP p, int[] at) {
         net.minecraft.world.World w = p.worldObj;
         if (!w.blockExists(at[0], at[1], at[2])) return "?";
@@ -394,7 +627,18 @@ public final class UseTask extends Task {
         o.addProperty("used", heldBefore == null ? "an empty hand" : heldBefore);
         o.addProperty("clicks", clicks);
         if (on != null && clicks > 0) {
-            o.addProperty("side", SIDES[side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2])]);
+            if (liquid && lookPoint != null) {
+                // Looked at, not clicked: no click can be aimed at a liquid.
+                o.addProperty("lookedAt", SIDES[(int) lookPoint[0]]);
+                o.add("liquid", liquidJson(p.worldObj));
+                if (crosshair != null) o.add("crosshair", crosshair);
+                if (crosshairNone) o.addProperty("crosshairNone", true);
+                JsonObject fill = fillJson();
+                if (fill != null) o.add("fluidContainer", fill);
+            } else {
+                o.addProperty("side", SIDES[lookPoint != null && !left ? (int) lookPoint[0] : side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2])]);
+                if (faceUnseen && !left) o.addProperty("faceUnseen", true);
+            }
             if (left) o.addProperty("left", true);
             // The block clicked, before and after: a block that changed or went away shows here.
             if (blockBefore != null) {
@@ -415,6 +659,11 @@ public final class UseTask extends Task {
                 if (notPlaced != null) o.addProperty("notPlaced", notPlaced);
             }
             dataChanges(p, o);
+        }
+        if (inAir > 0) {
+            o.addProperty("alsoInAir", inAir);
+            if (looking != null) o.add("looking", looking);
+            if (lookingAtNothing) o.addProperty("lookingAtNothing", true);
         }
         o.add("gained", gained);
         o.add("lost", lost);

@@ -1,7 +1,8 @@
-// 放方块和挖方块：意见簿 f16（楼梯朝向指定不了；拿着梯子对墙右键，结果只说“点的那一格还是混凝土”，它以为放了个空）和拍视频时的
-// 工具缺口（钢管道方块铁镐、钒钢镐都“挖不了”，probe 只给 harvest:false，它查了一圈也不知道要的是扳手）。
+// 放方块和挖方块：意见簿 f16（楼梯朝向指定不了；拿着梯子对墙右键，结果只说“点的那一格还是混凝土”，它以为放了个空）、拍视频时的
+// 工具缺口（钢管道方块铁镐、钒钢镐都“挖不了”，probe 只给 harvest:false，它查了一圈也不知道要的是扳手）和意见簿 f24（空桶、空单元
+// 对水源右键没反应）。
 // 这里是模拟身体（npm run mock-bridge、面板开发用的）照协议应答的那部分：probe 带 needs 和每件工具的等级，use 拿着方块点一个面时
-// 报方块进的那一格、没进去的原因。真的身体怎么做的在测试服上测（test/live-place.ts）；大脑怎么说给模型听在 tools.test.ts。
+// 报方块进的那一格、没进去的原因，对着水时看着水面右键、装满。真的身体怎么做的在测试服上测（test/live-place.ts）；大脑怎么说给模型听在 tools.test.ts。
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -49,5 +50,30 @@ describe('模拟身体：放方块的那一格、挖方块要什么工具', () =
     const second = await use()
     assert.deepEqual([second.placeCell, second.lost], [{ x: 0, y: 65, z: 0, before: 'minecraft:spruce_stairs/0', now: 'minecraft:spruce_stairs/0' }, []])
     assert.equal(second.notPlaced, 'the cell the block would go into, (0,65,0), is taken by minecraft:spruce_stairs/0 "Spruce Wood Stairs"')
+  })
+
+  it('对着水用空桶（意见簿 f24）：看着水的上表面右键，桶装满、那格水没了；对着流动的水装不了，照实写着不是源方块', async (t) => {
+    const bridge = new MockBridge({ bots: ['Alu'] })
+    await bridge.start()
+    const client = new BridgeClient({ address: () => ({ host: '127.0.0.1', port: bridge.port }), token: () => bridge.token, clientName: 'brain/test', requestTimeoutMs: 2000, reconnectMinMs: 20, reconnectMaxMs: 100, resume: { load: () => undefined, save: () => {} } })
+    client.start()
+    t.after(async () => {
+      client.stop()
+      await bridge.stop()
+    })
+    await waitFor('connected', () => client.isConnected())
+    const api = new BridgeApi(client)
+    bridge.bots.get('Alu')!.inventory = [{ slot: 0, id: 'minecraft:bucket', meta: 0, count: 2, name: 'Bucket' }]
+    bridge.liquids.set('2,64,2', { id: 'minecraft:water', meta: 0, name: 'Water', fluid: 'water' })
+    bridge.liquids.set('3,64,2', { id: 'minecraft:water', meta: 1, name: 'Water', fluid: 'water' })
+    const use = async (x: number) => {
+      const started = await api.taskStart('Alu', { type: 'use', item: { id: 'minecraft:bucket' }, on: { x, y: 64, z: 2 } })
+      return (await api.taskList('Alu')).recent?.find((r) => r.id === started.task.id)?.result as Record<string, unknown>
+    }
+    const source = await use(2)
+    assert.deepEqual([source.lookedAt, source.liquid, source.blockNow, source.gained], ['up', { fluid: 'water', name: 'Water', source: true }, 'minecraft:grass/0', [{ id: 'minecraft:water_bucket', meta: 0, name: 'Water Bucket', count: 1 }]])
+    const flowing = await use(3)
+    assert.deepEqual([(flowing.liquid as { source: boolean }).source, flowing.gained], [false, []])
+    assert.equal((await api.worldBlock({ x: 2, y: 64, z: 2 })).liquid, false)
   })
 })
