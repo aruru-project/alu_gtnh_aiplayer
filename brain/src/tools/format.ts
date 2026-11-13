@@ -345,6 +345,8 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
   if (task.type === 'blueprint') {
     if (detail && Object.keys(detail).length > 0) out.error = blueprintErrorLines(detail)
     if (result && Object.keys(result).length > 0) out.result = blueprintResultLines(result)
+  } else if (task.type === 'collect') {
+    if (result && Object.keys(result).length > 0) out.result = collectResultLines(result)
   } else if (task.type === 'craft') {
     if (detail && Array.isArray(detail.missing)) out.error = craftErrorLines(detail)
     if (result && isRecord(result.item)) out.result = craftResultLines(result)
@@ -1034,6 +1036,29 @@ export function areaResultLines(result: Record<string, unknown>): string[] {
   return [compactJson(withLocalNames(trimTaskResult(rest)), 600), ...(from ? [from] : []), ...skippedLines(result), ...cameOutLines(result), ...terrainLines(result)]
 }
 
+
+/** 捡不到的物品逐堆列全：实际位置和整句原因不能被紧凑 JSON 截掉。地形改动由 taskLines 的通用分支追加。 */
+function collectResultLines(result: Record<string, unknown>): string[] {
+  const rest = { ...result }
+  const head: string[] = []
+  for (const key of ['pickedUpStacks', 'disappearedTargets'] as const) {
+    if (typeof result[key] === 'number') {
+      head.push(`${key} ${result[key]}`)
+      delete rest[key]
+    }
+  }
+  const lines = head.length > 0 ? [head.join(', ')] : []
+  if (Array.isArray(result.remaining)) {
+    delete rest.remaining
+    if (result.remaining.length > 0) lines.push('remaining (not picked up):')
+    for (const item of result.remaining.filter(isRecord)) {
+      const entity = typeof item.entityId === 'number' ? ` (entity ${item.entityId})` : ''
+      lines.push(`- ${kindText(item.count, item)} at ${pointText(item)}${entity}: ${String(item.reason ?? 'reason not reported')}`)
+    }
+  }
+  if (Object.keys(rest).length > 0) lines.push(`other: ${compactJson(withLocalNames(rest), 300)}`)
+  return lines
+}
 
 function hasTerrainLines(result: Record<string, unknown>): boolean {
   return TERRAIN_KEYS.some((k) => result[k] !== undefined)
