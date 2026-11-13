@@ -310,13 +310,14 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 说话（对话线） | `say`（公共聊天，所有人都看到）`whisper`（悄悄话）。对话线不调工具写的字不进游戏，只给主人在面板上看（日志 `reply`） | `recent_chat`（最近的聊天记录，带每句话的说话人当时站在哪、指着什么；两条线都能用）`read_log`（翻自己的活动日志：按第几轮、按时间、按词、按类别；对话历史里换成交接记录的那些轮，原文在这里；两条线都能用） |
 | 两条线之间 | 对话线：`tell_worker`（交事、带话；这一轮里的人的原话原样附上）`worker_status`（干活线在干什么）`stop_work`（让一切停下）`start_helper`（派一个子思维出去想一件事）`helper_status`（看子思维、停一个）。干活线：`report`（汇报、提问） | |
 | 看 | `get_status` `look_around` `scan_area` `inspect_block`（一个方块是什么、罐里有什么流体、各面的覆盖板；带 `detail` 是它自己存的全部数据，原样给）`find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
+| 实体 | `look_around`（只给摘要） | `list_entities`（分页逐只身份/维度/精确位置/可观察状态；entity精查，detail/path读非玩家自己的状态；动作仍用use_item） |
 | 仓库 | `list_containers`（一页页列，标出接着管道的；一页里每个容器只列前 30 种，给 `at` 和 `radius: 0` 把一个容器看全，程序拿到的 `data` 一直是全的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
 | 走动（干活线） | `go_to`（给了 `y` 时 `range` 也管高度；默认不垫方块，`climb: true` 才垫，`takeBack: true` 到了把够得着的垫脚拆掉；结果里写着和要的高度差几格、路上垫了哪几块还在不在、挖掉了哪几块）`go_to_player` `follow_player` `go_home` | |
 | 服务器指令（干活线） | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明） | |
 | 地形（干活线） | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` | |
 | 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）；干活线：`build_blueprint` | `check_blueprint`（图纸放在某处时现场差什么）`read_blueprint`（图纸或草稿里有什么：材料表和每一格，不用知道它放在哪） |
 | 写程序 | `run_program`（当场跑完，只能调查询类的；两条线各跑各的，互不挡着）`view_draft`（草稿，加 `blueprint` 是服务器上的图纸）；干活线：`start_routine` `routine_status` `stop_routine`（后台例程，能调动作）`publish_draft` `delete_draft`；能看图的模型还有 `view_image` | 不能看图时 `view_image` 在这边，给尺寸和主要颜色 |
-| 物品（干活线） | `deposit_items` `withdraw_items`（位置，或者身上的一个包；位置带 `side` / `sneak` 是点那个面、蹲着开出来的界面——覆盖板里的东西这样存取）`collect_items` `give_items` `use_item`（右键：拿着身上的一件东西，或者空手；点方块的哪个面、哪一点、连点几下都能定——按钮、拉杆、抽屉的某一格） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
+| 物品（干活线） | `deposit_items` `withdraw_items`（位置，或者身上的一个包；位置带 `side` / `sneak` 是点那个面、蹲着开出来的界面——覆盖板里的东西这样存取）`collect_items` `give_items` `use_item`（拿东西或空手点方块/实体；on方块的面/点，entity稳定身份；left攻击实体或拍方块，times为次数） | `haul_items`（两个容器之间来回搬；会开任务，例程里调） |
 | 制作 | `find_item`（物品和流体；物品少时带上它的提示文字——玩家把鼠标放上去看到的那几行——和指南里讲它的页；`tip` 按提示里的字找物品）`find_recipes`（物品或流体怎么来；可以按加工方式、原料、编程电路号筛；配方之外，凿子的组也照实列：这块东西能从同组的哪些凿出来）`find_machines`；干活线：`craft_item` `process_items` | `find_uses`（一样东西或一种流体能拿来做什么，含能凿成什么）`total_materials`（把选好的配方、凿子的一步、流体的一步的总原料算出来） |
 | 键盘（干活线） | `press_key`（按一下 mod 加的键，像玩家那样：打开背上那件的界面、开关它；不给键是列出有哪些键。结果是看得见的变化：开了什么界面、穿着的东西自己的数据哪个值变了、游戏说了什么）`hold_keys`（按住跳、潜行、朝一点前进一段时间，是任务；到某个高度、离地多高、离那个点多近时松手。穿着开着的直升机背包时就是升、降、飞） | |
 | 界面（通用，干活线） | `open_screen` `click_slot` `use_control` `close_screen`（打开任何带界面的方块或身上的东西，看格子、点格子：给没有现成办法的界面用；`open_screen` 可以指定点哪个面、哪一点、蹲不蹲，结果里连界面上格子以外的控件一起列；`use_control` 按或者设这些控件——开关、选项、页签、流体格、按钮） | |

@@ -887,6 +887,18 @@ export interface BlueprintCheck {
 }
 
 export interface EntityInfo {
+  /** Stable identity. Runtime entityId is diagnostic only and must not be used as a persistent target. */
+  uuid?: string
+  entityId?: number
+  dim?: number
+  kind?: string
+  motion?: Vec3
+  state?: Record<string, unknown>
+  saved?: unknown
+  savedCut?: boolean
+  savedError?: string
+  savedUnavailable?: string
+  pathNotFound?: boolean
   type: 'player' | 'mob' | 'animal' | 'item' | 'other' | (string & {})
   name?: string
   pos?: Vec3

@@ -41,6 +41,8 @@ public final class BotConnection extends NetHandlerPlayServer {
     private volatile String kickReason;
     private boolean teleported;
     private int teleports;
+    private net.minecraft.entity.Entity clickingEntity;
+    private boolean entityEvent, entityDenied, damageDenied;
     private double teleX, teleY, teleZ;
 
     public BotConnection(MinecraftServer server, BotNetworkManager manager, EntityPlayerMP player,
@@ -185,6 +187,30 @@ public final class BotConnection extends NetHandlerPlayServer {
         ItemStack held = playerEntity.inventory.getCurrentItem();
         processPlayerBlockPlacement(ClientPackets.placement(-1, 255, -1, 255, held, 0, 0, 0));
         ModClients.usedInAir(this, held);
+    }
+
+    /** Ordinary C02 handler: Forge interaction/attack hooks, PvP and the target/item's own behavior all apply. */
+    public com.google.gson.JsonObject useOnEntity(net.minecraft.entity.Entity target, boolean left) {
+        clickingEntity = target;
+        entityEvent = entityDenied = damageDenied = false;
+        try {
+            processUseEntity(ClientPackets.entity(target.getEntityId(), left));
+            com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+            result.addProperty("event", entityEvent);
+            result.addProperty("denied", entityDenied || damageDenied);
+            return result;
+        } finally {
+            clickingEntity = null;
+        }
+    }
+
+    public void noteEntityEvent(net.minecraft.entity.Entity target, boolean canceled, boolean damage) {
+        if (target != clickingEntity) return;
+        if (damage) damageDenied |= canceled;
+        else {
+            entityEvent = true;
+            entityDenied |= canceled;
+        }
     }
 
     public void selectHotbar(int slot) {

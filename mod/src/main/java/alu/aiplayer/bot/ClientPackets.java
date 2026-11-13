@@ -5,6 +5,7 @@ import java.io.IOException;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.Packet;
 import net.minecraft.network.PacketBuffer;
+import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C07PacketPlayerDigging;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
@@ -66,6 +67,13 @@ final class ClientPackets {
         b.writeFloat(pitch);
         b.writeByte(onGround ? 1 : 0);
         return read(new C03PacketPlayer.C06PacketPlayerPosLook(), b);
+    }
+
+    static C02PacketUseEntity entity(int id, boolean left) {
+        PacketBuffer b = buffer();
+        b.writeInt(id);
+        b.writeByte(left ? 1 : 0);
+        return read(new C02PacketUseEntity(), b);
     }
 
     static C09PacketHeldItemChange heldItem(int slot) {

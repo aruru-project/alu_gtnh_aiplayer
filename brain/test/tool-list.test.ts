@@ -102,7 +102,7 @@ const ACTING = [
 const WORK_TOOLS_WITH_VISION = ['report', ...LOOKUPS, 'run_program', ...ACTING, ...NOTES]
 const TALK_TOOLS_WITH_VISION = ['say', 'whisper', 'tell_worker', 'worker_status', 'stop_work', 'start_helper', 'helper_status', ...LOOKUPS, 'run_program', ...NOTES]
 const TOOLS_WITH_VISION: Record<LineName, string[]> = { talk: TALK_TOOLS_WITH_VISION, work: WORK_TOOLS_WITH_VISION }
-const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
+const LIBRARY = ['recent_chat', 'read_log', 'list_stock', 'list_drawers', 'list_entities', 'find_uses', 'list_quest_lines', 'probe_block', 'check_blueprint', 'read_blueprint', 'haul_items', 'read_blocks', 'find_structure', 'check_structure', 'total_materials']
 const OLD_NAMES = ['list_blueprints', 'list_drafts', 'list_images', 'set_home', 'list_homes', 'join_team']
 
 describe('模型拿到的工具清单', () => {
@@ -162,7 +162,7 @@ describe('模型拿到的工具清单', () => {
     }
   })
 
-  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2400 字符；start_routine 的说明指过去', async (t) => {
+  it('库函数和合并掉的旧名字都不在清单里；run_program 的说明后面有库函数的索引，每个一行，整份不超过 2550 字符；start_routine 的说明指过去', async (t) => {
     for (const line of ['work', 'talk'] as const) {
       for (const vision of [true, false]) {
         const tools = await offered(setup(t, { vision }), line)
@@ -172,7 +172,8 @@ describe('模型拿到的工具清单', () => {
         const index = run.slice(run.indexOf('\nLibrary functions') + 1)
         // 上限从 2000 调到 2200：多了 read_log 的一行（约 200 字符）——历史压缩把较早的轮换成交接记录以后，靠它翻回原始记录
         // 上限从 2200 调到 2400：total_materials 的那一行长了约 120 字符——它现在照基地的做法展开整棵树、扣库存，结果里多了没定的、还缺的、活儿清单
-        assert.ok(index.length <= 2400, `the index is ${index.length} characters`)
+        // f30 list_entities 增加140字符；不能看图的work实际2483，完整身份/精查入口保留在库索引。
+        assert.ok(index.length <= 2550, `the index is ${index.length} characters`)
         const lines = index.split('\n')
         assert.equal(lines[0], 'Library functions are not in your tool list; a program calls them like tools. To read one: return (await tool(name, input)).text; to compute with one, use .data. Below: name {input}: what -> data')
         // 对话线的索引里只有只查不动的：会开任务的 haul_items 不在
@@ -263,7 +264,9 @@ describe('模型拿到的工具清单', () => {
   //           合进 main 以后（和图纸看图、任务书、等待、朝向、fill_area 朝向合在一起）：干活线实际 58,057、上限 58,400；对话线实际 29,039、上限 29,200。
   //   捡物寻路之后（意见簿 f31）：干活线 58,299 → 58,460（+161），上限 58,400 → 58,600。
   //           collect_items 的 dig/climb 两个参数：默认不挖不垫，模型能明确允许；身体旧调用保留原默认。对话线不变。
-  for (const [line, ceiling] of [['work', 58_600], ['talk', 29_200]] as const) {
+  // f30 实体：list_entities 库索引 +140（两条线）；use_item 的稳定实体目标/攻击参数净 +138。
+  // 与 f31 合并后 work 58,738 / talk 29,179；work 上限 58,800，talk 维持 29,200。
+  for (const [line, ceiling] of [['work', 58_800], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
@@ -368,7 +371,7 @@ describe('库函数：不在清单里，在程序里调', () => {
 
   it('调了一个不存在的名字：报错里分两组列出能调的——这条线的工具，和库函数；看图的两个按它能不能看图归组', async (t) => {
     const blind = (await modelCalls(setup(t, { vision: false }), 'fly_to_the_moon')).content
-    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, list_drawers, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
+    assert.match(blind, /^There is no tool named "fly_to_the_moon"\. Your tools: report, get_status, .*, report_problem\. Library functions \(in a program: await tool\(name, input\)\): recent_chat, read_log, list_stock, list_drawers, list_entities, find_uses, list_quest_lines, probe_block, check_blueprint, read_blueprint, haul_items, read_blocks, find_structure, check_structure, total_materials, view_area, view_image\.$/)
     assert.doesNotMatch(/Your tools: (.*)\. Library functions/.exec(blind)![1]!, /view_area|view_image|\bsay\b|whisper/)
     // 1100 → 1150：干活线多了 press_key、hold_keys 两个名字（实际 1,109）
     assert.ok(blind.length < 1150, `${blind.length} characters`)

@@ -102,6 +102,25 @@ public final class ServerEvents {
         else bot.notePunch(event.x, event.y, event.z, refused);
     }
 
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public void onEntityInteract(net.minecraftforge.event.entity.player.EntityInteractEvent event) {
+        Bot bot = bots.botOf(event.entityPlayer);
+        if (bot != null) bot.conn().noteEntityEvent(event.target, event.isCanceled(), false);
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public void onEntityAttack(net.minecraftforge.event.entity.player.AttackEntityEvent event) {
+        Bot bot = bots.botOf(event.entityPlayer);
+        if (bot != null) bot.conn().noteEntityEvent(event.target, event.isCanceled(), false);
+    }
+
+    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
+    public void onEntityDamage(net.minecraftforge.event.entity.living.LivingAttackEvent event) {
+        if (event.source == null || !(event.source.getEntity() instanceof EntityPlayer)) return;
+        Bot bot = bots.botOf((EntityPlayer) event.source.getEntity());
+        if (bot != null) bot.conn().noteEntityEvent(event.entityLiving, event.isCanceled(), true);
+    }
+
     /** Remembers when something refused a block a bot tried to place. */
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
     public void onPlace(BlockEvent.PlaceEvent event) {

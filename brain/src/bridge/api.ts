@@ -90,8 +90,11 @@ export class BridgeApi {
   worldContainers(center: Center, p: { radius?: number; offset?: number; limit?: number; kinds?: number } = {}): Promise<{ containers?: ContainerInfo[]; total?: number; offset?: number }> {
     return this.call('world.containers', { ...center, ...p })
   }
-  worldEntities(center: Center, p: { radius?: number } = {}): Promise<{ entities?: EntityInfo[]; total?: number }> {
+  worldEntities(center: Center, p: { radius?: number; offset?: number; limit?: number } = {}): Promise<{ entities?: EntityInfo[]; total?: number; offset?: number; more?: number }> {
     return this.call('world.entities', { ...center, ...p })
+  }
+  worldEntity(p: { uuid: string; dim: number; detail?: boolean; path?: string }): Promise<EntityInfo> {
+    return this.call('world.entity', p)
   }
 
   // 物品、配方、库存（只读）。服务器刚启动、配方索引还没建好时这几个方法返回 busy。

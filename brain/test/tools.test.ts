@@ -833,7 +833,7 @@ describe('任务类工具', () => {
       { type: 'use', item: { id: 'minecraft:dirt' }, on: { x: 5, y: 64, z: 5 }, side: 'south', hit: { x: 0.25, y: 0.75, z: 1 }, times: 2, every: 3 },
       { type: 'use', on: { x: 7, y: 65, z: 5 }, side: 'west' },
     ])
-    assert.deepEqual(await s.run('use_item', {}), { content: 'Give "id" (an item you carry) to use it, or "on" (a block) to right-click that block with an empty hand, or both.', isError: true })
+    assert.deepEqual(await s.run('use_item', {}), { content: 'Give id (an item to use in air), on (a block), or entity:{uuid,dim}.', isError: true })
     assert.deepEqual(await s.run('use_item', { id: 'minecraft:dirt', side: 'south' }), { content: '"side" and "hit" say where on a block to click: give the block as "on".', isError: true })
     assert.equal((await s.run('use_item', { id: 'minecraft:dirt', on: { x: 5, y: 64, z: 5 }, hit: { x: 2, y: 0, z: 0 } })).content, 'Invalid arguments for use_item: hit.x must be <= 1')
     assert.equal(s.game.callsOf('task.start').length, 2)
@@ -868,7 +868,7 @@ describe('任务类工具', () => {
     const s = setup(t)
     await s.run('use_item', { id: 'chisel:chisel', on: { x: -556, y: 66, z: 123 }, left: true })
     assert.deepEqual(s.game.callsOf('task.start').map((p) => p.task), [{ type: 'use', item: { id: 'chisel:chisel' }, on: { x: -556, y: 66, z: 123 }, left: true }])
-    assert.deepEqual(await s.run('use_item', { id: 'chisel:chisel', left: true }), { content: 'A left click is on a block: give the block as "on".', isError: true })
+    assert.deepEqual(await s.run('use_item', { id: 'chisel:chisel', left: true }), { content: 'A left click needs on (a block) or entity (a stable identity from list_entities).', isError: true })
     assert.equal(s.game.callsOf('task.start').length, 1)
     s.game.handlers['task.list'] = () => ({
       active: null,

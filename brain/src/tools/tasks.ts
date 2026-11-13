@@ -12,6 +12,7 @@ import type { Schema } from './schema.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { errorText } from '../util.ts'
+import { ENTITY } from './entities.ts'
 
 // 协议里的上限
 export const BLOCK_LIST_MAX = 256
@@ -524,25 +525,27 @@ export const giveItems: Tool = {
 export const useItem: Tool = {
   name: 'use_item',
   description:
-    'Right-click as a player does (task): holding an item you carry, in the air (eat, drink, wear it, open it) or on a block ("on"; you walk there first); without "id", with an empty hand on a block (a button, a lever). left: true makes it a left click on the block instead (a chisel carves the block in place). The result tells what changed: the block clicked before and now, items gained and lost, health, food, and the clicks made. Details: inventory manual.',
+    'Player clicks (task): hold a carried item, or omit id for an empty hand. Right-click in air (eat, drink, wear, open), on a block, or an entity from list_entities (shear, feed, etc.); walk into reach first, following a moving entity. left:true taps a block (e.g. chisel) or attacks the entity. Reports attempts and observed changes, not assumed success. Details: inventory manual.',
   inputSchema: obj({
-    id: str('Item to hold. Omit for an empty hand (then "on" is needed).'),
+    id: str('Item to hold. Omit for an empty hand (on or entity needed).'),
     meta: int('Its meta. Omit to match any.', { min: 0 }),
-    on: pos('Block to right-click. Omit to use the item in the air.'),
+    on: pos('Block to click; mutually exclusive with entity. Neither: use in air.'),
+    entity: ENTITY,
     side: str('Which face of the block to click (default: the one facing you). For a horizontal face you first walk in front of it.', { enum: USE_SIDES }),
     hit: obj({ x: num(undefined, { min: 0, max: 1 }), y: num(undefined, { min: 0, max: 1 }), z: num(undefined, { min: 0, max: 1 }) }, ['x', 'y', 'z'], 'The point of the block to click, each 0 to 1 from its lowest corner (default: the middle of the face).'),
     times: int('How many clicks in a row (default 1), like holding the button down.', { min: 1, max: 64 }),
     every: int('Ticks between the clicks (default 4).', { min: 1, max: 40 }),
     sneak: bool('true: sneak while using it; some items then do something else.'),
-    left: bool('true: a left click on the block "on" (pressed and let go; nothing that takes digging is dug).'),
+    left: bool('true: attack entity, or tap block on (nothing needing sustained digging is dug). times counts attacks too.'),
     queue,
   }),
-  async run(ctx, i: { id?: string; meta?: number; on?: unknown; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; left?: boolean; queue?: boolean }) {
-    if (i.left === true && i.on === undefined) return fail('A left click is on a block: give the block as "on".')
-    if (i.id === undefined && i.on === undefined) return fail('Give "id" (an item you carry) to use it, or "on" (a block) to right-click that block with an empty hand, or both.')
+  async run(ctx, i: { id?: string; meta?: number; on?: unknown; entity?: { uuid: string; dim: number }; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; left?: boolean; queue?: boolean }) {
+    if (i.entity !== undefined && i.on !== undefined) return fail('entity and on are mutually exclusive.')
+    if (i.left === true && i.on === undefined && i.entity === undefined) return fail('A left click needs on (a block) or entity (a stable identity from list_entities).')
+    if (i.id === undefined && i.on === undefined && i.entity === undefined) return fail('Give id (an item to use in air), on (a block), or entity:{uuid,dim}.')
     if (i.on === undefined && (i.side !== undefined || i.hit !== undefined)) return fail('"side" and "hit" say where on a block to click: give the block as "on".')
     const item = i.id === undefined ? undefined : i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }
-    return startTask(ctx, { type: 'use', item, on: i.on, side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak, ...(i.left === true ? { left: true } : {}) }, i.queue)
+    return startTask(ctx, { type: 'use', item, on: i.on, ...(i.entity === undefined ? {} : { entity: i.entity }), side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak, ...(i.left === true ? { left: true } : {}) }, i.queue)
   },
 }
 

@@ -252,7 +252,13 @@ public final class BridgeApi {
         bridge.register("world.entities", p -> {
             int[] c = centre(p);
             return WorldQueries
-                .entities(world(p), c[0] + 0.5, c[1], c[2] + 0.5, Math.max(1, J.i(p, "radius", 16)));
+                .entities(world(p), c[0] + 0.5, c[1], c[2] + 0.5, Math.max(1, J.i(p, "radius", 16)), J.i(p, "offset", 0), J.i(p, "limit", 80));
+        });
+        bridge.register("world.entity", p -> {
+            WorldServer w = world(p);
+            net.minecraft.entity.Entity e = alu.aiplayer.world.EntityView.find(w, alu.aiplayer.world.EntityView.uuid(J.reqStr(p, "uuid")));
+            if (e == null) throw RpcException.notFound("entity is not loaded/alive in dimension " + w.provider.dimensionId + ": " + J.reqStr(p, "uuid"));
+            return alu.aiplayer.world.EntityView.detail(e, J.bool(p, "detail", false), J.str(p, "path", null));
         });
 
         bridge.register("bot.list", p -> {

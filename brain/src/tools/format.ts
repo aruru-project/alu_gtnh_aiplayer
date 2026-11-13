@@ -1295,6 +1295,15 @@ export function craftResultLines(result: Record<string, unknown>): string[] {
  * 做了什么由那件物品自己决定，身体只报这些痕迹；什么都没变时明说，免得模型以为用成了。
  */
 export function useResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
+  if (params?.entity !== undefined || result.entityBefore !== undefined) {
+    const button = result.left === true ? 'left-click / attack' : 'right-click / interact'
+    const lines = [`Entity ${button}: ${String(result.clicks ?? 0)} attempt(s), ${String(result.entityEvents ?? 0)} normal game event(s). ${String(result.note ?? 'Compare observations; an attempted click is not proof of its intended effect.')}`]
+    // Preserve all observations, including drops, state and partial work on failure. No 200-character "other" cut.
+    for (const [key, value] of Object.entries(result)) {
+      if (!['clicks', 'entityEvents', 'left', 'note'].includes(key)) lines.push(`${key}: ${JSON.stringify(value)}`)
+    }
+    return lines
+  }
   const { used, gained, lost, openedScreen, health, food, freeSlots, clicks, side, left, blockBefore, blockNow, dataChanged, dataChangedMore, dataMovingLeftOut, placeCell, notPlaced, lookedAt, liquid, crosshair, crosshairNone, fluidContainer, alsoInAir, looking, lookingAtNothing, faceUnseen, ...rest } = result
   const item = isRecord(params?.item) ? params.item : undefined
   // 没指定 meta 时不按 id + meta 查名字（那会拿到 meta 0 的名字）：只拿服务器给的名字在这个 id 下对

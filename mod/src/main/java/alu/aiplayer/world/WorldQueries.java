@@ -13,10 +13,6 @@ import java.util.Set;
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.item.EntityItem;
-import net.minecraft.entity.monster.IMob;
-import net.minecraft.entity.passive.EntityAnimal;
-import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -914,7 +910,8 @@ public final class WorldQueries {
         return c;
     }
 
-    public static JsonObject entities(WorldServer w, double cx, double cy, double cz, int radius) {
+    public static JsonObject entities(WorldServer w, double cx, double cy, double cz, int radius, int offset, int limit) {
+        if (offset < 0 || limit < 1 || limit > 100) throw RpcException.badRequest("offset >= 0 and limit 1..100 required");
         if (radius > 64) throw RpcException.tooLarge("radius is limited to 64");
         AxisAlignedBB box = AxisAlignedBB
             .getBoundingBox(cx - radius, cy - radius, cz - radius, cx + radius, cy + radius, cz + radius);
@@ -928,31 +925,22 @@ public final class WorldQueries {
             found.add(en);
         }
         final double fx = cx, fy = cy, fz = cz;
-        Collections
-            .sort(found, (a, b) -> Double.compare(a.getDistanceSq(fx, fy, fz), b.getDistanceSq(fx, fy, fz)));
+        Collections.sort(found, (a, b) -> {
+            int d = Double.compare(a.getDistanceSq(fx, fy, fz), b.getDistanceSq(fx, fy, fz));
+            return d == 0 ? a.getUniqueID().compareTo(b.getUniqueID()) : d;
+        });
         JsonArray list = new JsonArray();
-        for (Entity en : found) {
-            if (list.size() >= 80) break;
-            JsonObject o = new JsonObject();
-            String type;
-            if (en instanceof EntityPlayer) type = "player";
-            else if (en instanceof IMob) type = "mob";
-            else if (en instanceof EntityAnimal) type = "animal";
-            else if (en instanceof EntityItem) type = "item";
-            else type = "other";
-            o.addProperty("type", type);
-            o.addProperty("name", en.getCommandSenderName());
-            o.add("pos", J.pos(en.posX, en.posY, en.posZ));
-            o.addProperty("dist", J.round(Math.sqrt(en.getDistanceSq(cx, cy, cz))));
-            if (en instanceof EntityItem) {
-                ItemStack s = ((EntityItem) en).getEntityItem();
-                if (s != null) o.add("item", Names.describe(s));
-            }
-            list.add(o);
+        for (int i = offset; i < found.size() && list.size() < limit; i++) {
+            Entity en = found.get(i);
+            JsonObject entry = EntityView.describe(en);
+            entry.addProperty("dist", J.round(Math.sqrt(en.getDistanceSq(cx, cy, cz))));
+            list.add(entry);
         }
         JsonObject o = new JsonObject();
         o.add("entities", list);
         o.addProperty("total", found.size());
+        o.addProperty("offset", offset);
+        o.addProperty("more", Math.max(0, found.size() - offset - list.size()));
         return o;
     }
 }

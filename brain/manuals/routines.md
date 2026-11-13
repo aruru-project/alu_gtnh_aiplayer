@@ -45,6 +45,7 @@ return took.text
 - 只查不动的在 run_program 和例程里都能调。haul_items 会开任务，只能在例程里调。
 - 各自的参数和 data：
   - list_stock { radius?, contains?, below?, at?, page? }：周围所有箱子和抽屉合成一张存货表。r.data.items 是 [{ id, meta, name, count, automated, places: [{ x, y, z, count, kind, automated }] }]（全部，不分页；r.text 一页 40 行）。at 是 { x, y, z }：以那个地方为中心看。
+  - list_entities { radius?, at?, page? }：实体逐只的 uuid、dim、kind、name、pos、motion、state；r.data 是 { entities, total, offset, more }，每页20只，more>0可翻页；动物移动会换序，合并按uuid去重。给 entity:{uuid,dim} 改为只看该实体，可带 detail/path 查它自己的状态。用 use_item 的 entity 点击它；详细用法见 inventory。
   - list_drawers { x, y, z, below?, page? }：抽屉管理器（或一个抽屉方块）的每一格。r.data.slots 是 [{ x, y, z, slot, id, meta, name, count, room, front, hit }]（空格是 { empty: true }；front / hit 是这一格的正面朝哪、点它时点的位置，可以原样交给 use_item 的 side / hit），r.data.total 是符合条件的总格数（一页 60 格，多了翻 page）。
   - find_uses { id, meta?, way?, contains?, page? }：一样东西能拿来做什么。只给 id/meta：r.data.ways 是 [{ way, name, recipes }]（每种方式几条）。给了 way、contains 或 page：r.data.recipes 是这一页的配方 [{ recipe, way, in: [{ id, meta, name, count } 或 { ore, name, count }], out: [{ id, meta, name, count, chance? }], fluidsIn?, eut?, ticks? }]，r.data.page、r.data.pages 是第几页、共几页。
   - list_quest_lines { player? }：任务书各章。r.data.lines 是 [{ name, en, quests, complete, available }]（后两项要有玩家的进度才有），r.data.unclaimed 是做完没领奖励的个数。

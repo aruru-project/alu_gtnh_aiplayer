@@ -49,7 +49,7 @@ public final class TaskFactory {
             case "process":
                 return new ProcessTask(params);
             case "use":
-                return new UseTask(params);
+                return params.has("entity") ? new EntityUseTask(params) : new UseTask(params);
             case "hold":
                 return new HoldTask(params);
             default:

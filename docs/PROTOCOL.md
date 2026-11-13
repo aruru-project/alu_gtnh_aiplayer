@@ -66,9 +66,12 @@
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
 | `world.containers` | `{radius?(≤32), offset?=0, limit?=40(≤100), kinds?=60(≤2000)}` + 中心 | `{containers:[Container…], total, offset}`，由近到远。**`total` 是范围里的总数，`containers` 只是从 `offset` 起的一页**，要看全就翻页。Container 见下 |
 | `world.drawers` | `{dim?,x,y,z, below?, offset?=0, limit?=200(≤500)}` | 一个抽屉管理器管着的全部抽屉（给的位置是普通抽屉时只有它自己），逐格列出，见下 |
-| `world.entities` | `{radius?(≤64)}` + 中心 | `{entities:[{type:"player"\|"mob"\|"animal"\|"item"\|"other",name,pos,dist,item?}], total}` |
+| `world.entities` | `{radius?(≤64), offset?=0, limit?=80(≤100)}` + 中心 | `{entities:[Entity…], total, offset, more}`。按距离、同距按 UUID 排；一页之外的数量在 `more`，不静默截断 |
+| `world.entity` | `{uuid, dim?, bot?, detail?=false, path?}` | 一个已加载的 Entity。找不到是 `not_found`，不加载区块。`detail/path` 读非玩家实体自己的存档状态，限额/显式省略/路径语法同 `world.block`；玩家只给公开观察，不暴露私人存档 |
 
 “中心”是 `{x,y,z}`，或者 `{bot}`（用该 bot 站的位置）。
+
+Entity 保留旧字段 `type,name,pos,dist,item?`，新增 `uuid`（稳定身份）、`dim`、`entityId`（仅当前运行期诊断用，不作持久目标）、`kind`（游戏的实体注册名，玩家为 `Player`）、`motion`、`state`。`pos/motion` 保留原始小数精度。`state` 有 `alive,burning,inWater,onGround,sneaking,invisible`；活物还有 `health,maxHealth,child`，动物还有 `inLove`，驯服动物有 `tamed,sitting,ownerUuid?`，羊有 `sheared,woolColor,woolMeta`（如红色 `red`、14）；骑乘有 `riding/rider` UUID。不认识的 mod 状态可精查 `detail/path`，省略处会明说。列表是每次查询时的实况，不是冻结的快照：动物移动会改变分页顺序；跨页合并按 UUID 去重，再动作时重新核对目标。
 
 Container：
 
@@ -598,7 +601,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180, leave?=false}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
-| `use` | `{item?:{id,meta?}, on?:{x,y,z}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on`），对着空中（不给 `on`：吃、喝、穿戴、打开它自己的界面）或者对着那个方块（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
+| `use` | `{item?:{id,meta?}, on?:{x,y,z}, entity?:{uuid,dim}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on` 或 `entity`），对着空中（不给目标：吃、喝、穿戴、打开它自己的界面）、方块 `on` 或实体 `entity`（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
 | `hold` | `{ticks(1–1200), jump?, sneak?, toward?:{x,z}, range?=1, y?, above?}` | 按住几个键一段时间，像玩家那样：`jump` 跳（空格）、`sneak` 潜行（Shift）、`toward` 朝那一列方块的中心按住前进（边走边转向它）。不找路、不挖不放，前面有什么就撞上什么。按了会怎样由世界和身上穿的东西决定（穿着开着的直升机背包，按住跳是往上升、按住潜行是往下降）。到 `ticks`、脚到 `y`（从下往上升到它，或从上往下降到它）、离地高度到 `above`（同样两个方向；0 是落地）、或者离 `toward` 水平不到 `range` 格时松手结束。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
@@ -647,7 +650,14 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。**东西照给的格子原样摆**：右边、下面空着的列和行不算（所以只占左上 2×2 的配方不用工作台），左边、上面空着的列和行是配方的一部分，不会被挪掉。这个包里的黏土铸模全是“空白黏土铸模 + 小刀”，出哪一种只看两样东西各摆在哪一格。
     只占左上 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
 - **随身的包当容器**：`deposit` / `withdraw` 的 `container` 除了位置，还可以写 `{item:{id,meta?}}`，意思是“我身上这件东西右键打开的那个界面”（背包一类）。不用走路；包本身不会被放进它自己里面；`deposit` 这样用时必须列出 `items`。身上没有这件东西是 `no_material`；右键后没有界面打开是 `invalid`。
-- **`use`**：
+- **`use` 对实体**（新增，旧的 `on` 方块含义不变）：
+  - `entity:{uuid,dim}` 来自实体查询，与 `on/side/hit` 互斥。手持仍由 `item` 指定，不给为空手；默认右键，`left:true` 为攻击。`times/every` 对两种按钮都有效：攻击 `times:2` 就是两次攻击，不是自动战斗。只按明确次数点击，不选敌人、不自动追杀。
+  - 每 tick 重找 UUID、每次点击前复查目标维度、存活、真实位置和触及距离。移动目标会重规划走近，遵守普通寻路与保护；最多累计接近 60 秒。按生存客户端的实体触及范围（眼睛到目标可见点 ≤3 格），不利用服务器更宽松的收包距离；攻击还先走到实体脚距2格内（GTNH的Battlegear2把空手攻击限为2.3格），再交给真实攻击事件决定。方块或前景实体挡住不隔空点。
+  - 动作走玩家的 `C02PacketUseEntity`，由游戏的 `interactWith/attackTargetEntityWithCurrentItem` 执行；Forge `EntityInteractEvent/AttackEntityEvent`、伤害、PvP、领地保护、工具耐久、物品消耗与自然掉落照常。身体不改羊的剪毛标志、不直接生成羊毛、不发奖励。游戏不允许攻击的掉落物/经验球/箭/自己会如实拒绝，避免发无效包被踢。
+  - `not_found`：目标不再已加载/存活（可能消失、死亡、离开已加载区块）；`wrong_dimension`：bot 与选定维度不符，或目标已到另一已加载维度；`out_of_reach`：找不到够得着且能看见的站位，附寻路原因；`stuck`：60 秒接近仍没追到；事件被取消为 `denied`。失败结果仍保留已尝试的次数和观察，绝不改用另一只同类动物。
+  - 结果 `{clicks,entityEvents,left,used,note,entityBefore?,entityNow?,newNearbyDrops:[Entity…],gained?,lost?,heldBefore?,heldNow?,openedScreen?}`。`entityBefore` 是第一次点之前、`entityNow` 是结束时的观察，`newNearbyDrops` 是点击前后附近4格内新出现的物品实体（不是凭空算出的奖励，也不保证还留在原处）；`gained/lost` 为背包变化。`done` 只表示请求的点击尝试结束，**不等于剪毛/喂食/伤害一定发生**：看前后 `state`、消耗、掉落；事件被取消会失败，没变化不捏造原因。最后一下杀死目标可完成，目标在还有下次点击时消失则失败。打开界面时停止余下点击并关掉界面。
+  - 实测（GTNH测试服，真大脑＋脚本模型，`brain/test/live-entities.ts`）：50格外观察到红羊，羊又移动约3格后仍追到同一UUID；剪毛 `sheared:false→true`、红色不变、自然掉2个红羊毛（meta14），再剪不再掉；喂小麦消耗1、`inLove:true`；空手攻击牛正常事件1次、生命10→9。不存在目标0点击 `not_found`；同UUID玩家从主世界到地狱后，旧目标0点击 `wrong_dimension`。修攻击距离前，3格准星内的空手攻击被Battlegear2事件拒绝、生命不变，身体如实 `denied`，没有绕掉事件。
+- **`use` 对方块/空中**：
   - 这是玩家用东西的通用办法，做了什么由那件物品自己决定，所以结果只报看得见的变化：`{used:"名字", gained:[{id,meta,name,count}], lost:[…], openedScreen?, health, food, freeSlots}`。`gained`/`lost` 是背包里多了、少了什么（吃掉的食物、穿到身上去的装备会出现在 `lost` 里）。
   - 吃喝这类要举着一会儿的，会等到用完（最多 8 秒）。
   - 右键打开了界面的（背包）会被马上关掉并带 `openedScreen:true`；要往里放、往外拿，用上一条说的 `deposit` / `withdraw`。

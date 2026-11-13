@@ -50,6 +50,7 @@ import { findQuests, getQuest, listQuestLines } from './quests.ts'
 import { validate } from './schema.ts'
 import type { Schema } from './schema.ts'
 import { listContainers, listDrawers, listStock } from './storage.ts'
+import { listEntities } from './entities.ts'
 import {
   cancelTask,
   clearArea,
@@ -249,6 +250,7 @@ export const LIBRARY_TOOLS: readonly Tool[] = [
   readLog,
   listStock,
   listDrawers,
+  listEntities,
   findUses,
   listQuestLines,
   probeBlock,

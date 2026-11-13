@@ -101,7 +101,8 @@ export const lookAround: Tool = {
 
     if (entities.status === 'fulfilled') {
       const list = (entities.value.entities ?? []).filter((e) => !(e.type === 'player' && e.name === ctx.botName))
-      lines.push(`Entities: ${formatEntities(list)}`)
+      const more = entities.value.more ?? Math.max(0, (entities.value.total ?? 0) - (entities.value.entities?.length ?? 0))
+      lines.push(`Entities: ${formatEntities(list)}${more > 0 ? `; ${more} more not shown` : ''}. Exact identities, positions and state: list_entities library function.`)
     } else {
       lines.push(`Entities: unavailable (${errorText(entities.reason)})`)
     }
