@@ -69,6 +69,11 @@ abstract class MoveTask extends Task {
             .func_152612_a(name);
     }
 
+    @Override
+    protected boolean reportsTerrain() {
+        return true;
+    }
+
     /** Where the bot is, and what the walk put down to climb on or dug out of the way. */
     @Override
     protected JsonObject summary() {

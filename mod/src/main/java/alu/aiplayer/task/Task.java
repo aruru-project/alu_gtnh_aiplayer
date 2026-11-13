@@ -86,6 +86,31 @@ public abstract class Task {
         return null;
     }
 
+    /**
+     * Whether {@link #summary()} itself says what the task's walking did to the world (walks and area tasks do).
+     * For the rest the result gets it here: a trip to a chest, a machine or a liquid can put down climbing blocks
+     * and dig its way too.
+     */
+    protected boolean reportsTerrain() {
+        return false;
+    }
+
+    /** The summary, with what the walking did to the world when the task does not say it itself. */
+    private JsonObject finalResult() {
+        JsonObject r = summary();
+        if (reportsTerrain() || bot == null || !bot.online()) return r;
+        JsonObject t = new JsonObject();
+        bot.terrain()
+            .addTo(t, bot.player().worldObj);
+        if (t.entrySet()
+            .isEmpty()) return r;
+        if (r == null) r = new JsonObject();
+        for (java.util.Map.Entry<String, com.google.gson.JsonElement> e : t.entrySet()) {
+            if (!r.has(e.getKey())) r.add(e.getKey(), e.getValue());
+        }
+        return r;
+    }
+
     public final boolean finished() {
         return state == State.DONE || state == State.FAILED || state == State.CANCELED;
     }
@@ -93,7 +118,7 @@ public abstract class Task {
     protected final void done() {
         if (finished()) return;
         state = State.DONE;
-        result = summary();
+        result = finalResult();
     }
 
     protected final void fail(String code, String message) {
@@ -106,7 +131,7 @@ public abstract class Task {
         errorCode = code;
         errorMessage = message;
         errorDetail = detail;
-        result = summary();
+        result = finalResult();
     }
 
     /** Ends the task with the failure a trip to a container ended in. */
@@ -121,7 +146,7 @@ public abstract class Task {
     public final void cancel() {
         if (finished()) return;
         state = State.CANCELED;
-        result = summary();
+        result = finalResult();
     }
 
     public final JsonObject info() {

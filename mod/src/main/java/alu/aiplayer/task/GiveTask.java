@@ -75,6 +75,12 @@ public final class GiveTask extends MoveTask {
         }
     }
 
+    /** Its summary is its own (what it dropped): what the walk did is added the way other tasks get it. */
+    @Override
+    protected boolean reportsTerrain() {
+        return false;
+    }
+
     @Override
     protected JsonObject summary() {
         JsonObject o = new JsonObject();

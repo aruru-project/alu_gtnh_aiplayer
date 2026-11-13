@@ -1325,6 +1325,32 @@ describe('图纸', () => {
     assert.doesNotMatch(text, /other:/)
   })
 
+  it('去水边、箱子、机器的路上垫了、挖了，也和走路一样照实列出（测试服：拿空单元去取水，回来身上多了 10 泥土、4 沙砾，结果里没说在哪挖的，填不回去）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't9', type: 'use', state: 'done', finishedAt: 100,
+          result: {
+            used: 'Empty Cell', clicks: 1, gained: [{ id: 'IC2:itemCellEmpty', meta: 1, name: 'Water Cell', count: 1 }], lost: [{ id: 'IC2:itemCellEmpty', meta: 0, name: 'Empty Cell', count: 1 }],
+            health: 20, food: 20, freeSlots: 14,
+            dugOnTheWay: [{ x: -545, y: 30, z: 166, id: 'minecraft:dirt' }, { x: -545, y: 31, z: 166, id: 'minecraft:gravel' }],
+          },
+        },
+        {
+          id: 't10', type: 'deposit', state: 'failed', finishedAt: 90, error: { code: 'unreachable', message: 'cannot get there' },
+          result: { climbingBlocks: [{ x: 1, y: 70, z: 2, id: 'minecraft:dirt', standing: true }], climbingBlocksStanding: 1 },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.match(text, /- t9 use \[done\]; result: .*gained: 1× IC2:itemCellEmpty\/1 .*; dug out of the way: \(-545,30,166\) minecraft:dirt, \(-545,31,166\) minecraft:gravel/)
+    assert.match(text, /- t10 deposit \[failed\] error=unreachable: cannot get there; partial result: climbing blocks put down on the way: 1, still standing 1: \(1,70,2\) minecraft:dirt/)
+    assert.doesNotMatch(text, /dugOnTheWay|"climbingBlocks"/)
+  })
+
   it('照图纸建的结果列出这次垫的每一块：在哪、还在不在、是不是它自己拆的，拆了但掉落物没回到身上的有几块（意见簿 f25：放一根铁栏杆，结果只有 removed 6，泥土少了 5 块，分不清哪些是垫脚）', async (t) => {
     const s = setup(t)
     s.game.handlers['task.list'] = () => ({

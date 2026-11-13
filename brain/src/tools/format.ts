@@ -331,6 +331,14 @@ export function formatTask(task: TaskInfo, opts: { params?: boolean } = {}): str
  * 这类任务在这里排成几行短文本（字段名照协议）。返回里没有的那一项，调用方照旧给紧凑 JSON。
  */
 export function taskLines(task: TaskInfo): { error?: string[]; result?: string[] } {
+  // 走路、区域任务和照图纸建的结果自己排垫脚和路上挖的；别的任务（去箱子、机器、水边……）路上也会垫、会挖，排在它们自己的结果后面
+  if (task.result && !TERRAIN_OWN_TYPES.has(task.type) && hasTerrainLines(task.result)) {
+    const rest: Record<string, unknown> = { ...task.result }
+    for (const key of TERRAIN_KEYS) delete rest[key]
+    const inner = taskLines({ ...task, result: rest })
+    const own = inner.result ?? (Object.keys(rest).length > 0 ? [compactJson(withLocalNames(trimTaskResult(rest)), 600)] : [])
+    return { ...inner, result: [...own, ...terrainLines(task.result)] }
+  }
   const out: { error?: string[]; result?: string[] } = {}
   const detail = task.error?.detail
   const result = task.result
@@ -903,6 +911,9 @@ export function formatBlueprintCheck(c: BlueprintCheck, opts: { clearGiven: bool
 }
 
 /** 身体报的“这次对地形做了什么”：垫的方块、路上挖掉的、没拆掉的垫脚、卸货卸下的东西。 */
+/** 结果里自己排了垫脚和路上挖的任务。 */
+const TERRAIN_OWN_TYPES = new Set(['blueprint', 'place', 'fill', 'flatten', 'dig', 'clear', 'goto', 'goto_player', 'follow'])
+
 const TERRAIN_KEYS = [
   'climbingBlocks',
   'climbingBlocksNotListed',

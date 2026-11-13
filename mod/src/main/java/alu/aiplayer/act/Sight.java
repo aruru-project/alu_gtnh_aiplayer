@@ -75,6 +75,21 @@ public final class Sight {
     private static final float[][] POINTS = { { 0.5F, 0.5F }, { 0.25F, 0.25F }, { 0.75F, 0.25F }, { 0.25F, 0.75F },
         { 0.75F, 0.75F } };
 
+    /**
+     * The points of a liquid's face to try, the middle first. More of them than for a block: which one is looked at
+     * decides whether the crosshair, going on through the liquid, lands on a block within reach.
+     */
+    private static final float[][] LIQUID_POINTS;
+    static {
+        float[] at = { 0.5F, 0.3F, 0.7F, 0.1F, 0.9F };
+        LIQUID_POINTS = new float[at.length * at.length][];
+        int n = 0;
+        for (int s = 0; s < at.length; s++) for (int i = 0; i <= s; i++) {
+            LIQUID_POINTS[n++] = new float[] { at[i], at[s] };
+            if (i != s) LIQUID_POINTS[n++] = new float[] { at[s], at[i] };
+        }
+    }
+
     /** A point on a face of a block, each 0..1 from its lowest corner; {@code u, v} run across the face. */
     private static double[] point(int face, float u, float v) {
         switch (face) {
@@ -134,18 +149,41 @@ public final class Sight {
      */
     public static double[] lookPoint(EntityPlayerMP p, int x, int y, int z, int side, float[] hit, boolean liquids) {
         double ex = p.posX, ey = p.posY + p.getEyeHeight(), ez = p.posZ;
+        // A liquid: a point past which the crosshair lands on a block (the bottom under it, the wall behind it), when
+        // there is one. A player looks there, so the click goes to a block: some items take a liquid only from a
+        // click on a block (an IC2 cell), none from a click at nothing.
+        double[] seenOnly = null;
         for (int face : faces(side)) {
             if (hit != null) {
                 double[] at = { hit[0], hit[1], hit[2] };
                 if (sees(p.worldObj, ex, ey, ez, x, y, z, face, at, CROSSHAIR_REACH, liquids)) return new double[] { face, at[0], at[1], at[2] };
                 continue;
             }
-            for (float[] uv : POINTS) {
+            for (float[] uv : liquids ? LIQUID_POINTS : POINTS) {
                 double[] at = point(face, uv[0], uv[1]);
-                if (sees(p.worldObj, ex, ey, ez, x, y, z, face, at, CROSSHAIR_REACH, liquids)) return new double[] { face, at[0], at[1], at[2] };
+                if (!sees(p.worldObj, ex, ey, ez, x, y, z, face, at, CROSSHAIR_REACH, liquids)) continue;
+                double[] r = { face, at[0], at[1], at[2] };
+                if (!liquids || landsOnBlock(p.worldObj, ex, ey, ez, x + at[0], y + at[1], z + at[2])) return r;
+                if (seenOnly == null) seenOnly = r;
             }
         }
-        return null;
+        return seenOnly;
+    }
+
+    /** Whether the crosshair, looking from the eyes at that point, lands on a block within reach (liquids looked through). */
+    private static boolean landsOnBlock(World w, double ex, double ey, double ez, double px, double py, double pz) {
+        double dx = px - ex, dy = py - ey, dz = pz - ez;
+        double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1.0e-3) return false;
+        // A little short of the full reach: the look is set from yaw and pitch, which round.
+        double k = (CROSSHAIR_REACH - 0.05) / len;
+        MovingObjectPosition mo = w.func_147447_a(
+            Vec3.createVectorHelper(ex, ey, ez),
+            Vec3.createVectorHelper(ex + dx * k, ey + dy * k, ez + dz * k),
+            false,
+            false,
+            false);
+        return mo != null && mo.typeOfHit == MovingObjectPosition.MovingObjectType.BLOCK;
     }
 
     /** Somewhere to stand from which a face of the block is seen (its middle), within reach. */

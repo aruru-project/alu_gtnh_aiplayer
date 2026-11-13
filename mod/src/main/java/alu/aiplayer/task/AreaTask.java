@@ -809,6 +809,11 @@ abstract class AreaTask extends Task {
     }
 
     @Override
+    protected boolean reportsTerrain() {
+        return true;
+    }
+
+    @Override
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
         o.addProperty("removed", removed);
