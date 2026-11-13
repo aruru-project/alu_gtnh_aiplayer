@@ -9,6 +9,42 @@ public abstract class Goal {
 
     public abstract boolean reached(int x, int y, int z);
 
+    /** Runtime arrival may need the actual body, rather than its rounded feet cell. */
+    public boolean reached(net.minecraft.entity.player.EntityPlayerMP p) {
+        return reached(
+            net.minecraft.util.MathHelper.floor_double(p.posX),
+            net.minecraft.util.MathHelper.floor_double(p.posY + 0.01),
+            net.minecraft.util.MathHelper.floor_double(p.posZ));
+    }
+
+    /** Pickup uses the player's collision query, not the map destination's symmetric height slack. */
+    public static Goal pickup(final net.minecraft.entity.player.EntityPlayerMP p,
+        final net.minecraft.util.AxisAlignedBB item) {
+        final double half = p.width / 2.0;
+        return new Goal() {
+
+            @Override
+            public boolean reached(int x, int y, int z) {
+                return net.minecraft.util.AxisAlignedBB
+                    .getBoundingBox(x + 0.5 - half, y, z + 0.5 - half, x + 0.5 + half, y + p.height, z + 0.5 + half)
+                    .expand(1, 0.5, 1).intersectsWith(item);
+            }
+
+            @Override
+            public boolean reached(net.minecraft.entity.player.EntityPlayerMP who) {
+                return who.boundingBox.expand(1, 0.5, 1).intersectsWith(item);
+            }
+
+            @Override
+            public double heuristic(int x, int y, int z) {
+                double dx = Math.max(0, Math.max(item.minX - (x + 0.5 + half + 1), x + 0.5 - half - 1 - item.maxX));
+                double dz = Math.max(0, Math.max(item.minZ - (z + 0.5 + half + 1), z + 0.5 - half - 1 - item.maxZ));
+                double dy = Math.max(0, Math.max(item.minY - (y + p.height + 0.5), y - 0.5 - item.maxY));
+                return (dx + dz) * WALK + dy * 6;
+            }
+        };
+    }
+
     /** A lower bound on the remaining cost, in ticks. */
     public abstract double heuristic(int x, int y, int z);
 

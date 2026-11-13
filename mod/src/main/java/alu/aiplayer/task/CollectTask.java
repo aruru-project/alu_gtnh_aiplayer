@@ -12,6 +12,7 @@ import alu.aiplayer.util.J;
 public final class CollectTask extends Task {
 
     private final int x, y, z, radius;
+    private final boolean dig, climb;
     private Collector collector;
 
     public CollectTask(JsonObject params) {
@@ -20,6 +21,8 @@ public final class CollectTask extends Task {
         y = J.reqHeight(params, "y");
         z = J.reqCoord(params, "z");
         radius = Math.max(1, Math.min(32, J.i(params, "radius", 8)));
+        dig = J.bool(params, "dig", true);
+        climb = J.bool(params, "climb", true);
     }
 
     @Override
@@ -29,7 +32,7 @@ public final class CollectTask extends Task {
         phase = "collecting";
         AxisAlignedBB box = AxisAlignedBB
             .getBoundingBox(x - radius, y - radius, z - radius, x + radius + 1, y + radius + 1, z + radius + 1);
-        collector = new Collector(bot, box, Rules.NATURAL_ONLY, 20 * 60 * 5, true);
+        collector = new Collector(bot, box, dig ? Rules.NATURAL_ONLY : Rules.NO_BREAK, 20 * 60 * 5, climb);
     }
 
     @Override
@@ -37,7 +40,10 @@ public final class CollectTask extends Task {
         if (collector == null) return;
         boolean more = collector.tick();
         progressDone = collector.picked;
-        if (!more) done();
+        if (!more) {
+            if (collector.failCode != null) fail(collector.failCode, collector.failMessage);
+            else done();
+        }
     }
 
     @Override
@@ -49,6 +55,11 @@ public final class CollectTask extends Task {
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
         o.addProperty("pickedUpStacks", collector == null ? 0 : collector.picked);
+        if (collector != null) {
+            com.google.gson.JsonArray remaining = collector.remaining();
+            if (remaining.size() > 0) o.add("remaining", remaining);
+            if (collector.disappeared > 0) o.addProperty("disappearedTargets", collector.disappeared);
+        }
         return o;
     }
 }

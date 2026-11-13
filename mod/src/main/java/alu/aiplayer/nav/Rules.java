@@ -34,6 +34,9 @@ public final class Rules {
         return natural;
     }
 
+    /** No digging, including the bot's own old climbing blocks. */
+    public static final NavWorld.BreakRule NO_BREAK = (w, x, y, z, block) -> false;
+
     /** Only natural terrain may be broken. This is the rule for simply walking somewhere. */
     public static final NavWorld.BreakRule NATURAL_ONLY = new NavWorld.BreakRule() {
 

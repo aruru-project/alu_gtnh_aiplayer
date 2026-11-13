@@ -39,6 +39,8 @@ public final class PathSearch {
     public static final byte CLIMB_UP = 7;
     /** Let go and slide down a ladder, to the next cell of it or to the ground under it. */
     public static final byte CLIMB_DOWN = 8;
+    /** In a liquid column: hold jump to rise, release it to sink. */
+    public static final byte SWIM = 9;
 
     public static final class Step {
 
@@ -107,6 +109,7 @@ public final class PathSearch {
     private final boolean canPillar;
     private final int maxNodes;
     private final int maxDrop;
+    private final boolean swim;
     private final Map<Long, Node> nodes = new HashMap<>();
     private final PriorityQueue<Entry> open = new PriorityQueue<>();
     private final Node start;
@@ -118,6 +121,12 @@ public final class PathSearch {
 
     public PathSearch(NavWorld nav, int sx, int sy, int sz, Goal goal, boolean canPillar, int maxNodes,
         int maxDrop) {
+        this(nav, sx, sy, sz, goal, canPillar, maxNodes, maxDrop, false);
+    }
+
+    public PathSearch(NavWorld nav, int sx, int sy, int sz, Goal goal, boolean canPillar, int maxNodes,
+        int maxDrop, boolean swim) {
+        this.swim = swim;
         this.maxDrop = maxDrop;
         this.nav = nav;
         this.goal = goal;
@@ -199,8 +208,8 @@ public final class PathSearch {
     private static final int HANGING = 4;
 
     /**
-     * 0 cannot stand, 1 on a full block (or at the foot of a ladder), 2 on a half block, 3 floating at a water
-     * surface, 4 hanging on a ladder.
+     * 0 cannot stand, 1 on a full block (or at the foot of a ladder), 2 on a half block, 3 in water (surface only
+     * unless swimming was requested), 4 hanging on a ladder.
      */
     private int stand(int x, int y, int z) {
         byte feet = nav.cls(x, y, z);
@@ -209,7 +218,7 @@ public final class PathSearch {
             return passable(head) && nav.passable(x, y + 2, z) && !nav.nearHazard(x, y, z) ? 2 : 0;
         }
         if (feet == NavWorld.WATER) {
-            return head == NavWorld.OPEN && !nav.nearHazard(x, y, z) ? 3 : 0;
+            return (head == NavWorld.OPEN || (swim && head == NavWorld.WATER)) && !nav.nearHazard(x, y, z) ? 3 : 0;
         }
         if (feet == NavWorld.CLIMB) {
             if (!passable(head) || nav.nearHazard(x, y, z)) return 0;
@@ -289,6 +298,16 @@ public final class PathSearch {
                         }
                     }
                 }
+            }
+        }
+
+        // Underwater pickups need real water-column edges, not a tunnel under the lake bed.
+        if (swim && nav.cls(x, y, z) == NavWorld.WATER) {
+            if (nav.cls(x, y + 1, z) == NavWorld.WATER && stand(x, y + 1, z) == 3) {
+                relax(n, x, y + 1, z, SWIM, WALK * WATER_FACTOR);
+            }
+            if (nav.cls(x, y - 1, z) == NavWorld.WATER && stand(x, y - 1, z) == 3) {
+                relax(n, x, y - 1, z, SWIM, WALK * WATER_FACTOR);
             }
         }
 

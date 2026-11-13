@@ -1037,10 +1037,12 @@ describe('任务类工具', () => {
     assert.equal(s.game.callsOf('task.start').length, 0)
   })
 
-  it('collect_items 不给坐标时用 bot 自己的位置', async (t) => {
+  it('collect_items 不给坐标时捡脚下周围，默认不挖不垫；也能明确允许挖路和垫块', async (t) => {
     const s = setup(t)
     await s.run('collect_items', { radius: 6 })
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'collect', x: 10, y: 64, z: -4, radius: 6 })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'collect', x: 10, y: 64, z: -4, radius: 6, dig: false, climb: false })
+    await s.run('collect_items', { x: -448, y: 61, z: 111, radius: 6, dig: true, climb: true })
+    assert.deepEqual(s.game.callsOf('task.start')[1]!.task, { type: 'collect', x: -448, y: 61, z: 111, radius: 6, dig: true, climb: true })
   })
 
   it('任务被游戏拒绝时，模型看到错误码', async (t) => {

@@ -593,7 +593,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | `deposit` | `{container:{x,y,z, side?, sneak?}, items?:[ItemFilter], keep?:[id]}` | 走过去把物品放进箱子。`container` 里带 `side` / `sneak` 时，不是普通地右键它，而是点那个面（蹲着或不蹲）打开界面，打开的是什么界面就往什么界面里放（覆盖板里的格子就这样存取）；`withdraw` 同。不给 items 则放入除工具、食物和 keep 以外的全部 |
 | `withdraw` | `{container:{x,y,z, side?, sneak?}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。界面里有“放不进东西的格子”的是机器：默认只从这些产物格取；`fromInputs:true` 改成从其余的格子取（把留在里面的模具、模头、没用完的原料拿出来）。没有这种格子的是普通仓储，哪格都取 |
 | `haul` | `{from:{x,y,z}, to:{x,y,z}, items?:[ItemFilter]}` | 在两个箱子之间来回搬，直到源箱子里符合条件的搬完或数量够。只搬这一趟取出来的东西，bot 自己的物品不动 |
-| `collect` | `{x,y,z, radius?=8}` | 捡起范围内掉在地上的物品 |
+| `collect` | `{x,y,z, radius?=8, dig?=true, climb?=true}` | 捡起范围内的掉落物（包括水下）。`dig:false` 不挖任何路，包括旧垫脚；`climb:false` 不垫块。协议旧调用默认仍允许；大脑 `collect_items` 默认两者都是 false，能显式开启 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
 | `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
@@ -619,6 +619,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   够不着高处时会用填充方块（配置 `fillerBlocks`：泥土、圆石等）垫脚往上搭；去箱子存取的路上不垫脚，免得把货用掉；`goto` 给 `climb:false` 时也不垫。
 - **楼梯、梯子**：楼梯当作能站上去的方块，一级一级跳上去（真人一样，头顶要有空：从一级迈到下一级时，脚下这一级上方第三格不能有东西）。梯子和藤蔓能上下：进梯子格，朝它贴着的墙推着往上爬，到了旁边有地板的高度跨出去；从楼板的洞口下到梯子上，松手往下滑。只有梯子（下面悬空）的格子不算到达的地方。
   方块形状按游戏物理实际碰撞的盒子判断（`addCollisionBoxesToList`），不读方块的边界缓存：原版楼梯被任何东西做过一次射线检测（玩家指着它看、生物看人）以后，同一种楼梯的边界缓存就常常是一个八分之一块（有实体碰到楼梯时才暂时恢复），原来据此把楼梯当成站不上去的障碍，时好时坏（意见簿 f18/f19：门口的台阶被认错，进不了屋，从门边挖下去钻到了地基下面）。
+- **捡物寻路**：目标是玩家拾取查询范围与掉落物碰撞盒相交（玩家身体横向扩 1 格、上下扩 0.5 格），不是地图点的高度容差。物品移动后重新找路；物品合并消失不算拾取，`pickedUpStacks` 只数游戏确认给这个玩家的拾取。捡物可以沿水柱上浮、松开跳键下沉；普通走路任务仍只找水面路线。非无敌玩家在水下剩余空气低于 80 tick 时以 `interrupted` 停下，消息写明仍在水下，没有自动返回水面；死亡仍按通常规则中断。
 - **树**：够不着的树叶和上面的雪直接跳过（`foliage out of reach`）。
 - **`dropoff` / `supply`** 是箱子坐标 `{x,y,z}` 或坐标数组：背包满时自动去 dropoff 卸货（留下工具、食物和一组垫脚方块），`clear` 和 `flatten` 结束时再卸一次；材料不够时自动去 supply 取。
 - **`overflow`**：背包满又没给 dropoff 时，`"fail"`（默认）以 `inventory_full` 失败，`"leave"` 继续挖、把掉落物留在地上。
@@ -697,7 +698,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   为了够到高处垫的方块，任务结束前会拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的；拆完把附近的掉落物捡回来（这一趟不再垫块）。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标在 `climbingBlocksLeft:[{x,y,z}]`（最多列 64 个），它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
   这个任务垫过的每一块都在 `climbingBlocks:[{x,y,z,id,meta?,standing,takenDown?}]`（和走路的结果同一种写法；任务里每一趟路——去干活、去补给箱、去捡掉落物——垫的都算）：`standing` 是现在还在不在，`takenDown:true` 是这个任务自己把它拆了（`standing:false` 又没有 `takenDown` 的，是别的什么拿走了它）。以前留下、这次拆掉的在 `olderClimbingBlocksTakenDown:[{x,y,z,id,meta?}]`。拆了、掉落物却没回到身上的块数在 `climbingBlockDropsNotPickedUp`（拆之前和捡完以后身上垫脚方块的差；没有就不带）。`removed` 不算拆掉的自己的垫脚（原来算：意见簿 f25，放一根铁栏杆的图纸结果是 `removed 6`，这 6 块全是它自己的垫脚）。
   走路途中为了过去挖掉的方块（不是任务本身要挖的）在 `dugOnTheWay:[{x,y,z,id,meta?}]`。去 `dropoff` 卸下的东西在 `unloaded:[{id,meta,name,count}]`（卸货时只给自己留一组垫脚方块，多带的泥土、圆石会被卸掉）。
-- `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
+- `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks, remaining?, disappearedTargets?}`。`remaining` 全列仍在范围内的掉落物 `{entityId,id,meta,count,x,y,z,reason}`，有剩余则 `unreachable`，不是全部捡完；超时是 `stuck`。目标消失且没有确认拾取或附近合并去向时带 `disappearedTargets`、以 `interrupted` 结束，不把消失算成捡到。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。**走路的结果**（`goto` `goto_player` `follow`）另外照实列出这一趟改了什么地形：`climbingBlocks:[{x,y,z,id,meta?,standing}]` 是垫下的方块（`standing` 是现在还在不在），`climbingBlocksStanding` 是还在的个数；`dugOnTheWay:[{x,y,z,id,meta?}]` 是为了过去挖掉的方块；各最多列 64 个，多的个数在 `climbingBlocksNotListed`、`dugOnTheWayNotListed`。什么都没改时没有这几项。`goto` 给了 `y` 时另有 `dy`：脚的高度减去 `y`（0 就是正好），`takeBack` 时有拆不到的另有 `notTakenBack`（个数；还剩哪些看 `climbingBlocks` 的 `standing`）。别的任务路上（去箱子、机器、液体边、捡东西……）垫了、挖了，结果里也带同样这几项（`climbingBlocks` 等、`dugOnTheWay` 等），加在那个任务自己的结果字段旁边；没有结果的失败任务也有 `result`，里面只有这几项。实测（测试服）：拿空单元去 30 格外的水边，路上挖了 10 泥土、4 沙砾，修以前结果里没有这些，挖了哪几格分不出来。
   `goto` 给了 `y` 的失败：
   - 目标范围里没有一格站得住（目标格里有走路不挖的东西、头顶那格有东西、或者脚下是空的而且 `climb:false`），一开始就以 `unreachable` 失败，不去找路：消息以 `nothing to stand on at the destination:` 开头，说明是哪一格是什么；`error.detail` 是 `{x,y,z, feet, head, below}`，后三个是那三格的 `{id, meta?}`（没加载是 `{loaded:false}`）。原来这种目标会被当成到了：站在低两格的地方报完成，或者垫土把楼梯口填上。

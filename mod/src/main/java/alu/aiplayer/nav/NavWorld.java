@@ -299,6 +299,7 @@ public final class NavWorld {
     }
 
     private int computeBreakCost(int x, int y, int z) {
+        if (rule == Rules.NO_BREAK) return -1;
         byte c = cls(x, y, z);
         if (c != SOLID && c != OBSTACLE && c != SLAB) return -1;
         Block b = world.getBlock(x, y, z);

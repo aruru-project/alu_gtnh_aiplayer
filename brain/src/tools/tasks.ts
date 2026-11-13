@@ -480,9 +480,11 @@ export const collectItems: Tool = {
     y: int('y of the center.', { min: 0, max: 255 }),
     z: int('z of the center.'),
     radius: int('Radius in blocks (default 8).', { min: 1, max: 32 }),
+    dig: bool('Allow digging a path (default false).'),
+    climb: bool('Allow stacking blocks (default false).'),
     queue,
   }),
-  async run(ctx, i: { x?: number; y?: number; z?: number; radius?: number; queue?: boolean }) {
+  async run(ctx, i: { x?: number; y?: number; z?: number; radius?: number; dig?: boolean; climb?: boolean; queue?: boolean }) {
     let center: { x: number; y: number; z: number }
     if (i.x !== undefined && i.y !== undefined && i.z !== undefined) {
       center = { x: i.x, y: i.y, z: i.z }
@@ -492,7 +494,7 @@ export const collectItems: Tool = {
     } else {
       return fail('give all of x, y, z or none of them')
     }
-    return startTask(ctx, { type: 'collect', ...center, radius: i.radius }, i.queue)
+    return startTask(ctx, { type: 'collect', ...center, radius: i.radius, dig: i.dig ?? false, climb: i.climb ?? false }, i.queue)
   },
 }
 

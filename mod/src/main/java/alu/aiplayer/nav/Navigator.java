@@ -39,6 +39,7 @@ public final class Navigator {
     private int plans;
     private int airTicks;
     private boolean mayPillar = true;
+    private boolean swim;
     private boolean gentle = true;
     private boolean explainClimbing;
     /** A last search, with climbing blocks allowed, run only to say whether they would have helped. */
@@ -68,7 +69,13 @@ public final class Navigator {
      *                  cargo, which would otherwise get used up as scaffolding.
      */
     public void go(Goal goal, NavWorld.BreakRule rule, boolean mayPillar) {
+        go(goal, rule, mayPillar, false);
+    }
+
+    /** Swimming below the surface is opt-in; ordinary travel keeps its surface-only routes. */
+    public void go(Goal goal, NavWorld.BreakRule rule, boolean mayPillar, boolean swim) {
         stop();
+        this.swim = swim;
         this.mayPillar = mayPillar;
         this.gentle = true;
         this.probing = false;
@@ -135,7 +142,7 @@ public final class Navigator {
         }
 
         if (search == null) {
-            if (goal.reached(bot.blockX(), bot.blockY(), bot.blockZ()) && (p.onGround || p.isInWater())) {
+            if (goal.reached(p) && (p.onGround || p.isInWater())) {
                 goal = null;
                 return Status.ARRIVED;
             }
@@ -154,7 +161,8 @@ public final class Navigator {
                 goal,
                 probing || (!gentle && mayPillar && Rules.scaffold(p) != null),
                 gentle ? MAX_NODES : MAX_NODES_CLIMBING,
-                bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP);
+                bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP,
+                swim);
         }
 
         PathSearch.Status st = search.step(budget());
@@ -201,7 +209,8 @@ public final class Navigator {
             bot.blockZ(),
             rule,
             gentle,
-            bot.terrain());
+            bot.terrain(),
+            swim);
         gentle = true;
         return Status.WORKING;
     }

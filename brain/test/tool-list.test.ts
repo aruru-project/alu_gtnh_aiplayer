@@ -261,7 +261,9 @@ describe('模型拿到的工具清单', () => {
   //           climb（要不要垫方块爬高，默认不垫——在世界里留下方块该她自己选）、takeBack（到了把够得着的垫脚拆掉）两个参数，
   //           range 写明给了 y 时也管高度、y 是脚的高度。做成库函数不行：这两个是她每次走路要定的事。对话线没变。
   //           合进 main 以后（和图纸看图、任务书、等待、朝向、fill_area 朝向合在一起）：干活线实际 58,057、上限 58,400；对话线实际 29,039、上限 29,200。
-  for (const [line, ceiling] of [['work', 58_400], ['talk', 29_200]] as const) {
+  //   捡物寻路之后（意见簿 f31）：干活线 58,299 → 58,460（+161），上限 58,400 → 58,600。
+  //           collect_items 的 dig/climb 两个参数：默认不挖不垫，模型能明确允许；身体旧调用保留原默认。对话线不变。
+  for (const [line, ceiling] of [['work', 58_600], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

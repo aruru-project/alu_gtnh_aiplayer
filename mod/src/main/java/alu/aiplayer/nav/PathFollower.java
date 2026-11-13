@@ -33,6 +33,7 @@ public final class PathFollower {
     private final int ox, oy, oz;
     private final NavWorld.BreakRule rule;
     private final boolean gentle;
+    private final boolean swim;
     private final Digger digger;
     private final TerrainLog log;
     /** The block being dug out of the way, as it was before digging started. */
@@ -52,7 +53,8 @@ public final class PathFollower {
     public String failBlock;
 
     public PathFollower(Bot bot, List<Step> steps, int ox, int oy, int oz, NavWorld.BreakRule rule, boolean gentle,
-        TerrainLog log) {
+        TerrainLog log, boolean swim) {
+        this.swim = swim;
         this.log = log;
         this.gentle = gentle;
         this.bot = bot;
@@ -134,8 +136,11 @@ public final class PathFollower {
             return Status.MOVING;
         }
 
-        if (p.isInWater()) bot.motion.jump = true;
+        if (p.isInWater()) bot.motion.jump = !swim || p.posY < s.y + 0.1;
         switch (s.move) {
+            case PathSearch.SWIM:
+                if (!centered(p, s.x, s.z, 0.2)) bot.motion.moveToward(p, s.x + 0.5, s.z + 0.5);
+                break;
             case PathSearch.CLIMB_UP:
                 return climbUp(p, s, px, py, pz);
             case PathSearch.CLIMB_DOWN:
@@ -278,6 +283,8 @@ public final class PathFollower {
             case PathSearch.DIG_DOWN:
                 if (!nav.passable(s.x, s.y, s.z)) return new int[] { s.x, s.y, s.z };
                 return null;
+            case PathSearch.SWIM:
+                return nav.passable(s.x, s.y, s.z) && nav.passable(s.x, s.y + 1, s.z) ? null : new int[0];
             case PathSearch.CLIMB_UP:
                 if (!nav.passable(s.x, s.y + 1, s.z)) return new int[] { s.x, s.y + 1, s.z };
                 if (!nav.passable(s.x, s.y, s.z)) return new int[0];
@@ -293,7 +300,7 @@ public final class PathFollower {
             // Holding on to a ladder: there once the feet are in the step's cell.
             return p.isOnLadder() && MathHelper.floor_double(p.posY + 0.01) == s.y && index + 1 < steps.size();
         }
-        if (Math.abs(p.posY - s.y) > 0.75) return false;
+        if (Math.abs(p.posY - s.y) > (swim && p.isInWater() ? 0.25 : 0.75)) return false;
         return !needsCentering() || centered(p, s.x, s.z, 0.3);
     }
 
