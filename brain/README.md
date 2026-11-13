@@ -311,7 +311,7 @@ test/              node:test；模拟 bridge（mock-bridge.ts）和模拟模型�
 | 两条线之间 | 对话线：`tell_worker`（交事、带话；这一轮里的人的原话原样附上）`worker_status`（干活线在干什么）`stop_work`（让一切停下）`start_helper`（派一个子思维出去想一件事）`helper_status`（看子思维、停一个）。干活线：`report`（汇报、提问） | |
 | 看 | `get_status` `look_around` `scan_area` `inspect_block`（一个方块是什么、罐里有什么流体、各面的覆盖板；带 `detail` 是它自己存的全部数据，原样给）`find_blocks` `get_player_position`（站在哪、朝哪、准星指着什么、面前有哪些容器）；能看图的模型还有 `view_area` | `probe_block`（现在能不能挖这一格）`read_blocks`（一个盒子的全部方块）；不能看图时 `view_area` 也在这边，给文字 |
 | 仓库 | `list_containers`（一页页列，标出接着管道的；一页里每个容器只列前 30 种，给 `at` 和 `radius: 0` 把一个容器看全，程序拿到的 `data` 一直是全的）`find_in_storage`（某几样东西在哪） | `list_drawers`（抽屉管理器管着的每一格）`list_stock`（一片仓库的存货总表，能筛能翻页） |
-| 走动（干活线） | `go_to` `go_to_player` `follow_player` `go_home` | |
+| 走动（干活线） | `go_to`（给了 `y` 时 `range` 也管高度；默认不垫方块，`climb: true` 才垫，`takeBack: true` 到了把够得着的垫脚拆掉；结果里写着和要的高度差几格、路上垫了哪几块还在不在、挖掉了哪几块）`go_to_player` `follow_player` `go_home` | |
 | 服务器指令（干活线） | `run_command`（以它的身份发一条指令：设家 `sethome`、列家 `home list`、加入队伍 `team join`……能发哪些由身体的允许列表定，被拒绝时结果里写明） | |
 | 地形（干活线） | `flatten_area` `clear_area` `fill_area` `dig_blocks` `place_blocks` | |
 | 图纸 | `list_designs`（服务器上的图纸、草稿、主人传的图片，一起列或只列一种）；干活线：`build_blueprint` | `check_blueprint`（图纸放在某处时现场差什么）`read_blueprint`（图纸或草稿里有什么：材料表和每一格，不用知道它放在哪） |

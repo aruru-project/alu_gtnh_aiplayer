@@ -130,22 +130,41 @@ function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: numb
 
 // ── 移动 ──
 
+/**
+ * 走路。给了 y 时高度也按 range 核对（身体的 yRange，不给它时身体按老规矩差 2 格也算到）；站不住的目标一开始就失败。
+ * 默认不垫方块（身体的 climb 默认是垫，这里总是写明）：在世界里留下方块该是模型自己选的。
+ */
 export const goTo: Tool = {
   name: 'go_to',
   description:
-    'Walk to a position (task). x and z alone: the ground at that spot; y too when the height matters. A walk covers at most about 256 blocks; farther places are reached by teleporting near first (go_home).',
+    'Walk to a position (task). x and z alone: the ground at that spot; y too when the height matters (where your feet end up). A walk covers at most about 256 blocks; farther places are reached by teleporting near first (go_home).',
   inputSchema: obj(
     {
       x: int(),
       y: int(undefined, { min: 0, max: 255 }),
       z: int(),
-      range: int('Stop when within this many blocks horizontally (default 1).', { min: 0, max: 32 }),
+      range: int('Stop when within this many blocks (default 1); with y, of that height too.', { min: 0, max: 32 }),
+      climb: bool('true: may stack blocks (dirt, cobblestone) under you to climb. Default false.'),
+      takeBack: bool('With climb: on arrival, dig out the blocks you stacked that are within reach.'),
       queue,
     },
     ['x', 'z'],
   ),
-  run: (ctx, i: { x: number; y?: number; z: number; range?: number; queue?: boolean }) =>
-    startTask(ctx, { type: 'goto', x: i.x, y: i.y, z: i.z, range: i.range }, i.queue),
+  run: (ctx, i: { x: number; y?: number; z: number; range?: number; climb?: boolean; takeBack?: boolean; queue?: boolean }) =>
+    startTask(
+      ctx,
+      {
+        type: 'goto',
+        x: i.x,
+        y: i.y,
+        z: i.z,
+        range: i.range,
+        yRange: i.y === undefined ? undefined : (i.range ?? 1),
+        climb: i.climb === true,
+        takeBack: i.takeBack === true ? true : undefined,
+      },
+      i.queue,
+    ),
 }
 
 export const goToPlayer: Tool = {

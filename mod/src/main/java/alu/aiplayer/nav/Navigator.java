@@ -23,6 +23,12 @@ public final class Navigator {
     /** Replans in a row that got nowhere before giving up. */
     private static final int MAX_FRUITLESS = 6;
     private static final int MAX_PLANS = 200;
+    /**
+     * How much closer (in the search's own measure: ticks of walking, about 4.7 a block) a path that digs or stacks
+     * blocks must bring the bot when it does not reach the goal. Changing the terrain only to end up a little nearer
+     * is how a bot that could not find the door dug down beside it and tunnelled under the house.
+     */
+    private static final double MIN_PROGRESS_CHANGING_TERRAIN = 8 * Goal.WALK;
 
     private final Bot bot;
     private Goal goal;
@@ -34,11 +40,20 @@ public final class Navigator {
     private int airTicks;
     private boolean mayPillar = true;
     private boolean gentle = true;
+    private boolean explainClimbing;
+    /** A last search, with climbing blocks allowed, run only to say whether they would have helped. */
+    private boolean probing;
+    private final TerrainLog changes = new TerrainLog();
 
     /** unreachable, stuck, no_tool or no_material. */
     public String failCode;
     public String failMessage;
     public String failBlock;
+    /**
+     * After an unreachable failure with climbing blocks not allowed and {@link #explainClimbing} asked for: how many
+     * climbing blocks a way that uses them would take, or 0 when there is no such way either. -1 when not known.
+     */
+    public int climbingBlocksWouldTake = -1;
 
     public Navigator(Bot bot) {
         this.bot = bot;
@@ -57,6 +72,7 @@ public final class Navigator {
         stop();
         this.mayPillar = mayPillar;
         this.gentle = true;
+        this.probing = false;
         this.goal = goal;
         this.rule = rule == null ? Rules.NATURAL_ONLY : rule;
         fruitless = 0;
@@ -64,6 +80,20 @@ public final class Navigator {
         failCode = null;
         failMessage = null;
         failBlock = null;
+        climbingBlocksWouldTake = -1;
+    }
+
+    /**
+     * With climbing blocks not allowed, finding no way ends with one more search that may use them, so that the
+     * failure can say whether they would have got the bot there.
+     */
+    public void explainClimbing(boolean on) {
+        explainClimbing = on;
+    }
+
+    /** The blocks this navigator has put down to climb on and dug out of the way, since it was made. */
+    public TerrainLog changes() {
+        return changes;
     }
 
     public boolean active() {
@@ -110,8 +140,9 @@ public final class Navigator {
                 goal = null;
                 return Status.ARRIVED;
             }
-            // Plan from solid footing; a search started in mid-air would begin from a cell the bot is leaving.
-            if (!(p.onGround || p.isInWater()) && ++airTicks < 60) return Status.WORKING;
+            // Plan from solid footing (or from a ladder, which holds the bot where it is); a search started in
+            // mid-air would begin from a cell the bot is leaving.
+            if (!(p.onGround || p.isInWater() || p.isOnLadder()) && ++airTicks < 60) return Status.WORKING;
             airTicks = 0;
             if (++plans > MAX_PLANS) return fail("stuck", "could not get there after many attempts", null);
             // First look for a way that leaves the terrain as it is. Digging through and stacking blocks to climb
@@ -122,7 +153,7 @@ public final class Navigator {
                 bot.blockY(),
                 bot.blockZ(),
                 goal,
-                !gentle && mayPillar && Rules.scaffold(p) != null,
+                probing || (!gentle && mayPillar && Rules.scaffold(p) != null),
                 gentle ? MAX_NODES : MAX_NODES_CLIMBING,
                 bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP);
         }
@@ -131,14 +162,47 @@ public final class Navigator {
         if (st == PathSearch.Status.RUNNING) return Status.WORKING;
         PathSearch finished = search;
         search = null;
+        if (probing) {
+            probing = false;
+            int pillars = 0;
+            if (st == PathSearch.Status.FOUND) {
+                for (PathSearch.Step s : finished.path()) if (s.move == PathSearch.PILLAR) pillars++;
+            }
+            climbingBlocksWouldTake = pillars;
+            if (pillars > 0) {
+                return fail(
+                    "unreachable",
+                    "no way to get there without stacking blocks to climb on; a way that stacks " + pillars
+                        + " exists",
+                    null);
+            }
+            return fail("unreachable", "no way to get there", null);
+        }
+        boolean changesTerrain = !gentle;
+        if (st == PathSearch.Status.PARTIAL && changesTerrain && finished.progress() < MIN_PROGRESS_CHANGING_TERRAIN) {
+            // Only part of the way, and that part digs or climbs: not worth altering anything for.
+            st = PathSearch.Status.NONE;
+        }
         if (st == PathSearch.Status.NONE) {
             if (gentle) {
                 gentle = false;
                 return Status.WORKING;
             }
+            if (explainClimbing && !mayPillar) {
+                probing = true;
+                return Status.WORKING;
+            }
             return fail("unreachable", "no way to get there", null);
         }
-        follower = new PathFollower(bot, finished.path(), bot.blockX(), bot.blockY(), bot.blockZ(), rule, gentle);
+        follower = new PathFollower(
+            bot,
+            finished.path(),
+            bot.blockX(),
+            bot.blockY(),
+            bot.blockZ(),
+            rule,
+            gentle,
+            changes);
         gentle = true;
         return Status.WORKING;
     }

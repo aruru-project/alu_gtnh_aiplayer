@@ -11,8 +11,9 @@ import java.util.PriorityQueue;
  * A* over feet cells, resumable so one search can be spread over several ticks.
  * <p>
  * Moves: walk to a neighbour on the same level, step or jump up one, walk off an edge and drop up to three, build a
- * one-block pillar under the feet, dig straight down one. Any of them may first break blocks that are in the way
- * when the {@link NavWorld} allows it. Each step records only where it goes and how; the follower works out at the
+ * one-block pillar under the feet, dig straight down one, climb up or down a ladder (and step off it onto a floor
+ * beside it, or from a floor onto it). Any of them may first break blocks that are in the way when the
+ * {@link NavWorld} allows it. Each step records only where it goes and how; the follower works out at the
  * time what has to be cleared, since the world may have changed.
  */
 public final class PathSearch {
@@ -34,6 +35,10 @@ public final class PathSearch {
     public static final byte DIG_DOWN = 5;
     /** Ride an elevator block to another one above or below. */
     public static final byte ELEVATOR = 6;
+    /** Climb one cell up a ladder, pushing toward the wall it hangs on. */
+    public static final byte CLIMB_UP = 7;
+    /** Let go and slide down a ladder, to the next cell of it or to the ground under it. */
+    public static final byte CLIMB_DOWN = 8;
 
     public static final class Step {
 
@@ -55,6 +60,9 @@ public final class PathSearch {
     private static final double PILLAR_COST = 22.0;
     private static final int DOOR_COST = 12;
     private static final double ELEVATOR_COST = 14.0;
+    /** Ticks per block: a player pushing into a ladder rises about 0.12 a tick, and slides down at 0.15. */
+    private static final double LADDER_UP_COST = 8.5;
+    private static final double LADDER_DOWN_COST = 7.0;
     private static final double HEURISTIC_WEIGHT = 1.3;
     /** How far a bot that can be hurt will let itself fall. */
     public static final int SAFE_DROP = 3;
@@ -106,6 +114,7 @@ public final class PathSearch {
     private int expanded;
     private Status status = Status.RUNNING;
     private List<Step> path = Collections.emptyList();
+    private double progress;
 
     public PathSearch(NavWorld nav, int sx, int sy, int sz, Goal goal, boolean canPillar, int maxNodes,
         int maxDrop) {
@@ -134,6 +143,11 @@ public final class PathSearch {
         return expanded;
     }
 
+    /** How much nearer the goal the path's end is than its start, by the goal's own estimate. */
+    public double progress() {
+        return progress;
+    }
+
     /** Works for about the given time, then returns the status so far. */
     public Status step(long budgetNanos) {
         if (status != Status.RUNNING) return status;
@@ -150,7 +164,8 @@ public final class PathSearch {
             }
             if (n.closed || e.f > n.f) continue;
             n.closed = true;
-            if (goal.reached(n.x, n.y, n.z)) return finish(n, Status.FOUND);
+            // A cell where the bot only hangs on a ladder is no place to stop.
+            if (goal.reached(n.x, n.y, n.z) && stand(n.x, n.y, n.z) != HANGING) return finish(n, Status.FOUND);
             if (n.h < best.h) best = n;
             if (++expanded >= maxNodes) {
                 return best != start && best.h < start.h - 0.5 ? finish(best, Status.PARTIAL)
@@ -167,6 +182,7 @@ public final class PathSearch {
     private Status finish(Node end, Status result) {
         status = result;
         if (end != null) {
+            progress = start.h - end.h;
             List<Step> steps = new ArrayList<>();
             for (Node n = end; n != null && n.parent != null; n = n.parent) steps.add(new Step(n.x, n.y, n.z, n.move));
             Collections.reverse(steps);
@@ -179,17 +195,27 @@ public final class PathSearch {
 
     // ---- world model ----------------------------------------------------------------------------------------
 
-    /** 0 cannot stand, 1 on a full block, 2 on a half block, 3 floating at a water surface. */
+    /** Feet in a ladder cell with nothing under them: holding on, not standing. */
+    private static final int HANGING = 4;
+
+    /**
+     * 0 cannot stand, 1 on a full block (or at the foot of a ladder), 2 on a half block, 3 floating at a water
+     * surface, 4 hanging on a ladder.
+     */
     private int stand(int x, int y, int z) {
         byte feet = nav.cls(x, y, z);
         byte head = nav.cls(x, y + 1, z);
         if (feet == NavWorld.SLAB) {
-            return openOrWater(head) && nav.cls(x, y + 2, z) == NavWorld.OPEN && !nav.nearHazard(x, y, z) ? 2 : 0;
+            return passable(head) && nav.passable(x, y + 2, z) && !nav.nearHazard(x, y, z) ? 2 : 0;
         }
         if (feet == NavWorld.WATER) {
             return head == NavWorld.OPEN && !nav.nearHazard(x, y, z) ? 3 : 0;
         }
-        if (feet != NavWorld.OPEN || !openOrWater(head)) return 0;
+        if (feet == NavWorld.CLIMB) {
+            if (!passable(head) || nav.nearHazard(x, y, z)) return 0;
+            return nav.cls(x, y - 1, z) == NavWorld.SOLID ? 1 : HANGING;
+        }
+        if (feet != NavWorld.OPEN || !passable(head)) return 0;
         if (nav.cls(x, y - 1, z) != NavWorld.SOLID) return 0;
         return nav.nearHazard(x, y, z) ? 0 : 1;
     }
@@ -198,10 +224,14 @@ public final class PathSearch {
         return c == NavWorld.OPEN || c == NavWorld.WATER;
     }
 
+    private static boolean passable(byte c) {
+        return c == NavWorld.OPEN || c == NavWorld.WATER || c == NavWorld.CLIMB;
+    }
+
     /** Cost to have a cell open: 0 if it is, the digging time if it may be broken, -1 if it cannot be. */
     private int openCost(int x, int y, int z) {
         byte c = nav.cls(x, y, z);
-        if (c == NavWorld.OPEN || c == NavWorld.WATER) return 0;
+        if (c == NavWorld.OPEN || c == NavWorld.WATER || c == NavWorld.CLIMB) return 0;
         if (c == NavWorld.HAZARD || c == NavWorld.UNLOADED) return -1;
         if (c == NavWorld.DOOR) return DOOR_COST;
         return nav.breakCost(x, y, z);
@@ -239,12 +269,19 @@ public final class PathSearch {
                 }
             }
 
-            // Off the edge and down.
+            // Off the edge and down: onto the ground, or onto a ladder below, which catches the bot.
             if (s == 0 && nav.cls(nx, y - 1, nz) != NavWorld.SOLID) {
                 int c1 = openCost(nx, y, nz), c2 = openCost(nx, y + 1, nz);
                 if (c1 >= 0 && c2 >= 0) {
                     for (int k = 1; k <= maxDrop; k++) {
-                        if (!openOrWater(nav.cls(nx, y - k, nz))) break;
+                        byte below = nav.cls(nx, y - k, nz);
+                        if (below == NavWorld.CLIMB) {
+                            if (stand(nx, y - k, nz) != 0) {
+                                relax(n, nx, y - k, nz, DESCEND, WALK + FALL_PER_BLOCK * k + c1 + c2);
+                            }
+                            break;
+                        }
+                        if (!openOrWater(below)) break;
                         int land = stand(nx, y - k, nz);
                         if (land != 0) {
                             relax(n, nx, y - k, nz, DESCEND, WALK + FALL_PER_BLOCK * k + c1 + c2);
@@ -255,15 +292,41 @@ public final class PathSearch {
             }
         }
 
+        // Up a ladder: from the foot of it or from a cell of it, into the cell of it above. A ladder that starts at
+        // head height is reached with a jump.
+        if (stand(x, y + 1, z) == HANGING) {
+            byte feet = nav.cls(x, y, z);
+            if (feet == NavWorld.CLIMB) relax(n, x, y + 1, z, CLIMB_UP, LADDER_UP_COST);
+            else if (here == 1 && feet == NavWorld.OPEN) relax(n, x, y + 1, z, CLIMB_UP, LADDER_UP_COST + JUMP);
+        }
+        // Down a ladder: let go and slide, to the next cell of it or to the ground under it.
+        if (here == HANGING) {
+            for (int k = 1; k <= maxDrop; k++) {
+                byte below = nav.cls(x, y - k, z);
+                if (below == NavWorld.CLIMB) {
+                    if (stand(x, y - k, z) != 0) relax(n, x, y - k, z, CLIMB_DOWN, LADDER_DOWN_COST * k);
+                    break;
+                }
+                if (!openOrWater(below)) break;
+                if (stand(x, y - k, z) != 0) {
+                    relax(n, x, y - k, z, CLIMB_DOWN, LADDER_DOWN_COST + FALL_PER_BLOCK * k);
+                    break;
+                }
+            }
+        }
+
         if (here == 1) {
             for (int dir = 0; dir < 2; dir++) {
                 int to = nav.elevatorTarget(x, y, z, dir == 0);
                 if (to >= 0) relax(n, x, to, z, ELEVATOR, ELEVATOR_COST);
             }
         }
-        if (here == 1) {
+        // Not at the foot of a ladder: a block cannot go where the ladder is, nor the floor be dug from under it.
+        // Not on an elevator either: measured on the test server, a bot jumping on one to put a block under itself
+        // never got the block to go down there, and a block on top of an elevator would stop it working anyway.
+        if (here == 1 && nav.cls(x, y, z) != NavWorld.CLIMB && !nav.onElevator(x, y, z)) {
             // Pillar up: jump and put a block under the feet.
-            if (canPillar) {
+            if (canPillar && nav.cls(x, y + 1, z) != NavWorld.CLIMB) {
                 int headroom = openCost(x, y + 2, z);
                 if (headroom >= 0 && !nav.nearHazard(x, y + 1, z)) {
                     relax(n, x, y + 1, z, PILLAR, PILLAR_COST + headroom);

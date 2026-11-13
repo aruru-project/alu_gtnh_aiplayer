@@ -268,6 +268,8 @@ public final class BlueprintTask extends ClearTask {
         }
     }
 
+    static final String LAYER_GIVEN_UP = "not tried: 3 cells of this layer in a row were unreachable";
+
     private void tooFar(int[] cell) {
         skip(cell[0], cell[1], cell[2], why(cell[0], cell[1], cell[2], "unreachable"));
         if (Rules.scaffold(bot.player()) == null) needsClimbingBlocks = true;
@@ -277,16 +279,14 @@ public final class BlueprintTask extends ClearTask {
         }
         if (++layerFailures < 3) return;
         // Three in a row on one layer with nothing placed in between: the rest of it is most likely just as far
-        // out of reach, and finding that out cell by cell costs a path search each.
-        int n = 0;
+        // out of reach, and finding that out cell by cell costs a path search each. Those cells were not tried,
+        // and the result says so: from somewhere else they may well be within reach.
         for (Iterator<int[]> it = targets.iterator(); it.hasNext();) {
             int[] t = it.next();
             if (t[1] != failingLayer) continue;
-            gaveUp.add(key(t[0], t[1], t[2]));
+            skip(t[0], t[1], t[2], LAYER_GIVEN_UP);
             it.remove();
-            n++;
         }
-        countSkip("unreachable", n);
         layerFailures = 0;
     }
 

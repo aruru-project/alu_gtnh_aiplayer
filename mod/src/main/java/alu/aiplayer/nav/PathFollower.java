@@ -34,6 +34,11 @@ public final class PathFollower {
     private final NavWorld.BreakRule rule;
     private final boolean gentle;
     private final Digger digger;
+    private final TerrainLog log;
+    /** The block being dug out of the way, as it was before digging started. */
+    private int[] digging;
+    private net.minecraft.block.Block diggingBlock;
+    private int diggingMeta;
     private int index;
     private int stepTicks;
     private int pushTicks;
@@ -46,7 +51,9 @@ public final class PathFollower {
     public String failMessage;
     public String failBlock;
 
-    public PathFollower(Bot bot, List<Step> steps, int ox, int oy, int oz, NavWorld.BreakRule rule, boolean gentle) {
+    public PathFollower(Bot bot, List<Step> steps, int ox, int oy, int oz, NavWorld.BreakRule rule, boolean gentle,
+        TerrainLog log) {
+        this.log = log;
         this.gentle = gentle;
         this.bot = bot;
         this.steps = steps;
@@ -76,6 +83,10 @@ public final class PathFollower {
         if (digger.busy()) {
             if (p.isInWater()) bot.motion.jump = true;
             Digger.Status ds = digger.tick();
+            if (ds == Digger.Status.DONE && digging != null) {
+                log.dug(digging[0], digging[1], digging[2], diggingBlock, diggingMeta);
+                digging = null;
+            }
             if (ds == Digger.Status.FAILED) {
                 failCode = digger.failCode;
                 failMessage = digger.failMessage;
@@ -115,6 +126,9 @@ public final class PathFollower {
                 return Status.MOVING;
             }
             if (!Reach.canReach(p, blocked[0], blocked[1], blocked[2])) return Status.BLOCKED;
+            digging = blocked;
+            diggingBlock = p.worldObj.getBlock(blocked[0], blocked[1], blocked[2]);
+            diggingMeta = p.worldObj.getBlockMetadata(blocked[0], blocked[1], blocked[2]);
             digger.begin(blocked[0], blocked[1], blocked[2]);
             stepTicks = 0;
             return Status.MOVING;
@@ -122,6 +136,13 @@ public final class PathFollower {
 
         if (p.isInWater()) bot.motion.jump = true;
         switch (s.move) {
+            case PathSearch.CLIMB_UP:
+                return climbUp(p, s, px, py, pz);
+            case PathSearch.CLIMB_DOWN:
+                // Let go: the ladder lets the bot down slowly. Keep to the column without pushing into the wall,
+                // which would make it climb again.
+                if (!centered(p, s.x, s.z, 0.15)) bot.motion.moveToward(p, s.x + 0.5, s.z + 0.5);
+                break;
             case PathSearch.ASCEND:
                 bot.motion.moveToward(p, s.x + 0.5, s.z + 0.5);
                 if ((p.onGround || p.isInWater()) && s.y - p.posY > 0.6) bot.motion.jump = true;
@@ -142,6 +163,23 @@ public final class PathFollower {
                 }
                 break;
         }
+        return Status.MOVING;
+    }
+
+    /**
+     * Climbs into the ladder cell above: pushes toward the wall the ladder hangs on, which is what makes a player
+     * climb. From the ground under a ladder that starts at head height, jumps to catch it.
+     */
+    private Status climbUp(EntityPlayerMP p, Step s, int px, int py, int pz) {
+        int[] wall = NavWorld.climbWall(p.worldObj, s.x, s.y, s.z);
+        if (wall == null) wall = NavWorld.climbWall(p.worldObj, px, py, pz);
+        if (wall != null) {
+            // Aim at the wall's middle: that keeps the bot in the column while it presses into the ladder.
+            bot.motion.moveToward(p, s.x + 0.5 + wall[0] * 0.9, s.z + 0.5 + wall[1] * 0.9);
+        } else if (!centered(p, s.x, s.z, 0.2)) {
+            bot.motion.moveToward(p, s.x + 0.5, s.z + 0.5);
+        }
+        if (p.onGround) bot.motion.jump = true;
         return Status.MOVING;
     }
 
@@ -200,7 +238,10 @@ public final class PathFollower {
                 return Status.FAILED;
             }
             Placer.Result r = Placer.place(bot, s.x, cellY, s.z, scaffold);
-            if (r == Placer.Result.PLACED) bot.noteScaffold(s.x, cellY, s.z);
+            if (r == Placer.Result.PLACED) {
+                bot.noteScaffold(s.x, cellY, s.z);
+                log.placed(p.worldObj, s.x, cellY, s.z);
+            }
             else if (r != Placer.Result.IN_THE_WAY) return Status.BLOCKED;
         }
         return Status.MOVING;
@@ -237,14 +278,21 @@ public final class PathFollower {
             case PathSearch.DIG_DOWN:
                 if (!nav.passable(s.x, s.y, s.z)) return new int[] { s.x, s.y, s.z };
                 return null;
+            case PathSearch.CLIMB_UP:
+                if (!nav.passable(s.x, s.y + 1, s.z)) return new int[] { s.x, s.y + 1, s.z };
+                if (!nav.passable(s.x, s.y, s.z)) return new int[0];
+                return null;
             default:
                 return null;
         }
     }
 
     private boolean arrived(EntityPlayerMP p, Step s) {
-        if (!(p.onGround || p.isInWater())) return false;
         if (MathHelper.floor_double(p.posX) != s.x || MathHelper.floor_double(p.posZ) != s.z) return false;
+        if (!(p.onGround || p.isInWater())) {
+            // Holding on to a ladder: there once the feet are in the step's cell.
+            return p.isOnLadder() && MathHelper.floor_double(p.posY + 0.01) == s.y && index + 1 < steps.size();
+        }
         if (Math.abs(p.posY - s.y) > 0.75) return false;
         return !needsCentering() || centered(p, s.x, s.z, 0.3);
     }
@@ -256,6 +304,9 @@ public final class PathFollower {
         Step next = steps.get(index + 1);
         if (next.move == PathSearch.PILLAR || next.move == PathSearch.DIG_DOWN) return true;
         if (s.move == PathSearch.PILLAR || s.move == PathSearch.DIG_DOWN) return false;
+        if (s.move == PathSearch.CLIMB_UP || s.move == PathSearch.CLIMB_DOWN
+            || next.move == PathSearch.CLIMB_UP
+            || next.move == PathSearch.CLIMB_DOWN) return false;
         int px = index == 0 ? ox : steps.get(index - 1).x;
         int pz = index == 0 ? oz : steps.get(index - 1).z;
         // Keep walking through cells that lie on a straight line.

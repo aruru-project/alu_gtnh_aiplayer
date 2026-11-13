@@ -50,11 +50,14 @@ abstract class MoveTask extends Task {
             .func_152612_a(name);
     }
 
+    /** Where the bot is, and what the walk put down to climb on or dug out of the way. */
     @Override
     protected JsonObject summary() {
         if (bot == null || !bot.online()) return null;
         JsonObject o = new JsonObject();
         o.add("block", J.pos(bot.blockX(), bot.blockY(), bot.blockZ()));
+        if (nav != null) nav.changes()
+            .addTo(o, bot.player().worldObj);
         return o;
     }
 }

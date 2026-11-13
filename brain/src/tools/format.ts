@@ -346,10 +346,12 @@ export function taskLines(task: TaskInfo): { error?: string[]; result?: string[]
     // 放下就走（leave）的结果里没有产物，是“放进去了、机器开工了”和那一刻机器的状态
     if (result && result.left === true) out.result = processLeftLines(result, task.params)
     else if (result && Array.isArray(result.outputs)) out.result = processResultLines(result, task.params)
-  } else if (task.type === 'place' || task.type === 'fill' || task.type === 'flatten') {
+  } else if (task.type === 'place' || task.type === 'fill' || task.type === 'flatten' || task.type === 'dig' || task.type === 'clear') {
     // 一格也没放上的 place、fill 也走这里：跳过的原因是整句话，放进 JSON 会被截掉
-    const placeLike = task.type !== 'flatten' && result !== undefined && (isRecord(result.skipped) || count(result.cameOutDifferent) > 0)
-    if (result && (Array.isArray(result.placedItems) || placeLike)) out.result = areaResultLines(result)
+    const placeLike = (task.type === 'place' || task.type === 'fill') && result !== undefined && (isRecord(result.skipped) || count(result.cameOutDifferent) > 0)
+    if (result && (Array.isArray(result.placedItems) || placeLike || hasTerrainLines(result))) out.result = areaResultLines(result)
+  } else if (task.type === 'goto' || task.type === 'goto_player' || task.type === 'follow') {
+    if (result && isRecord(result.block)) out.result = moveResultLines(result)
   } else if (task.type === 'use') {
     if (result && (typeof result.used === 'string' || Array.isArray(result.gained))) out.result = useResultLines(result, task.params)
   } else if (task.type === 'hold') {
@@ -900,6 +902,19 @@ export function formatBlueprintCheck(c: BlueprintCheck, opts: { clearGiven: bool
   return lines.join('\n')
 }
 
+/** 身体报的“这次对地形做了什么”：垫的方块、路上挖掉的、没拆掉的垫脚、卸货卸下的东西。 */
+const TERRAIN_KEYS = [
+  'climbingBlocks',
+  'climbingBlocksNotListed',
+  'climbingBlocksStanding',
+  'climbingBlocksLeft',
+  'climbingBlocksLeftStanding',
+  'dugOnTheWay',
+  'dugOnTheWayNotListed',
+  'notTakenBack',
+  'unloaded',
+] as const
+
 const BLUEPRINT_NOW_KEYS = ['cells', 'done', 'toPlace', 'byHand', 'blocked', 'extra', 'unloaded'] as const
 const BLUEPRINT_RESULT_KEYS = new Set([
   'removed',
@@ -911,7 +926,7 @@ const BLUEPRINT_RESULT_KEYS = new Set([
   'cameOutDifferent',
   'cameOutExamples',
   'needsClimbingBlocks',
-  'climbingBlocksLeftStanding',
+  ...TERRAIN_KEYS,
   'now',
   'materials',
   'byHandBlocks',
@@ -936,7 +951,7 @@ export function blueprintResultLines(result: Record<string, unknown>): string[] 
   if (result.needsClimbingBlocks === true) {
     lines.push('needsClimbingBlocks: true (some spots were too high to reach and you carry no dirt or cobblestone to climb on)')
   }
-  if (count(result.climbingBlocksLeftStanding) > 0) lines.push(`climbingBlocksLeftStanding ${count(result.climbingBlocksLeftStanding)}`)
+  lines.push(...terrainLines(result))
   if (isRecord(result.now)) {
     const now = result.now
     const parts = BLUEPRINT_NOW_KEYS.filter((k) => typeof now[k] === 'number').map((k) => `${k} ${String(now[k])}`)
@@ -996,12 +1011,62 @@ function cameOutLines(result: Record<string, unknown>): string[] {
 }
 
 /**
- * 区域任务的结果：挖了放了多少等照旧是紧凑 JSON；放了哪几种、跳过了什么（按原因）、哪些放出来朝向不对，各自成行。
+ * 区域任务的结果：挖了放了多少等照旧是紧凑 JSON；放了哪几种、跳过了什么（按原因）、哪些放出来朝向不对、垫脚和路上挖的、卸了什么，
+ * 各自成行（坐标和整句的原因不能被截断）。
  */
 export function areaResultLines(result: Record<string, unknown>): string[] {
   const { placedItems, skipped, skippedExamples, cameOutDifferent, cameOutExamples, ...rest } = result
   const from = placedFromText(placedItems)
-  return [compactJson(withLocalNames(rest), 600), ...(from ? [from] : []), ...skippedLines(result), ...cameOutLines(result)]
+  for (const key of TERRAIN_KEYS) delete rest[key]
+  return [compactJson(withLocalNames(trimTaskResult(rest)), 600), ...(from ? [from] : []), ...skippedLines(result), ...cameOutLines(result), ...terrainLines(result)]
+}
+
+
+function hasTerrainLines(result: Record<string, unknown>): boolean {
+  return TERRAIN_KEYS.some((k) => result[k] !== undefined)
+}
+
+function cellText(c: Record<string, unknown>): string {
+  return `(${String(c.x)},${String(c.y)},${String(c.z)})`
+}
+
+function cellsText(v: unknown, describe: (c: Record<string, unknown>) => string = cellText): string {
+  return (Array.isArray(v) ? v.filter(isRecord) : []).map(describe).join(', ')
+}
+
+export function terrainLines(result: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  if (Array.isArray(result.climbingBlocks) && result.climbingBlocks.length > 0) {
+    const all = result.climbingBlocks.filter(isRecord)
+    const total = all.length + count(result.climbingBlocksNotListed)
+    const standing = typeof result.climbingBlocksStanding === 'number' ? result.climbingBlocksStanding : all.filter((c) => c.standing === true).length
+    let s = `climbing blocks put down on the way: ${total}, still standing ${standing}: ${cellsText(all, (c) => `${cellText(c)} ${String(c.id)}${c.standing === true ? '' : ' (gone)'}`)}`
+    if (count(result.climbingBlocksNotListed) > 0) s += `; ${count(result.climbingBlocksNotListed)} more not listed`
+    lines.push(s)
+  }
+  if (count(result.notTakenBack) > 0) lines.push(`not taken back (out of reach from where you stopped, or under your feet): ${count(result.notTakenBack)}`)
+  if (count(result.climbingBlocksLeftStanding) > 0) {
+    const at = cellsText(result.climbingBlocksLeft)
+    lines.push(`climbingBlocksLeftStanding ${count(result.climbingBlocksLeftStanding)}${at ? ` at ${at}` : ''}`)
+  }
+  if (Array.isArray(result.dugOnTheWay) && result.dugOnTheWay.length > 0) {
+    let s = `dug out of the way: ${cellsText(result.dugOnTheWay, (c) => `${cellText(c)} ${String(c.id)}${c.meta ? `/${String(c.meta)}` : ''}`)}`
+    if (count(result.dugOnTheWayNotListed) > 0) s += `; ${count(result.dugOnTheWayNotListed)} more not listed`
+    lines.push(s)
+  }
+  const unloaded = kindList(result.unloaded)
+  if (unloaded.length > 0) lines.push(`left in the drop-off containers: ${unloaded.map((k) => kindText(k.count, k)).join(', ')}`)
+  return lines
+}
+
+/** 走路类任务的结果：在哪、和要的高度差几格，再加路上对地形做了什么。 */
+export function moveResultLines(result: Record<string, unknown>): string[] {
+  const block = result.block as { x: number; y: number; z: number }
+  let head = `at ${formatPos(block)}`
+  if (typeof result.dy === 'number') head += result.dy === 0 ? ', feet at the height asked for' : `, feet ${Math.abs(result.dy)} ${result.dy > 0 ? 'above' : 'below'} the height asked for`
+  const known = new Set<string>(['block', 'dy', ...TERRAIN_KEYS])
+  const rest = Object.fromEntries(Object.entries(result).filter(([k]) => !known.has(k)))
+  return [head, ...terrainLines(result), ...(Object.keys(rest).length > 0 ? [`other: ${compactJson(rest, 300)}`] : [])]
 }
 
 /** blueprint 任务失败时的 detail：missing 是每种材料缺多少。 */

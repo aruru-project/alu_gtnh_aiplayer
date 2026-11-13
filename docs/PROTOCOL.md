@@ -561,7 +561,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 | code | 含义 | detail | 大脑通常怎么办 |
 |---|---|---|---|
-| `unreachable` | 走不到目标，或目标比步行上限（配置 `maxTravel`，默认 256 格）还远 | 可能有 `x y z` | 太远就先 `home` 传送到附近；否则换目标或问人 |
+| `unreachable` | 走不到目标，或目标比步行上限（配置 `maxTravel`，默认 256 格）还远；`goto` 的目标站不住、或不垫方块上不去（见“走路的结果”） | 可能有 `x y z`；`goto` 见“走路的结果” | 太远就先 `home` 传送到附近；否则换目标或问人 |
 | `stuck` | 多次尝试后仍无进展 | | 看状态后重试或问人 |
 | `no_tool` | 没有能挖这种方块的工具。消息写着它要什么（工具类别和等级，同 `bot.probe` 的 `needs`）和身上每件工具为什么不行 | `block`、`x y z`、`needs` | 找工具或问人 |
 | `no_material` | 要放的方块不够 | `missing`，`item` 或 `items` | 去取或问人 |
@@ -579,7 +579,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 | type | 参数 | 行为 |
 |---|---|---|
-| `goto` | `{x,z, y?, range?=1, dim?}` | 走到离目标水平 range 格以内。给了 `y` 时高度差不超过 2（range 大于 2 时至多 4）；不给则以该处地面为准 |
+| `goto` | `{x,z, y?, range?=1, yRange?, climb?=true, takeBack?=false, dim?}` | 走到离目标水平 range 格以内。给了 `y`（脚的高度）时，脚和 `y` 的高度差不超过 `yRange`；不给 `yRange` 时是 2（range 大于 2 时至多 4）。不给 `y` 则以该处地面为准。`climb:false` 时不垫方块往上爬；`takeBack:true` 时到了以后把这次垫的、站着够得着的方块挖掉。见下“走路的结果” |
 | `goto_player` | `{player, range?=2}` | 走到某玩家身边；5 分钟追不上以 `stuck` 失败 |
 | `follow` | `{player, distance?=3}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等 |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
@@ -612,9 +612,11 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 点同一种台阶的上表面（或上半台阶的下表面）在游戏里是把两块合成一个双台阶，这种点法不算。
   - 实测（测试服）：一条一格宽、两边是墙、下面悬空的梯道里，四级云杉木楼梯 `blockMeta 2`（往南升）四级都是 /2；平地上四级 /0、/1、/2、/3 各是各的；原木 /4 点了它西边那块石头的侧面；云杉原木 /5 不给 `meta` 用了 `log` 1；只有地面时上半台阶 /8、倒楼梯 /4 记着要点侧面上半或上面那块的底面。
 - **服务器自己的保护**：原版服务器会不出声地丢掉玩家对它保护的方块的点击、挖掘和对着它的放置（没有事件，什么都不变，该开的界面也不开）。身体在每一次右键、挖、对着方块放之前先问服务器（`isBlockProtected`）；受保护就不点出去，这一下以 `denied` 收场：任务失败，`screen.open` 返回错误。消息写明是什么、多大范围，`error.detail.protection` 是同样的数：`{x,y,z, by:"spawn protection", spawn:{x,z}, range, x1,z1,x2,z2}`——被拒绝的那一格（放方块时是对着放的那一格），主世界里离出生点 `range` 格以内（x、z 两个方向里大的那个）、所有高度；服务器有 op 时，不是 op 的玩家在这里点、挖、放都被拒绝。`by` 是 `"the server"` 的，是服务器拒绝了、但不在出生点那一块里（别的 mod 改了规则）。实测（测试服 spawn-protection=1，出生点 (-136, 154)，范围 x -137..-135、z 153..155）：打开那里的部件加工台、空手右键、左键、挖、对着那里的方块放、往那里的箱子里放东西都以 `denied` 收场，都在 0.6 秒内；`fill` 跨进这块时外面的两格照放，碰到里面的那一格停下。
-- **走路时**先找不改动地形的路；确实走不通才挖开或垫脚。
+- **走路时**先找不改动地形的路；确实走不通才挖开或垫脚。挖开、垫脚只为一条能走到目标的完整的路：找不到完整的路时，不改地形的半截路照走（走近了再找），要改地形的半截路只有能近 8 格以上才走（原来会为了近一两格从门边挖下去、在别人的地基下打洞）。
 - **走路时**只会自己挖开“天然方块”（mod 配置 `naturalBlocks`：泥土、草方块、沙子、沙砾、雪、树叶、花草等；不含石头和木头，因为人也拿它们盖房子）和任务指定要清掉的区域内的方块，不会为了抄近路拆别的东西，也不会挖掉本任务刚放下的方块。
-  够不着高处时会用填充方块（配置 `fillerBlocks`：泥土、圆石等）垫脚往上搭；去箱子存取的路上不垫脚，免得把货用掉。
+  够不着高处时会用填充方块（配置 `fillerBlocks`：泥土、圆石等）垫脚往上搭；去箱子存取的路上不垫脚，免得把货用掉；`goto` 给 `climb:false` 时也不垫。
+- **楼梯、梯子**：楼梯当作能站上去的方块，一级一级跳上去（真人一样，头顶要有空：从一级迈到下一级时，脚下这一级上方第三格不能有东西）。梯子和藤蔓能上下：进梯子格，朝它贴着的墙推着往上爬，到了旁边有地板的高度跨出去；从楼板的洞口下到梯子上，松手往下滑。只有梯子（下面悬空）的格子不算到达的地方。
+  方块形状按游戏物理实际碰撞的盒子判断（`addCollisionBoxesToList`），不读方块的边界缓存：原版楼梯被任何东西做过一次射线检测（玩家指着它看、生物看人）以后，同一种楼梯的边界缓存就常常是一个八分之一块（有实体碰到楼梯时才暂时恢复），原来据此把楼梯当成站不上去的障碍，时好时坏（意见簿 f18/f19：门口的台阶被认错，进不了屋，从门边挖下去钻到了地基下面）。
 - **树**：够不着的树叶和上面的雪直接跳过（`foliage out of reach`）。
 - **`dropoff` / `supply`** 是箱子坐标 `{x,y,z}` 或坐标数组：背包满时自动去 dropoff 卸货（留下工具、食物和一组垫脚方块），`clear` 和 `flatten` 结束时再卸一次；材料不够时自动去 supply 取。
 - **`overflow`**：背包满又没给 dropoff 时，`"fail"`（默认）以 `inventory_full` 失败，`"leave"` 继续挖、把掉落物留在地上。
@@ -631,6 +633,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 挖出来的东西背包满时送去 `dropoff`，建筑材料留在身上。
   - 结束时（成功或失败）结果里有 `now`：`{cells, done, toPlace, byHand, blocked, extra}`，以及各最多 8 项的 `materials`（还缺的）、`byHandBlocks`、`blockedBy`、`extraBlocks`。
     够不着又没有垫脚方块时带 `needsClimbingBlocks:true`。
+  - 同一层连着 3 格走不到时，这一层剩下的格子不再一格一格去试，记在 `skipped` 的 `"not tried: 3 cells of this layer in a row were unreachable"` 下（原来和真的走不到的一起记成 `unreachable`）：换个地方站（比如先走到屋顶上）再跑一次，它们多半够得着。
   - 重新执行会接着做：已经对的格子不动。
 - **`craft`**：
   - 材料和工具必须已经在身上（先 `withdraw`）。不够时以 `no_material` 失败，`error.detail.missing` 列出每样还差多少（格式同 `recipe.find` 的 `ingredients`）。
@@ -681,7 +684,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - **调用的人自己带的字段**：任务参数里身体不认识的键原样留在任务的 `params` 里，任务信息和结束事件都带着它。大脑用它记“这一批是哪条配方的几轮”（`recipe:{ref, rounds, ticks?}`），身体不读它。
   - 多方块的总线和仓不按名单找：主机名下登记的所有总线和仓都算（蒸汽多方块的蒸汽总线也在内）。
   - 还不行的：单方块机器的流体格（要它已经接好流体来源）；界面里要点按钮才能开工的机器（用 `screen.*` 自己点）。
-- **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。
+- **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。会走楼梯、爬梯子（见上）。
   会坐 OpenBlocks 电梯（站上去，相当于跳一下上楼、蹲一下下楼）。门打不开或电梯不动时换别的路。
 - **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。
   数量按 bot 背包里实际增减的数目计。
@@ -689,9 +692,13 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 结果 `result`：
 
 - 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], cameOutDifferent?, cameOutExamples?:[{x,y,z,want,got,why?}], freeSlots}`，`cameOutDifferent` 是放下去了、但 meta 和要的不一样的格数（身体预料不到放法的方块，`why` 写着），`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
-  为了够到高处垫的方块，任务结束前会拆掉；够不着拆的个数在 `climbingBlocksLeftStanding`。
+  为了够到高处垫的方块，任务结束前会拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标在 `climbingBlocksLeft:[{x,y,z}]`（最多列 64 个），它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
+  走路途中为了过去挖掉的方块（不是任务本身要挖的）在 `dugOnTheWay:[{x,y,z,id,meta?}]`。去 `dropoff` 卸下的东西在 `unloaded:[{id,meta,name,count}]`（卸货时只给自己留一组垫脚方块，多带的泥土、圆石会被卸掉）。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
-- 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。
+- 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。**走路的结果**（`goto` `goto_player` `follow`）另外照实列出这一趟改了什么地形：`climbingBlocks:[{x,y,z,id,meta?,standing}]` 是垫下的方块（`standing` 是现在还在不在），`climbingBlocksStanding` 是还在的个数；`dugOnTheWay:[{x,y,z,id,meta?}]` 是为了过去挖掉的方块；各最多列 64 个，多的个数在 `climbingBlocksNotListed`、`dugOnTheWayNotListed`。什么都没改时没有这几项。`goto` 给了 `y` 时另有 `dy`：脚的高度减去 `y`（0 就是正好），`takeBack` 时有拆不到的另有 `notTakenBack`（个数；还剩哪些看 `climbingBlocks` 的 `standing`）。
+  `goto` 给了 `y` 的失败：
+  - 目标范围里没有一格站得住（目标格里有走路不挖的东西、头顶那格有东西、或者脚下是空的而且 `climb:false`），一开始就以 `unreachable` 失败，不去找路：消息以 `nothing to stand on at the destination:` 开头，说明是哪一格是什么；`error.detail` 是 `{x,y,z, feet, head, below}`，后三个是那三格的 `{id, meta?}`（没加载是 `{loaded:false}`）。原来这种目标会被当成到了：站在低两格的地方报完成，或者垫土把楼梯口填上。
+  - `climb:false` 走不到、而允许垫方块就能到时，消息是 `no way there without stacking blocks to climb on; one that stacks N exists (climb: true allows stacking them)`，`error.detail.climbingBlocksWouldTake` 是 N；身上没有垫脚方块时消息里另说一句。
 - `hold`：`{held, stopped, from, pos, block, onGround, aboveGround?, motion, lowest, highest, distance?, track, tanks?}`。`held` 是按了几个 tick；`stopped` 是为什么松手（`ticks` 时间到、`y` 到了那个高度、`above` 离地到了那个高度、`arrived` 到了 `toward` 的 `range` 以内）；`from`、`pos` 是开始和现在的位置（小数）；`aboveGround`、`motion` 同 `BotStatus`（松手那一刻还在动的，之后还会接着滑一段）；`lowest`、`highest` 是脚的最低、最高；`distance` 是现在离 `toward` 多远；`track` 是路上最多约 30 个点 `[{t, x,y,z, above?}]`（`t` 是第几个 tick）；`tanks` 是穿着的东西的罐 `[{slot, fluid?, name?, amount, capacity, was}]`（`was` 是开始时的量）。
 
 ## 事件

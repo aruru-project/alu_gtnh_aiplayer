@@ -33,10 +33,11 @@
 
 # 身体自己会处理的
 - 走路时优先走不改动地形的路；实在走不通才会挖开挡路的天然方块（泥土、沙子、沙砾、树叶之类，不动石头和木头）。
-- 够不着高处时用泥土、圆石垫脚，垫的方块任务结束前会自己拆掉。
+- 够不着高处时用泥土、圆石垫脚，垫的方块任务结束前会自己拆掉（这个任务垫的不论多远都拆）。
+- 背包满了去 dropoff 卸货时，身上只留一组垫脚的方块，多带的泥土、圆石会一起卸进去：结果里的 unloaded 是卸下了什么。
 
 # 看懂结果
 - removed / placed 是挖掉和放上的数量，skipped 按原因列出跳过了多少，skippedExamples 给出几个具体坐标。
 - 跳过带数据的方块（箱子、抽屉、机器）、液体、基岩属于正常，不用管。
 - 原因是 hole deeper than maxFillDepth 的，是坑太深没填：要填就把 maxFillDepth 调大再跑一次。foliage out of reach 是够不着的树叶，一般不用管。
-- 结果里有 climbingBlocksLeftStanding 时，是有几块垫脚的方块没能拆掉：在别人的地方干活的话，说一声或者回去拆。
+- 结果里有 climbingBlocksLeftStanding 时，是有几块垫脚的方块没能拆掉，climbingBlocksLeft 是它们的坐标：在别人的地方干活的话，说一声或者回去拆（dig_blocks）。dugOnTheWay 是走路途中为了过去挖掉的方块。

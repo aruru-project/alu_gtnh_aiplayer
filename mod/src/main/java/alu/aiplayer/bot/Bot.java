@@ -542,18 +542,7 @@ public final class Bot implements BotConnection.Listener {
      */
     public static double aboveGround(EntityPlayerMP p) {
         if (p.onGround) return 0;
-        net.minecraft.world.World w = p.worldObj;
-        int x = MathHelper.floor_double(p.posX), z = MathHelper.floor_double(p.posZ);
-        int top = MathHelper.floor_double(p.posY);
-        for (int y = top; y >= Math.max(0, top - 256); y--) {
-            if (!w.blockExists(x, y, z)) return -1;
-            net.minecraft.block.Block b = w.getBlock(x, y, z);
-            if (b.getMaterial()
-                .isLiquid()) return Math.max(0, p.posY - (y + 1));
-            net.minecraft.util.AxisAlignedBB box = b.getCollisionBoundingBoxFromPool(w, x, y, z);
-            if (box != null && box.maxY <= p.posY + 1.0e-6) return p.posY - box.maxY;
-        }
-        return -1;
+        return alu.aiplayer.nav.NavWorld.heightAboveSupport(p.worldObj, p.posX, p.posY, p.posZ, 256);
     }
 
     public int blockX() {

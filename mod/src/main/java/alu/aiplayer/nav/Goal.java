@@ -18,7 +18,16 @@ public abstract class Goal {
      * higher or lower.
      */
     public static Goal near(final int gx, final int gy, final int gz, final int range) {
-        final int slack = Math.max(2, Math.min(4, range));
+        return near(gx, gy, gz, range, defaultHeightSlack(range));
+    }
+
+    /** How far off in height {@link #near(int, int, int, int)} lets the feet be: 2, or up to 4 for a wide range. */
+    public static int defaultHeightSlack(int range) {
+        return Math.max(2, Math.min(4, range));
+    }
+
+    /** Within a horizontal range of a block position, with the feet at most {@code slack} above or below it. */
+    public static Goal near(final int gx, final int gy, final int gz, final int range, final int slack) {
         return new Goal() {
 
             @Override

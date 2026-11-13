@@ -29,6 +29,7 @@ import alu.aiplayer.nav.Goal;
 import alu.aiplayer.nav.NavWorld;
 import alu.aiplayer.nav.Navigator;
 import alu.aiplayer.nav.Rules;
+import alu.aiplayer.nav.TerrainLog;
 import alu.aiplayer.util.J;
 import alu.aiplayer.util.Kinds;
 import alu.aiplayer.util.Names;
@@ -113,6 +114,7 @@ abstract class AreaTask extends Task {
         super.start(bot);
         nav = new Navigator(bot);
         digger = new Digger(bot);
+        scaffoldBefore = new HashSet<>(bot.scaffoldCells());
     }
 
     @Override
@@ -568,9 +570,14 @@ abstract class AreaTask extends Task {
             }
 
             @Override
-            public void moved(ItemStack type, int count) {}
+            public void moved(ItemStack type, int count) {
+                if (count > 0) unloaded.add(type, count);
+            }
         };
     }
+
+    /** What drop-off trips have left in the drop-off containers. */
+    private final Kinds unloaded = new Kinds();
 
     /** Whether the inventory is full enough that digging should stop to deal with it. */
     protected boolean inventoryFull() {
@@ -661,7 +668,10 @@ abstract class AreaTask extends Task {
 
     private List<int[]> tidyList;
     private int[] tidyCurrent;
-    private int scaffoldLeft;
+    /** Climbing blocks that tidying could not take down. */
+    private final List<int[]> scaffoldLeft = new ArrayList<>();
+    /** The climbing blocks the bot knew of when this task started; any others are this task's own. */
+    private Set<Long> scaffoldBefore = new HashSet<>();
 
     /** Whether a block at this cell is part of what the task is meant to leave behind. */
     protected boolean keepsBlock(int x, int y, int z) {
@@ -669,8 +679,9 @@ abstract class AreaTask extends Task {
     }
 
     /**
-     * Takes down the climbing blocks the bot has left standing around here, highest first. Returns true while it
-     * is still at it. What it cannot get at without building more is counted and left.
+     * Takes down the climbing blocks this task put down, wherever they are, and those the bot left standing around
+     * here earlier, highest first. Returns true while it is still at it. What it cannot get at without building
+     * more is left, listed in the result and still remembered as the bot's own.
      */
     protected boolean tidying() {
         EntityPlayerMP p = bot.player();
@@ -684,7 +695,7 @@ abstract class AreaTask extends Task {
                     bot.forgetScaffold(x, y, z);
                     continue;
                 }
-                if (p.getDistanceSq(x + 0.5, y, z + 0.5) > 48.0 * 48.0) continue;
+                if (p.getDistanceSq(x + 0.5, y, z + 0.5) > 48.0 * 48.0 && scaffoldBefore.contains(k)) continue;
                 tidyList.add(new int[] { x, y, z });
             }
             if (!tidyList.isEmpty()) phase = "tidying up";
@@ -692,8 +703,8 @@ abstract class AreaTask extends Task {
         if (tidyCurrent != null) {
             Act a = digCell(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
             if (a == Act.BUSY || a == Act.FAILED) return true;
-            bot.forgetScaffold(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
-            if (a != Act.OK) scaffoldLeft++;
+            if (a == Act.OK) bot.forgetScaffold(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
+            else scaffoldLeft.add(tidyCurrent);
             tidyCurrent = null;
         }
         if (tidyList.isEmpty()) return false;
@@ -760,7 +771,15 @@ abstract class AreaTask extends Task {
             o.add("skipped", s);
             o.add("skippedExamples", skipExamples);
         }
-        if (scaffoldLeft > 0) o.addProperty("climbingBlocksLeftStanding", scaffoldLeft);
+        if (!scaffoldLeft.isEmpty()) {
+            o.addProperty("climbingBlocksLeftStanding", scaffoldLeft.size());
+            JsonArray a = new JsonArray();
+            for (int[] c : scaffoldLeft) if (a.size() < TerrainLog.LIST_LIMIT) a.add(J.pos(c[0], c[1], c[2]));
+            o.add("climbingBlocksLeft", a);
+        }
+        if (nav != null && bot != null && bot.online()) nav.changes()
+            .addDugTo(o);
+        if (!unloaded.isEmpty()) o.add("unloaded", unloaded.toJson());
         if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
         return o;
     }

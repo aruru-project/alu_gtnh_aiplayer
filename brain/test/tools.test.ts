@@ -600,7 +600,7 @@ describe('任务类工具', () => {
     assert.match(a.content, /Task t1 \(goto\) started\./)
     assert.match(b.content, /Task t2 \(deposit\) added to the end of your queue/)
     assert.deepEqual(s.game.callsOf('task.start'), [
-      { bot: 'Alu', task: { type: 'goto', x: 1, y: 64, z: 2 }, mode: 'replace' },
+      { bot: 'Alu', task: { type: 'goto', x: 1, y: 64, z: 2, yRange: 1, climb: false }, mode: 'replace' },
       { bot: 'Alu', task: { type: 'deposit', container: { x: 5, y: 64, z: 5 }, keep: ['minecraft:torch'] }, mode: 'append' },
     ])
     assert.deepEqual(s.started, ['t1', 't2'])
@@ -616,10 +616,56 @@ describe('任务类工具', () => {
     assert.deepEqual(
       s.game.callsOf('task.start').map((p) => p.task),
       [
-        { type: 'goto', x: -60, z: -60 },
+        { type: 'goto', x: -60, z: -60, climb: false },
         { type: 'place', blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:cobblestone', meta: 0 }], supply: [{ x: 5, y: 64, z: 5 }] },
       ],
     )
+  })
+
+  it('go_to 给了高度就按 range 核对高度（意见簿 f15：要 y73、range 0，身体按老规矩差 2 格也算到，站在 y71 报完成）；默认不垫方块，climb:true 才允许；takeBack 原样带过去', async (t) => {
+    const s = setup(t)
+    await s.run('go_to', { x: -622, y: 73, z: 134, range: 0 })
+    await s.run('go_to', { x: -622, y: 73, z: 134 })
+    await s.run('go_to', { x: -576, y: 89, z: 97, range: 2, climb: true, takeBack: true })
+    assert.deepEqual(
+      s.game.callsOf('task.start').map((p) => p.task),
+      [
+        { type: 'goto', x: -622, y: 73, z: 134, range: 0, yRange: 0, climb: false },
+        { type: 'goto', x: -622, y: 73, z: 134, yRange: 1, climb: false },
+        { type: 'goto', x: -576, y: 89, z: 97, range: 2, yRange: 2, climb: true, takeBack: true },
+      ],
+    )
+  })
+
+  it('go_to 的结果里写着到了哪、和要的高度差几格、路上垫了哪几块（还在不在）、挖掉了什么（意见簿 f15/f17：垫了泥土一个字没提，她自己扫才找到）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't3', type: 'goto', state: 'done', finishedAt: 100,
+          result: {
+            block: { x: -622, y: 78, z: 132 }, dy: 0,
+            climbingBlocks: [
+              { x: -622, y: 69, z: 127, id: 'minecraft:dirt', standing: true },
+              { x: -622, y: 70, z: 127, id: 'minecraft:dirt', standing: false },
+            ],
+            climbingBlocksStanding: 1,
+            notTakenBack: 1,
+            dugOnTheWay: [{ x: -625, y: 68, z: 128, id: 'minecraft:grass' }],
+          },
+        },
+        {
+          id: 't2', type: 'goto', state: 'failed', finishedAt: 90,
+          error: { code: 'unreachable', message: 'no way there without stacking blocks to climb on; one that stacks 2 exists (climb: true allows stacking them)', detail: { climbingBlocksWouldTake: 2 } },
+          result: { block: { x: -623, y: 69, z: 131 }, dy: -4 },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.match(text, /t3 goto \[done\]; result: at \(-622,78,132\), feet at the height asked for; climbing blocks put down on the way: 2, still standing 1: \(-622,69,127\) minecraft:dirt, \(-622,70,127\) minecraft:dirt \(gone\); not taken back[^;]*: 1; dug out of the way: \(-625,68,128\) minecraft:grass/)
+    assert.match(text, /t2 goto \[failed\] error=unreachable: no way there without stacking blocks to climb on; one that stacks 2 exists \(climb: true allows stacking them\).*partial result: at \(-623,69,131\), feet 4 below the height asked for/)
   })
 
   it('放方块不给 meta 就是 0（意见簿：说明写着默认 0，身体收到的却是“哪种都行”，把钢管道方块混进了钢机械方块）：fill_area、place_blocks 交给身体的每一格都带着 meta，给了的照给的', async (t) => {
@@ -1237,6 +1283,33 @@ describe('图纸', () => {
     assert.match(text, /partial result: removed 4019, placed 1949, freeSlots 3; now \(the world compared with the blueprint\): cells 5294, done 1959, toPlace 1874, byHand 2, blocked 265, extra 14/)
     // 排在最后的那张表也完整地在
     assert.match(text, /extraBlocks \(still where the blueprint is empty\): 14× gregtech:gt\.blockmachines \(not natural terrain, clear digs 0, 14 of them hold data and are never dug\)$/m)
+  })
+
+  it('照图纸建的结果：没拆掉的垫脚列出坐标，卸货卸下了什么照实说（意见簿 f21：只报“2 块”，她自己扫出 13 块；带的 327 泥土多半被卸进了箱子，她以为用掉了）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't8', type: 'blueprint', state: 'done', finishedAt: 100,
+          result: {
+            removed: 26, placed: 20, freeSlots: 21,
+            skipped: { unreachable: 3, 'not tried: 3 cells of this layer in a row were unreachable': 45 },
+            climbingBlocksLeftStanding: 2,
+            climbingBlocksLeft: [{ x: -590, y: 75, z: 105 }, { x: -563, y: 87, z: 99 }],
+            unloaded: [{ id: 'minecraft:dirt', meta: 0, name: 'Dirt', count: 287 }],
+            now: { cells: 1704, done: 1656, toPlace: 48, byHand: 0, blocked: 0, extra: 12 },
+          },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    // 跳过的原因按原因各成一行（朝向那次改的写法），没试的和真走不到的分开
+    assert.match(text, /skipped 48 cell\(s\), by reason:; - 3× unreachable; - 45× not tried: 3 cells of this layer in a row were unreachable/)
+    assert.match(text, /climbingBlocksLeftStanding 2 at \(-590,75,105\), \(-563,87,99\)/)
+    assert.match(text, /left in the drop-off containers: 287× minecraft:dirt "Dirt"/)
+    assert.doesNotMatch(text, /other:/)
   })
 })
 
@@ -1904,7 +1977,7 @@ describe('工具结果', () => {
     const s = setup(t)
     const ok = await s.run('go_to', { x: '12', y: '64', z: '-3' })
     assert.equal(ok.isError, undefined)
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'goto', x: 12, y: 64, z: -3 })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'goto', x: 12, y: 64, z: -3, yRange: 1, climb: false })
     const bad = await s.run('go_to', { x: 'north', y: 64.5, z: 1 })
     assert.equal(bad.isError, true)
     assert.match(bad.content, /x must be a number; y must be an integer/)

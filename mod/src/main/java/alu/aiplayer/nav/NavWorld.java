@@ -1,10 +1,13 @@
 package alu.aiplayer.nav;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
+import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.init.Blocks;
 import net.minecraft.util.AxisAlignedBB;
@@ -36,6 +39,11 @@ public final class NavWorld {
     public static final byte UNLOADED = 6;
     /** A closed door or gate that a right-click opens. */
     public static final byte DOOR = 7;
+    /**
+     * Something a player climbs: a ladder, a vine. It does not fill the cell, so the bot can be in it; while its feet
+     * are in such a cell it holds on, goes up by pushing toward the wall and slides down when it lets go.
+     */
+    public static final byte CLIMB = 8;
 
     /** Decides which blocks may be broken to make a path. */
     public interface BreakRule {
@@ -107,7 +115,7 @@ public final class NavWorld {
         long k = key(x, y, z);
         Byte cached = classes.get(k);
         if (cached != null) return cached;
-        byte c = classify(world, x, y, z);
+        byte c = classify(world, x, y, z, player);
         if (c == DOOR && shutDoors.contains(k)) c = OBSTACLE;
         if (c == UNLOADED) sawUnloaded = true;
         classes.put(k, c);
@@ -115,6 +123,11 @@ public final class NavWorld {
     }
 
     public static byte classify(World w, int x, int y, int z) {
+        return classify(w, x, y, z, null);
+    }
+
+    /** @param who the player whose way this is, for blocks that are solid or climbable for some only; may be null */
+    public static byte classify(World w, int x, int y, int z, EntityLivingBase who) {
         if (!w.blockExists(x, y, z)) return UNLOADED;
         Block b = w.getBlock(x, y, z);
         Material m = b.getMaterial();
@@ -124,20 +137,113 @@ public final class NavWorld {
         int door = Doors.state(w, x, y, z, b);
         if (door == Doors.OPEN) return OPEN;
         if (door == Doors.CLOSED) return DOOR;
-        AxisAlignedBB bb;
-        try {
-            bb = b.getCollisionBoundingBoxFromPool(w, x, y, z);
-        } catch (Throwable t) {
-            return OBSTACLE;
+        byte shape = shape(w, x, y, z, b, who);
+        if (shape != SOLID && shape != SLAB && climbable(w, x, y, z, b, who)) return CLIMB;
+        return shape;
+    }
+
+    /**
+     * The movement class of a block's shape, from the boxes the game's physics collides a player with. Not from the
+     * block's bounds: some blocks keep bounds that are only true for the last thing asked of them. Stairs are the
+     * case in point: once anything traces a ray through a stair (a player pointing at one, a mob checking whether it
+     * can see someone), every stair of that kind reports an eighth of a block as its bounds until a moving entity
+     * next bumps into one, and was then taken for something that cannot be stood on.
+     */
+    private static byte shape(World w, int x, int y, int z, Block b, EntityLivingBase who) {
+        List<AxisAlignedBB> boxes = collisionBoxes(w, x, y, z, b, who);
+        if (boxes == null) return OBSTACLE;
+        if (boxes.isEmpty()) return b == Blocks.web ? OBSTACLE : OPEN;
+        double top = Double.NEGATIVE_INFINITY;
+        boolean fullWidth = false, fullWidthFromBottom = false;
+        for (AxisAlignedBB bb : boxes) {
+            top = Math.max(top, bb.maxY - y);
+            if (bb.minX <= x + 0.01 && bb.maxX >= x + 0.99 && bb.minZ <= z + 0.01 && bb.maxZ >= z + 0.99) {
+                fullWidth = true;
+                if (bb.minY <= y + 0.01) fullWidthFromBottom = true;
+            }
         }
-        if (bb == null) return b == Blocks.web ? OBSTACLE : OPEN;
-        double height = bb.maxY - y;
-        if (height <= 0.26) return OPEN;
-        boolean fullWidth = bb.minX <= x + 0.01 && bb.maxX >= x + 0.99 && bb.minZ <= z + 0.01 && bb.maxZ >= z + 0.99;
+        if (top <= 0.26) return OPEN;
         if (!fullWidth) return OBSTACLE;
-        if (height >= 0.85 && height <= 1.01) return SOLID;
-        if (height >= 0.4 && height <= 0.6 && bb.minY <= y + 0.01) return SLAB;
+        if (top >= 0.85 && top <= 1.01) return SOLID;
+        if (top >= 0.4 && top <= 0.6 && fullWidthFromBottom) return SLAB;
         return OBSTACLE;
+    }
+
+    /** The boxes a player in this cell collides with, as the game's physics finds them; null if the block threw. */
+    private static List<AxisAlignedBB> collisionBoxes(World w, int x, int y, int z, Block b, EntityLivingBase who) {
+        List<AxisAlignedBB> boxes = new ArrayList<>();
+        try {
+            b.addCollisionBoxesToList(w, x, y, z, AxisAlignedBB.getBoundingBox(x, y, z, x + 1, y + 1, z + 1), boxes, who);
+        } catch (Throwable t) {
+            return null;
+        }
+        return boxes;
+    }
+
+    /** Whether a player in this cell holds on to it, as on a ladder. */
+    private static boolean climbable(World w, int x, int y, int z, Block b, EntityLivingBase who) {
+        try {
+            return b.isLadder(w, x, y, z, who);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * The horizontal direction {dx, dz} from a climbable cell toward what it hangs on: the way to push to climb it.
+     * Null when it hangs on nothing the bot can push against.
+     */
+    public static int[] climbWall(World w, int x, int y, int z) {
+        Block b = w.getBlock(x, y, z);
+        int meta = w.getBlockMetadata(x, y, z);
+        if (b instanceof net.minecraft.block.BlockLadder) {
+            switch (meta) {
+                case 2:
+                    return new int[] { 0, 1 };
+                case 3:
+                    return new int[] { 0, -1 };
+                case 4:
+                    return new int[] { 1, 0 };
+                case 5:
+                    return new int[] { -1, 0 };
+                default:
+                    break;
+            }
+        } else if (b instanceof net.minecraft.block.BlockVine) {
+            if ((meta & 1) != 0) return new int[] { 0, 1 };
+            if ((meta & 4) != 0) return new int[] { 0, -1 };
+            if ((meta & 2) != 0) return new int[] { -1, 0 };
+            if ((meta & 8) != 0) return new int[] { 1, 0 };
+        }
+        // Anything else that is climbed: whatever solid neighbour it has.
+        int[][] dirs = { { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } };
+        for (int[] d : dirs) {
+            byte c = classify(w, x + d[0], y, z + d[1]);
+            if (c == SOLID || c == OBSTACLE) return d;
+        }
+        return null;
+    }
+
+    /**
+     * How far feet at this height are above what holds them up in their column: the top of the highest collision
+     * box at or below them, or a liquid's surface. -1 if nothing does within the given depth or that part of the
+     * world is not loaded.
+     */
+    public static double heightAboveSupport(World w, double px, double feetY, double pz, int depth) {
+        int x = net.minecraft.util.MathHelper.floor_double(px), z = net.minecraft.util.MathHelper.floor_double(pz);
+        int top = net.minecraft.util.MathHelper.floor_double(feetY);
+        for (int y = top; y >= Math.max(0, top - depth); y--) {
+            if (!w.blockExists(x, y, z)) return -1;
+            Block b = w.getBlock(x, y, z);
+            if (b.getMaterial()
+                .isLiquid()) return Math.max(0, feetY - (y + 1));
+            List<AxisAlignedBB> boxes = collisionBoxes(w, x, y, z, b, null);
+            if (boxes == null) continue;
+            double best = Double.NEGATIVE_INFINITY;
+            for (AxisAlignedBB bb : boxes) if (bb.maxY <= feetY + 1.0e-6) best = Math.max(best, bb.maxY);
+            if (best > Double.NEGATIVE_INFINITY) return feetY - best;
+        }
+        return -1;
     }
 
     /** For a bot standing with its feet at x y z: the feet level it would arrive at by elevator, or -1. */
@@ -159,9 +265,15 @@ public final class NavWorld {
 
     private static final int ELEVATOR_REACH = 20;
 
+    /** Whether a bot with its feet here stands on an elevator block. */
+    public boolean onElevator(int x, int y, int z) {
+        return y >= 1 && world.blockExists(x, y - 1, z) && Elevators.is(world.getBlock(x, y - 1, z));
+    }
+
+    /** Nothing in the cell keeps the bot out of it: open, water, or something it climbs. */
     public boolean passable(int x, int y, int z) {
         byte c = cls(x, y, z);
-        return c == OPEN || c == WATER;
+        return c == OPEN || c == WATER || c == CLIMB;
     }
 
     /** Lava or fire in the cell or right next to it. */
