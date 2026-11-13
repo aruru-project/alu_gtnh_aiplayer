@@ -143,6 +143,7 @@ public final class BridgeApi {
                 Math.max(0, Math.min(24, J.i(p, "machines", 8))),
                 J.str(p, "machine", null));
         });
+        bridge.register("recipe.overclock", p -> alu.aiplayer.act.MachineOverclock.calculate(world(p), p));
         bridge.register("world.machines", p -> {
             int[] c = centre(p);
             return WorldQueries.machines(

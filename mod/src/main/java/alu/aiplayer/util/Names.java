@@ -54,6 +54,32 @@ public final class Names {
         o.addProperty("name", displayName(stack));
         Double left = durabilityLeft(stack);
         if (left != null) o.addProperty("durability", J.round(left));
+        // Fluid cells keep their contents in NBT, not in their display name or meta. Ask the item's own
+        // interface on a copy: a named "Large Fluid Cell" is not necessarily empty.
+        try {
+            ItemStack one = stack.copy();
+            one.stackSize = 1;
+            net.minecraftforge.fluids.FluidStack fluid;
+            int capacity;
+            if (one.getItem() instanceof net.minecraftforge.fluids.IFluidContainerItem) {
+                net.minecraftforge.fluids.IFluidContainerItem container = (net.minecraftforge.fluids.IFluidContainerItem) one.getItem();
+                capacity = container.getCapacity(one);
+                fluid = container.getFluid(one);
+            } else {
+                capacity = net.minecraftforge.fluids.FluidContainerRegistry.getContainerCapacity(one);
+                fluid = net.minecraftforge.fluids.FluidContainerRegistry.getFluidForFilledItem(one);
+            }
+            if (capacity > 0) {
+                JsonObject tank = new JsonObject();
+                tank.addProperty("capacity", capacity);
+                tank.addProperty("amount", fluid == null ? 0 : fluid.amount);
+                if (fluid != null && fluid.getFluid() != null) {
+                    tank.addProperty("fluid", fluid.getFluid().getName());
+                    tank.addProperty("name", fluid.getLocalizedName());
+                }
+                o.add("fluidContainer", tank);
+            }
+        } catch (Throwable ignored) {}
         return o;
     }
 

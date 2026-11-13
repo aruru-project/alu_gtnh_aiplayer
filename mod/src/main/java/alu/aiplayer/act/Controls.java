@@ -151,6 +151,17 @@ public final class Controls {
                 o.addProperty("fills", (Boolean) call(h, "canFillSlot"));
                 o.addProperty("drains", (Boolean) call(h, "canDrainSlot"));
                 if ((Boolean) call(h, "isPhantom")) o.addProperty("phantom", true);
+                else if (f != null && (Boolean) call(h, "canDrainSlot")) {
+                    net.minecraft.item.ItemStack cursor = (net.minecraft.item.ItemStack) call(call(h, "getSyncManager"), "getCursorItem");
+                    if (cursor != null && cursor.getItem() instanceof net.minecraftforge.fluids.IFluidContainerItem) {
+                        // Some item implementations modify even a simulated stack. Never pass the real cursor
+                        // or the real tank's FluidStack into their probe.
+                        net.minecraft.item.ItemStack copy = cursor.copy();
+                        copy.stackSize = 1;
+                        int accepted = ((net.minecraftforge.fluids.IFluidContainerItem) copy.getItem()).fill(copy, f.copy(), false);
+                        o.addProperty("cursorFillableMb", accepted);
+                    }
+                }
                 return o;
             }
             if (is(h, "value.sync.InteractionSyncHandler")) {

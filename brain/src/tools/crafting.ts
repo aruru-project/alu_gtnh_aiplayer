@@ -5,7 +5,7 @@
 // 怎么挑配方写在 crafting 手册里，这里的说明只讲每个工具给什么、要什么。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { StockQuery, StockResult } from '../bridge/protocol.ts'
+import type { BlockPos, StockQuery, StockResult } from '../bridge/protocol.ts'
 import { formatItemSearch, formatMachines, formatRecipes, formatStock, itemKey, nameOf, tankText } from './format.ts'
 import type { OtherMachineLine } from './format.ts'
 import { carried, craftGrid, findItemLocal, findRecipesLocal, findTables, findUsesLocal, fitsPocketGrid, fluidInside, isHandCraft, isMachineWay, otherMachines, processPlan, quantity, whereItStands } from './recipe-book.ts'
@@ -102,8 +102,10 @@ export const findRecipes: Tool = {
   name: 'find_recipes',
   description:
     'How an item or a fluid is made (NEI\'s "R"). With only id/meta or "fluid": every way to make it (a way is one kind of machine, or hand crafting), what each costs, the power tier, and whether a machine or crafting table near you can do it now. With "way", "contains", "circuit" or "page": the exact recipes with everything they take and give, and how many of each ingredient you carry. Every recipe has a # number for craft_item / process_items. How to choose: crafting manual.',
-  inputSchema: obj(recipeQuery),
-  async run(ctx, i: { id?: string; meta?: number; fluid?: string; way?: string; contains?: string; circuit?: number; page?: number }) {
+  inputSchema: obj({ ...recipeQuery, machine: pos('Optional machine position for its NEI overclock prediction.'), tier: str('Instead of machine: standard electric 1A model, e.g. MV; not multiblock/custom rules.') }),
+  async run(ctx, i: { id?: string; meta?: number; fluid?: string; way?: string; contains?: string; circuit?: number; page?: number; machine?: BlockPos; tier?: string }) {
+    if (i.machine && i.tier) return fail('Give machine or tier, not both.')
+    if ((i.machine || i.tier) && !ctx.packdata?.recipes) return fail('Overclock prediction needs the local recipe book for base ticks and recipe map.')
     if (ctx.packdata?.recipes) return withMethodNote(ctx, i, await findRecipesLocal(ctx, i))
     // 没有本地配方册：问服务器（英文，每种机器只给前几条；只能按物品问）
     if (i.id === undefined) return fail('There is no recipe book on this brain: only an item ("id") can be asked about, from the game server.')
@@ -355,7 +357,7 @@ async function tankNote(ctx: ToolContext, machine: unknown, fluids: readonly { f
 }
 
 /** 一组“什么东西、几个”。每一项怎么写由那个参数的说明讲（“each {id, meta?, count}”），不在每一格里重复。 */
-const stackList = (description: string, max: number) => arr(description, obj({ id: str(), meta: int(undefined, { min: 0 }), count: int(undefined, { min: 1 }) }, ['id', 'count']), { min: 1, max })
+const stackList = (description: string, max: number, min = 1) => arr(description, obj({ id: str(), meta: int(undefined, { min: 0 }), count: int(undefined, { min: 1 }) }, ['id', 'count']), { min, max })
 
 interface ProcessInput {
   machine: unknown
@@ -381,11 +383,11 @@ export const processItems: Tool = {
       machine: pos('Position of the machine (a multiblock: its controller).'),
       recipe: int('Recipe # from find_recipes: the inputs, the circuit and the products to expect are taken from it.', { min: 0 }),
       rounds: int('Times to run the recipe (default 1).', { min: 1, max: PROCESS_MAX_ROUNDS }),
-      inputs: stackList('Instead of "recipe": exactly what to put in, each {id, meta?, count}; what is not used up (a mold) with count 1.', PROCESS_MAX_INPUTS),
+      inputs: stackList('Instead of recipe: {id, meta?, count}; mold count 1. Empty: observe existing processing, collect only expect counts; no circuit/mold changes.', PROCESS_MAX_INPUTS, 0),
       moldInside: bool('true: the mold or shape the recipe needs already sits in the machine; none is put in.'),
       circuit: int('Programmed circuit number to set (0 clears it). Default: the recipe\'s, 0 when it has none.', { min: 0, max: 24 }),
       fluids: stackList('Multiblock only: full fluid cells you carry, each {id, meta?, count}, to pour into its input hatch.', 6),
-      expect: stackList('Multiblock only: products to fetch from the chest its output bus pushes into, each {id, meta?, count}. Default: the recipe\'s.', 9),
+      expect: stackList('Products {id, meta?, count}; default recipe outputs. With no added inputs, collect at most these counts, not proof of making them.', 9),
       bus: pos('Multiblock only: the input bus to use. Default: the emptiest.'),
       wait: int('Seconds to wait for it to finish, at most (default 180).', { min: PROCESS_WAIT_MIN_SEC, max: PROCESS_WAIT_MAX_SEC }),
       leave: bool('true: end the task once the machine has started; the circuit then stays as set.'),
@@ -415,7 +417,6 @@ export const processItems: Tool = {
       inputs ??= plan.inputs
       circuit ??= plan.circuit
       expect ??= plan.expect.length > 0 ? plan.expect : undefined
-      if (inputs.length === 0 && plan.fluids.length === 0) return fail(`Recipe #${i.recipe} lists nothing to put in.`)
       // 配方要的流体不替它准备：没给装满的单元时，照实说这台机器的罐里现在有什么（读得到的话），免得不开工时它不知道差在哪
       if (plan.fluids.length > 0 && i.fluids === undefined) {
         const need = plan.fluids.map((f) => `${quantity(f.mb)} mB ${f.name}`).join(' and ')

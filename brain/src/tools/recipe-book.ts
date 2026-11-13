@@ -6,7 +6,7 @@
 // 结果是给模型看的：说明用英文，物品名是物品表里的中文名。
 
 import { BridgeError } from '../bridge/protocol.ts'
-import type { AttachedBlock, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
+import type { AttachedBlock, BlockPos, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
 import type { CarvingBook, FluidInfo, FluidTable, GuideBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
@@ -828,6 +828,8 @@ interface Way {
 }
 
 interface RecipeQuery {
+  machine?: BlockPos
+  tier?: string
   id?: string
   meta?: number
   /** 查的是一种流体：它的名字（中文、英文）或者注册名。 */
@@ -944,6 +946,20 @@ async function carriedNow(ctx: ToolContext, items: ItemTable | undefined): Promi
   }
 }
 
+async function overclockNote(ctx: ToolContext, r: Recipe, input: RecipeQuery): Promise<string> {
+  if (!input.machine && !input.tier) return ''
+  if (!r.handler.key.startsWith('gt.recipe.') || !r.eut || !r.ticks || r.fake) return ' [overclock unavailable: not a GT base recipe with known EU/t and ticks, or an NEI display-only recipe]'
+  try {
+    const oc = await ctx.bridge.recipeOverclock({ bot: ctx.botName, recipeKey: r.handler.key, eut: r.eut, ticks: r.ticks, ...(input.machine ? { machine: input.machine } : { tier: input.tier! }) })
+    if (oc.unavailable) return ` [overclock unavailable: ${oc.unavailable}]`
+    if (oc.ticks === undefined || oc.eut === undefined) return ' [overclock unavailable: game returned no calculation]'
+    return ` [NEI prediction: ${oc.ticks} ticks (${oc.ticks / 20} s), ${oc.eut} EU/t; ${oc.scope}; source: ${oc.source}]`
+  } catch (e) {
+    if (e instanceof BridgeError) return ` [overclock unavailable: ${e.message}]`
+    throw e
+  }
+}
+
 export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
@@ -997,7 +1013,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   const merged = duplicates > 0 ? ` (${duplicates} exact duplicate(s) in the book are merged)` : ''
 
   const contains = input.contains?.trim().toLowerCase()
-  if (input.way !== undefined || contains || input.circuit !== undefined || input.page !== undefined) {
+  if (input.way !== undefined || contains || input.circuit !== undefined || input.page !== undefined || input.machine || input.tier) {
     // 具体的配方：按方式、按“原料里含某物”、按编程电路号筛，翻页
     let chosen = ways
     if (input.way !== undefined && input.way.trim().length > 0) {
@@ -1013,7 +1029,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
     if (!paged) return fail(`There is no page ${input.page}: ${list.length} recipe(s)${scope}, ${Math.ceil(list.length / RECIPES_PER_PAGE)} page(s).`)
     const have = await carriedNow(ctx, items)
-    const lines = paged.shown.map((r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { ...wanted, ...(have ? { have } : {}) })}`)
+    const lines = await Promise.all(paged.shown.map(async (r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { ...wanted, ...(have ? { have } : {}) })}${await overclockNote(ctx, r, input)}`))
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
     return {
       content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, ...(paged.shown.some((r) => r.fake) ? [FAKE_FACT] : []), 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),

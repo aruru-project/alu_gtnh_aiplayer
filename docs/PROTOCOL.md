@@ -49,7 +49,7 @@
 - 方块坐标是整数 `x y z`，维度是整数 `dim`（主世界 0）。x、z 超出 ±3000 万或 y 明显不是高度时返回 `bad_request`。`world.*` 方法省略 `dim` 时：带了 `bot` 就用它所在的维度，否则主世界。
 - 实体位置 `pos` 是小数；`block` 是脚所在格子的整数坐标。
 - 方块：`{"id":"minecraft:stone","meta":0}`。物品：`{"id":"minecraft:dirt","meta":0,"count":64,"name":"Dirt"}`。
-  `name` 是服务器语言（英文）下的显示名，只给人和模型看，不用于匹配。工具的 `meta` 一律是 0。
+  `name` 是服务器语言（英文）下的显示名，只给人和模型看，不用于匹配。工具的 `meta` 一律是 0。物品原生流体接口可读时另带 `fluidContainer:{amount,capacity,fluid?,name?}`：这一只容器真实内容（空的 amount 0），鼠标、背包、界面格子均有；不带不代表空。
 - 物品筛选 `ItemFilter`：`{"id":"minecraft:dirt"}`（任意 meta）或带 `"meta":0`，可带 `"count":N`。
 
 ## 方法
@@ -109,6 +109,7 @@ Container：
 ]
 ```
 
+- 非虚拟流体控件带 `cursorFillableMb` 时：鼠标上一只容器原生 `IFluidContainerItem.fill(...,false)` 接受槽内当前流体的 mB；在容器和流体副本上探测，真 NBT/罐不变。0 不表示槽本身不能用，结合物品 `fluidContainer` 核对是否异液或满容器。操作仍是原来的 `screen.press`，没有额外传液方法。
 - `circuit` 是 GregTech 的编程电路设置（玩家点它弹出一个小窗口选号）：`value` 是现在的号，0 是没有。`screen.set {key, value}` 给 0–24 就设成那个号，和玩家在小窗口里点一样，不用电路物品。实测：进阶组装机 24 → 5 → 0 → 24。界面另外列着的 `ghostCircuitIndex`（只读文字）是从 0 数的序号，比号小 1。
 
 - `key` 可以写全（`fluidAutoOutput:0`），也可以只写冒号前的名字（不重名时）；`panel` 只在重名时需要。
@@ -333,7 +334,10 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 | `item.search` | `{query, limit?=12(≤40)}` | `{items:[{id,meta,name, recipes:{crafting,machine,smelting}, ores?:[矿辞名]}]}`。名字或 id 里包含 query 的每个词，最像的排前面 |
 | `recipe.find` | `{id, meta?=0, bot?, crafting?=4, machines?=8, machine?}` | 这个物品怎么做，见下。`machine` 给了就只列名字里含它的机器的配方 |
 | `world.machines` | `{radius?=32(≤64), name?, limit?=30(≤60)}` + 中心 | 附近的 GregTech 加工机器（单方块的，和多方块机器的主机），由近到远：`{machines:[{x,y,z,name,id,meta,recipes,tier,inputSlots,outputSlots,active,progress?,maxProgress?,storedEU,inputVoltage,switchedOff?,autoOutput?,dist}], total}`。`autoOutput` 是单方块机器界面上的自动输出开着时（两个开关都关着不带）：`{items, fluids, side?, to?:{x,y,z,name}, outputFaceIsFront?}`，开着的那几样做出来就从输出面 `side` 推给挨着的 `to`，不留在产物格；`outputFaceIsFront` 时输出面就是它的正面，什么都推不出去。`recipes` 是它跑哪种配方，`recipeKey` 是这种配方在配方册里的页（`handlers.json` 的 `key`），`circuit` 是它现在设的编程电路（没设不带）（和 `recipe.find` 里的 `machine` 同名，如 `Lathe`）；`id`+`meta` 是这台机器作为物品时的那一对，和配方册 `handlers.json` 里每个配方页的 `machines` 可以直接比对；`storedEU` 为 0 就是没电；`name` 给了就只列名字或 `recipes` 里含它的 |
+| `recipe.overclock` | `{eut,ticks,recipeKey,machine?:{x,y,z},tier?,bot?,dim?}`（machine/tier 二选一） | 只读安装 GT 的 NEI 超频预测，见下 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,cover?,side?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
+
+`recipe.overclock`：保留 `{baseEut,baseTicks}`，成功另带 `{eut,ticks,overclocks,scope,source,machine?}`，不能算时带 `unavailable`，不回猜测数值。`machine` 使用已加载 GT 基础电力机器自身的 standard `EUOverclockDescriber`；`recipeKey` 必须与机器配方页相符。`tier` 是显式选用的标准电力单机 1A 模型，不代表任意该等级机器。调用安装的 `EUOverclockDescriber.createCalculator / OverclockCalculator`（与 NEI 路径相同），不改机器。只接受确知不读取配方特殊元数据的标准 describer；特殊 describer、多方块的炉温/并行/电流/速度能耗倍率/超频模式未知时不计算。预测不保证配方实际能运行。`world.machines` 的单机正运行时可另带 `currentEUt`（机器自己的 mEUt）；`maxProgress` 是该轮实际 ticks。
 
 `recipe.find` 的结果：
 
@@ -673,6 +677,8 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - **`left:true` 是左键**（要给 `on`）：按下马上松开，像玩家点一下。对按下有反应的东西照样反应（拿着凿子左键方块就是在原地凿成凿子里选好的样子；一碰就碎的方块会碎），要挖一会儿的方块不会被挖掉。空手左键要快捷栏里有空格（没有是 `inventory_full`）。结果里带 `left:true`。
 - **`process`**：
   - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
+  - **零新增输入**：`inputs:[]` 且无 `fluids` 时，只观察既有加工并限量收货，不会新开一批、不改电路、不拿原料格（模具）。`expect` 有数量时只取对应产物格种类、至多指定数量；没给则只观察。读不到运行配方的机器拒绝此模式。正在制作的物品与 expect 不符会失败，不因机器有活动就当作指定配方完成。机器空闲或到 wait 上限时结束；取不足也如实报告。
+    - 结果 `{put:0,observedExisting:true,startedByTask:false,alreadyWorking,existingOutputs,outputs,observedRounds,observedMade,requestedOutputsCollected?,timedOut?,making?,machine?,fluids?,note}`。existingOutputs 是到场时已有产物；observedRounds/observedMade 只是观察期间见到的完成，不是任务所属批次或请求轮数的证明；outputs 是实际取回、可能包括已有的成品。界面仅能整组/半组取，最小一次超过尚需数量时不碰那组，以 invalid 失败，带 `pickupLimited:{minimum,wanted}`（例如 5 个要 2 个，最小一次是 3；4 要 2 可以右键取半组）；不把多余放进机器原料格。这个有界点击只在零投料观察模式启用，其他旧存取路径未改。此模式不带原 `rounds/made/left` 字段，不倒推出到场之前做了几轮；外送或漏看不补算。`requestedOutputsCollected` 仅表示期望取回数量够了。`leave:true` 是见到既有加工/已有产物就结束观察，不收货、不说本任务启动了机器。
   - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1），可以带 `stays:true` 说明它不消耗（放下就走的那一批做完时，原料格里剩着它不算没做完；不带的话要等它被取走）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
   - **取回只取自己的**：不管是做完、没开工还是做了别的，身体从原料格里取回的只是它这次放进去的那几种、每种至多放进去的数；原来就在里面的（别人留着的模具、模头）不动。实测：压模机原料格里先有一个别人的模头（杆），放 1 个圆石没开工，取回的只有圆石，模头（杆）留在机器里（以前是一起拿走了，意见簿 f1）。
   - **没放全**：有的原料放不进去（格子被别的东西占着、身上不够）时，结果里多 `notPut:[{id,meta?,name,count,carried}]`（哪样少放了几个、身上现在还有几个）和 `inputSlots:[{id,meta,name,count}]`（放完那一刻原料格里有什么，挡着的多半就是它们）。机器照样拿放进去的开工的，`making` 写着它开工做的是什么。实测：进阶压模机 II 两个原料格一个被别人的模头（杆）占着，2 个钢锭和自己的模头（板）只放进去 2 个钢锭，`notPut` 是那个模头（板）（`carried:1`），`inputSlots` 是模头（杆）和 1 个钢锭（另一个已经被机器拿去开工了：做的是钢杆）。

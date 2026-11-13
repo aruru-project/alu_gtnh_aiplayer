@@ -6,7 +6,7 @@
 
 import { BridgeError } from '../bridge/protocol.ts'
 import type { ClientOnlyScreen, Item, ScreenControl, ScreenSlot, ScreenState } from '../bridge/protocol.ts'
-import { compactJson, fluidName, itemKey, nameOf, wornText } from './format.ts'
+import { compactJson, fluidName, itemKey, nameOf, tankText, wornText } from './format.ts'
 import { bool, int, num, obj, pos, str } from './schema.ts'
 import { USE_SIDES } from './tasks.ts'
 import { fail } from './types.ts'
@@ -30,7 +30,7 @@ function controlLine(c: ScreenControl): string {
       // 拿着容器点它时：能不能从里面取、能不能往里倒
       const ways = [c.drains === true ? 'gives to' : '', c.fills === true ? 'takes from' : ''].filter(Boolean)
       const hand = c.phantom === true ? 'a setting, holds no real fluid' : ways.length > 0 ? `${ways.join(' and ')} a fluid container on your cursor` : 'not worked with a container'
-      return `- ${c.key} [fluid slot]: ${holds}; ${hand}`
+      return `- ${c.key} [fluid slot]: ${holds}; ${hand}${c.cursorFillableMb !== undefined ? `; one cursor container can accept ${c.cursorFillableMb} mB of this fluid now (native simulation)` : ''}`
     }
     case 'choice':
       return `- ${c.key} [choice${fixed}]: ${shown(c.value)}${c.options && c.options.length > 0 ? ` of ${c.options.join(', ')}` : ''}`
@@ -71,7 +71,7 @@ export const SCREEN_SETTLE_MS = 200
 
 function stack(item: Item): string {
   const name = nameOf(item)
-  return `${item.count ?? 1}× ${name ? `${name} ` : ''}[${itemKey({ id: item.id, meta: item.meta ?? 0 })}]`
+  return `${item.count ?? 1}× ${name ? `${name} ` : ''}[${itemKey({ id: item.id, meta: item.meta ?? 0 })}]${item.fluidContainer ? ` {container: ${tankText(item.fluidContainer)}}` : ''}`
 }
 
 /** 相邻的空格并成一段（“slots 3–8: empty”），有东西的一格一行。 */

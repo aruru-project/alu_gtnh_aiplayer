@@ -17,6 +17,8 @@ export interface Vec3 {
 }
 
 export interface Item {
+  /** This particular stack's fluid contents, read from the item (not its name or recipe sample). */
+  fluidContainer?: Tank
   id: string
   meta?: number
   count: number
@@ -519,6 +521,8 @@ export interface ScreenSlot {
  * 名字（panel、key）是界面自己起的，身体不知道任何一个是干什么的。readOnly 的只是显示，不收玩家的改动。
  */
 export interface ScreenControl {
+  /** Native item fill simulation on copies: mB one cursor container can accept from this tank now. */
+  cursorFillableMb?: number
   /** 它在哪个面板上（界面自己的名字）。只在 key 重名时才需要用它区分。 */
   panel?: string
   /** 它的名字，如 fluidAutoOutput:0；冒号前的那一段不重名时可以单独用。 */
@@ -595,6 +599,8 @@ export interface MachineInfo {
   active?: boolean
   progress?: number
   maxProgress?: number
+  /** Current running basic-machine EU/t; not a prediction from its tier. */
+  currentEUt?: number
   /** 为 0 就是没电。 */
   storedEU?: number
   inputVoltage?: number

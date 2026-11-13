@@ -71,6 +71,7 @@ export function itemKey(item: { id: string; meta?: number }): string {
 }
 
 export interface MergedItem {
+  fluidContainer?: Tank
   id: string
   meta: number
   count: number
@@ -84,12 +85,13 @@ export function mergeItems(items: readonly (Item | InventoryItem)[]): MergedItem
   const map = new Map<string, MergedItem>()
   for (const it of items) {
     if (!it || typeof it.id !== 'string') continue
-    const key = itemKey(it)
+    const key = itemKey(it) + (it.fluidContainer ? JSON.stringify(it.fluidContainer) : '')
     const count = typeof it.count === 'number' ? it.count : 1
     let m = map.get(key)
     if (!m) {
       m = { id: it.id, meta: it.meta ?? 0, count: 0 }
       if (it.name) m.name = it.name
+      if (it.fluidContainer) m.fluidContainer = it.fluidContainer
       map.set(key, m)
     }
     m.count += count
@@ -275,6 +277,7 @@ export function formatItem(m: MergedItem): string {
   const name = nameOf(m)
   if (name) s += ` "${name}"`
   if (m.minDurability !== undefined) s += ` (${Math.round(m.minDurability * 100)}% durability)`
+  if (m.fluidContainer) s += ` {container: ${tankText(m.fluidContainer)}}`
   return s
 }
 
@@ -1580,7 +1583,7 @@ function machineStateText(m: MachineInfo | Record<string, unknown>, wayName?: Wa
   if (auto) parts.push(auto)
   if (m.active === true) {
     const done = count(m.maxProgress) > 0 ? ` (${Math.round((count(m.progress) * 100) / count(m.maxProgress))}% of the current item done)` : ''
-    parts.push(`BUSY${done}`)
+    parts.push(`BUSY${done}${typeof m.currentEUt === 'number' ? `; current recipe ${m.maxProgress} ticks, ${m.currentEUt} EU/t (read from machine)` : ''}`)
   } else if (m.active === false) {
     parts.push(typeof m.idleReason === 'string' && m.idleReason.length > 0 ? `idle (it says: ${m.idleReason})` : 'idle')
   }
@@ -1816,6 +1819,17 @@ function notPutText(notPut: unknown, inputSlots: unknown): string {
 }
 
 export function processResultLines(result: Record<string, unknown>, params?: Record<string, unknown>): string[] {
+  if (result.observedExisting === true) {
+    return [
+      'observed existing processing; no inputs added, no circuit or mould changed, not a batch started by this task',
+      `already working on arrival: ${result.alreadyWorking === true}; outputs already present: ${compactJson(result.existingOutputs, 4000)}`,
+      `completions observed (not proof of ownership or requested rounds): ${count(result.observedRounds)}; observed products: ${compactJson(result.observedMade, 4000)}`,
+      `actually collected: ${compactJson(result.outputs, 4000)}${typeof result.requestedOutputsCollected === 'boolean' ? `; requested counts collected: ${result.requestedOutputsCollected}` : ''}`,
+      ...(result.pickupLimited ? [`pickup limited by native whole/half clicks: ${compactJson(result.pickupLimited)}; that stack was left untouched, requested count NOT collected`] : []),
+      ...(typeof result.note === 'string' ? [result.note] : []),
+      ...(result.timedOut === true ? ['wait limit reached; any ongoing recipe remains in the machine'] : []),
+    ]
+  }
   const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, notPut, inputSlots, ...rest } = result
   const got = kindList(outputs)
   const list = (v: unknown): string => kindList(v).map((o) => kindText(o.count, o)).join(', ')

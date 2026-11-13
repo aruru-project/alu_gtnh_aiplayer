@@ -586,6 +586,7 @@ public final class Machines {
             if (max > 0) {
                 o.addProperty("progress", (Integer) progress.invoke(te));
                 o.addProperty("maxProgress", max);
+                try { o.addProperty("currentEUt", ((Number) m.getClass().getField("mEUt").get(m)).longValue()); } catch (Throwable ignored) {}
             }
             o.addProperty("storedEU", (Long) storedEu.invoke(te));
             o.addProperty("inputVoltage", (Long) inputVoltage.invoke(te));

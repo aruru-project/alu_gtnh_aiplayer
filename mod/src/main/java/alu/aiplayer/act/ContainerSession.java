@@ -87,6 +87,16 @@ public final class ContainerSession {
     public boolean containerFull;
     /** True when a withdrawal stopped because the bot's inventory is full. */
     public boolean inventoryFull;
+    private boolean boundedWithdrawal;
+    /** No native whole/half pickup fits the requested remaining count. Nothing from that slot was taken. */
+    public boolean pickupLimited;
+    public int smallestPickup, wantedPickup;
+
+    /** Opt in when over-taking and depositing a surplus elsewhere would be unsafe (existing processing). */
+    public ContainerSession boundedWithdrawal() {
+        boundedWithdrawal = true;
+        return this;
+    }
     public String failCode;
     public String failMessage;
     /** With a refusal: the container's position, and what protects it when it was the server's own protection. */
@@ -720,7 +730,31 @@ public final class ContainerSession {
                 if (f < 0) continue;
                 ItemStack type = stack.copy();
                 int had = Inventories.count(p, exact(type));
-                c.slotClick(s.slotNumber, 0, 1, p);
+                if (boundedWithdrawal && withdrawLeft[f] < stack.stackSize) {
+                    int half = (stack.stackSize + 1) / 2;
+                    if (half > withdrawLeft[f]) {
+                        pickupLimited = true;
+                        smallestPickup = half;
+                        wantedPickup = withdrawLeft[f];
+                        continue;
+                    }
+                    if (roomFor(p, stack) < half || p.inventory.getItemStack() != null) {
+                        inventoryFull = true;
+                        break;
+                    }
+                    // A real right-click picks up half; put that cursor stack into the player's slots.
+                    // Never take a whole output stack then try to return its surplus into an INPUT slot.
+                    c.slotClick(s.slotNumber, 1, 0, p);
+                    for (Slot own : mine) {
+                        ItemStack hand = p.inventory.getItemStack();
+                        if (hand == null) break;
+                        ItemStack there = own.getStack();
+                        if (!own.isItemValid(hand) || (there != null && !sameItem(there, hand))) continue;
+                        c.slotClick(own.slotNumber, 0, 0, p);
+                    }
+                } else {
+                    c.slotClick(s.slotNumber, 0, 1, p);
+                }
                 c.detectAndSendChanges();
                 int got = Inventories.count(p, exact(type)) - had;
                 if (got <= 0) {

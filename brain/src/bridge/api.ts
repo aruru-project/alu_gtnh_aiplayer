@@ -103,6 +103,10 @@ export class BridgeApi {
     return this.call('item.search', limit === undefined ? { query } : { query, limit })
   }
   /** 某个物品怎么做。带 bot 时原料里有它身上现有的数量（have）。machine 给了就只列名字里含它的机器的配方。 */
+  recipeOverclock(p: { bot?: string; eut: number; ticks: number; recipeKey: string; machine?: BlockPos; tier?: string }): Promise<{ eut?: number; ticks?: number; overclocks?: number; scope?: string; source?: string; unavailable?: string }> {
+    return this.call('recipe.overclock', p)
+  }
+
   recipeFind(p: { id: string; meta?: number; bot?: string; crafting?: number; machines?: number; machine?: string }): Promise<RecipeFindResult> {
     return this.call('recipe.find', p)
   }

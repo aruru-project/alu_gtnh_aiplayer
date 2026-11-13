@@ -84,8 +84,8 @@ public final class ProcessTask extends Task {
         at = Params.pos(params, "machine");
         inputs = Inventories.filters(J.array(params, "inputs"));
         fluids = J.has(params, "fluids") ? Inventories.filters(J.array(params, "fluids")) : new ArrayList<ItemFilter>();
-        if (inputs.isEmpty() && fluids.isEmpty() || inputs.size() > 9 || fluids.size() > 4) {
-            throw new IllegalArgumentException("inputs must list 1 to 9 items (fluids: up to 4 kinds of filled cells)");
+        if (inputs.size() > 9 || fluids.size() > 4) {
+            throw new IllegalArgumentException("inputs must list 0 to 9 items (fluids: up to 4 kinds of filled cells)");
         }
         for (ItemFilter f : inputs) if (f.count <= 0) throw new IllegalArgumentException("each input needs a count");
         stays = new boolean[inputs.size()];
@@ -105,6 +105,8 @@ public final class ProcessTask extends Task {
         expect = J.has(params, "expect") ? Inventories.filters(J.array(params, "expect")) : new ArrayList<ItemFilter>();
         limitTicks = 20 * Math.max(5, Math.min(3600, J.i(params, "wait", 180)));
         leave = J.bool(params, "leave", false);
+        observing = inputs.isEmpty() && fluids.isEmpty();
+        if (observing) for (ItemFilter f : expect) if (f.count <= 0) throw new IllegalArgumentException("observing existing work needs a count for each expected item");
     }
 
     /**
@@ -135,6 +137,25 @@ public final class ProcessTask extends Task {
             plain = true;
         }
         multi = Machines.isMultiblock(te);
+        if (observing) {
+            if (plain) {
+                fail("invalid", "this machine's running recipe cannot be read; use its screen or withdraw to collect existing products");
+                return;
+            }
+            loadAt = at;
+            if (multi) for (TileEntity port : Machines.ports(te, "output bus")) unloadAt.add(new int[] { port.xCoord, port.yCoord, port.zCoord });
+            else unloadAt.add(at);
+            trip = new ContainerTrip(bot, at[0], at[1], at[2]);
+            trip.session.deposit(plan(inputs)); // approach and open normally; no item or circuit changes
+            trip.beforeSession(() -> {
+                busyBefore = Machines.working(machine());
+                existingOutputs = outputContents();
+                return true;
+            }, "could not observe the machine");
+            stage = 10;
+            phase = "going to observe existing processing (no inputs added)";
+            return;
+        }
         if (!multi) {
             if (!fluids.isEmpty()) {
                 fail("invalid", "fluids from cells are only poured into a multiblock's input hatch; this is a single-block machine");
@@ -423,6 +444,10 @@ public final class ProcessTask extends Task {
 
     @Override
     public void tick() {
+        if (observing) {
+            tickObservation();
+            return;
+        }
         switch (stage) {
             case 0: { // loading
                 ContainerTrip.Status st = trip.tick();
@@ -645,6 +670,104 @@ public final class ProcessTask extends Task {
                 break;
             }
         }
+    }
+
+    /** Zero added inputs means watching/collecting existing processing, never claiming to start our own batch. */
+    private final boolean observing;
+    private JsonArray existingOutputs = new JsonArray();
+    private boolean observationStopped;
+    private JsonObject pickupLimited;
+
+    private JsonArray outputContents() {
+        Kinds held = new Kinds();
+        for (int[] pos : unloadAt) {
+            TileEntity te = tile(pos);
+            int[] slots = Machines.outputSlots(te);
+            if (!(te instanceof IInventory) || slots == null) continue;
+            for (int i = 0; i < slots[1]; i++) {
+                ItemStack s = ((IInventory) te).getStackInSlot(slots[0] + i);
+                if (s != null && s.stackSize > 0) held.add(s, s.stackSize);
+            }
+        }
+        return held.toJson();
+    }
+
+    private void tickObservation() {
+        TileEntity te = machine();
+        if (te == null) {
+            fail("invalid", "the machine is gone");
+            return;
+        }
+        if (stage == 10) {
+            ContainerTrip.Status st = trip.tick();
+            if (st == ContainerTrip.Status.WORKING) return;
+            if (st == ContainerTrip.Status.FAILED) { fail(trip); return; }
+            before = carried();
+            fluidsBefore = fluidState().toString();
+            phase = "observing existing processing (not a batch started by this task)";
+            stage = 11;
+        }
+        waited++;
+        if (Machines.working(te)) {
+            sawWorking = true;
+            ran = true;
+            making = Machines.making(te);
+            idle = 0;
+        } else idle++;
+        watchRounds(te);
+        boolean matchesCurrent = expect.isEmpty() || making == null || making.size() == 0;
+        if (making != null) for (com.google.gson.JsonElement e : making) if (isExpected(Kinds.key(e.getAsJsonObject()))) matchesCurrent = true;
+        if (!matchesCurrent) {
+            if (trip != null) trip.stop();
+            outputs = gained();
+            fail("invalid", "the existing machine recipe does not make the expected items; no inputs or circuit were changed; observed: " + kindsText(making));
+            return;
+        }
+        if (stage == 12) {
+            ContainerTrip.Status st = trip.tick();
+            if (st == ContainerTrip.Status.WORKING) return;
+            outputs = gained();
+            if (st == ContainerTrip.Status.FAILED) { fail(trip); return; }
+            if (++unloadIndex < unloadAt.size() && !stillExpected().isEmpty()) {
+                collectObserved();
+                return;
+            }
+            if (trip.session.pickupLimited && !stillExpected().isEmpty()) {
+                pickupLimited = new JsonObject();
+                pickupLimited.addProperty("minimum", trip.session.smallestPickup);
+                pickupLimited.addProperty("wanted", trip.session.wantedPickup);
+                fail("invalid", "cannot collect the requested count without taking extra: this output slot's smallest native pickup is "
+                    + trip.session.smallestPickup + ", but only " + trip.session.wantedPickup
+                    + " more were requested. That stack was left untouched; outputs lists only what was actually collected");
+                return;
+            }
+            if (observationStopped || stillExpected().isEmpty()) { done(); return; }
+            stage = 11;
+        }
+        timedOut = waited > limitTicks;
+        observationStopped = timedOut || idle > (multi ? START_WAIT_MULTI : START_WAIT);
+        if (leave && (sawWorking || existingOutputs.size() > 0)) {
+            // Observation only: no "left/started" success flag or circuit watch for somebody else's processing.
+            leftState = Machines.describe(te);
+            done();
+            return;
+        }
+        boolean available = false;
+        for (com.google.gson.JsonElement e : outputContents()) if (isExpected(Kinds.key(e.getAsJsonObject()))) available = true;
+        if (!expect.isEmpty() && !unloadAt.isEmpty() && (available || observationStopped)) {
+            unloadIndex = 0;
+            collectObserved();
+            stage = 12;
+        } else if (observationStopped) {
+            fluidsAfter = fluidState();
+            done();
+        }
+    }
+
+    private void collectObserved() {
+        int[] pos = unloadAt.get(unloadIndex);
+        trip = new ContainerTrip(bot, pos[0], pos[1], pos[2]);
+        trip.session.withdraw(stillExpected()).boundedWithdrawal(); // output slots only; never resident moulds
     }
 
     private String notStarted;
@@ -983,6 +1106,24 @@ public final class ProcessTask extends Task {
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
         o.addProperty("put", put);
+        if (observing) {
+            o.addProperty("observedExisting", true);
+            o.addProperty("alreadyWorking", busyBefore);
+            o.addProperty("startedByTask", false);
+            o.add("existingOutputs", existingOutputs);
+            o.add("outputs", outputs);
+            if (pickupLimited != null) o.add("pickupLimited", pickupLimited);
+            o.addProperty("observedRounds", rounds);
+            o.add("observedMade", made.toJson());
+            if (making != null) o.add("making", making);
+            if (timedOut) o.addProperty("timedOut", true);
+            if (before != null && !expect.isEmpty()) o.addProperty("requestedOutputsCollected", stillExpected().isEmpty());
+            if (leftState != null) o.add("machine", leftState);
+            if (fluidsAfter != null) o.add("fluids", fluidsAfter);
+            o.addProperty("note", "No inputs were added and no circuit or mould was changed. This task observed existing processing, not a batch it started. existingOutputs were present on arrival; observedRounds/observedMade are only completions seen while watching, not ownership or proof of the requested number of rounds. outputs are the expected items actually collected (including any already present), at most the requested counts."
+                + (leave ? " Observation ended without waiting or collecting; production is not complete." : ""));
+            return o;
+        }
         if (poured > 0) o.addProperty("cellsPoured", poured);
         if (left) {
             o.addProperty("left", true);
