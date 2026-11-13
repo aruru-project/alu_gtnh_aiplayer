@@ -277,7 +277,7 @@ export const inspectBlock: Tool = {
 
 /** 方块要什么工具，照它自己说的（Forge 的工具类别和等级）。 */
 export function needsText(n: ProbeNeeds): string {
-  if (n.toolRequired === false) return 'no tool: a bare hand harvests it (a fitting tool is only faster)'
+  if (n.toolRequired === false) return 'no required tool; drops still depend on the block and the tool used'
   if (typeof n.tool === 'string') return `a tool of class "${n.tool}" at level ${n.level ?? 0} or higher (what the block itself names)`
   if (n.unreadable === true) return 'a tool, but the block could not say which'
   return 'a tool, and the block names no tool class: whether a tool harvests it is that tool\'s own call'
@@ -318,6 +318,12 @@ export const probeBlock: Tool = {
     const candidates = p.candidates ?? []
     // 这个方块要哪一类工具、几级（方块自己说的）；老的身体没有这一项
     if (p.needs) lines.push(`It needs ${needsText(p.needs)}.`)
+    if (p.shearing) {
+      const sh = p.shearing
+      if (sh.shearable === true) lines.push(`The block accepts ${sh.item} for shearing here; this check does not predict the drops. A use_item left click with shears keeps that item in hand; automatic digging picks its tool for speed.`)
+      else if (sh.shearable === false) lines.push(`The block does not accept ${sh.item} for shearing in its current state.`)
+      else lines.push('The block declares shearing support, but could not say whether shears work here.')
+    }
     // excluded：一次挖多格的工具（匠魂锤、挖掘铲、伐木斧等），身体不会用它们
     const usable = candidates.filter((c) => !c.excluded && c.harvest !== false && typeof c.ticks === 'number' && c.ticks > 0)
     if (p.canDig) {

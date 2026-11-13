@@ -229,10 +229,12 @@ PlayerView（`world.player` 的结果，也是 `chat`、`whisper` 事件里的 `
 | `bot.command` | `{bot, command}` | `{output:[string]}`。以该玩家身份执行指令（不带 `/`，连斜杠最多 100 字符，超出返回 `bad_request`）。`output` 是执行当下服务器回给它的消息；之后才到的走 `bot.message` 事件。指令必须以 mod 配置 `allowedCommands` 里某一项的全部单词开头，否则 `denied`。短时间内说话和指令加起来超过大约 8 条也返回 `denied`（再多会被服务器当刷屏踢掉），等几秒再试 |
 | `bot.look` | `{bot, x,y,z}` | `{}` |
 | `bot.drop` | `{bot, items:[ItemFilter]\|all:true}` | `{dropped:n}`，丢在面前 |
-| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, needs, candidates:[{slot,item,harvest,strength,ticks,level?,classes?,excluded?}], protection?}`：它现在能不能挖这个方块、用哪件工具、要多久，见下；`protection` 是服务器自己的保护不让它动这一格（见“任务”下面的“服务器自己的保护”），这时工具挖得动也一样 |
+| `bot.probe` | `{bot, x,y,z}` | `world.block` 的内容，加 `{canDig, digTicks, toolSlot, inReach, needs, candidates:[{slot,item,harvest,strength,ticks,level?,classes?,excluded?}], shearing?, protection?}`：它现在能不能挖这个方块、用哪件工具、要多久，见下；`protection` 是服务器自己的保护不让它动这一格（见“任务”下面的“服务器自己的保护”），这时工具挖得动也一样 |
 
-`bot.probe` 的 `needs` 是这个方块自己说要什么工具（Forge 的 `getHarvestTool(meta)`、`getHarvestLevel(meta)`）：`{tool?, level?, toolRequired}`。`tool` 是工具类别的名字（`pickaxe`、`axe`、`shovel`，GregTech 的 `wrench`、`cutter`……），`level` 是最低等级；方块不说类别时没有这两项，能不能挖由每件工具自己判断（原版工具按方块的材质）。`toolRequired:false` 是空手也挖得下来（有合适的工具只是更快）。读不出来时带 `unreadable:true`。
-`candidates` 是空手和身上每件不能叠放的东西各自对这一格的结果：`harvest` 是游戏判定挖下来有没有掉落（Forge 的 `canHarvestBlock`，再要求有进度），`strength` 是每 tick 挖掉的比例（0 是一点进度都没有：这个整合包把原版的铁镐这类工具关掉了，就是这样），`ticks` 是要多久（-1 挖不动）；`level` 是这件工具对 `needs.tool` 那一类自报的等级（`getHarvestLevel(stack, 类别)`，-1 是不算这一类；**GregTech 的工具对任何类别都报自己的等级**，挖不挖得动看 `harvest`），`classes` 是它自认是哪几类工具、各几级（GregTech 的工具不报）。
+`bot.probe` 的 `needs` 是这个方块自己说要什么工具（Forge 的 `getHarvestTool(meta)`、`getHarvestLevel(meta)`）：`{tool?, level?, toolRequired}`。`tool` 是工具类别的名字（`pickaxe`、`axe`、`shovel`，GregTech 的 `wrench`、`cutter`……），`level` 是最低等级；方块不说类别时没有这两项，能不能挖由每件工具自己判断（原版工具按方块的材质）。`toolRequired:false` 是方块材质不要求工具，不保证掉自身或一定掉东西：掉落仍由方块和所用工具决定。读不出来时带 `unreadable:true`。
+`candidates` 是空手和身上每件不能叠放的东西各自对这一格的结果：`harvest` 是游戏判定有无采掘资格（Forge 的 `canHarvestBlock`，再要求有进度），不是掉落表，也不是“必定有物品掉落”，`strength` 是每 tick 挖掉的比例（0 是一点进度都没有：这个整合包把原版的铁镐这类工具关掉了，就是这样），`ticks` 是要多久（-1 挖不动）；`level` 是这件工具对 `needs.tool` 那一类自报的等级（`getHarvestLevel(stack, 类别)`，-1 是不算这一类；**GregTech 的工具对任何类别都报自己的等级**，挖不挖得动看 `harvest`），`classes` 是它自认是哪几类工具、各几级（GregTech 的工具不报）。
+`shearing` 仅在方块声明 Forge `IShearable` 时出现：`{item:"minecraft:shears", shearable:bool}`，是它的 `isShearable` 对一把原版剪刀的回答；方法出错时省略 `shearable`、带 `unreadable:true`。没有这一项不代表别的模组工具一定不能剪。查询不调用 `onSheared` 或 `getDrops`，不抽一次随机掉落冒充完整掉落表。实际剪要用 `use` 的 `left:true`、指定剪刀；自动挖掘按速度选工具，植物可能仍选空手。
+实测（`tools/check-harvest.py`，测试服）：BOP 亚麻 `foliage/3` 和原版树叶都报可用剪刀；查询不改方块或背包；自动挖亚麻不回收亚麻植株，拿剪刀左键得到植株，剪树叶得到树叶。BOP 植物普通掉落有随机性，具体规则见 terrain 手册，不把某次没掉东西判为程序错误。
 实测（测试服）：钢管道方块（`gregtech:gt.blockcasings2` 13）`needs` 是 `wrench` 2 级；铁镐 `classes {pickaxe:3}`、`level -1`、挖不动；没有材料数据的扳手（`/give` 出来的）`level 0`、挖不动；钢扳手 `level 3`、25 tick。石头是 `pickaxe` 0 级，铁镐 `level 3` 但 `strength 0`。
 
 `allowedCommands` 默认：`home`、`sethome`、`delhome`、`homes`、`spawn`、`back`、`tell`、`msg`、`w`、`tpa`、`tpaccept`、`team join`。

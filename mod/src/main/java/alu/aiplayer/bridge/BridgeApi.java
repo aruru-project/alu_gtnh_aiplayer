@@ -348,6 +348,8 @@ public final class BridgeApi {
                         b.world()
                             .getBlockMetadata(x, y, z)));
                 o.add("candidates", Tools.explain(b.player(), b.world(), x, y, z));
+                JsonObject shearing = Tools.shearing(b.world(), x, y, z);
+                if (shearing != null) o.add("shearing", shearing);
                 // Whatever the tools say, the server's own protection refuses the bot's hand on this block.
                 JsonObject by = alu.aiplayer.act.Protection.of(b.player(), x, y, z);
                 if (by != null) o.add("protection", by);

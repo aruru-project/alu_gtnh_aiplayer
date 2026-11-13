@@ -472,6 +472,19 @@ describe('观察', () => {
     assert.match(hammer.content, /TConstruct:hammer:0 is never used \(it breaks several blocks at once\)/)
   })
 
+  it('查亚麻的采集方式：可空手打掉不代表掉亚麻，剪刀是否能采集另外说明，查询不承诺掉落表', async (t) => {
+    const s = setup(t)
+    const block = { id: 'BiomesOPlenty:foliage', meta: 3, name: 'Flax', hardness: 0, canDig: true, digTicks: 1, toolSlot: -1,
+      needs: { toolRequired: false }, candidates: [{ slot: -1, item: 'hand', harvest: true, ticks: 1 }],
+      shearing: { item: 'minecraft:shears', shearable: true } }
+    s.game.handlers['bot.probe'] = () => block
+    const r = await s.run('probe_block', { x: -702, y: 90, z: 174 })
+    assert.match(r.content, /accepts minecraft:shears for shearing/)
+    assert.match(r.content, /does not predict the drops/)
+    assert.doesNotMatch(r.content, /a fitting tool is only faster/)
+    assert.deepEqual(r.data, block)
+  })
+
   it('probe_block 写明这一格要什么工具、几级，身上每件工具为什么不行（拍视频时：钢管道方块只给了 harvest:false，它不知道要的是扳手）', async (t) => {
     const s = setup(t)
     // 测试服上身体给的原样：铁镐、没有材料的扳手（0 级）、钢扳手（3 级）对着钢管道方块
@@ -503,7 +516,7 @@ describe('观察', () => {
     s.game.handlers['bot.probe'] = () => ({ ...casing, needs: { toolRequired: true }, canDig: false, toolSlot: -1, candidates: [] })
     assert.ok((await s.run('probe_block', { x: 0, y: 60, z: 0 })).content.includes("It needs a tool, and the block names no tool class: whether a tool harvests it is that tool's own call."))
     s.game.handlers['bot.probe'] = () => ({ ...casing, needs: { tool: 'shovel', level: 0, toolRequired: false }, canDig: true, digTicks: 18, toolSlot: -1, candidates: [{ slot: -1, item: 'hand', harvest: true, ticks: 18 }] })
-    assert.ok((await s.run('probe_block', { x: 0, y: 60, z: 0 })).content.includes('It needs no tool: a bare hand harvests it (a fitting tool is only faster).'))
+    assert.ok((await s.run('probe_block', { x: 0, y: 60, z: 0 })).content.includes('It needs no required tool; drops still depend on the block and the tool used.'))
   })
 
   it('use_item 拿着方块对一个面右键：结果写明方块进的是哪一格、那一格之前和现在是什么；没进去时写明原因（意见簿 f16：梯子其实放上了，结果只说“点的那一格还是混凝土”，它以为放了个空）', async (t) => {

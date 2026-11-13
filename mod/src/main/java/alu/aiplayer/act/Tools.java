@@ -130,11 +130,29 @@ public final class Tools {
         return o;
     }
 
+    /**
+     * Only asks the Forge capability whether vanilla shears can be used here. Never calls onSheared/getDrops to
+     * preview drops: those can consume randomness, spawn items or change mod state. The answer is not a drop table.
+     */
+    public static com.google.gson.JsonObject shearing(World w, int x, int y, int z) {
+        Block block = w.getBlock(x, y, z);
+        if (!(block instanceof net.minecraftforge.common.IShearable)) return null;
+        com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+        o.addProperty("item", "minecraft:shears");
+        try {
+            o.addProperty("shearable", ((net.minecraftforge.common.IShearable) block)
+                .isShearable(new ItemStack(net.minecraft.init.Items.shears), w, x, y, z));
+        } catch (Throwable t) {
+            o.addProperty("unreadable", true);
+        }
+        return o;
+    }
+
     /** The same in words: "a wrench (tool class "wrench") of level 2 or higher". */
     public static String needsText(Block block, int meta) {
         com.google.gson.JsonObject n = needs(block, meta);
         if (!n.get("toolRequired")
-            .getAsBoolean()) return "no tool: a bare hand harvests it";
+            .getAsBoolean()) return "no required tool; drops still depend on the block and the tool used";
         if (!n.has("tool")) {
             return "a tool the block does not name (it gives no tool class; whether a tool can harvest it is that tool's own call)";
         }

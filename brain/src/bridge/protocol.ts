@@ -928,6 +928,8 @@ export interface ProbeResult extends BlockInfo {
    * classes：它自认是哪几类工具、各几级。strength 为 0 是挖它一点进度都没有。
    */
   candidates?: ProbeCandidate[]
+  /** Forge IShearable 对原版剪刀的回答；未声明此能力时省略，不是掉落预测。 */
+  shearing?: { item: string; shearable?: boolean; unreadable?: boolean }
   /** 服务器自己的保护不让 bot 动这一格（点、挖、对着它放都会被拒绝）：工具挖得动也一样。 */
   protection?: Protection
 }
