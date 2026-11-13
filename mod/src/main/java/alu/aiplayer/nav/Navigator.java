@@ -43,7 +43,6 @@ public final class Navigator {
     private boolean explainClimbing;
     /** A last search, with climbing blocks allowed, run only to say whether they would have helped. */
     private boolean probing;
-    private final TerrainLog changes = new TerrainLog();
 
     /** unreachable, stuck, no_tool or no_material. */
     public String failCode;
@@ -91,9 +90,9 @@ public final class Navigator {
         explainClimbing = on;
     }
 
-    /** The blocks this navigator has put down to climb on and dug out of the way, since it was made. */
+    /** What the running task's walking has done to the world (the bot's log, shared by all its navigators). */
     public TerrainLog changes() {
-        return changes;
+        return bot.terrain();
     }
 
     public boolean active() {
@@ -202,7 +201,7 @@ public final class Navigator {
             bot.blockZ(),
             rule,
             gentle,
-            changes);
+            bot.terrain());
         gentle = true;
         return Status.WORKING;
     }

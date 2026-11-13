@@ -580,8 +580,8 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | type | 参数 | 行为 |
 |---|---|---|
 | `goto` | `{x,z, y?, range?=1, yRange?, climb?=true, takeBack?=false, dim?}` | 走到离目标水平 range 格以内。给了 `y`（脚的高度）时，脚和 `y` 的高度差不超过 `yRange`；不给 `yRange` 时是 2（range 大于 2 时至多 4）。不给 `y` 则以该处地面为准。`climb:false` 时不垫方块往上爬；`takeBack:true` 时到了以后把这次垫的、站着够得着的方块挖掉。见下“走路的结果” |
-| `goto_player` | `{player, range?=2}` | 走到某玩家身边；5 分钟追不上以 `stuck` 失败 |
-| `follow` | `{player, distance?=3}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等 |
+| `goto_player` | `{player, range?=2, climb?=true}` | 走到某玩家身边；5 分钟追不上以 `stuck` 失败。`climb` 同 `goto`；`climb:false` 而垫块才走得到时以 `unreachable` 失败，消息和 `detail.climbingBlocksWouldTake` 同 `goto` |
+| `follow` | `{player, distance?=3, climb?=true}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等，`progress.note` 写着为什么（走不到时是 `cannot reach <名字> right now: ` 加原因；`climb:false` 而垫块才跟得上时原因同 `goto` 的那句） |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
 | `dig` | `{blocks:[{x,y,z}]}`，≤256 | 逐个挖掉，由近到远。点名的方块里装着东西（箱子、抽屉、机器）也照样挖，像玩家挖一样，里面的东西掉出来；区域类任务（`clear` `flatten` 和图纸的清障）碰到装着东西的方块是跳过的（`has contents`） |
 | `place` | `{blocks:[{x,y,z,item,meta?,blockMeta?}], supply?}`，≤256 | 逐个放置，由低到高，材料从背包拿。给了 `meta` 就只用这个 meta 的物品放（用完了去 `supply` 取这一种，取不到以 `no_material` 停下）；不给是这个 id 的哪种都行，背包里先找到哪种用哪种，可能混着放（`fill` 同）。`blockMeta`（0–15）是放下去以后那一格方块的 meta（`world.block` 读到的那个）：楼梯朝哪边升、原木横竖、台阶上半下半。给了就照它放，见下面“放成指定的 meta”；给了 `blockMeta` 不给 `meta` 时用哪种物品由身体挑（能放出这个 meta 的那种：云杉原木横放 `blockMeta` 5 用的是物品 `log` 1） |
@@ -692,7 +692,8 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 结果 `result`：
 
 - 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], cameOutDifferent?, cameOutExamples?:[{x,y,z,want,got,why?}], freeSlots}`，`cameOutDifferent` 是放下去了、但 meta 和要的不一样的格数（身体预料不到放法的方块，`why` 写着），`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
-  为了够到高处垫的方块，任务结束前会拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标在 `climbingBlocksLeft:[{x,y,z}]`（最多列 64 个），它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
+  为了够到高处垫的方块，任务结束前会拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的；拆完把附近的掉落物捡回来（这一趟不再垫块）。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标在 `climbingBlocksLeft:[{x,y,z}]`（最多列 64 个），它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
+  这个任务垫过的每一块都在 `climbingBlocks:[{x,y,z,id,meta?,standing,takenDown?}]`（和走路的结果同一种写法；任务里每一趟路——去干活、去补给箱、去捡掉落物——垫的都算）：`standing` 是现在还在不在，`takenDown:true` 是这个任务自己把它拆了（`standing:false` 又没有 `takenDown` 的，是别的什么拿走了它）。以前留下、这次拆掉的在 `olderClimbingBlocksTakenDown:[{x,y,z,id,meta?}]`。拆了、掉落物却没回到身上的块数在 `climbingBlockDropsNotPickedUp`（拆之前和捡完以后身上垫脚方块的差；没有就不带）。`removed` 不算拆掉的自己的垫脚（原来算：意见簿 f25，放一根铁栏杆的图纸结果是 `removed 6`，这 6 块全是它自己的垫脚）。
   走路途中为了过去挖掉的方块（不是任务本身要挖的）在 `dugOnTheWay:[{x,y,z,id,meta?}]`。去 `dropoff` 卸下的东西在 `unloaded:[{id,meta,name,count}]`（卸货时只给自己留一组垫脚方块，多带的泥土、圆石会被卸掉）。
 - `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks}`。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。**走路的结果**（`goto` `goto_player` `follow`）另外照实列出这一趟改了什么地形：`climbingBlocks:[{x,y,z,id,meta?,standing}]` 是垫下的方块（`standing` 是现在还在不在），`climbingBlocksStanding` 是还在的个数；`dugOnTheWay:[{x,y,z,id,meta?}]` 是为了过去挖掉的方块；各最多列 64 个，多的个数在 `climbingBlocksNotListed`、`dugOnTheWayNotListed`。什么都没改时没有这几项。`goto` 给了 `y` 时另有 `dy`：脚的高度减去 `y`（0 就是正好），`takeBack` 时有拆不到的另有 `notTakenBack`（个数；还剩哪些看 `climbingBlocks` 的 `standing`）。

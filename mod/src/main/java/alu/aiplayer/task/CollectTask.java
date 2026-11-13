@@ -29,7 +29,7 @@ public final class CollectTask extends Task {
         phase = "collecting";
         AxisAlignedBB box = AxisAlignedBB
             .getBoundingBox(x - radius, y - radius, z - radius, x + radius + 1, y + radius + 1, z + radius + 1);
-        collector = new Collector(bot, box, Rules.NATURAL_ONLY, 20 * 60 * 5);
+        collector = new Collector(bot, box, Rules.NATURAL_ONLY, 20 * 60 * 5, true);
     }
 
     @Override

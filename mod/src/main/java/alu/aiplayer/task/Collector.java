@@ -28,7 +28,11 @@ final class Collector {
     private int ticksLeft;
     int picked;
 
-    Collector(Bot bot, AxisAlignedBB box, NavWorld.BreakRule rule, int maxTicks) {
+    private final boolean mayPillar;
+
+    /** @param mayPillar whether walking to an item may stack climbing blocks */
+    Collector(Bot bot, AxisAlignedBB box, NavWorld.BreakRule rule, int maxTicks, boolean mayPillar) {
+        this.mayPillar = mayPillar;
         this.bot = bot;
         this.box = box;
         this.rule = rule;
@@ -58,7 +62,8 @@ final class Collector {
                     MathHelper.floor_double(target.posY + 0.01),
                     MathHelper.floor_double(target.posZ),
                     0),
-                rule);
+                rule,
+                mayPillar);
         }
         Navigator.Status st = nav.tick();
         if (st == Navigator.Status.FAILED) {

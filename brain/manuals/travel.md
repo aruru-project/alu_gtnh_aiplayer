@@ -10,7 +10,7 @@
 - 身体走路时优先走不改动地形的路；实在走不通才会挖开挡路的天然方块（泥土、沙子、树叶之类），而且只为一条能走到的路挖。
 
 # 垫方块
-- go_to 默认不垫方块。只有给了 climb: true，走不上去的地方才会在脚下叠泥土、圆石往上爬（身上要带着这些方块）。
+- go_to、go_to_player、follow_player 默认不垫方块。只有给了 climb: true，走不上去的地方才会在脚下叠泥土、圆石往上爬（身上要带着这些方块）。follow_player 跟不上时原地等，task_status 里它的那一行写着为什么（不垫块跟不上也写在那里）。
 - 上不去时 go_to 以 unreachable 失败，消息照实说为什么：
   - nothing to stand on at the destination：目标那一格站不住（脚下是空的、格子里有东西、头顶顶着）。消息里写着那几格是什么，多半是坐标给错了一格，或者目标在楼梯口的洞上。
   - no way there without stacking blocks to climb on; one that stacks N exists：不垫方块上不去，垫 N 块能上。要不要垫你自己定，要垫就给 climb: true 再走一次。

@@ -85,6 +85,17 @@ public final class Rules {
         return known;
     }
 
+    /** How many items of the configured throwaway blocks the bot carries. */
+    public static int fillerCarried(EntityPlayerMP p) {
+        int n = 0;
+        for (ItemStack s : p.inventory.mainInventory) {
+            if (s == null) continue;
+            Block b = Block.getBlockFromItem(s.getItem());
+            if (b != null && b != net.minecraft.init.Blocks.air && isFiller(b)) n += s.stackSize;
+        }
+        return n;
+    }
+
     /** The throwaway block to build pillars and fill holes with: the first configured filler the bot carries. */
     public static ItemFilter scaffold(EntityPlayerMP p) {
         for (String id : AiPlayerMod.config().fillerBlocks) {

@@ -907,6 +907,8 @@ const TERRAIN_KEYS = [
   'climbingBlocks',
   'climbingBlocksNotListed',
   'climbingBlocksStanding',
+  'olderClimbingBlocksTakenDown',
+  'climbingBlockDropsNotPickedUp',
   'climbingBlocksLeft',
   'climbingBlocksLeftStanding',
   'dugOnTheWay',
@@ -1040,9 +1042,17 @@ export function terrainLines(result: Record<string, unknown>): string[] {
     const all = result.climbingBlocks.filter(isRecord)
     const total = all.length + count(result.climbingBlocksNotListed)
     const standing = typeof result.climbingBlocksStanding === 'number' ? result.climbingBlocksStanding : all.filter((c) => c.standing === true).length
-    let s = `climbing blocks put down on the way: ${total}, still standing ${standing}: ${cellsText(all, (c) => `${cellText(c)} ${String(c.id)}${c.standing === true ? '' : ' (gone)'}`)}`
+    // 每一块：还在、这个任务自己拆了（taken down）、不在了又不是它拆的（gone）
+    const state = (c: Record<string, unknown>): string => (c.standing === true ? '' : c.takenDown === true ? ' (taken down)' : ' (gone)')
+    let s = `climbing blocks put down on the way: ${total}, still standing ${standing}: ${cellsText(all, (c) => `${cellText(c)} ${String(c.id)}${state(c)}`)}`
     if (count(result.climbingBlocksNotListed) > 0) s += `; ${count(result.climbingBlocksNotListed)} more not listed`
     lines.push(s)
+  }
+  if (count(result.climbingBlockDropsNotPickedUp) > 0) {
+    lines.push(`climbing blocks taken down whose drops did not come back into your inventory: ${count(result.climbingBlockDropsNotPickedUp)} (they lie on the ground nearby or are gone)`)
+  }
+  if (Array.isArray(result.olderClimbingBlocksTakenDown) && result.olderClimbingBlocksTakenDown.length > 0) {
+    lines.push(`climbing blocks left by earlier work, taken down: ${cellsText(result.olderClimbingBlocksTakenDown, (c) => `${cellText(c)} ${String(c.id)}`)}`)
   }
   if (count(result.notTakenBack) > 0) lines.push(`not taken back (out of reach from where you stopped, or under your feet): ${count(result.notTakenBack)}`)
   if (count(result.climbingBlocksLeftStanding) > 0) {

@@ -622,6 +622,19 @@ describe('任务类工具', () => {
     )
   })
 
+  it('跟人走也默认不垫方块（和 go_to 一样，留下方块该是她自己选的）：go_to_player、follow_player 交给身体的任务总是写明 climb，给了 climb:true 才是 true', async (t) => {
+    const s = setup(t)
+    await s.run('go_to_player', { player: 'Steve' })
+    await s.run('follow_player', { player: 'Steve', climb: true })
+    assert.deepEqual(
+      s.game.callsOf('task.start').map((p) => p.task),
+      [
+        { type: 'goto_player', player: 'Steve', climb: false },
+        { type: 'follow', player: 'Steve', climb: true },
+      ],
+    )
+  })
+
   it('go_to 给了高度就按 range 核对高度（意见簿 f15：要 y73、range 0，身体按老规矩差 2 格也算到，站在 y71 报完成）；默认不垫方块，climb:true 才允许；takeBack 原样带过去', async (t) => {
     const s = setup(t)
     await s.run('go_to', { x: -622, y: 73, z: 134, range: 0 })
@@ -763,7 +776,7 @@ describe('任务类工具', () => {
       { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, fill: false, maxFillDepth: 2, dropoff: [{ x: 1, y: 65, z: 1 }] },
       { type: 'fill', x1: 0, y1: 64, z1: 0, x2: 4, y2: 66, z2: 4, item: 'minecraft:cobblestone', shape: 'walls', meta: 0 },
       { type: 'haul', from: { x: 1, y: 64, z: 1 }, to: { x: 9, y: 64, z: 9 }, items: [{ id: 'minecraft:iron_ingot', count: 64 }] },
-      { type: 'follow', player: 'Steve', distance: 4 },
+      { type: 'follow', player: 'Steve', distance: 4, climb: false },
       { type: 'home', name: 'base' },
     ])
   })
@@ -1309,6 +1322,36 @@ describe('图纸', () => {
     assert.match(text, /skipped 48 cell\(s\), by reason:; - 3× unreachable; - 45× not tried: 3 cells of this layer in a row were unreachable/)
     assert.match(text, /climbingBlocksLeftStanding 2 at \(-590,75,105\), \(-563,87,99\)/)
     assert.match(text, /left in the drop-off containers: 287× minecraft:dirt "Dirt"/)
+    assert.doesNotMatch(text, /other:/)
+  })
+
+  it('照图纸建的结果列出这次垫的每一块：在哪、还在不在、是不是它自己拆的，拆了但掉落物没回到身上的有几块（意见簿 f25：放一根铁栏杆，结果只有 removed 6，泥土少了 5 块，分不清哪些是垫脚）', async (t) => {
+    const s = setup(t)
+    s.game.handlers['task.list'] = () => ({
+      active: null,
+      queue: [],
+      recent: [
+        {
+          id: 't9', type: 'blueprint', state: 'done', finishedAt: 100,
+          result: {
+            removed: 0, placed: 1, freeSlots: 31,
+            climbingBlocks: [
+              { x: -610, y: 70, z: 157, id: 'minecraft:dirt', standing: false, takenDown: true },
+              { x: -610, y: 71, z: 157, id: 'minecraft:dirt', standing: false },
+              { x: -611, y: 76, z: 157, id: 'minecraft:dirt', standing: true },
+            ],
+            climbingBlocksStanding: 1,
+            climbingBlockDropsNotPickedUp: 1,
+            olderClimbingBlocksTakenDown: [{ x: -590, y: 77, z: 105, id: 'minecraft:dirt' }],
+            now: { cells: 1, done: 1, toPlace: 0, byHand: 0, blocked: 0, extra: 0 },
+          },
+        },
+      ],
+    })
+    const text = (await s.run('task_status')).content
+    assert.match(text, /climbing blocks put down on the way: 3, still standing 1: \(-610,70,157\) minecraft:dirt \(taken down\), \(-610,71,157\) minecraft:dirt \(gone\), \(-611,76,157\) minecraft:dirt;/)
+    assert.match(text, /climbing blocks taken down whose drops did not come back into your inventory: 1/)
+    assert.match(text, /climbing blocks left by earlier work, taken down: \(-590,77,105\) minecraft:dirt/)
     assert.doesNotMatch(text, /other:/)
   })
 })

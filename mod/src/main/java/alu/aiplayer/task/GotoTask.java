@@ -8,7 +8,6 @@ import net.minecraft.world.World;
 
 import com.google.gson.JsonObject;
 
-import alu.aiplayer.AiPlayerMod;
 import alu.aiplayer.act.Digger;
 import alu.aiplayer.act.Reach;
 import alu.aiplayer.bot.Bot;
@@ -30,13 +29,12 @@ public final class GotoTask extends MoveTask {
     /** Null means "wherever the ground is at x, z". */
     private final Integer y;
     private final int yRange;
-    /** Whether filler blocks may be stacked to climb. */
-    private final boolean climb;
     /** Whether to take down, on arrival, the climbing blocks of this walk that can be reached from there. */
     private final boolean takeBack;
 
     private List<TerrainLog.Cell> toTakeBack;
     private int notReachedToTakeBack;
+    private TerrainLog.Cell takingBack;
     private Digger digger;
 
     public GotoTask(JsonObject params) {
@@ -47,7 +45,6 @@ public final class GotoTask extends MoveTask {
         range = Math.max(0, Math.min(32, J.i(params, "range", 1)));
         yRange = J.has(params, "yRange") ? Math.max(0, Math.min(32, J.i(params, "yRange", 0)))
             : Goal.defaultHeightSlack(range);
-        climb = J.bool(params, "climb", true);
         takeBack = J.bool(params, "takeBack", false);
     }
 
@@ -60,7 +57,6 @@ public final class GotoTask extends MoveTask {
         }
         if (!withinTravel(x, z)) return;
         phase = "walking";
-        nav.explainClimbing(!climb);
         if (y == null) {
             nav.go(Goal.column(x, z, range), Rules.NATURAL_ONLY, climb);
             return;
@@ -85,27 +81,8 @@ public final class GotoTask extends MoveTask {
             if (takeBack) beginTakingBack();
             else done();
         } else if (st == Navigator.Status.FAILED) {
-            failWalk();
+            failNav();
         }
-    }
-
-    private void failWalk() {
-        if (nav.climbingBlocksWouldTake > 0) {
-            JsonObject detail = new JsonObject();
-            detail.addProperty("climbingBlocksWouldTake", nav.climbingBlocksWouldTake);
-            String carry = Rules.scaffold(bot.player()) == null
-                ? "; the bot carries none of the blocks it climbs with (" + String.join(", ", AiPlayerMod.config().fillerBlocks)
-                    + ")"
-                : "";
-            fail(
-                "unreachable",
-                "no way there without stacking blocks to climb on; one that stacks " + nav.climbingBlocksWouldTake
-                    + " exists (climb: true allows stacking them)"
-                    + carry,
-                detail);
-            return;
-        }
-        failNav();
     }
 
     // ---- footing ----------------------------------------------------------------------------------------------
@@ -208,6 +185,8 @@ public final class GotoTask extends MoveTask {
             digger.tick();
             if (digger.busy()) return true;
             if (digger.failCode != null) notReachedToTakeBack++;
+            else bot.terrain()
+                .takenDown(takingBack.x, takingBack.y, takingBack.z, null, 0);
         }
         while (!toTakeBack.isEmpty()) {
             TerrainLog.Cell c = toTakeBack.remove(0);
@@ -216,6 +195,7 @@ public final class GotoTask extends MoveTask {
                 notReachedToTakeBack++;
                 continue;
             }
+            takingBack = c;
             digger.begin(c.x, c.y, c.z);
             return true;
         }

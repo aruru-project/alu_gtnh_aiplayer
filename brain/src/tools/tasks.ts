@@ -130,6 +130,9 @@ function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: numb
 
 // ── 移动 ──
 
+/** 走路时能不能垫方块往上爬（go_to、go_to_player、follow_player 共用）。默认不垫：在世界里留下方块该是模型自己选的。 */
+const climb = bool('true: may stack blocks (dirt, cobblestone) under you to climb. Default false.')
+
 /**
  * 走路。给了 y 时高度也按 range 核对（身体的 yRange，不给它时身体按老规矩差 2 格也算到）；站不住的目标一开始就失败。
  * 默认不垫方块（身体的 climb 默认是垫，这里总是写明）：在世界里留下方块该是模型自己选的。
@@ -144,7 +147,7 @@ export const goTo: Tool = {
       y: int(undefined, { min: 0, max: 255 }),
       z: int(),
       range: int('Stop when within this many blocks (default 1); with y, of that height too.', { min: 0, max: 32 }),
-      climb: bool('true: may stack blocks (dirt, cobblestone) under you to climb. Default false.'),
+      climb,
       takeBack: bool('With climb: on arrival, dig out the blocks you stacked that are within reach.'),
       queue,
     },
@@ -171,12 +174,12 @@ export const goToPlayer: Tool = {
   name: 'go_to_player',
   description: 'Walk to a player and stop next to them (task). Fails with "stuck" if you cannot catch up within 5 minutes.',
   inputSchema: obj(
-    { player: str('Player name.'), range: int('Stop when within this many blocks (default 2).', { min: 1, max: 32 }), queue },
+    { player: str('Player name.'), range: int('Stop when within this many blocks (default 2).', { min: 1, max: 32 }), climb, queue },
     ['player'],
   ),
-  async run(ctx, i: { player: string; range?: number; queue?: boolean }) {
+  async run(ctx, i: { player: string; range?: number; climb?: boolean; queue?: boolean }) {
     if (!PLAYER_NAME_RE.test(i.player)) return fail(`"${i.player}" is not a valid player name`)
-    return startTask(ctx, { type: 'goto_player', player: i.player, range: i.range }, i.queue)
+    return startTask(ctx, { type: 'goto_player', player: i.player, range: i.range, climb: i.climb === true }, i.queue)
   },
 }
 
@@ -184,12 +187,12 @@ export const followPlayer: Tool = {
   name: 'follow_player',
   description: 'Keep following a player until you cancel it or start another task (task that never ends by itself).',
   inputSchema: obj(
-    { player: str('Player name.'), distance: int('Distance to keep (default 3).', { min: 1, max: 32 }), queue },
+    { player: str('Player name.'), distance: int('Distance to keep (default 3).', { min: 1, max: 32 }), climb, queue },
     ['player'],
   ),
-  async run(ctx, i: { player: string; distance?: number; queue?: boolean }) {
+  async run(ctx, i: { player: string; distance?: number; climb?: boolean; queue?: boolean }) {
     if (!PLAYER_NAME_RE.test(i.player)) return fail(`"${i.player}" is not a valid player name`)
-    return startTask(ctx, { type: 'follow', player: i.player, distance: i.distance }, i.queue)
+    return startTask(ctx, { type: 'follow', player: i.player, distance: i.distance, climb: i.climb === true }, i.queue)
   },
 }
 

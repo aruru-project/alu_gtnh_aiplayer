@@ -154,7 +154,11 @@ abstract class AreaTask extends Task {
             Digger.Status st = digger.tick();
             if (st == Digger.Status.WORKING) return Act.BUSY;
             if (st == Digger.Status.DONE) {
-                removed++;
+                // A climbing block of the bot's own coming down is not part of the work: it is said in the
+                // climbing blocks' list, not counted as removed.
+                if (diggingOwnClimbingBlock) bot.terrain()
+                    .takenDown(x, y, z, diggingBlock, diggingMeta);
+                else removed++;
                 bot.forgetScaffold(x, y, z);
                 return Act.OK;
             }
@@ -178,6 +182,11 @@ abstract class AreaTask extends Task {
                 return Act.SKIPPED;
             }
             if (Reach.canReach(p, x, y, z)) {
+                diggingBlock = block;
+                diggingMeta = w.getBlockMetadata(x, y, z);
+                // Asked for by position (dig_blocks on one of its own climbing blocks), it is the work itself.
+                diggingOwnClimbingBlock = bot.scaffoldCells()
+                    .contains(key(x, y, z)) && Rules.isFiller(block) && !named(x, y, z);
                 digger.begin(x, y, z);
                 return Act.BUSY;
             }
@@ -190,6 +199,10 @@ abstract class AreaTask extends Task {
         walking = true;
         return Act.BUSY;
     }
+
+    private Block diggingBlock;
+    private int diggingMeta;
+    private boolean diggingOwnClimbingBlock;
 
     /** Kinds of block that turned out to need a tool the bot does not carry. */
     protected final Set<String> noToolFor = new HashSet<>();
@@ -661,13 +674,22 @@ abstract class AreaTask extends Task {
             bot,
             AxisAlignedBB.getBoundingBox(x1 - 3, y1 - 2, z1 - 3, x2 + 4, y2 + 3, z2 + 4),
             rule,
-            20 * 90);
+            20 * 90,
+            true);
     }
 
     // ---- tidying up -----------------------------------------------------------------------------------------
 
     private List<int[]> tidyList;
     private int[] tidyCurrent;
+    /** Climbing blocks taken down while tidying, and the box they were in. */
+    private int tidiedDown;
+    private int tx1 = Integer.MAX_VALUE, ty1 = Integer.MAX_VALUE, tz1 = Integer.MAX_VALUE, tx2 = Integer.MIN_VALUE,
+        ty2 = Integer.MIN_VALUE, tz2 = Integer.MIN_VALUE;
+    /** Climbing blocks carried when tidying began; after the drops are swept up, how many did not come back. */
+    private int fillerBeforeTidying;
+    private boolean tidySwept;
+    private int dropsNotPickedUp;
     /** Climbing blocks that tidying could not take down. */
     private final List<int[]> scaffoldLeft = new ArrayList<>();
     /** The climbing blocks the bot knew of when this task started; any others are this task's own. */
@@ -699,15 +721,46 @@ abstract class AreaTask extends Task {
                 tidyList.add(new int[] { x, y, z });
             }
             if (!tidyList.isEmpty()) phase = "tidying up";
+            fillerBeforeTidying = Rules.fillerCarried(p);
         }
         if (tidyCurrent != null) {
-            Act a = digCell(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
+            int[] c = tidyCurrent;
+            Act a = digCell(c[0], c[1], c[2]);
             if (a == Act.BUSY || a == Act.FAILED) return true;
-            if (a == Act.OK) bot.forgetScaffold(tidyCurrent[0], tidyCurrent[1], tidyCurrent[2]);
-            else scaffoldLeft.add(tidyCurrent);
+            if (a == Act.OK) {
+                bot.forgetScaffold(c[0], c[1], c[2]);
+                tidiedDown++;
+                tx1 = Math.min(tx1, c[0]);
+                ty1 = Math.min(ty1, c[1]);
+                tz1 = Math.min(tz1, c[2]);
+                tx2 = Math.max(tx2, c[0]);
+                ty2 = Math.max(ty2, c[1]);
+                tz2 = Math.max(tz2, c[2]);
+            } else {
+                scaffoldLeft.add(c);
+            }
             tidyCurrent = null;
         }
-        if (tidyList.isEmpty()) return false;
+        if (tidyList.isEmpty()) {
+            if (tidiedDown == 0) return false;
+            if (!tidySwept) {
+                // What was taken down dropped where it stood, or rolled off: pick it up again, as a player would.
+                // Climbing to get at a drop would leave a new climbing block, so this walk does not.
+                tidySwept = true;
+                if (!inventoryFull()) {
+                    collector = new Collector(
+                        bot,
+                        AxisAlignedBB.getBoundingBox(tx1 - 3, ty1 - 6, tz1 - 3, tx2 + 4, ty2 + 3, tz2 + 4),
+                        rule,
+                        20 * 60,
+                        false);
+                }
+                return true;
+            }
+            dropsNotPickedUp = Math.max(0, tidiedDown - (Rules.fillerCarried(p) - fillerBeforeTidying));
+            tidiedDown = 0;
+            return false;
+        }
         int best = 0;
         for (int i = 1; i < tidyList.size(); i++) if (tidyList.get(i)[1] > tidyList.get(best)[1]) best = i;
         tidyCurrent = tidyList.remove(best);
@@ -777,8 +830,9 @@ abstract class AreaTask extends Task {
             for (int[] c : scaffoldLeft) if (a.size() < TerrainLog.LIST_LIMIT) a.add(J.pos(c[0], c[1], c[2]));
             o.add("climbingBlocksLeft", a);
         }
-        if (nav != null && bot != null && bot.online()) nav.changes()
-            .addDugTo(o);
+        if (bot != null && bot.online()) bot.terrain()
+            .addTo(o, bot.player().worldObj);
+        if (dropsNotPickedUp > 0) o.addProperty("climbingBlockDropsNotPickedUp", dropsNotPickedUp);
         if (!unloaded.isEmpty()) o.add("unloaded", unloaded.toJson());
         if (bot != null && bot.online()) o.addProperty("freeSlots", Inventories.freeSlots(bot.player()));
         return o;

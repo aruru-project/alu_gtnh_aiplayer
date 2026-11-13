@@ -13,8 +13,10 @@ import alu.aiplayer.util.J;
 import alu.aiplayer.util.Names;
 
 /**
- * What getting somewhere did to the world: the blocks put down to climb on and the blocks dug out of the way. A
- * task reports it as it is when the task ends, so that nothing the bot changed on a walk goes unsaid.
+ * What a task's walking did to the world: the blocks put down to climb on (and which of them the task took down
+ * again) and the blocks dug out of the way. The bot keeps one for the task it is running, shared by every walk the
+ * task makes (to the work, to a supply chest, after drops), and the task reports it as it is when it ends, so that
+ * nothing the bot changed on the way goes unsaid.
  */
 public final class TerrainLog {
 
@@ -38,6 +40,10 @@ public final class TerrainLog {
 
     private final List<Cell> placed = new ArrayList<>();
     private final List<Cell> dug = new ArrayList<>();
+    /** Climbing blocks of this log that the task itself dug out again. */
+    private final java.util.Set<Long> takenDown = new java.util.HashSet<>();
+    /** Climbing blocks left by earlier work that this task took down. */
+    private final List<Cell> olderTakenDown = new ArrayList<>();
 
     void placed(World w, int x, int y, int z) {
         for (Cell c : placed) if (c.x == x && c.y == y && c.z == z) return;
@@ -52,8 +58,22 @@ public final class TerrainLog {
         dug.add(new Cell(x, y, z, Names.blockId(b), meta));
     }
 
+    /**
+     * The task dug out a climbing block of the bot's: one of this log's, or one an earlier task left standing (then
+     * it is listed apart, as it was when dug).
+     */
+    public void takenDown(int x, int y, int z, Block b, int meta) {
+        for (Cell c : placed) {
+            if (c.x == x && c.y == y && c.z == z) {
+                takenDown.add(NavWorld.key(x, y, z));
+                return;
+            }
+        }
+        if (b != null) olderTakenDown.add(new Cell(x, y, z, Names.blockId(b), meta));
+    }
+
     public boolean isEmpty() {
-        return placed.isEmpty() && dug.isEmpty();
+        return placed.isEmpty() && dug.isEmpty() && olderTakenDown.isEmpty();
     }
 
     /** The climbing blocks put down, in the order they were. */
@@ -76,8 +96,9 @@ public final class TerrainLog {
     }
 
     /**
-     * Adds {@code climbingBlocks} (each with whether it still stands) and {@code dugOnTheWay} to a task result.
-     * Nothing is added for a walk that changed nothing.
+     * Adds {@code climbingBlocks} (each with whether it still stands, and {@code takenDown} for those the task dug out
+     * again), {@code olderClimbingBlocksTakenDown} and {@code dugOnTheWay} to a task result. Nothing is added for a
+     * task whose walking changed nothing.
      */
     public void addTo(JsonObject o, World w) {
         if (!placed.isEmpty()) {
@@ -89,11 +110,17 @@ public final class TerrainLog {
                 if (a.size() >= LIST_LIMIT) continue;
                 JsonObject e = cell(c);
                 e.addProperty("standing", s);
+                if (takenDown.contains(NavWorld.key(c.x, c.y, c.z))) e.addProperty("takenDown", true);
                 a.add(e);
             }
             o.add("climbingBlocks", a);
             if (placed.size() > LIST_LIMIT) o.addProperty("climbingBlocksNotListed", placed.size() - LIST_LIMIT);
             o.addProperty("climbingBlocksStanding", standing);
+        }
+        if (!olderTakenDown.isEmpty()) {
+            JsonArray a = new JsonArray();
+            for (Cell c : olderTakenDown) if (a.size() < LIST_LIMIT) a.add(cell(c));
+            o.add("olderClimbingBlocksTakenDown", a);
         }
         addDugTo(o);
     }

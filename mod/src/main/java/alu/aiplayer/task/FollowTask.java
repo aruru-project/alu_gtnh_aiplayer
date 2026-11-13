@@ -39,7 +39,9 @@ public final class FollowTask extends MoveTask {
             return;
         }
         double dist = me.getDistanceToEntity(target);
-        if (dist <= distance + 0.5) {
+        // Close enough only when standing: in the middle of a jump (to put a block under itself) the bot is nearer
+        // someone above it than it will be on landing, and stopping there threw the climbing step away.
+        if (dist <= distance + 0.5 && (me.onGround || me.isInWater() || !nav.active())) {
             note = "";
             nav.stop();
             bot.motion.lookAt(me, target.posX, target.posY + target.getEyeHeight(), target.posZ);
@@ -62,9 +64,10 @@ public final class FollowTask extends MoveTask {
         }
         Navigator.Status st = nav.tick();
         if (st == Navigator.Status.FAILED) {
-            note = "cannot reach " + player + " right now: " + nav.failMessage;
+            note = "cannot reach " + player + " right now: " + navProblem();
             retryIn = 60;
-        } else {
+        } else if (!nav.planning()) {
+            // Said why it could not get there until a new way is found (or not).
             note = "";
         }
     }

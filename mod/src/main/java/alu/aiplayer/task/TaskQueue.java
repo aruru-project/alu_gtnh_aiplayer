@@ -125,6 +125,7 @@ public final class TaskQueue {
             active.state = Task.State.RUNNING;
             active.startedAt = System.currentTimeMillis();
             active.startDim = bot.player().dimension;
+            bot.beginTerrainLog();
             try {
                 active.start(bot);
             } catch (Throwable t) {

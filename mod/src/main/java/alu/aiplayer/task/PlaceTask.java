@@ -29,6 +29,9 @@ public final class PlaceTask extends AreaTask {
     private List<int[]> deferred = new ArrayList<>();
     private boolean progressSinceDeferral;
     private int[] current;
+    /** The cells asked for: what ends up there stays, filler or not. */
+    private final java.util.Set<Long> asked = new java.util.HashSet<>();
+    private boolean finishing;
 
     public PlaceTask(JsonObject params) {
         super("place", params);
@@ -40,6 +43,7 @@ public final class PlaceTask extends AreaTask {
             int[] p = Params.pos(o);
             // The fourth number is the index of the item this cell gets.
             targets.add(new int[] { p[0], p[1], p[2], items.size() });
+            asked.add(key(p[0], p[1], p[2]));
             int meta = J.i(o, "meta", -1);
             int want = J.i(o, "blockMeta", -1);
             if (J.has(o, "blockMeta") && (want < 0 || want > 15)) throw new IllegalArgumentException("blockMeta is 0 to 15");
@@ -57,8 +61,18 @@ public final class PlaceTask extends AreaTask {
     }
 
     @Override
+    protected boolean keepsBlock(int x, int y, int z) {
+        return asked.contains(key(x, y, z));
+    }
+
+    @Override
     public void tick() {
         if (busyWithErrand()) return;
+        if (finishing) {
+            // The climbing blocks put down to get up to the cells come down again before the task ends.
+            if (!tidying() && !finished()) done();
+            return;
+        }
         if (current != null) {
             int i = current[3];
             if (open.get(i)) {
@@ -93,7 +107,7 @@ public final class PlaceTask extends AreaTask {
                 progressSinceDeferral = false;
             } else {
                 for (int[] d : deferred) skip(d[0], d[1], d[2], why(d[0], d[1], d[2], "nothing to place against"));
-                done();
+                finishing = true;
                 return;
             }
         }

@@ -40,4 +40,4 @@
 - removed / placed 是挖掉和放上的数量，skipped 按原因列出跳过了多少，skippedExamples 给出几个具体坐标。
 - 跳过带数据的方块（箱子、抽屉、机器）、液体、基岩属于正常，不用管。
 - 原因是 hole deeper than maxFillDepth 的，是坑太深没填：要填就把 maxFillDepth 调大再跑一次。foliage out of reach 是够不着的树叶，一般不用管。
-- 结果里有 climbingBlocksLeftStanding 时，是有几块垫脚的方块没能拆掉，climbingBlocksLeft 是它们的坐标：在别人的地方干活的话，说一声或者回去拆（dig_blocks）。dugOnTheWay 是走路途中为了过去挖掉的方块。
+- 垫过脚的任务，结果里逐块列着这次垫的方块（climbing blocks put down）：在哪、现在还在不在、是不是任务自己拆的（taken down）。还在的就是留在世界里的垫脚；拆了、掉落物却没回到你身上的块数也写着（多半掉在附近地上）。removed 不算拆掉的自己的垫脚。climbingBlocksLeftStanding 是没能拆掉的个数，后面是坐标：在别人的地方干活的话，说一声或者回去拆（dig_blocks）。dug out of the way 是走路途中为了过去挖掉的方块。

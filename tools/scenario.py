@@ -387,9 +387,13 @@ def scenario_nav(s, origin):
             if x in (x1, x1 + 4) or z in (z1 + 9, z1 + 13):
                 for y in range(f, f + 5):
                     b.put(x, y, z, stone)
-    # E: a stone pillar three high, nothing to climb it by.
+    # E: a stone pillar three high, nothing to climb it by; F, another, for someone to stand on; G, a column seven
+    # high whose top is out of reach from the ground.
     for y in range(f, f + 3):
         b.put(x1 + 12, y, z1 + 11, stone)
+        b.put(x1 + 12, y, z1 + 7, stone)
+    for y in range(f, f + 7):
+        b.put(x1 + 14, y, z1 + 13, stone)
     b.close()
     s.call("bot.configure", {"bot": BOT, "settings": {"invulnerable": True}})
     rcon(f"tp {BOT} {x1 + 2}.5 {f} {z1}.5")
@@ -469,6 +473,86 @@ def scenario_nav(s, origin):
     check("with climb and takeBack: there, every block it stacked listed, and each said to stand only if it does",
           r["state"] == "done" and at(x1 + 12, f + 3, z1 + 11) and len(listed) >= 1 and truthful
           and placed_here() == sum(1 for c in listed if c["standing"]), json.dumps(res))
+
+    def dirt():
+        return s.counts().get("minecraft:dirt", 0)
+
+    # Following someone who stands on top of F: without climb the bot cannot keep up and says so where its task
+    # says what it is doing; with climb it stacks a block beside the pillar and is there.
+    other = "Perch"
+    s.call("bot.spawn", {"name": other, "x": x1 + 12, "y": f + 3, "z": z1 + 7})
+    s.call("bot.configure", {"bot": other, "settings": {"invulnerable": True}})
+    rcon(f"tp {BOT} {x1 + 10}.5 {f} {z1 + 7}.5")
+    time.sleep(1.5)
+    before = placed_here()
+
+    trace = []
+
+    def follow(climb, until, seconds=40):
+        s.call("task.start", {"bot": BOT, "task": {"type": "follow", "player": other, "distance": 2, "climb": climb}})
+        deadline = time.time() + seconds
+        seen = None
+        trace.clear()
+        while time.time() < deadline:
+            active = s.call("task.list", {"bot": BOT})["active"] or {}
+            seen = active
+            st = s.status()
+            step = (st["block"]["x"], st["block"]["y"], st["block"]["z"], (active.get("progress") or {}).get("note", ""))
+            if not trace or trace[-1] != step:
+                trace.append(step)
+            if until(active):
+                break
+            time.sleep(0.25)
+        s.call("task.cancel", {"bot": BOT})
+        time.sleep(0.5)
+        return seen, s.call("task.list", {"bot": BOT})["recent"][0]
+
+    seen, _ = follow(False, lambda a: "stacking blocks" in (a.get("progress") or {}).get("note", ""))
+    note = (seen.get("progress") or {}).get("note", "")
+    check("following someone up on a pillar without climb: it says it cannot keep up without stacking blocks, stacks none",
+          "cannot reach Perch right now: no way there without stacking blocks to climb on" in note
+          and placed_here() == before and s.status()["block"]["y"] == f, json.dumps(seen))
+
+    def up_beside(_a):
+        # Standing (not in the middle of a jump) up on a block of its own, within the distance asked of the pillar
+        # and at most two below its top.
+        st = s.status()
+        me = st["block"]
+        return st["onGround"] and me["y"] >= f + 1 and (me["x"] - (x1 + 12)) ** 2 + (me["z"] - (z1 + 7)) ** 2 <= 4
+    # From a corner of the pillar: mid-jump the bot is nearer someone above than on landing, and the follow took
+    # that for close enough, stopped the walk and threw away the block it was about to put under itself.
+    rcon(f"tp {BOT} {x1 + 11}.5 {f} {z1 + 6}.5")
+    time.sleep(1.5)
+    seen, ended = follow(True, up_beside)
+    res = ended.get("result") or {}
+    listed = res.get("climbingBlocks") or []
+    now = placed_here()
+    check("with climb it keeps up, and when stopped its result lists the blocks it stacked",
+          up_beside(None) and len(listed) >= 1 and now == before + len(listed),
+          json.dumps({"ended": ended, "at": s.status()["block"], "stacked": now - before, "pillar": [x1 + 12, f + 3, z1 + 7],
+                      "them": s.call("bot.status", {"bot": other})["block"], "trace": trace[-12:]}))
+    s.call("bot.despawn", {"bot": other})
+    s.call("bot.remove", {"bot": other})
+
+    # An area task that has to climb to place a block (place_blocks, on top of G): every climbing block it put down is listed,
+    # each with whether it still stands and whether the task took it down, and what did not come back into the
+    # inventory is counted (feedback f25: a blueprint for one iron bar said only "removed 6", and 5 dirt were gone).
+    rcon(f"tp {BOT} {x1 + 12}.5 {f} {z1 + 13}.5")
+    time.sleep(1.5)
+    had = dirt()
+    r = s.run({"type": "place", "blocks": [{"x": x1 + 14, "y": f + 7, "z": z1 + 13, "item": "minecraft:cobblestone"}]}, 240)
+    res = r.get("result") or {}
+    listed = res.get("climbingBlocks") or []
+    truthful = all((s.block(c["x"], c["y"], c["z"]) == c["id"]) == c["standing"] for c in listed)
+    # The dirt carried: each block stacked takes one, each taken down gives one back unless it is counted as not
+    # picked up (more can come back: the sweep after taking them down picks up whatever lies there).
+    taken = sum(1 for c in listed if c.get("takenDown")) + len(res.get("olderClimbingBlocksTakenDown") or [])
+    accounted = dirt() - had >= -len(listed) + taken - res.get("climbingBlockDropsNotPickedUp", 0)
+    check("an area task that climbed: each climbing block listed, said standing or taken down as it is, none counted as removed, "
+          "and any that did not come back into the inventory counted",
+          r["state"] == "done" and s.block(x1 + 14, f + 7, z1 + 13) == "minecraft:cobblestone" and len(listed) >= 1 and truthful
+          and all(c.get("takenDown") is True or c["standing"] for c in listed) and res.get("removed") == 0 and accounted,
+          json.dumps({"result": res, "dirtBefore": had, "dirtAfter": dirt()}))
 
 
 def main():

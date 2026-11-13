@@ -283,6 +283,18 @@ public final class Bot implements BotConnection.Listener {
     private final java.util.Set<Long> scaffoldView = java.util.Collections.unmodifiableSet(scaffold);
     private long scaffoldCount;
 
+    private alu.aiplayer.nav.TerrainLog terrain = new alu.aiplayer.nav.TerrainLog();
+
+    /** What the running task's walking has done to the world: climbing blocks put down and taken down, blocks dug. */
+    public alu.aiplayer.nav.TerrainLog terrain() {
+        return terrain;
+    }
+
+    /** A new task starts with nothing changed yet. */
+    public void beginTerrainLog() {
+        terrain = new alu.aiplayer.nav.TerrainLog();
+    }
+
     /** Remembers a block this bot put down only to stand on. */
     public void noteScaffold(int x, int y, int z) {
         scaffold.add(alu.aiplayer.nav.NavWorld.key(x, y, z));

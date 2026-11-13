@@ -5,6 +5,7 @@ import net.minecraft.server.MinecraftServer;
 
 import com.google.gson.JsonObject;
 
+import alu.aiplayer.AiPlayerMod;
 import alu.aiplayer.nav.Goal;
 import alu.aiplayer.nav.Navigator;
 import alu.aiplayer.nav.Rules;
@@ -14,15 +15,20 @@ import alu.aiplayer.util.J;
 abstract class MoveTask extends Task {
 
     protected Navigator nav;
+    /** Whether filler blocks may be stacked to climb on the way (the task's {@code climb}, true when not given). */
+    protected final boolean climb;
 
     MoveTask(String type, JsonObject params) {
         super(type, params);
+        climb = J.bool(params, "climb", true);
     }
 
     @Override
     public void start(alu.aiplayer.bot.Bot bot) {
         super.start(bot);
         nav = new Navigator(bot);
+        // Not allowed to stack blocks, a walk that finds no way finds out whether stacking them would have done.
+        nav.explainClimbing(!climb);
     }
 
     @Override
@@ -31,17 +37,30 @@ abstract class MoveTask extends Task {
     }
 
     protected void walkTo(int x, int y, int z, int range) {
-        nav.go(Goal.near(x, y, z, range), Rules.NATURAL_ONLY);
+        nav.go(Goal.near(x, y, z, range), Rules.NATURAL_ONLY, climb);
+    }
+
+    /** Why the navigator failed, in words: with climbing not allowed, whether stacking blocks would have done. */
+    protected String navProblem() {
+        if (nav.climbingBlocksWouldTake <= 0) return nav.failMessage;
+        String carry = Rules.scaffold(bot.player()) == null
+            ? "; the bot carries none of the blocks it climbs with (" + String.join(", ", AiPlayerMod.config().fillerBlocks)
+                + ")"
+            : "";
+        return "no way there without stacking blocks to climb on; one that stacks " + nav.climbingBlocksWouldTake
+            + " exists (climb: true allows stacking them)"
+            + carry;
     }
 
     /** Fails the task with the navigator's reason. */
     protected void failNav() {
         JsonObject detail = null;
-        if (nav.failBlock != null) {
+        if (nav.failBlock != null || nav.climbingBlocksWouldTake > 0) {
             detail = new JsonObject();
-            detail.addProperty("block", nav.failBlock);
+            if (nav.failBlock != null) detail.addProperty("block", nav.failBlock);
+            if (nav.climbingBlocksWouldTake > 0) detail.addProperty("climbingBlocksWouldTake", nav.climbingBlocksWouldTake);
         }
-        fail(nav.failCode, nav.failMessage, detail);
+        fail(nav.failCode, navProblem(), detail);
     }
 
     protected static EntityPlayerMP findPlayer(String name) {
