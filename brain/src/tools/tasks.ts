@@ -333,6 +333,7 @@ export const fillArea: Tool = {
       ...boxProps,
       item: str('Item id of the block to place.'),
       meta: int(`Its meta (${META_WORDS}).`, { min: 0 }),
+      blockMeta: int('The meta every block must end up with, as in place_blocks.', { min: 0, max: 15 }),
       shape: str('solid (default), hollow (only the six faces) or walls (only the four sides).', { enum: ['solid', 'hollow', 'walls'] }),
       supply: supply('the block'),
       queue,
@@ -343,8 +344,9 @@ export const fillArea: Tool = {
     const volume = boxVolume(i)
     if (volume > BOX_MAX_VOLUME) return fail(`box volume is ${volume}; at most ${BOX_MAX_VOLUME} per task. Split it and queue the pieces.`)
     const { queue: q, ...params } = i
-    // 身体收到不带 meta 的是“哪种都行”，会把同一个 id 的几种方块混着放；说明里写的默认 0 要真的交给它
-    return startTask(ctx, { type: 'fill', ...params, meta: i.meta ?? 0 }, q)
+    // 身体收到不带 meta 的是“哪种都行”，会把同一个 id 的几种方块混着放；说明里写的默认 0 要真的交给它。
+    // 给了 blockMeta 不给 meta：用哪种物品由身体挑（能放出这个朝向的那种），同 place_blocks
+    return startTask(ctx, { type: 'fill', ...params, ...(i.meta === undefined && i.blockMeta !== undefined ? {} : { meta: i.meta ?? 0 }) }, q)
   },
 }
 

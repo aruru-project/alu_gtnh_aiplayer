@@ -6,6 +6,7 @@
 //      拿着梯子点空地的上表面，结果写明没放进去、为什么（梯子要贴着墙）。
 //   4. 意见簿 f24：空桶对水源右键没反应。地面里嵌着两格水源、一个一格深的坑。空桶对第一格水源用：身体看着水面右键，桶装满；
 //      装满的水桶对着坑底用：水倒进坑里；空单元对第二格水源用：装成水单元。
+//   5. fill_area 的 blockMeta：一排五格原木横放（东西向，/4），西头有一块石头可以靠；五格都是 /4。
 //   3. 拍视频时的工具缺口：一格钢管道方块（gregtech:gt.blockcasings2 的 13），身上是铁镐和一把没有材料的扳手（0 级）。
 //      probe_block 写明要的是 wrench 类、2 级，每件工具为什么不行；dig_blocks 以 no_tool 失败，消息里写着同样的事。
 // 模拟模型服务按脚本回应干活线：每一步看了上一步的结果再定下一步，对话线只传话。大脑是真启动的进程（src/main.ts），
@@ -49,6 +50,7 @@ async function main(): Promise<number> {
   const pool = { x: cx - 5, y: cy - 1, z: cz - 5 }
   const pool2 = { x: cx - 5, y: cy - 1, z: cz - 1 }
   const pitFloor = { x: cx - 3, y: cy - 2, z: cz - 5 }
+  const logRow = { x1: cx - 4, y1: cy, z1: cz + 5, x2: cx, y2: cy, z2: cz + 5 }
 
   const observer = new BridgeClient({
     address: () => ({ host: '127.0.0.1', port: TESTSERVER_BRIDGE_PORT }),
@@ -151,6 +153,14 @@ async function main(): Promise<number> {
     step(waiting('拿空单元装水。')),
     step((seen) => {
       expect(seen, /gained: 1× IC2:itemCellEmpty\/1/, '装成了水单元')
+      return call('fill_area', { ...logRow, item: 'minecraft:log', blockMeta: 4 })
+    }),
+    // ── 5. 一排横放的原木 ──
+    step(waiting('在摆一排横放的原木。')),
+    step((seen) => {
+      expect(seen, /任务 \w+（fill）完成了。/, '摆原木的任务完成了')
+      expect(seen, /"placed":5/, '五格都放了')
+      if (/skipped|cameOutDifferent/.test(seen.split('[最近发生的事')[0]!)) throw new Error(`有跳过的或者朝向不对的：${seen.slice(0, 900)}`)
       return { text: '楼梯四级都朝南放好了；钢管道方块要 2 级以上的扳手，我身上的扳手是 0 级的；桶和单元都装上了水。' }
     }),
   )
@@ -178,18 +188,19 @@ async function main(): Promise<number> {
       for (const w of [pool, pool2]) await set(w.x, w.y, w.z, 'minecraft:water')
       await set(pitFloor.x, pitFloor.y, pitFloor.z, 'minecraft:stone')
       await set(pitFloor.x, pitFloor.y + 1, pitFloor.z, 'minecraft:air')
+      await set(logRow.x1 - 1, logRow.y1, logRow.z1, 'minecraft:stone')
       const placed = await set(casing.x, casing.y, casing.z, CASING, 13)
       if (!/placed/i.test(placed)) throw new Error(`摆钢管道方块：${placed}`)
       say(await rcon.send(`tp ${BOT} ${cx} ${cy} ${cz}`))
       await rcon.send(`clear ${BOT}`)
-      for (const give of [`${STAIRS} 8 0`, 'minecraft:ladder 2 0', 'minecraft:iron_pickaxe 1 0', 'gregtech:gt.metatool.01 1 16', 'minecraft:bucket 1 0', 'IC2:itemCellEmpty 1 0']) say(await rcon.send(`give ${BOT} ${give}`))
+      for (const give of [`${STAIRS} 8 0`, 'minecraft:ladder 2 0', 'minecraft:iron_pickaxe 1 0', 'gregtech:gt.metatool.01 1 16', 'minecraft:bucket 1 0', 'IC2:itemCellEmpty 1 0', 'minecraft:log 5 0']) say(await rcon.send(`give ${BOT} ${give}`))
     } finally {
       rcon.close()
     }
     await sleep(1000)
 
     say('面板上对它说：在梯道里放四级朝南升的楼梯上二楼，再看看那块钢管道方块拆不拆得动')
-    await brain.call('POST', '/command', { text: '在东边那条梯道里放四级往南升的云杉木楼梯通到二楼；再试试放楼梯和梯子；再看看那块钢管道方块拆不拆得动；最后拿桶和空单元装点水。' })
+    await brain.call('POST', '/command', { text: '在东边那条梯道里放四级往南升的云杉木楼梯通到二楼；再试试放楼梯和梯子；再看看那块钢管道方块拆不拆得动；再拿桶和空单元装点水；最后在北边摆一排东西向横放的原木。' })
     await until('脚本用完、大脑空闲', async () => {
       if (problems.length > 0) return true
       if (llm.remaining !== 0) return false
@@ -220,6 +231,13 @@ async function main(): Promise<number> {
     const pit = await game.worldBlock({ ...pitFloor, y: pitFloor.y + 1 })
     say(`坑里：${pit.id}/${pit.meta}`)
     if (pit.id !== 'minecraft:water' && pit.id !== 'minecraft:flowing_water') throw new Error('坑里没有水')
+    const logs: string[] = []
+    for (let x = logRow.x1; x <= logRow.x2; x++) {
+      const b = await game.worldBlock({ x, y: logRow.y1, z: logRow.z1 })
+      logs.push(`${b.id}/${b.meta}`)
+    }
+    say(`那一排原木：${logs.join(', ')}`)
+    if (logs.some((l) => l !== 'minecraft:log/4')) throw new Error('原木不是都东西向横放（/4）')
     const casingNow = await game.worldBlock(casing)
     if (casingNow.id !== CASING) throw new Error('钢管道方块不见了')
     say(`✔ 走完了：干活线调了 ${calls} 次模型（脚本 ${scripted} 步）`)

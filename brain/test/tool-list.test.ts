@@ -256,7 +256,9 @@ describe('模型拿到的工具清单', () => {
   //   放方块能指定朝向之后（意见簿 f16，楼梯）：干活线实际 56,532、上限 56,400 → 56,600（+200；和上面图纸、任务书两次合在一起：实际 57,590、上限 57,800）。多的是 place_blocks 每一格的 blockMeta
   //           （+245：放下去以后方块的 meta 要是几，身体自己找站位和点的面让它这样出来），和库函数索引里 probe_block 那一行写上了
   //           needs（+27：这一格要哪一类工具、几级）。做不到的原因写在结果里，不占说明。对话线没变。
-  for (const [line, ceiling] of [['work', 57_800], ['talk', 29_200]] as const) {
+  //   fill_area 也能指定朝向之后：干活线实际 56,663、上限 56,600 → 56,800（+131，fill_area 的 blockMeta，说明指到 place_blocks）。对话线没变。
+  //           以上几次合进 main 以后（图纸看图、任务书、等待、朝向、fill_area 朝向）：干活线实际 57,772、上限 58,000；对话线实际 29,039、上限 29,200。
+  for (const [line, ceiling] of [['work', 58_000], ['talk', 29_200]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))

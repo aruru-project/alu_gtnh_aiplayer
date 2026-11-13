@@ -651,6 +651,18 @@ describe('任务类工具', () => {
     assert.equal(bad.content, 'Invalid arguments for place_blocks: blocks[0].blockMeta must be <= 15')
   })
 
+  it('fill_area 也可以说放下去要是哪个 meta（一整排朝向相同的楼梯、横放的原木）：blockMeta 原样交给身体，给了它不给 meta 时不替它填 0；两个都不给的照旧是 0', async (t) => {
+    const s = setup(t)
+    await s.run('fill_area', { x1: 0, y1: 70, z1: 0, x2: 8, y2: 70, z2: 0, item: 'minecraft:spruce_stairs', blockMeta: 6 })
+    await s.run('fill_area', { x1: 0, y1: 64, z1: 2, x2: 4, y2: 64, z2: 2, item: 'minecraft:log', meta: 1, blockMeta: 5 })
+    await s.run('fill_area', { x1: 0, y1: 64, z1: 4, x2: 4, y2: 64, z2: 4, item: 'minecraft:planks' })
+    const tasks = s.game.callsOf('task.start').map((p) => p.task as Record<string, unknown>)
+    assert.deepEqual(tasks.map((t) => [t.meta, t.blockMeta]), [[undefined, 6], [1, 5], [0, undefined]])
+    assert.equal(Object.hasOwn(tasks[0]!, 'meta'), false)
+    const bad = await s.run('fill_area', { x1: 0, y1: 64, z1: 4, x2: 4, y2: 64, z2: 4, item: 'minecraft:log', blockMeta: 16 })
+    assert.equal(bad.content, 'Invalid arguments for fill_area: blockMeta must be <= 15')
+  })
+
   it('放方块的结果：跳过的原因是一整句话时每种一行、不被截断，写着几格、在哪；放下去了但朝向不对的也列出来；一格没放上的也这样说', async (t) => {
     const s = setup(t)
     // 测试服上身体给的原样（一格没处点、一格楼梯要 /9）

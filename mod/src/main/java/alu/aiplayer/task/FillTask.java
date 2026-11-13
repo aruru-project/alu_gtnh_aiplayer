@@ -24,7 +24,11 @@ public final class FillTask extends AreaTask {
 
     private final int x1, y1, z1, x2, y2, z2;
     private final String shape;
-    private final ItemFilter item;
+    private ItemFilter item;
+    /** The meta every block must come out with (which way stairs or logs face), or -1 for any. */
+    private final int want;
+    /** Whether the item's variant was left to the bot and is still to be chosen (with {@link #want}). */
+    private boolean open;
     private int stage;
     private List<int[]> targets;
     private List<int[]> deferred = new ArrayList<>();
@@ -50,6 +54,9 @@ public final class FillTask extends AreaTask {
             throw new IllegalArgumentException("shape must be solid, hollow or walls");
         }
         item = new ItemFilter(J.reqStr(params, "item"), J.i(params, "meta", -1), -1);
+        want = J.i(params, "blockMeta", -1);
+        if (J.has(params, "blockMeta") && (want < 0 || want > 15)) throw new IllegalArgumentException("blockMeta is 0 to 15");
+        open = want >= 0 && item.meta < 0;
     }
 
     private boolean inShape(int x, int y, int z) {
@@ -100,7 +107,11 @@ public final class FillTask extends AreaTask {
             return;
         }
         if (current != null) {
-            Act a = placeCell(current[0], current[1], current[2], item);
+            if (open) {
+                open = false;
+                if (!chooseVariant(current)) return;
+            }
+            Act a = placeCell(current[0], current[1], current[2], item, want);
             if (a == Act.BUSY || a == Act.FAILED) return;
             if (a == Act.NEED_MATERIAL) {
                 int missing = targets.size() + deferred.size() + 1;
@@ -112,7 +123,7 @@ public final class FillTask extends AreaTask {
                 startSupply(want, "out of " + item.label() + "; " + missing + " more needed", detail);
                 return;
             }
-            if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], "unreachable");
+            if (a == Act.UNREACHABLE) skip(current[0], current[1], current[2], why(current[0], current[1], current[2], "unreachable"));
             if (a == Act.OK) progressSinceDeferral = true;
             else if (!gaveUp.contains(key(current[0], current[1], current[2]))) deferred.add(current);
             progressDone = placed;
@@ -124,13 +135,48 @@ public final class FillTask extends AreaTask {
                 deferred = new ArrayList<>();
                 progressSinceDeferral = false;
             } else {
-                for (int[] d : deferred) skip(d[0], d[1], d[2], "nothing to place against");
+                for (int[] d : deferred) skip(d[0], d[1], d[2], why(d[0], d[1], d[2], "nothing to place against"));
                 deferred.clear();
                 stage = 2;
                 return;
             }
         }
         current = takeNearest(targets, true);
+    }
+
+    /**
+     * The blocks must come out as {@link #want} and the variant of the item was not given: the one whose clicks can
+     * give that meta (judged at the first cell). False, the task failed, when no variant can.
+     */
+    private boolean chooseVariant(int[] cell) {
+        net.minecraft.block.Block b = alu.aiplayer.act.Orientation.blockOf(item.item);
+        if (b == null || alu.aiplayer.act.Orientation.rule(b) == alu.aiplayer.act.Orientation.Rule.UNKNOWN) return true;
+        World w = bot.player().worldObj;
+        int d = alu.aiplayer.act.Orientation.damageFor(w, cell[0], cell[1], cell[2], item.item, want);
+        if (d < 0) {
+            int plain;
+            try {
+                plain = alu.aiplayer.act.Orientation.placedMeta(item.item, 0);
+            } catch (Throwable t) {
+                plain = 0;
+            }
+            java.util.Set<Integer> can = alu.aiplayer.act.Orientation.allOutcomes(
+                alu.aiplayer.act.Orientation.rule(b),
+                alu.aiplayer.act.Orientation.ways(w, cell[0], cell[1], cell[2], b, plain));
+            fail(
+                "invalid",
+                "no variant of " + item.id
+                    + " can come out as /"
+                    + want
+                    + " ("
+                    + item.id
+                    + ":0 comes out as "
+                    + alu.aiplayer.act.Orientation.metas(can)
+                    + ")");
+            return false;
+        }
+        item = new ItemFilter(item.id, d, -1);
+        return true;
     }
 
     @Override
