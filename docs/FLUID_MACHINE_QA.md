@@ -25,7 +25,7 @@
 ## 还没证明、仍有限制
 
 - 没有证据锁定 f26 当时那只容器的真实内容；这不是对原操作缺陷的确认。
-- 零投料模式的 rounds 是期望取回数量的换算，不是批次所有权或生产完成证明。外送、进入观察前已完成的加工不倒推补算。外送箱不会被此模式自动取货，取回不足会显式显示。
+- 零投料模式的 rounds 是期望取回数量的换算，不是批次所有权或生产完成证明。外送、进入观察前已完成的加工不倒推补算。外送箱不会被此模式自动取货；非 leave 的收货目标没取齐，空闲/超时均失败并保留短缺明细。
 - 有界取货只用于这次的零投料观察路径；其他旧 `withdraw`/有投料 `process` 的“整组取出再退多余”没有在这批声称修好，应另案处理。没有直接改槽、绕事件或扔地捡回。
 - 非 GT 机器不支持零投料观察；多方块观察和跨多个输出总线尚未实机验收。标准单机之外的 NEI 特殊计算、并行及中途动态改变配方未作全面实机覆盖。
 - 该脚本不会替代真人模型规划验收。
@@ -44,3 +44,14 @@
 - `/tmp/aiplayer-fluid-machine-gW8xUR/`：真实锭模错配方拒绝、多方块未知参数通过。
 
 每个目录都有 transcript、真实大脑日志和 `logs/runs/routine-*.jsonl`。脚本支持 `--only-process`、`--only-limit`、`--only-wrong`，只重跑相关场景，不反复跑整套。
+
+## 追加审查：观察停止不等于收货完成
+
+主控指出首版两处观察停止仍调用 done：虽有 requestedOutputsCollected:false，机器空闲或超时且 expect 未取齐时仍会发成功任务。追加修复统一收尾：非 leave 的 expect 目标未齐，以 invalid 失败，增加 missingOutputs 和 stopReason（machine_idle / wait_limit / pickup_limited）；保留已取回 outputs。expect 为空的纯观察、leave 快照继续允许 done。
+
+换输出总线前先保存 pickupLimited（连同该总线坐标），最后仍没补齐就按保存的原因失败，避免换 trip 丢掉证据后重试。其他总线补齐时可成功；跨多总线仍未实机验收。
+
+定向实机 `node test/live-fluid-machine.ts --only-shortfall`：
+- 修前 `/tmp/aiplayer-fluid-machine-HI8mGq/`：已有 1 片、请求 2 片，取到 1 仍给 done，目标检查失败。
+- 修后 `/tmp/aiplayer-fluid-machine-yGxyMJ/`：相同场景 failed，outputs 1、missingOutputs 1、stopReason machine_idle；请求 63 片限时 5 秒，failed、实际取 8、缺 55、stopReason wait_limit；无 expect 纯观察和 leave 快照仍 done，均不冒认生产完成。
+- 只跑新增目标场景及 fluid-machine/controls/recipes 相关测试、typecheck、gradle build，均通过，测试服已正常停止；没有再跑整套实机场景或 npm 全套。日志 `/tmp/aip-fluid2/shortfall-*.log`。

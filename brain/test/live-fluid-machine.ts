@@ -1,5 +1,5 @@
 // f26/f27/f29: real brain + scripted local models + this worktree's GTNH test server.
-// node test/live-fluid-machine.ts [--only-process | --only-limit | --only-wrong]
+// node test/live-fluid-machine.ts [--only-process | --only-limit | --only-wrong | --only-shortfall]
 // Selectors skip already verified cases; each selected case gets fresh, powered fixtures.
 // Uses a disposable platform at (10,100,10); no real model credentials or production ports.
 import assert from 'node:assert/strict'
@@ -101,6 +101,40 @@ await call('close_screen'); return 'PASS f26-${name}';`)
     await game.screenClick(BOT, { slot: mould.slot, shift: true })
     await game.screenClose(BOT)
   }
+  if (process.argv.includes('--only-shortfall')) {
+    await stageSolidifier(144)
+    await until('one existing plate', async () => (await game.worldContainers(solidifier, { radius: 1 })).containers?.some((c) => c.x === 12 && c.items?.some((i) => i.meta === 17880 && i.count === 1)), 5000)
+    await execute('f27-idle-shortfall', `${prelude}
+const p=await tool('process_items',{machine:${JSON.stringify(solidifier)},recipe:208950,rounds:2,moldInside:true,wait:10});
+const r=p.data.result;
+check(!p.ok,'idle machine with only one of two requested plates was called done: '+p.text);
+check(r.outputs.some(x=>x.meta===17880&&x.count===1),'lost partial collection');
+check(r.missingOutputs.some(x=>x.meta===17880&&x.count===1),'missing count not reported');
+check(r.stopReason==='machine_idle'&&r.requestedOutputsCollected===false,'idle shortfall reason missing');
+return 'PASS f27-idle-shortfall';`)
+    await stageSolidifier(9072)
+    await execute('f27-timeout-shortfall', `${prelude}
+const p=await tool('process_items',{machine:${JSON.stringify(solidifier)},recipe:208950,rounds:63,moldInside:true,wait:5});
+const r=p.data.result;
+check(!p.ok,'timeout with incomplete collection was called done: '+p.text);
+const got=r.outputs.filter(x=>x.meta===17880).reduce((n,x)=>n+x.count,0);
+const missing=r.missingOutputs.filter(x=>x.meta===17880).reduce((n,x)=>n+x.count,0);
+check(got>0&&got<63&&got+missing===63,'partial and missing quantities inconsistent');
+check(r.stopReason==='wait_limit'&&r.timedOut===true&&r.requestedOutputsCollected===false,'timeout reason missing');
+return 'PASS f27-timeout-shortfall';`)
+    // No collection goal: idle observation is allowed to finish. leave is a snapshot, not goal completion.
+    await stageSolidifier(0)
+    await execute('f27-observe-without-goal', `${prelude}
+const p=await call('process_items',{machine:${JSON.stringify(solidifier)},inputs:[],wait:5});
+check(p.data.result.observedExisting===true&&p.data.result.outputs.length===0,'not pure observation');
+return 'PASS f27-observe-without-goal';`)
+    await stageSolidifier(9072)
+    await execute('f27-leave-snapshot', `${prelude}
+const p=await call('process_items',{machine:${JSON.stringify(solidifier)},recipe:208950,rounds:63,moldInside:true,leave:true});
+check(p.data.result.startedByTask===false&&p.data.result.outputs.length===0,'leave collected or claimed its own batch');
+check(p.data.result.requestedOutputsCollected===false,'snapshot claimed collection complete');
+return 'PASS f27-leave-snapshot';`)
+  } else {
   // Solidifier with 63 rounds worth of rubber and a resident plate mould; machine already runs before process_items.
   if (!process.argv.includes('--only-limit') && !process.argv.includes('--only-wrong')) {
   await stageSolidifier(9072)
@@ -173,6 +207,7 @@ await call('close_screen');return 'PASS f27-wrong-recipe';`)
   assert.match(multi.unavailable ?? '', /parallel.*amperage/)
   assert.equal(multi.ticks, undefined)
   fs.appendFileSync(transcript, `\nMULTIBLOCK: ${JSON.stringify(multi)}\n`)
+  }
   console.log('All selected live fluid/machine checks passed')
 } finally {
   await game.taskCancel(BOT).catch(() => undefined)

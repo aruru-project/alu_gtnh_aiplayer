@@ -677,6 +677,7 @@ public final class ProcessTask extends Task {
     private JsonArray existingOutputs = new JsonArray();
     private boolean observationStopped;
     private JsonObject pickupLimited;
+    private String observationStopReason;
 
     private JsonArray outputContents() {
         Kinds held = new Kinds();
@@ -723,29 +724,37 @@ public final class ProcessTask extends Task {
             fail("invalid", "the existing machine recipe does not make the expected items; no inputs or circuit were changed; observed: " + kindsText(making));
             return;
         }
+        timedOut = waited > limitTicks;
+        observationStopped = timedOut || idle > (multi ? START_WAIT_MULTI : START_WAIT);
         if (stage == 12) {
             ContainerTrip.Status st = trip.tick();
             if (st == ContainerTrip.Status.WORKING) return;
             outputs = gained();
             if (st == ContainerTrip.Status.FAILED) { fail(trip); return; }
+            // Preserve the first blocked pickup before moving to another bus (which replaces trip).
+            // A later bus may satisfy the goal, but it must not hide why earlier stock could not be taken.
+            if (trip.session.pickupLimited && pickupLimited == null) {
+                pickupLimited = new JsonObject();
+                pickupLimited.addProperty("minimum", trip.session.smallestPickup);
+                pickupLimited.addProperty("wanted", trip.session.wantedPickup);
+                int[] where = unloadAt.get(unloadIndex);
+                pickupLimited.add("container", J.pos(where[0], where[1], where[2]));
+            }
             if (++unloadIndex < unloadAt.size() && !stillExpected().isEmpty()) {
                 collectObserved();
                 return;
             }
-            if (trip.session.pickupLimited && !stillExpected().isEmpty()) {
-                pickupLimited = new JsonObject();
-                pickupLimited.addProperty("minimum", trip.session.smallestPickup);
-                pickupLimited.addProperty("wanted", trip.session.wantedPickup);
-                fail("invalid", "cannot collect the requested count without taking extra: this output slot's smallest native pickup is "
-                    + trip.session.smallestPickup + ", but only " + trip.session.wantedPickup
-                    + " more were requested. That stack was left untouched; outputs lists only what was actually collected");
+            if (pickupLimited != null && !stillExpected().isEmpty()) {
+                observationStopReason = "pickup_limited";
+                fail("invalid", "cannot collect the requested count without taking extra: an output slot's smallest native pickup was "
+                    + J.i(pickupLimited, "minimum", 0) + ", but only " + J.i(pickupLimited, "wanted", 0)
+                    + " more were requested there. That stack was left untouched; outputs lists only what was actually collected; still missing: "
+                    + kindsText(missingOutputs()));
                 return;
             }
-            if (observationStopped || stillExpected().isEmpty()) { done(); return; }
+            if (observationStopped || stillExpected().isEmpty()) { finishObservation(); return; }
             stage = 11;
         }
-        timedOut = waited > limitTicks;
-        observationStopped = timedOut || idle > (multi ? START_WAIT_MULTI : START_WAIT);
         if (leave && (sawWorking || existingOutputs.size() > 0)) {
             // Observation only: no "left/started" success flag or circuit watch for somebody else's processing.
             leftState = Machines.describe(te);
@@ -760,8 +769,33 @@ public final class ProcessTask extends Task {
             stage = 12;
         } else if (observationStopped) {
             fluidsAfter = fluidState();
-            done();
+            finishObservation();
         }
+    }
+
+    private JsonArray missingOutputs() {
+        JsonArray missing = new JsonArray();
+        for (ItemFilter f : stillExpected()) {
+            JsonObject item = Names.describe(new ItemStack(f.item, f.count, Math.max(0, f.meta)));
+            if (f.meta < 0) item.remove("meta");
+            missing.add(item);
+        }
+        return missing;
+    }
+
+    /** Completing the observation is not the same thing as completing a requested collection. */
+    private void finishObservation() {
+        outputs = gained();
+        if (!leave && !expect.isEmpty() && !stillExpected().isEmpty()) {
+            observationStopReason = timedOut ? "wait_limit" : "machine_idle";
+            fail("invalid", "observation stopped " + (timedOut ? "at the wait limit" : "because the machine is idle")
+                + " before the requested outputs were collected; still missing: " + kindsText(missingOutputs())
+                + ". outputs lists what was actually collected; no inputs, circuit or mould were changed");
+            return;
+        }
+        // A later output bus supplied the goal despite an earlier slot's pickup limit.
+        pickupLimited = null;
+        done();
     }
 
     private void collectObserved() {
@@ -817,14 +851,9 @@ public final class ProcessTask extends Task {
                 o.has("name") ? o.get("name")
                     .getAsString() : "")
                 .append(" [")
-                .append(
-                    o.get("id")
-                        .getAsString())
-                .append(':')
-                .append(
-                    o.get("meta")
-                        .getAsInt())
-                .append(']');
+                .append(o.get("id").getAsString());
+            if (o.has("meta")) sb.append(':').append(o.get("meta").getAsInt());
+            sb.append(']');
         }
         return sb.toString();
     }
@@ -1117,7 +1146,12 @@ public final class ProcessTask extends Task {
             o.add("observedMade", made.toJson());
             if (making != null) o.add("making", making);
             if (timedOut) o.addProperty("timedOut", true);
-            if (before != null && !expect.isEmpty()) o.addProperty("requestedOutputsCollected", stillExpected().isEmpty());
+            if (before != null && !expect.isEmpty()) {
+                JsonArray missing = missingOutputs();
+                o.addProperty("requestedOutputsCollected", missing.size() == 0);
+                o.add("missingOutputs", missing);
+            }
+            if (observationStopReason != null) o.addProperty("stopReason", observationStopReason);
             if (leftState != null) o.add("machine", leftState);
             if (fluidsAfter != null) o.add("fluids", fluidsAfter);
             o.addProperty("note", "No inputs were added and no circuit or mould was changed. This task observed existing processing, not a batch it started. existingOutputs were present on arrival; observedRounds/observedMade are only completions seen while watching, not ownership or proof of the requested number of rounds. outputs are the expected items actually collected (including any already present), at most the requested counts."

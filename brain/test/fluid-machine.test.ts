@@ -57,6 +57,13 @@ it('fluid recipe with resident mould sends zero added inputs and exactly the req
   assert.doesNotMatch(observed.join('\n'), /finished 63 round/)
 })
 
+it('an observation shortfall retains collected items and says how many are missing and why it stopped', () => {
+  const text = processResultLines({ observedExisting: true, alreadyWorking: false, existingOutputs: [{ id: GT, meta: 17880, count: 1 }], outputs: [{ id: GT, meta: 17880, count: 1 }], observedRounds: 0, observedMade: [], requestedOutputsCollected: false, missingOutputs: [{ id: GT, meta: 17880, count: 1 }], stopReason: 'machine_idle' }).join('\n')
+  assert.match(text, /actually collected:.*"count":1/)
+  assert.match(text, /requested counts collected: false/)
+  assert.match(text, /still missing:.*"count":1.*observation stopped: machine_idle/)
+})
+
 it('querying MV adds the game-calculated NEI prediction without rewriting the base recipe', async (t) => {
   const s = setup(t)
   s.game.handlers['recipe.overclock'] = () => ({ ticks: 16, eut: 32, scope: 'standard electric 1 A', source: 'installed GregTech calculator' })

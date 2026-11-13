@@ -1825,6 +1825,7 @@ export function processResultLines(result: Record<string, unknown>, params?: Rec
       `already working on arrival: ${result.alreadyWorking === true}; outputs already present: ${compactJson(result.existingOutputs, 4000)}`,
       `completions observed (not proof of ownership or requested rounds): ${count(result.observedRounds)}; observed products: ${compactJson(result.observedMade, 4000)}`,
       `actually collected: ${compactJson(result.outputs, 4000)}${typeof result.requestedOutputsCollected === 'boolean' ? `; requested counts collected: ${result.requestedOutputsCollected}` : ''}`,
+      ...(Array.isArray(result.missingOutputs) && result.missingOutputs.length > 0 ? [`still missing: ${compactJson(result.missingOutputs, 4000)}${typeof result.stopReason === 'string' ? `; observation stopped: ${result.stopReason}` : ''}`] : []),
       ...(result.pickupLimited ? [`pickup limited by native whole/half clicks: ${compactJson(result.pickupLimited)}; that stack was left untouched, requested count NOT collected`] : []),
       ...(typeof result.note === 'string' ? [result.note] : []),
       ...(result.timedOut === true ? ['wait limit reached; any ongoing recipe remains in the machine'] : []),
