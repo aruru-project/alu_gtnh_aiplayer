@@ -8,7 +8,7 @@
 - deposit_items（存）、withdraw_items（取）的容器位置，还有别的任务的 supply（取材料）和 dropoff（卸货），都既可以是箱子也可以是抽屉。
 - 在两个容器之间来回搬（要跑几趟就跑几趟，你背包里原有的东西不动）：库函数 haul_items。它不在工具清单里，会开任务，所以写在例程里：start_routine 的程序里 `await tool("haul_items", { from: { x, y, z }, to: { x, y, z }, items: [{ id, meta, count }] })`（不给 items 就是全搬）。只搬一两样时，自己先 withdraw_items 再 deposit_items 也一样。
 - 你身上的背包这类包也能存取（deposit_items / withdraw_items 给 bag），做法在 inventory 手册里。
-- 机器也能当容器，哪个 mod 的都行（界面里有“放不进东西的格子”的就是机器）：deposit_items 是放进它能放东西的格子；withdraw_items 默认只从产物格取，给 fromInputs:true 才取其余格子里的（主人留在里面的模具、模头、燃料）。那是主人摆好的：用完放回原处，他下次用时它得在那里。
+- 能打开容器并识别槽位的机器，也能用存取任务：deposit_items 放进它能接受东西的格子；withdraw_items 默认只从识别出的产物格取，给 fromInputs:true 才取其余格子里的。特殊槽位未识别时不能保证分对，先看 open_screen 的实际槽位；不能仅凭“有格子不收物品”就判断整台机器的用法。主人留在里面的模具、模头、燃料，用完放回原处。
 - 存取任务对付不了的界面（要放进指定的某一格、要一格格点的）：open_screen 打开自己点，见 screens 手册。
 
 # 覆盖板里的东西
@@ -19,7 +19,7 @@
 
 # 流体罐
 - 装流体的方块（机器的罐、储罐、超级缸）里现在有什么：inspect_block、list_containers、find_machines 的结果里写着，每个罐是 多少 of 容量 mB 什么流体 [fluid 内部名]，空罐写 empty。
-- 流体不是物品，不能直接存取；能查它怎么来、能做什么（crafting 手册的“流体”）。
+- deposit_items / withdraw_items 搬的是物品，不是直接抽罐里的流体。流体可以用支持它的容器装取、机器自动输出或已有管道转移；界面有可操作的流体格时，用 click_slot 拿容器、use_control 点流体格。具体支持与容量看工具结果，见 crafting、screens、gregtech 手册。
 
 # 看仓库
 - **主人说的是某个地方的东西，就以那个地方为中心看，不要以自己为中心。**下面这几个工具（还有 look_around、find_blocks、find_machines）默认看的是你身边；给 at（一个坐标）就改成看那个地方的周围。“我这边的箱子”：先 get_player_position 找到主人，at 给他的位置。“抽屉管理器旁边那个箱子”：at 给抽屉管理器的坐标。你站在几十格外时，以自己为中心什么也看不到，这不等于没有。

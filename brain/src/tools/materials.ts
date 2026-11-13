@@ -468,7 +468,7 @@ export const totalMaterials: Tool = {
         : top.note?.undecided
           ? 'it has more than one recipe and none is chosen (below)'
           : top.note?.onlyOther
-            ? `only ${top.note.onlyOther.join(', ')} gives it, which is nothing you can run`
+            ? `only ${top.note.onlyOther.join(', ')} lists it, with no supported crafting or machine step for this planner; other player actions may apply`
             : 'nothing in the recipe book makes it'
       head.push(`Nothing is expanded: no recipe is settled for the target itself — ${why}.`)
     }
@@ -510,7 +510,7 @@ export const totalMaterials: Tool = {
         const groups: [string, (t: TreeThing<Note>) => boolean, (t: TreeThing<Note>) => string][] = [
           ['taken ready-made, by the base\'s methods', (t) => t.note?.ready !== undefined, (t) => ` [${t.note!.ready!.key}]`],
           ['nothing in the recipe book makes it', (t) => !t.loop && !t.unfit && !t.cut && !t.note?.onlyOther && !t.note?.ready, () => ''],
-          ['only made by something you cannot run', (t) => t.note?.onlyOther !== undefined, (t) => ` (${t.note!.onlyOther!.join(', ')})`],
+          ['no supported crafting/machine step to expand; other player actions may apply', (t) => t.note?.onlyOther !== undefined, (t) => ` (${t.note!.onlyOther!.join(', ')})`],
           ['its recipe needs something above it in the tree (loop)', (t) => t.loop !== undefined, (t) => ` (#${t.loop!.recipe.ref} ${t.loop!.recipe.handler.name} needs ${t.loop!.needs === t ? 'itself' : thingName(t.loop!.needs, nm, false)})`],
           ['the recipe given for it does not make it', (t) => t.unfit !== undefined, (t) => ` (#${t.unfit!.ref})`],
           ['below the cut-off', (t) => t.cut === true, () => ''],
@@ -647,6 +647,7 @@ export const totalMaterials: Tool = {
       }
       return { recipe: r.ref, way: r.handler.name, rounds: t.rounds, makes, needed: t.needed, ...rule }
     }
+    // 保留旧数据原因码 "cannot run" 兼容调用方；只指规划器没有可展开步骤，不是全局玩家能力判断。
     const why = (t: TreeThing<Note>): string => (t.note?.undecided ? 'undecided' : t.note?.ready ? 'ready' : t.loop ? 'loop' : t.unfit ? 'unfit' : t.cut ? 'limit' : t.note?.onlyOther ? 'cannot run' : 'none')
     const steps = jobs.map(jobData)
     return {

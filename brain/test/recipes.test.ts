@@ -21,7 +21,7 @@ const NOW = 1_800_000_000_000
 /** 汇总的开头和结尾：按加工方式一种种列，说的是事实，不排好坏、不推荐。 */
 const LISTED = "Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:"
 const FACTS_ONLY =
-  '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.'
+  '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. For supported crafting or machine recipes, use the # number with craft_item or process_items; other pages may require different player actions.'
 /** 游戏标成“NEI 里显示用”的配方后面带的标记是什么意思：结果里说一次。 */
 const NEI_DISPLAY =
   '[NEI display]: the game marks these recipes as shown in NEI for display — the machine finds what to make its own way, not by matching this exact line (a cutting machine shows one line per coolant). They are what a player sees in NEI for the thing, and process_items can try them like any other.'
@@ -425,7 +425,7 @@ describe('身体读不全状态的机器：照配方册认，可以试', () => {
     const lines = (await s.run('find_machines')).content.split('\n')
     assert.match(lines[0]!, /^3 GregTech machine\(s\) within 32 blocks of you, nearest first\./)
     assert.deepEqual(lines.slice(-2), [
-      "1 other machine(s) within 32 blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read, but process_items works on them the way a player would — inputs in, wait, products out):",
+      "1 other machine(s) within 32 blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read. process_items can try normal container operations; special slots or controls may require separate actions or support):",
       '- (14,64,-4) "熔炉": runs "烧制" recipes; AUTOMATED: Hopper at (14,65,-4) feeds or drains it',
     ])
     // 和身体认识的机器查的是同一片地方

@@ -1218,7 +1218,7 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
   const totalMachines = Math.max(count(total.machines), machines.length)
   const totalSmelting = Math.max(count(total.smelting), smelted.length)
   if (totalCrafting + totalMachines + totalSmelting === 0) {
-    return `No recipe is known for ${what}: it is not crafted, made in a machine or smelted (it may be mined, dropped or traded). Look for it in storage or ask the owner.`
+    return `No recipe is known for ${what} in this index: it lists no crafting, machine or smelting route. Other sources such as mining, drops or trading may apply; this is not a check of whether you can obtain it.`
   }
   const lines: string[] = [`Recipes for ${what}: ${totalCrafting} crafting, ${totalMachines} machine, ${totalSmelting} smelting.`]
 
@@ -1240,7 +1240,7 @@ export function formatRecipes(r: RecipeFindResult, opts: { machineFilter?: strin
 
   if (machines.length > 0) {
     lines.push(
-      'Machine recipes (run one with process_items on a single-block machine that find_machines lists with this recipe type and at least this tier; you cannot supply fluids):',
+      'Machine recipes (process_items uses a compatible machine with the required tier; fluids must already be available or supplied through supported containers/controls, or its multiblock fluids input; see the crafting manual):',
     )
     for (const m of machines) lines.push(`- ${machineRecipeText(m)}`)
   }
@@ -1652,7 +1652,7 @@ type GuideLine = (m: { x?: number; y?: number; z?: number; id?: string; meta?: n
 function otherMachineLines(others: readonly OtherMachineLine[], radius: number, guide?: GuideLine): string[] {
   if (others.length === 0) return []
   const lines = [
-    `${others.length} other machine(s) within ${Math.min(radius, 32)} blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read, but process_items works on them the way a player would — inputs in, wait, products out):`,
+    `${others.length} other machine(s) within ${Math.min(radius, 32)} blocks (other mods' machines, furnaces: recognised from the recipe book; their state cannot be read. process_items can try normal container operations; special slots or controls may require separate actions or support):`,
   ]
   for (const o of others.slice(0, 30)) {
     const auto = attachedText(o.attached)

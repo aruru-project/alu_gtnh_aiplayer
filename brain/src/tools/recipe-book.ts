@@ -498,7 +498,7 @@ export function isHandCraft(recipe: Recipe): boolean {
  *   craft   手工合成；
  *   machine GregTech 的机器配方（身体读得懂这类机器的状态；同一个材料件矿辞名下的东西放哪个都行）；
  *   device  别的机器（原版熔炉、别的 mod 的机器）：配方页列着做它的机器，身体照玩家的办法用——把原料点进去、等、取产物；
- *   other   没有机器可言的页（信息页、图表、世界里发生的事）：它做不了。
+ *   other   没有受支持的合成/机器映射的页：不能直接按编号交给合成或加工任务，不判断其他玩家动作是否能完成。
  */
 export function wayKind(h: RecipeHandler): 'machine' | 'device' | 'craft' | 'other' {
   if (h.grid) return 'craft'
@@ -514,17 +514,17 @@ export const isMachineWay = (h: RecipeHandler): boolean => wayKind(h) === 'machi
 const UNREAD_NOTE = 'its state cannot be read (not a machine the body knows): it is used the way a player would — inputs in, wait, products out; if it needs fuel or anything else the recipe does not list, add that to "inputs"'
 
 interface Availability {
-  /** 排序用：0 现在做得了，1 手工工具配方（有机器时不用），2 有机器但现在不行，3 附近没有，4 它操作不了。 */
+  /** 排序用：0 已通过所列条件，1 手工工具配方/可尝试，2 有机器但现在不行，3 附近没有，4 不能直接按编号合成/加工。 */
   rank: number
   text: string
 }
 
 export function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings): Availability {
   const kind = wayKind(h)
-  if (kind === 'other') return { rank: 4, text: 'you cannot run this yourself (no machine or crafting grid does it: it is an information page, or something that happens in the world)' }
+  if (kind === 'other') return { rank: 4, text: 'not directly executable by craft_item or process_items: this page has no supported crafting or machine mapping; it may describe information or a world interaction. Other player actions may apply; their support is not determined here' }
   if (kind === 'craft') {
     const craftable = recipes.filter(isHandCraft)
-    if (craftable.length === 0) return { rank: 4, text: 'needs a bigger crafting grid than you can use' }
+    if (craftable.length === 0) return { rank: 4, text: 'not supported by craft_item: this page has no readable recipe fitting its crafting grid' }
     // 手工工具配方（锤子敲板那类）：照实说它要工具，用不用由模型定
     const tools = craftable.every((r) => r.in.some(isTool))
     const hand = tools ? 'uses hand tools (may wear out or be consumed)' : ''
@@ -1074,7 +1074,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
   }
   if (anyFake) lines.push(FAKE_FACT)
   lines.push(
-    '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. A recipe is used by its # number: craft_item or process_items.',
+    '"CAN RUN NOW" states only this: a machine of that kind stands in the base, has power, is not switched off, and its tier (voltage, coil heat) covers the least demanding of those recipes. "CAN TRY" is a machine whose state cannot be read. Neither says anything about the ingredients (find_in_storage) or about which way is better; a fluid a recipe needs is stated in brackets after it, from what the machine\'s tanks or input hatches hold now. For supported crafting or machine recipes, use the # number with craft_item or process_items; other pages may require different player actions.',
   )
   return { content: lines.join('\n'), ...carveData, keepWhole: true }
 }

@@ -1508,7 +1508,7 @@ describe('物品、配方、库存、合成', () => {
     const text = (await s.run('find_recipes', { id: GT, meta: 27305 })).content
     assert.match(text, /^Crafting by hand: no recipe\. craft_item cannot make it\.$/m)
     // 机器配方现在能自己做：说明用哪个工具、挑什么样的机器
-    assert.match(text, /^Machine recipes \(run one with process_items on a single-block machine that find_machines lists with this recipe type and at least this tier/m)
+    assert.match(text, /^Machine recipes \(process_items uses a compatible machine with the required tier; fluids must already be available or supplied through supported containers\/controls, or its multiblock fluids input/m)
     assert.match(text, /^- Lathe, LV \(16 EU\/t\), 2\.5 s: 1× gregtech:gt\.metaitem\.01\/26305 "Steel Bolt" -> 1× gregtech:gt\.metaitem\.01\/27305 "Steel Screw"$/m)
     assert.match(
       text,
@@ -1527,7 +1527,7 @@ describe('物品、配方、库存、合成', () => {
     const s = setup(t)
     s.game.handlers['recipe.find'] = () => ({ item: { id: 'IC2:itemRecipePart', meta: 12, name: 'Shaft (Refined Iron)' }, crafting: [], machines: [], total: { crafting: 0, machines: 0, smelting: 0 } })
     const raw = await s.run('find_recipes', { id: 'IC2:itemRecipePart', meta: 12 })
-    assert.match(raw.content, /^No recipe is known for IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)".*Look for it in storage or ask the owner\.$/)
+    assert.match(raw.content, /^No recipe is known for IC2:itemRecipePart\/12 "Shaft \(Refined Iron\)" in this index:.*this is not a check of whether you can obtain it\.$/)
     // 真实 mod 的原话里说的是协议方法名 item.search；模型只认得工具名
     s.game.handlers['recipe.find'] = () => {
       throw new BridgeError('not_found', 'no such item is known: gregtech:gt.metaitem.01/0; item.search finds ids')

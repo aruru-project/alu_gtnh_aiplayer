@@ -377,7 +377,7 @@ interface ProcessInput {
 export const processItems: Tool = {
   name: 'process_items',
   description:
-    'Run one batch through a machine (task): walks to it, puts the inputs in, waits for it to finish and takes the products out — the task holds you at the machine for as long as it runs. With leave: true it ends once the machine has started: the products stay inside, to be taken out later with withdraw_items. Any block with a screen that takes items works (a multiblock: give its controller). Give "recipe" and "rounds", or "inputs" yourself. Everything it consumes, and a mold or shape, must be in your inventory; the programmed circuit is set on the machine, not carried. Details: crafting manual.',
+    'Run one batch through a machine (task): walks to it, puts the inputs in, waits for it to finish and takes the products out — the task holds you at the machine for as long as it runs. With leave: true it ends once the machine has started: the products stay inside, to be taken out later with withdraw_items. Tries readable container slots; special interfaces may need other actions (a multiblock: give its controller). Give "recipe" and "rounds", or "inputs" yourself. Everything it consumes, and a mold or shape, must be in your inventory; the programmed circuit is set on the machine, not carried. Details: crafting manual.',
   inputSchema: obj(
     {
       machine: pos('Position of the machine (a multiblock: its controller).'),
@@ -409,7 +409,7 @@ export const processItems: Tool = {
       if (!recipe) return fail(`There is no recipe #${i.recipe}. Take the number from find_recipes (numbers change when the recipe book is re-exported).`)
       // 哪个 mod 的机器都行：身体认识的（GregTech）读得懂状态，别的照玩家的办法把原料点进去、等、取产物
       if (!isMachineWay(recipe.handler)) {
-        return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a machine recipe${recipe.handler.grid ? ': make it with craft_item' : ': no machine does it'}.`)
+        return fail(`Recipe #${i.recipe} is a "${recipe.handler.name}" recipe, not a machine recipe${recipe.handler.grid ? ': make it with craft_item' : ': this page has no supported machine mapping; other player actions may apply'}.`)
       }
       const plan = processPlan(recipe, i.rounds ?? 1, await carriedOrNone(ctx), ctx.packdata?.items, i.moldInside === true)
       // 自己另给了 inputs 的，放进去的是几轮就说不准了
