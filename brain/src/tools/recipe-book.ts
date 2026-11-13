@@ -527,7 +527,7 @@ export function availability(h: RecipeHandler, recipes: readonly Recipe[], aroun
     if (craftable.length === 0) return { rank: 4, text: 'needs a bigger crafting grid than you can use' }
     // 手工工具配方（锤子敲板那类）：照实说它要工具，用不用由模型定
     const tools = craftable.every((r) => r.in.some(isTool))
-    const hand = tools ? 'uses hand tools (not used up, but they wear)' : ''
+    const hand = tools ? 'uses hand tools (may wear out or be consumed)' : ''
     if (craftable.some(fitsPocketGrid)) return { rank: tools ? 1 : 0, text: ['CAN CRAFT NOW in your own 2x2 grid (no table needed)', hand].filter(Boolean).join('; ') }
     if (around.error) return { rank: tools ? 1 : 0, text: ['by hand at a crafting table', hand].filter(Boolean).join('; ') }
     const table = around.tables[0]
@@ -613,7 +613,7 @@ export function recipeLine(recipe: Recipe, nm: Namer, opts: LineOptions = {}): s
   const needs: string[] = []
   for (const s of slots) {
     if (circuitOf(s) !== undefined) needs.push(`programmed circuit ${circuitOf(s)}`)
-    else if (isTool(s)) needs.push(`tool ${slotName(s, nm, true)}${have(s)} (worn, not used up)`)
+    else if (isTool(s)) needs.push(`tool ${slotName(s, nm, true)}${have(s)} (may wear out or be consumed)`)
     else if (s.n === 0) needs.push(`${slotName(s, nm, true)}${have(s)} (stays in the machine, not used up)`)
   }
   let line = `#${recipe.ref}: ${parts.join(' + ') || 'nothing consumed'}${needs.length > 0 ? `; needs ${needs.join(', ')}` : ''} → ${outputText(recipe, nm)}`

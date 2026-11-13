@@ -416,8 +416,10 @@ export interface RecipeIngredient {
   example?: { id: string; meta?: number }
   /** 有几种物品都行（多于一种时才有）。 */
   alternatives?: number
-  /** 锤子、扳手、锉刀这类：做的时候要带着，只磨损不消耗。 */
+  /** 矿辞登记的合成工具提示，不保证不消耗或耐久够做完整批。 */
   tool?: boolean
+  /** 身上某个匹配物声明有合成返还；可能磨损、变成别的物品或损坏消失。 */
+  containerItem?: boolean
   /** recipe.find 给了 bot 时，它身上现有的数量。 */
   have?: number
 }

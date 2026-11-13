@@ -593,8 +593,8 @@ it('端到端：大脑带着本地配方册启动，主人指着箱子说“做�
   // 看做法：配方册里的那一条，附近有工作台
   assert.deepEqual(seen(2).split('\n').slice(0, 3), [
     "直升机桨叶 [adventurebackpack:backpackComponent/6] can be made 1 way(s), 1 recipe(s) in all. Listed by way of making, in the recipe book's order; what stands in your base for each way is stated, nothing is ranked or recommended:",
-    '1. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (not used up, but they wear)',
-    '   #0: 4× 精炼铁柄 [IC2:itemRecipePart/12] + 3× any screwSteel (e.g. 钢螺丝 [gregtech:gt.metaitem.01/27305]); needs tool any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22]) (worn, not used up) → 1× 直升机桨叶 — needs a crafting table (3x3)',
+    '1. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (may wear out or be consumed)',
+    '   #0: 4× 精炼铁柄 [IC2:itemRecipePart/12] + 3× any screwSteel (e.g. 钢螺丝 [gregtech:gt.metaitem.01/27305]); needs tool any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22]) (may wear out or be consumed) → 1× 直升机桨叶 — needs a crafting table (3x3)',
   ])
   // 合成任务：摆法是大脑照配方册给的，不是让服务器自己找配方
   const craft = bridge.requestsOf('task.start').map((r) => r.task as Record<string, unknown>).find((task) => task.type === 'craft')!

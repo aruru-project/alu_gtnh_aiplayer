@@ -361,7 +361,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 ```
 
 - `ingredients` 里一项要么是一种确定的物品（`id`、`meta`；没有 `meta` 表示任何变体都行），要么是一个矿辞名（`ore`，任何登记在这个名字下的物品都行，`example` 是其中一种）。
-- `tool:true` 是锤子、扳手、锉刀这类：做的时候要带着，只磨损不消耗。
+- `tool:true` 是矿辞登记的合成工具提示，不保证不消耗或耐久够用。`containerItem:true`（给了 bot 且身上匹配物声明有合成返还时）表示可能返还东西；可能是磨损工具、不同物品（满桶变空桶），也可能耗尽消失。不会为查询调用真正消耗/返还物品的钩子。
 - `have` 是给了 `bot` 时它身上现有的数量。
 - 有些 mod 自己的配方类型读不出原料，标 `unreadable:true`；这种配方 `craft` 做不了。
 - `tier` 是按 `eut` 算出的最低机器等级。
@@ -638,11 +638,11 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 同一层连着 3 格走不到时，这一层剩下的格子不再一格一格去试，记在 `skipped` 的 `"not tried: 3 cells of this layer in a row were unreachable"` 下（原来和真的走不到的一起记成 `unreachable`）：换个地方站（比如先走到屋顶上）再跑一次，它们多半够得着。
   - 重新执行会接着做：已经对的格子不动。
 - **`craft`**：
-  - 材料和工具必须已经在身上（先 `withdraw`）。不够时以 `no_material` 失败，`error.detail.missing` 列出每样还差多少（格式同 `recipe.find` 的 `ingredients`）。
+  - 材料和工具必须已经在身上（先 `withdraw`）。普通耗材按整批轮数预检；实际携带物声明有合成返还时只预检一轮，不按矿辞名字猜可复用次数。每轮只摆一份、正常点击取一次成品，走游戏真实的消耗/返还逻辑，取回余料后重新检查下一轮。工具中途损坏或返回了不能再用的物品时以 `no_material` 停下，`error.detail.missing` 列下一轮差多少（格式同 `recipe.find` 的 `ingredients`），已经做出的保留、材料和耐久不恢复；开工前普通耗材不足时列整批差多少。
   - `2x2` 的配方在随身的合成格里做，不用走动。`3x3` 的要工作台：`table` 给位置，不给就找 48 格内最近的（原版工作台、匠魂的合成站都行；任何界面里有 3×3 合成格的方块都可以用 `table` 指定）。附近没有时以 `invalid` 失败。
   - 合成站的格子里有别人摆的东西时不动它，以 `invalid` 失败。
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
-  - 结果 `{crafted, item:{id,meta,name}, freeSlots}`，`crafted` 是多出来的个数。
+  - 结果 `{crafted, rounds, requestedRounds, item:{id,meta,name}, freeSlots}`，`crafted` 是实际取出的成品个数，`rounds` 是已经完成的轮数，`requestedRounds` 是本批要求的轮数；运行中、失败和取消时也保留已完成的部分。`count` 仍是成品数，向上取整成轮数（每轮出 2 个、要 5 个就做 3 轮共 6 个）。
   - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。**东西照给的格子原样摆**：右边、下面空着的列和行不算（所以只占左上 2×2 的配方不用工作台），左边、上面空着的列和行是配方的一部分，不会被挪掉。这个包里的黏土铸模全是“空白黏土铸模 + 小刀”，出哪一种只看两样东西各摆在哪一格。
     只占左上 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
 - **随身的包当容器**：`deposit` / `withdraw` 的 `container` 除了位置，还可以写 `{item:{id,meta?}}`，意思是“我身上这件东西右键打开的那个界面”（背包一类）。不用走路；包本身不会被放进它自己里面；`deposit` 这样用时必须列出 `items`。身上没有这件东西是 `no_material`；右键后没有界面打开是 `invalid`。

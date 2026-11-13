@@ -34,7 +34,7 @@ const STORE: Box[] = [
 const UNDECIDED_HEAD =
   'NOT DECIDED, {n} (each has more than one recipe and nothing says which: no recipe named, no base method for it or its kind of part, no way of the base\'s order makes it). Nothing below them is expanded. To decide one: set_base_method (it is then followed every time), or name a recipe # in "recipes" for this once; then run this again.'
 const LOOKED = 'Storage was looked into (3 container(s); what you carry counts too): what is there is used first, only what is short is expanded. Things inside machines do not count.'
-const TABLE = 'CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (not used up, but they wear)'
+const TABLE = 'CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (may wear out or be consumed)'
 const AUTOMATED = "In containers with pipes or hoppers attached (your owner's automation: not counted, not used): 64× 钢锭 [gregtech:gt.metaitem.01/11305] ((14,64,-4), Hopper)"
 const SCREWDRIVER = 'any craftingToolScrewdriver (e.g. 螺丝刀 [gregtech:gt.metatool.01/22])'
 

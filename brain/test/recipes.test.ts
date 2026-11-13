@@ -140,8 +140,8 @@ describe('find_recipes：查做法', () => {
       '   #2: 3× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel) → 2× 钢板 (per 钢板: 1.5 钢锭) — LV (16 EU/t), 2.8 s',
       // 手工锤：2 锭出 1 板；照实说它要工具（用不用由它自己定）
       // 要工作台的只说附近有、离多远，不给坐标（合成时由 craft_item 找离它那时最近的）
-      '3. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (not used up, but they wear)',
-      '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (worn, not used up) → 1× 钢板 — needs a crafting table (3x3)',
+      '3. 有序合成 — 1 recipe(s); CAN CRAFT NOW (needs a crafting table, the nearest 2 block(s) from here; craft_item walks to the nearest one by itself); uses hand tools (may wear out or be consumed)',
+      '   #3: 2× any ingotSteel (e.g. 钢锭 [gregtech:gt.metaitem.01/11305]); needs tool any craftingToolHardHammer (e.g. 锤 [gregtech:gt.metatool.01/12]) (may wear out or be consumed) → 1× 钢板 — needs a crafting table (3x3)',
       '4. 合金炉 — 1 recipe(s); no such machine within 112 blocks',
       '   #4: 2× 钢锭 [gregtech:gt.metaitem.01/11305] (or any ingotSteel); needs 模具（板） [gregtech:gt.metaitem.01/32301] (stays in the machine, not used up) → 1× 钢板 — LV (30 EU/t), 5.6 s',
       // 板材切割机：游戏把这一页的配方都标成“NEI 里显示用的”。它照常列出来，行尾带着标记
@@ -250,7 +250,7 @@ describe('find_recipes：查做法', () => {
     assert.deepEqual(s.lastTask(), { type: 'process', machine: { x: 14, y: 64, z: -4 }, inputs: [{ id: 'gregtech:gt.metaitem.01', meta: 2032, count: 4 }], expect: [{ id: 'minecraft:iron_ingot', meta: 0, count: 4 }] })
     s.game.handlers['world.containers'] = () => ({ containers: [], total: 0, offset: 0 })
     // 要工具的配方照实说要工具
-    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks; uses hand tools (not used up, but they wear)')
+    assert.equal((await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })).content.split('\n')[1], '1. 有序合成 — 1 recipe(s); needs a crafting table: none within 88 blocks; uses hand tools (may wear out or be consumed)')
 
     s.game.connected = false
     const offline = (await s.run('find_recipes', PLATE)).content.split('\n')

@@ -1478,7 +1478,7 @@ describe('物品、配方、库存、合成', () => {
     assert.equal(/in English/.test((await s.run('find_item', { query: 'helicopter' })).content), false)
   })
 
-  it('find_recipes：合成配方里每样原料写清要几个、是确定的物品还是“任何 xxx”、是不是只磨损的工具、身上已有几个', async (t) => {
+  it('find_recipes：合成配方里每样原料写清要几个、是确定的物品还是“任何 xxx”、工具可能耗尽、身上已有几个', async (t) => {
     const s = setup(t)
     s.game.handlers['recipe.find'] = () => BLADES_RECIPES
     const res = await s.run('find_recipes', { id: 'adventurebackpack:backpackComponent', meta: 6 })
@@ -1492,7 +1492,7 @@ describe('物品、配方、库存、合成', () => {
     assert.match(text, /^  - 3× any screwSteel \(ore name; e\.g\. gregtech:gt\.metaitem\.01\/27305 "Steel Screw"\), you carry 2$/m)
     assert.match(
       text,
-      /^  - 1× any craftingToolScrewdriver \(ore name, 6 kinds fit; e\.g\. gregtech:gt\.metatool\.01\/22 "Single Use Screwdriver"\) \[tool: must be in your inventory, wears but is not used up\], you carry 0$/m,
+      /^  - 1× any craftingToolScrewdriver \(ore name, 6 kinds fit; e\.g\. gregtech:gt\.metatool\.01\/22 "Single Use Screwdriver"\) \[tool: must be carried; may wear out or be consumed\], you carry 0$/m,
     )
     assert.match(text, /^  - 2× minecraft:wool \(any meta\) "Wool \(any variant\)", you carry 5$/m)
     // 读不出原料的配方如实说明 craft_item 做不了

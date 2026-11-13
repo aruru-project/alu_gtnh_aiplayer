@@ -147,11 +147,7 @@ public final class Layout {
         return cell instanceof List ? book.oreName(cell) : null;
     }
 
-    /**
-     * Hammers, wrenches, files and the like: the recipe wears them but gives them back. A cell is one when its ore
-     * name is a crafting tool's, or (a grid laid out by name) when the item itself is registered as one, or the game
-     * hands the item back after a craft.
-     */
+    /** A display hint from ore registration, not a promise of reuse or enough durability for a batch. */
     public boolean isTool(Object cell) {
         String ore = ore(cell);
         if (ore != null) return ore.startsWith("craftingTool");
@@ -163,12 +159,6 @@ public final class Layout {
             for (int id : OreDictionary.getOreIDs(probe)) {
                 if (OreDictionary.getOreName(id)
                     .startsWith("craftingTool")) return true;
-            }
-            if (probe.getItem()
-                .hasContainerItem(probe)) {
-                ItemStack back = probe.getItem()
-                    .getContainerItem(probe);
-                return back != null && back.getItem() == probe.getItem();
             }
         } catch (Throwable ignored) {}
         return false;
@@ -225,6 +215,17 @@ public final class Layout {
         return n;
     }
 
+    /** Does an actual carried alternative declare a crafting remainder? Never invoke getContainerItem here. */
+    public static boolean carriedReturnsItem(EntityPlayerMP p, Object cell) {
+        for (ItemStack s : p.inventory.mainInventory) {
+            if (!matches(cell, s)) continue;
+            // Some mods update a stack while checking usability, so even this query gets a copy.
+            ItemStack probe = s.copy();
+            if (probe.getItem().hasContainerItem(probe)) return true;
+        }
+        return false;
+    }
+
     public JsonObject ingredientJson(Object cell, int count) {
         JsonObject o = new JsonObject();
         o.addProperty("count", count);
@@ -257,7 +258,10 @@ public final class Layout {
         JsonArray out = new JsonArray();
         for (Object kind : distinct()) {
             JsonObject o = ingredientJson(kind, cellsWanting(kind));
-            if (p != null) o.addProperty("have", carried(p, kind));
+            if (p != null) {
+                o.addProperty("have", carried(p, kind));
+                if (carriedReturnsItem(p, kind)) o.addProperty("containerItem", true);
+            }
             out.add(o);
         }
         return out;

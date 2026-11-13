@@ -21,7 +21,6 @@ import com.google.gson.JsonObject;
 
 import alu.aiplayer.act.ContainerSession;
 import alu.aiplayer.act.Inventories;
-import alu.aiplayer.act.ItemFilter;
 import alu.aiplayer.bot.Bot;
 import alu.aiplayer.craft.Layout;
 import alu.aiplayer.craft.RecipeBook;
@@ -65,7 +64,7 @@ public final class CraftTask extends Task {
     private int stage;
     private int wait;
     private int cell;
-    private int before;
+    private int completedRounds;
     private int made;
     private String failCode, failMessage;
     private JsonObject failDetail;
@@ -167,6 +166,20 @@ public final class CraftTask extends Task {
                 stage = 5;
                 break;
             case 5:
+                // A remainder may stay in the grid or go to the inventory, and need not be the same item.
+                // Take it back exactly as the game returned it before selecting the next round's inputs.
+                if (failCode == null && completedRounds < crafts) {
+                    returnIngredients(p);
+                    if (!gridIsEmpty()) {
+                        failCode = "inventory_full";
+                        failMessage = "no room to take back the crafting remainders";
+                    } else if (checkMaterials(p, false)) {
+                        cell = 0;
+                        wait = 0;
+                        stage = 3;
+                        break;
+                    }
+                }
                 emptyGrid(p);
                 stage = 6;
                 break;
@@ -211,19 +224,11 @@ public final class CraftTask extends Task {
             }
             crafts = (wanted + expected.stackSize - 1) / expected.stackSize;
         }
-        JsonArray missing = new JsonArray();
-        for (Object kind : layout.distinct()) {
-            int need = layout.cellsWanting(kind) * needPerCell(kind);
-            int have = Layout.carried(p, kind);
-            if (have < need) missing.add(layout.ingredientJson(kind, need - have));
-        }
-        if (missing.size() > 0) {
-            JsonObject detail = new JsonObject();
-            detail.add("missing", missing);
-            fail("no_material", "the inventory lacks ingredients for " + crafts + " round(s) of this recipe", detail);
+        progressTotal = crafts;
+        if (!checkMaterials(p, true)) {
+            fail(failCode, failMessage, failDetail);
             return;
         }
-        before = expected == null ? 0 : Inventories.count(p, outputFilter());
         if (!layout.needsTable()) {
             if (p.openContainer != p.inventoryContainer) bot.conn()
                 .closeWindow();
@@ -251,13 +256,26 @@ public final class CraftTask extends Task {
         stage = 1;
     }
 
-    /** A tool sits in its cell for every round; anything else is used up once per round. */
-    private int needPerCell(Object kind) {
-        return layout.isTool(kind) ? 1 : crafts;
-    }
-
-    private ItemFilter outputFilter() {
-        return new ItemFilter(Names.itemId(expected.getItem()), Names.meta(expected), -1);
+    /**
+     * Plain consumables are needed for the whole batch. A real carried item with a container hook might return
+     * a tool, an empty bucket, or nothing when it breaks: only the actual craft can decide. Do not call that
+     * hook speculatively or multiply such an item by the batch size. Every later round checks its real inputs.
+     */
+    private boolean checkMaterials(EntityPlayerMP p, boolean batch) {
+        JsonArray missing = new JsonArray();
+        for (Object kind : layout.distinct()) {
+            int multiplier = batch && !Layout.carriedReturnsItem(p, kind) ? crafts : 1;
+            int need = layout.cellsWanting(kind) * multiplier;
+            int have = Layout.carried(p, kind);
+            if (have < need) missing.add(layout.ingredientJson(kind, need - have));
+        }
+        if (missing.size() == 0) return true;
+        failCode = "no_material";
+        failMessage = batch ? "the inventory lacks ingredients for this batch (returning items checked one round at a time)"
+            : "ingredients ran out after " + completedRounds + " of " + crafts + " round(s); missing for the next round";
+        failDetail = new JsonObject();
+        failDetail.add("missing", missing);
+        return false;
     }
 
     /** Finds the crafting grid and result slot of a screen. Returns false if it has none. */
@@ -320,7 +338,7 @@ public final class CraftTask extends Task {
             return;
         }
         Object kind = layout.cells[cell];
-        int need = needPerCell(kind);
+        int need = 1;
         int col = cell % layout.width, row = cell / layout.width;
         int target = gridSlots[row * gridWidth + col];
         stowCursor(p);
@@ -370,10 +388,7 @@ public final class CraftTask extends Task {
     private void takeResult(EntityPlayerMP p) {
         Slot result = grid.getSlot(resultSlot);
         ItemStack out = result.getStack();
-        if (expected == null && out != null) {
-            expected = out.copy();
-            before = Inventories.count(p, outputFilter());
-        }
+        if (expected == null && out != null) expected = out.copy();
         if (out == null || out.getItem() != expected.getItem() || Names.meta(out) != Names.meta(expected)) {
             failCode = "invalid";
             failMessage = "laid out as the recipe says, the grid gives "
@@ -381,11 +396,44 @@ public final class CraftTask extends Task {
                 + (expected == null ? "" : " instead of " + Names.displayName(expected));
             return;
         }
-        // Shift-click: the game repeats the craft for as long as the grid still holds the recipe.
-        grid.slotClick(resultSlot, 0, 1, p);
+        if (!canStow(p, out)) {
+            failCode = "inventory_full";
+            failMessage = "no room for the next crafting result";
+            return;
+        }
+        // A normal click takes exactly one round, with the game's own SlotCrafting consumption/container hooks.
+        // Shift-click can repeat unexpectedly when inputs are returned and can stop early when a tool breaks.
+        stowCursor(p);
+        grid.slotClick(resultSlot, 0, 0, p);
+        grid.detectAndSendChanges();
+        ItemStack taken = p.inventory.getItemStack();
+        if (taken == null) {
+            failCode = "invalid";
+            failMessage = "the crafting result could not be taken";
+            return;
+        }
+        made += taken.stackSize;
+        completedRounds++;
+        progressDone = completedRounds;
+        stowCursor(p);
+    }
+
+    private static boolean canStow(EntityPlayerMP p, ItemStack out) {
+        int left = out.stackSize;
+        for (ItemStack s : p.inventory.mainInventory) {
+            if (s == null) left -= Math.min(out.getMaxStackSize(), p.inventory.getInventoryStackLimit());
+            else if (s.isItemEqual(out) && ItemStack.areItemStackTagsEqual(s, out)) {
+                left -= Math.max(0, Math.min(s.getMaxStackSize(), p.inventory.getInventoryStackLimit()) - s.stackSize);
+            }
+            if (left <= 0) return true;
+        }
+        return false;
+    }
+
+    private void returnIngredients(EntityPlayerMP p) {
+        for (int n : gridSlots) if (grid.getSlot(n).getHasStack()) grid.slotClick(n, 0, 1, p);
         grid.detectAndSendChanges();
         stowCursor(p);
-        made = Inventories.count(p, outputFilter()) - before;
     }
 
     private void emptyGrid(EntityPlayerMP p) {
@@ -415,6 +463,8 @@ public final class CraftTask extends Task {
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
         o.addProperty("crafted", Math.max(0, made));
+        o.addProperty("rounds", completedRounds);
+        o.addProperty("requestedRounds", crafts);
         if (expected != null) {
             JsonObject item = new JsonObject();
             item.addProperty("id", Names.itemId(expected.getItem()));

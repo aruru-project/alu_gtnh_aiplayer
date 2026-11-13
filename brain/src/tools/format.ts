@@ -1157,7 +1157,8 @@ export function ingredientText(ing: RecipeIngredient | Record<string, unknown>):
       s = `${n}× ${eg || 'an item'} or a similar item${kinds ? ` (${kinds})` : ''}`
     }
   }
-  if (ing.tool === true) s += ' [tool: must be in your inventory, wears but is not used up]'
+  if (ing.tool === true) s += ' [tool: must be carried; may wear out or be consumed]'
+  if (ing.containerItem === true) s += ' [a carried item can return a crafting remainder; it may change or break]'
   if (typeof ing.have === 'number') s += `, you carry ${ing.have}`
   return s
 }
@@ -1281,8 +1282,9 @@ export function craftErrorLines(detail: Record<string, unknown>): string[] {
 
 /** craft 任务的结果：多出来几个什么、背包还剩几格。 */
 export function craftResultLines(result: Record<string, unknown>): string[] {
-  const { crafted, item, freeSlots, ...rest } = result
+  const { crafted, item, rounds, requestedRounds, freeSlots, ...rest } = result
   let line = `crafted ${isRecord(item) ? kindText(crafted, item) : String(crafted)}`
+  if (typeof rounds === 'number' && typeof requestedRounds === 'number') line += ` (${rounds} of ${requestedRounds} round(s))`
   if (typeof freeSlots === 'number') line += `, freeSlots ${freeSlots}`
   if (Object.keys(rest).length > 0) line += `, other: ${compactJson(rest, 200)}`
   return [line]
