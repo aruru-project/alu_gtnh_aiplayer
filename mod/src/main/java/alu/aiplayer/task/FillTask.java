@@ -34,6 +34,7 @@ public final class FillTask extends AreaTask {
     private List<int[]> deferred = new ArrayList<>();
     private boolean progressSinceDeferral;
     private int[] current;
+    private boolean noTargets;
 
     public FillTask(JsonObject params) {
         super("fill", params);
@@ -98,6 +99,7 @@ public final class FillTask extends AreaTask {
             nav.stop();
             targets = findTargets();
             progressTotal = targets.size();
+            noTargets = targets.isEmpty();
             phase = "placing";
             stage = 1;
             return;
@@ -182,6 +184,13 @@ public final class FillTask extends AreaTask {
     @Override
     protected boolean keepsBlock(int x, int y, int z) {
         return x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2 && inShape(x, y, z);
+    }
+
+    @Override
+    protected JsonObject summary() {
+        JsonObject o = super.summary();
+        if (noTargets) o.addProperty("placementNote", "no empty/replaceable cells in requested shape; existing blocks were left unchanged");
+        return o;
     }
 
     private List<int[]> findTargets() {

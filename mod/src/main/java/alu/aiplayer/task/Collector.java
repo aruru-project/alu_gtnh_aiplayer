@@ -55,6 +55,10 @@ public final class Collector {
         FMLCommonHandler.instance().bus().register(this);
     }
 
+    void maxDrop(int blocks) {
+        nav.maxDrop(blocks);
+    }
+
     /** The game's successful pickup event, not isDead (which also means merged, despawned, or someone else took it). */
     @SubscribeEvent
     public void pickedUp(PlayerEvent.ItemPickupEvent e) {
@@ -77,7 +81,7 @@ public final class Collector {
             nav.stop();
         }
         if (target != null && (!target.boundingBox.intersectsWith(box) || !hasRoomFor(p, target.getEntityItem()))) {
-            givenUp.put(target.getEntityId(), "left collection area or no room");
+            givenUp.put(target.getEntityId(), target.boundingBox.intersectsWith(box) ? "no room in inventory" : "left collection area");
             if (!target.boundingBox.intersectsWith(box)) disappeared++;
             target = null;
             nav.stop();
@@ -86,7 +90,13 @@ public final class Collector {
             target = nearest(p);
             if (target == null) {
                 if (disappeared > 0) return end("interrupted", "an item target disappeared without a confirmed pickup");
-                if (remaining().size() > 0) return end("unreachable", "items remain; see their positions and reasons");
+                JsonArray rest = remaining();
+                if (rest.size() > 0) {
+                    boolean allFull = true;
+                    for (com.google.gson.JsonElement e : rest) if (e.getAsJsonObject().get("capacity").getAsInt() > 0) allFull = false;
+                    return allFull ? end("inventory_full", "no inventory space for remaining items; free slots or compatible stacks, then collect again")
+                        : end("unreachable", "items remain; see their positions, capacity and reasons");
+                }
                 stop();
                 return false;
             }
@@ -161,12 +171,33 @@ public final class Collector {
             item.addProperty("x", e.posX);
             item.addProperty("y", e.posY);
             item.addProperty("z", e.posZ);
+            int capacity = capacity(p, s);
             String reason = givenUp.get(e.getEntityId());
-            if (reason == null) reason = hasRoomFor(p, s) ? "not collected" : "no room in inventory";
+            if (capacity == 0) reason = "no room in inventory";
+            else if (reason == null) reason = "not collected";
+            item.addProperty("capacity", capacity);
             item.addProperty("reason", reason);
+            if (capacity > 0 && (reason.startsWith("unreachable") || reason.startsWith("stuck"))) {
+                int x = net.minecraft.util.MathHelper.floor_double(e.posX);
+                int y = net.minecraft.util.MathHelper.floor_double(e.posY);
+                int z = net.minecraft.util.MathHelper.floor_double(e.posZ);
+                item.add("itemCell", blockCell(p.worldObj, x, y, z));
+                item.add("aboveItemCell", blockCell(p.worldObj, x, y + 1, z));
+            }
             out.add(item);
         }
         return out;
+    }
+
+    /** Local observations, not a prescription to dig: an item can fit where a two-block-tall player cannot. */
+    private static JsonObject blockCell(net.minecraft.world.World w, int x, int y, int z) {
+        JsonObject o = alu.aiplayer.util.J.pos(x, y, z);
+        if (!w.blockExists(x, y, z)) o.addProperty("loaded", false);
+        else {
+            o.addProperty("id", Names.blockId(w.getBlock(x, y, z)));
+            o.addProperty("meta", w.getBlockMetadata(x, y, z));
+        }
+        return o;
     }
 
     private EntityItem nearest(EntityPlayerMP p) {
@@ -188,16 +219,22 @@ public final class Collector {
     }
 
     static boolean hasRoomFor(EntityPlayerMP p, ItemStack stack) {
-        if (stack == null) return false;
+        return capacity(p, stack) > 0;
+    }
+
+    /** Space for this exact stack type/NBT right now; shared empty slots are not reserved per drop. */
+    static int capacity(EntityPlayerMP p, ItemStack stack) {
+        if (stack == null) return 0;
+        int room = 0;
+        int limit = Math.min(stack.getMaxStackSize(), p.inventory.getInventoryStackLimit());
         ItemStack[] inv = p.inventory.mainInventory;
         for (int i = 0; i < inv.length && i < alu.aiplayer.act.Inventories.CARRY_SLOTS; i++) {
             ItemStack s = inv[i];
-            if (s == null) return true;
-            if (s.getItem() == stack.getItem() && s.isStackable()
-                && s.stackSize < s.getMaxStackSize()
+            if (s == null) room += limit;
+            else if (s.getItem() == stack.getItem() && s.isStackable()
                 && s.getItemDamage() == stack.getItemDamage()
-                && ItemStack.areItemStackTagsEqual(s, stack)) return true;
+                && ItemStack.areItemStackTagsEqual(s, stack)) room += Math.max(0, limit - s.stackSize);
         }
-        return false;
+        return room;
     }
 }

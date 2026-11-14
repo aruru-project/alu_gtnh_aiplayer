@@ -605,6 +605,34 @@ describe('观察', () => {
 })
 
 describe('任务类工具', () => {
+  it('施工、拾取和定位把显式挖路/垫脚/落差选择交给身体', async (t) => {
+    const s = setup(t)
+    const options = { dig: true, climb: true, maxDrop: 1 }
+    const box = { x1: 0, y1: 64, z1: 0, x2: 1, y2: 65, z2: 1 }
+    await s.run('go_to', { x: 1, z: 1, ...options })
+    await s.run('collect_items', { x: 1, y: 64, z: 1, ...options })
+    await s.run('dig_blocks', { blocks: [{ x: 1, y: 64, z: 1 }], ...options })
+    await s.run('place_blocks', { blocks: [{ x: 1, y: 64, z: 1, item: 'minecraft:dirt' }], ...options })
+    await s.run('fill_area', { ...box, item: 'minecraft:dirt', ...options })
+    await s.run('clear_area', { ...box, ...options })
+    await s.run('flatten_area', { x1: 0, z1: 0, x2: 1, z2: 1, y: 64, ...options })
+    await s.run('build_blueprint', { name: 'hut', x: 0, y: 64, z: 0, ...options })
+    const requests = s.game.callsOf('task.start')
+    assert.equal(requests.length, 8)
+    for (const { task } of requests) {
+      const request = task as Record<string, unknown>
+      assert.equal(request.dig, true)
+      assert.equal(request.climb, true)
+      assert.equal(request.maxDrop, 1)
+    }
+  })
+
+  it('从当前站位点击方块的选择不会被工具吞掉', async (t) => {
+    const s = setup(t)
+    await s.run('use_item', { on: { x: 1, y: 64, z: 1 }, side: 'south', approach: 'current' })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'use', on: { x: 1, y: 64, z: 1 }, side: 'south', approach: 'current' })
+  })
+
   it('默认 replace，queue: true 时用 append 排到队尾', async (t) => {
     const s = setup(t)
     const a = await s.run('go_to', { x: 1, y: 64, z: 2 })
@@ -613,7 +641,7 @@ describe('任务类工具', () => {
     assert.match(a.content, /Task t1 \(goto\) started\./)
     assert.match(b.content, /Task t2 \(deposit\) added to the end of your queue/)
     assert.deepEqual(s.game.callsOf('task.start'), [
-      { bot: 'Alu', task: { type: 'goto', x: 1, y: 64, z: 2, yRange: 1, climb: false }, mode: 'replace' },
+      { bot: 'Alu', task: { type: 'goto', x: 1, y: 64, z: 2, yRange: 1, dig: false, climb: false, maxDrop: 3 }, mode: 'replace' },
       { bot: 'Alu', task: { type: 'deposit', container: { x: 5, y: 64, z: 5 }, keep: ['minecraft:torch'] }, mode: 'append' },
     ])
     assert.deepEqual(s.started, ['t1', 't2'])
@@ -629,8 +657,8 @@ describe('任务类工具', () => {
     assert.deepEqual(
       s.game.callsOf('task.start').map((p) => p.task),
       [
-        { type: 'goto', x: -60, z: -60, climb: false },
-        { type: 'place', blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:cobblestone', meta: 0 }], supply: [{ x: 5, y: 64, z: 5 }] },
+        { type: 'goto', x: -60, z: -60, dig: false, climb: false, maxDrop: 3 },
+        { type: 'place', blocks: [{ x: 1, y: 65, z: 1, item: 'minecraft:cobblestone', meta: 0 }], supply: [{ x: 5, y: 64, z: 5 }], dig: false, climb: false, maxDrop: 3 },
       ],
     )
   })
@@ -656,9 +684,9 @@ describe('任务类工具', () => {
     assert.deepEqual(
       s.game.callsOf('task.start').map((p) => p.task),
       [
-        { type: 'goto', x: -622, y: 73, z: 134, range: 0, yRange: 0, climb: false },
-        { type: 'goto', x: -622, y: 73, z: 134, yRange: 1, climb: false },
-        { type: 'goto', x: -576, y: 89, z: 97, range: 2, yRange: 2, climb: true, takeBack: true },
+        { type: 'goto', x: -622, y: 73, z: 134, range: 0, yRange: 0, dig: false, climb: false, maxDrop: 3 },
+        { type: 'goto', x: -622, y: 73, z: 134, yRange: 1, dig: false, climb: false, maxDrop: 3 },
+        { type: 'goto', x: -576, y: 89, z: 97, range: 2, yRange: 2, dig: false, climb: true, maxDrop: 3, takeBack: true },
       ],
     )
   })
@@ -786,8 +814,8 @@ describe('任务类工具', () => {
     await s.run('go_home', { name: 'base' })
     const tasks = s.game.callsOf('task.start').map((p) => p.task)
     assert.deepEqual(tasks, [
-      { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, fill: false, maxFillDepth: 2, dropoff: [{ x: 1, y: 65, z: 1 }] },
-      { type: 'fill', x1: 0, y1: 64, z1: 0, x2: 4, y2: 66, z2: 4, item: 'minecraft:cobblestone', shape: 'walls', meta: 0 },
+      { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, fill: false, maxFillDepth: 2, dropoff: [{ x: 1, y: 65, z: 1 }], dig: false, climb: false, maxDrop: 3 },
+      { type: 'fill', x1: 0, y1: 64, z1: 0, x2: 4, y2: 66, z2: 4, item: 'minecraft:cobblestone', shape: 'walls', meta: 0, dig: false, climb: false, maxDrop: 3 },
       { type: 'haul', from: { x: 1, y: 64, z: 1 }, to: { x: 9, y: 64, z: 9 }, items: [{ id: 'minecraft:iron_ingot', count: 64 }] },
       { type: 'follow', player: 'Steve', distance: 4, climb: false },
       { type: 'home', name: 'base' },
@@ -996,8 +1024,8 @@ describe('任务类工具', () => {
     assert.deepEqual(
       s.game.callsOf('task.start').map((p) => p.task),
       [
-        { type: 'clear', x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave' },
-        { type: 'flatten', x1: 0, z1: 0, x2: 3, z2: 3, y: 64, overflow: 'fail' },
+        { type: 'clear', x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'leave', dig: false, climb: false, maxDrop: 3 },
+        { type: 'flatten', x1: 0, z1: 0, x2: 3, z2: 3, y: 64, overflow: 'fail', dig: false, climb: false, maxDrop: 3 },
       ],
     )
     const bad = await s.run('clear_area', { x1: 0, y1: 60, z1: 0, x2: 3, y2: 62, z2: 3, overflow: 'void' })
@@ -1040,9 +1068,9 @@ describe('任务类工具', () => {
   it('collect_items 不给坐标时捡脚下周围，默认不挖不垫；也能明确允许挖路和垫块', async (t) => {
     const s = setup(t)
     await s.run('collect_items', { radius: 6 })
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'collect', x: 10, y: 64, z: -4, radius: 6, dig: false, climb: false })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'collect', x: 10, y: 64, z: -4, radius: 6, dig: false, climb: false, maxDrop: 3 })
     await s.run('collect_items', { x: -448, y: 61, z: 111, radius: 6, dig: true, climb: true })
-    assert.deepEqual(s.game.callsOf('task.start')[1]!.task, { type: 'collect', x: -448, y: 61, z: 111, radius: 6, dig: true, climb: true })
+    assert.deepEqual(s.game.callsOf('task.start')[1]!.task, { type: 'collect', x: -448, y: 61, z: 111, radius: 6, dig: true, climb: true, maxDrop: 3 })
   })
 
   it('任务被游戏拒绝时，模型看到错误码', async (t) => {
@@ -1162,7 +1190,7 @@ describe('图纸', () => {
     }
     assert.equal((await s.run('check_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })).isError, undefined)
     await s.run('build_blueprint', { name: 'cabin.schematic', x: 0, y: 64, z: 0 })
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'cabin', x: 0, y: 64, z: 0 })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'cabin', x: 0, y: 64, z: 0, dig: false, climb: false, maxDrop: 3 })
     const missing = await s.run('check_blueprint', { name: 'castle', x: 0, y: 64, z: 0 })
     assert.deepEqual([missing.isError, missing.content], [true, 'bad_request: there is no blueprint named "castle"; blueprint.list shows the ones there are (list_designs shows the blueprints on the server; a name is the file name without ".schematic".)'])
   })
@@ -1238,7 +1266,7 @@ describe('图纸', () => {
       {
         bot: 'Alu',
         task: {
-          type: 'blueprint', name: '02_Workshop_v3', x: -592, y: 63, z: 80,
+          type: 'blueprint', name: '02_Workshop_v3', x: -592, y: 63, z: 80, dig: false, climb: false, maxDrop: 3,
           x1: -592, x2: -561, z1: 80, z2: 111, y1: 63, y2: 68,
           skip: ['minecraft:carpet'], clear: ['natural', 'plants'],
           supply: [{ x: -600, y: 64, z: 70 }, { x: -598, y: 64, z: 70 }], dropoff: [{ x: -600, y: 64, z: 72 }], overflow: 'leave',
@@ -1248,7 +1276,7 @@ describe('图纸', () => {
     ])
     // 不给 clear 就不带 clear：身体那边不给就一块都不挖
     await s.run('build_blueprint', { name: 'hut', x: 20, y: 65, z: 20 })
-    assert.deepEqual(s.game.callsOf('task.start')[1], { bot: 'Alu', task: { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20 }, mode: 'replace' })
+    assert.deepEqual(s.game.callsOf('task.start')[1], { bot: 'Alu', task: { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20, dig: false, climb: false, maxDrop: 3 }, mode: 'replace' })
     assert.deepEqual(s.started, ['t1', 't2'])
   })
 
@@ -1259,7 +1287,7 @@ describe('图纸', () => {
     assert.deepEqual(s.game.callsOf('blueprint.check'), [{ name: 'hut', x: 20, y: 65, z: 20, bot: 'Alu' }])
     assert.match(check.content, /No clear list was given/)
     await s.run('build_blueprint', { name: 'hut', x: 20, y: 65, z: 20, only: [], skip: [], clear: [] })
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20 })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'blueprint', name: 'hut', x: 20, y: 65, z: 20, dig: false, climb: false, maxDrop: 3 })
   })
 
   it('图纸超过 64×64 列、没有这张图纸时，身体的原话转给模型', async (t) => {
@@ -2061,7 +2089,7 @@ describe('工具结果', () => {
     const s = setup(t)
     const ok = await s.run('go_to', { x: '12', y: '64', z: '-3' })
     assert.equal(ok.isError, undefined)
-    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'goto', x: 12, y: 64, z: -3, yRange: 1, climb: false })
+    assert.deepEqual(s.game.callsOf('task.start')[0]!.task, { type: 'goto', x: 12, y: 64, z: -3, yRange: 1, dig: false, climb: false, maxDrop: 3 })
     const bad = await s.run('go_to', { x: 'north', y: 64.5, z: 1 })
     assert.equal(bad.isError, true)
     assert.match(bad.content, /x must be a number; y must be an integer/)

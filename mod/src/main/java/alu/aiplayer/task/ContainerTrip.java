@@ -22,6 +22,7 @@ final class ContainerTrip {
     private boolean frontChecked;
     private final Bot bot;
     private final int x, y, z;
+    private alu.aiplayer.nav.NavWorld.BreakRule travelRule = Rules.NATURAL_ONLY;
     String failCode;
     String failMessage;
     com.google.gson.JsonObject failDetail;
@@ -71,6 +72,14 @@ final class ContainerTrip {
         frontChecked = true;
     }
 
+    /** Area work's permissions also apply while fetching material or unloading. */
+    void travel(boolean dig, int maxDrop) {
+        travelRule = dig ? Rules.NATURAL_ONLY : Rules.NO_BREAK;
+        nav.terrain(dig, false);
+        if (maxDrop >= 0) nav.maxDrop(maxDrop);
+        nav.go(Goal.reach(x, y, z, false), travelRule, false);
+    }
+
     Status tick() {
         if (!arrived) {
             Navigator.Status st = nav.tick();
@@ -86,7 +95,7 @@ final class ContainerTrip {
                 frontChecked = true;
                 net.minecraft.tileentity.TileEntity te = bot.player().worldObj.getTileEntity(x, y, z);
                 if (Drawers.is(te) && !Drawers.inFront(bot.player(), x, y, z, Drawers.front(te))) {
-                    nav.go(Goal.reachFacing(x, y, z, Drawers.front(te)), Rules.NATURAL_ONLY, false);
+                    nav.go(Goal.reachFacing(x, y, z, Drawers.front(te)), travelRule, false);
                     arrived = false;
                     return Status.WORKING;
                 }

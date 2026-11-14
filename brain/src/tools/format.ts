@@ -925,6 +925,8 @@ const TERRAIN_KEYS = [
   'climbingBlocksStanding',
   'olderClimbingBlocksTakenDown',
   'climbingBlockDropsNotPickedUp',
+  'remainingDrops',
+  'collectionProblem',
   'climbingBlocksLeft',
   'climbingBlocksLeftStanding',
   'dugOnTheWay',
@@ -1033,7 +1035,7 @@ function cameOutLines(result: Record<string, unknown>): string[] {
  * 各自成行（坐标和整句的原因不能被截断）。
  */
 export function areaResultLines(result: Record<string, unknown>): string[] {
-  const { placedItems, skipped, skippedExamples, cameOutDifferent, cameOutExamples, ...rest } = result
+  const { placedItems, skipped, skippedExamples, cameOutDifferent, cameOutExamples, remainingDrops, collectionProblem, ...rest } = result
   const from = placedFromText(placedItems)
   for (const key of TERRAIN_KEYS) delete rest[key]
   return [compactJson(withLocalNames(trimTaskResult(rest)), 600), ...(from ? [from] : []), ...skippedLines(result), ...cameOutLines(result), ...terrainLines(result)]
@@ -1053,14 +1055,21 @@ function collectResultLines(result: Record<string, unknown>): string[] {
   const lines = head.length > 0 ? [head.join(', ')] : []
   if (Array.isArray(result.remaining)) {
     delete rest.remaining
-    if (result.remaining.length > 0) lines.push('remaining (not picked up):')
-    for (const item of result.remaining.filter(isRecord)) {
-      const entity = typeof item.entityId === 'number' ? ` (entity ${item.entityId})` : ''
-      lines.push(`- ${kindText(item.count, item)} at ${pointText(item)}${entity}: ${String(item.reason ?? 'reason not reported')}`)
-    }
+    lines.push(...remainingItemLines(result.remaining, 'remaining (not picked up):'))
   }
   if (Object.keys(rest).length > 0) lines.push(`other: ${compactJson(withLocalNames(rest), 300)}`)
   return lines
+}
+
+function remainingItemLines(items: unknown, title: string): string[] {
+  if (!Array.isArray(items) || items.length === 0) return []
+  return [title, ...items.filter(isRecord).map((item) => {
+    const entity = typeof item.entityId === 'number' ? ` (entity ${item.entityId})` : ''
+    const capacity = typeof item.capacity === 'number' ? `; inventory can accept ${item.capacity} of this exact type now (shared space)` : ''
+    const cells = [item.itemCell, item.aboveItemCell].filter(isRecord).map((c) => `${cellText(c)} ${c.loaded === false ? 'not loaded' : `${String(c.id)}/${String(c.meta)}`}`)
+    const nearby = cells.length > 0 ? `; item cell / above: ${cells.join(', ')}` : ''
+    return `- ${kindText(item.count, item)} at ${pointText(item)}${entity}: ${String(item.reason ?? 'reason not reported')}${capacity}${nearby}`
+  })]
 }
 
 function hasTerrainLines(result: Record<string, unknown>): boolean {
@@ -1077,6 +1086,8 @@ function cellsText(v: unknown, describe: (c: Record<string, unknown>) => string 
 
 export function terrainLines(result: Record<string, unknown>): string[] {
   const lines: string[] = []
+  if (typeof result.collectionProblem === 'string') lines.push(`drop collection: ${result.collectionProblem}`)
+  lines.push(...remainingItemLines(result.remainingDrops, 'drops still in the work/cleanup area (not necessarily all from this task):'))
   if (Array.isArray(result.climbingBlocks) && result.climbingBlocks.length > 0) {
     const all = result.climbingBlocks.filter(isRecord)
     const total = all.length + count(result.climbingBlocksNotListed)
@@ -1095,7 +1106,7 @@ export function terrainLines(result: Record<string, unknown>): string[] {
   }
   if (count(result.notTakenBack) > 0) lines.push(`not taken back (out of reach from where you stopped, or under your feet): ${count(result.notTakenBack)}`)
   if (count(result.climbingBlocksLeftStanding) > 0) {
-    const at = cellsText(result.climbingBlocksLeft)
+    const at = cellsText(result.climbingBlocksLeft, (c) => `${cellText(c)}${typeof c.reason === 'string' ? ` (${c.reason})` : ''}`)
     lines.push(`climbingBlocksLeftStanding ${count(result.climbingBlocksLeftStanding)}${at ? ` at ${at}` : ''}`)
   }
   if (Array.isArray(result.dugOnTheWay) && result.dugOnTheWay.length > 0) {

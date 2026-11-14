@@ -48,6 +48,8 @@ public final class UseTask extends Task {
     private final float[] hit;
     private final int times;
     private final int every;
+    private final boolean currentPosition;
+    private int approachTicks;
 
     private Navigator nav;
     private int stage;
@@ -126,6 +128,9 @@ public final class UseTask extends Task {
         if ((side >= 0 || hit != null) && on == null) throw new IllegalArgumentException("side and hit belong to a block: give on {x,y,z}");
         times = Math.max(1, Math.min(MOST_CLICKS, J.i(params, "times", 1)));
         every = Math.max(1, Math.min(40, J.i(params, "every", 4)));
+        String approach = J.str(params, "approach", "walk");
+        if (!approach.equals("walk") && !approach.equals("current")) throw new IllegalArgumentException("approach must be walk or current");
+        currentPosition = approach.equals("current");
     }
 
     private static int side(JsonObject params) {
@@ -149,6 +154,7 @@ public final class UseTask extends Task {
             if (!withinTravel(on[0], on[2])) return;
             phase = "going there";
             nav = new Navigator(bot);
+            nav.interaction(currentPosition);
             net.minecraft.world.World w = bot.player().worldObj;
             liquid = !left && w.blockExists(on[0], on[1], on[2]) && w.getBlock(on[0], on[1], on[2])
                 .getMaterial()
@@ -156,12 +162,12 @@ public final class UseTask extends Task {
             // A face is clicked from the side it looks at.
             Goal near = side >= 2 ? Goal.reachFacing(on[0], on[1], on[2], side) : Goal.reach(on[0], on[1], on[2], false);
             Goal goal;
-            if (left) {
+            if (left && !currentPosition) {
                 goal = near;
             } else {
                 // A player clicks what it sees: somewhere the face (a liquid: the liquid) is in sight, within reach.
-                goal = alu.aiplayer.act.Sight.seeing(w, on[0], on[1], on[2], side, liquid);
-                if (!liquid) fallbackGoal = near;
+                goal = alu.aiplayer.act.Sight.seeing(w, on[0], on[1], on[2], side, liquid, hit);
+                if (!liquid && !currentPosition) fallbackGoal = near;
             }
             nav.go(goal, Rules.NATURAL_ONLY, false);
         }
@@ -394,10 +400,15 @@ public final class UseTask extends Task {
         switch (stage) {
             case 0: {
                 if (nav != null && !arrived) {
+                    if (++approachTicks > 20 * 60) {
+                        fail("stuck", "use approach timed out after 60 seconds of game ticks; no click made. Flight equipment is unchanged and may keep consuming fuel");
+                        return;
+                    }
                     Navigator.Status st = nav.tick();
                     if (st == Navigator.Status.WORKING) return;
                     if (st == Navigator.Status.FAILED) {
-                        if (fallbackGoal != null) {
+                        if (fallbackGoal != null && "unreachable".equals(nav.failCode)
+                            && (p.onGround || p.isInWater() || p.isOnLadder())) {
                             // Nowhere it is seen from: within reach will do, as before; the result says so.
                             faceUnseen = true;
                             nav.go(fallbackGoal, Rules.NATURAL_ONLY, false);
@@ -411,6 +422,10 @@ public final class UseTask extends Task {
                         lookPoint = alu.aiplayer.act.Sight.lookPoint(p, on[0], on[1], on[2], side, hit, liquid);
                         if (lookPoint == null && !faceUnseen) {
                             // Off the middle of its cell the look differs from the one planned: to the middle once.
+                            if (currentPosition) {
+                                fail("out_of_reach", "the requested point is no longer visible from the current position; no click made");
+                                return;
+                            }
                             if (!recentredForSight) {
                                 recentredForSight = true;
                                 recentring = 10;

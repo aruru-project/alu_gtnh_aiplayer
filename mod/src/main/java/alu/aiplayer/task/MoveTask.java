@@ -17,16 +17,23 @@ abstract class MoveTask extends Task {
     protected Navigator nav;
     /** Whether filler blocks may be stacked to climb on the way (the task's {@code climb}, true when not given). */
     protected final boolean climb;
+    protected final boolean dig;
+    private final int maxDrop;
 
     MoveTask(String type, JsonObject params) {
         super(type, params);
         climb = J.bool(params, "climb", true);
+        dig = J.bool(params, "dig", true);
+        maxDrop = J.has(params, "maxDrop") ? J.i(params, "maxDrop", 3) : -1;
+        if (J.has(params, "maxDrop") && (maxDrop < 0 || maxDrop > 40)) throw new IllegalArgumentException("maxDrop must be 0..40");
     }
 
     @Override
     public void start(alu.aiplayer.bot.Bot bot) {
         super.start(bot);
         nav = new Navigator(bot);
+        nav.terrain(dig, climb);
+        if (maxDrop >= 0) nav.maxDrop(maxDrop);
         // Not allowed to stack blocks, a walk that finds no way finds out whether stacking them would have done.
         nav.explainClimbing(!climb);
     }

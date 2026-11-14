@@ -133,6 +133,13 @@ function boxVolume(b: { x1: number; y1: number; z1: number; x2: number; y2: numb
 
 /** 走路时能不能垫方块往上爬（go_to、go_to_player、follow_player 共用）。默认不垫：在世界里留下方块该是模型自己选的。 */
 const climb = bool('true: may stack blocks (dirt, cobblestone) under you to climb. Default false.')
+export const terrainTravel = {
+  dig: bool('Allow extra digging for travel (default false; requested digging is unaffected).'),
+  climb,
+  maxDrop: int('Largest planned drop in blocks (default 3, even if invulnerable).', { min: 0, max: 40 }),
+}
+export type TravelOptions = { dig?: boolean; climb?: boolean; maxDrop?: number }
+export const safeTravel = (i: TravelOptions): TravelOptions => ({ dig: i.dig ?? false, climb: i.climb ?? false, maxDrop: i.maxDrop ?? 3 })
 
 /**
  * 走路。给了 y 时高度也按 range 核对（身体的 yRange，不给它时身体按老规矩差 2 格也算到）；站不住的目标一开始就失败。
@@ -148,13 +155,13 @@ export const goTo: Tool = {
       y: int(undefined, { min: 0, max: 255 }),
       z: int(),
       range: int('Stop when within this many blocks (default 1); with y, of that height too.', { min: 0, max: 32 }),
-      climb,
+      ...terrainTravel,
       takeBack: bool('With climb: on arrival, dig out the blocks you stacked that are within reach.'),
       queue,
     },
     ['x', 'z'],
   ),
-  run: (ctx, i: { x: number; y?: number; z: number; range?: number; climb?: boolean; takeBack?: boolean; queue?: boolean }) =>
+  run: (ctx, i: TravelOptions & { x: number; y?: number; z: number; range?: number; takeBack?: boolean; queue?: boolean }) =>
     startTask(
       ctx,
       {
@@ -164,7 +171,7 @@ export const goTo: Tool = {
         z: i.z,
         range: i.range,
         yRange: i.y === undefined ? undefined : (i.range ?? 1),
-        climb: i.climb === true,
+        ...safeTravel(i),
         takeBack: i.takeBack === true ? true : undefined,
       },
       i.queue,
@@ -320,6 +327,7 @@ export const flattenArea: Tool = {
       maxFillDepth: int('Deepest hole to fill, in layers (default 3); deeper ones are skipped and reported.', { min: 1, max: 64 }),
       dropoff,
       supply: supply('fill material'),
+      ...terrainTravel,
       overflow,
       queue,
     },
@@ -332,19 +340,19 @@ export const flattenArea: Tool = {
       return fail(`area is ${width}×${depth}; at most ${FLATTEN_MAX_SIDE}×${FLATTEN_MAX_SIDE} per task. Split it and queue the pieces.`)
     }
     const { queue: q, ...params } = i
-    return startTask(ctx, { type: 'flatten', ...params }, q)
+    return startTask(ctx, { type: 'flatten', ...params, ...safeTravel(i) }, q)
   },
 }
 
 export const clearArea: Tool = {
   name: 'clear_area',
   description: `Dig out every block in a box, from the top down (task, volume at most ${BOX_MAX_VOLUME}). Chests, drawers, machines, liquids and bedrock are left alone. ${BOX_WORDS}`,
-  inputSchema: obj({ ...boxProps, dropoff, overflow, queue }, boxRequired),
+  inputSchema: obj({ ...boxProps, ...terrainTravel, dropoff, overflow, queue }, boxRequired),
   async run(ctx, i) {
     const volume = boxVolume(i)
     if (volume > BOX_MAX_VOLUME) return fail(`box volume is ${volume}; at most ${BOX_MAX_VOLUME} per task. Split it and queue the pieces.`)
     const { queue: q, ...params } = i
-    return startTask(ctx, { type: 'clear', ...params }, q)
+    return startTask(ctx, { type: 'clear', ...params, ...safeTravel(i) }, q)
   },
 }
 
@@ -359,6 +367,7 @@ export const fillArea: Tool = {
       blockMeta: int('The meta every block must end up with, as in place_blocks.', { min: 0, max: 15 }),
       shape: str('solid (default), hollow (only the six faces) or walls (only the four sides).', { enum: ['solid', 'hollow', 'walls'] }),
       supply: supply('the block'),
+      ...terrainTravel,
       queue,
     },
     [...boxRequired, 'item'],
@@ -369,15 +378,15 @@ export const fillArea: Tool = {
     const { queue: q, ...params } = i
     // 身体收到不带 meta 的是“哪种都行”，会把同一个 id 的几种方块混着放；说明里写的默认 0 要真的交给它。
     // 给了 blockMeta 不给 meta：用哪种物品由身体挑（能放出这个朝向的那种），同 place_blocks
-    return startTask(ctx, { type: 'fill', ...params, ...(i.meta === undefined && i.blockMeta !== undefined ? {} : { meta: i.meta ?? 0 }) }, q)
+    return startTask(ctx, { type: 'fill', ...params, ...safeTravel(i), ...(i.meta === undefined && i.blockMeta !== undefined ? {} : { meta: i.meta ?? 0 }) }, q)
   },
 }
 
 export const digBlocks: Tool = {
   name: 'dig_blocks',
   description: `Dig specific blocks, nearest first (task, at most ${BLOCK_LIST_MAX}). A chest, drawer or machine listed here is dug as a player digs it: what is inside drops on the ground. clear_area does whole boxes.`,
-  inputSchema: obj({ blocks: arr('Positions to dig.', pos(), { min: 1, max: BLOCK_LIST_MAX }), queue }, ['blocks']),
-  run: (ctx, i: { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks }, i.queue),
+  inputSchema: obj({ blocks: arr('Positions to dig.', pos(), { min: 1, max: BLOCK_LIST_MAX }), ...terrainTravel, queue }, ['blocks']),
+  run: (ctx, i: TravelOptions & { blocks: unknown[]; queue?: boolean }) => startTask(ctx, { type: 'dig', blocks: i.blocks, ...safeTravel(i) }, i.queue),
 }
 
 export const placeBlocks: Tool = {
@@ -394,11 +403,12 @@ export const placeBlocks: Tool = {
         { min: 1, max: BLOCK_LIST_MAX },
       ),
       supply: supply('blocks'),
+      ...terrainTravel,
       queue,
     },
     ['blocks'],
   ),
-  run: (ctx, i: { blocks: { meta?: number; blockMeta?: number }[]; supply?: unknown[]; queue?: boolean }) =>
+  run: (ctx, i: TravelOptions & { blocks: { meta?: number; blockMeta?: number }[]; supply?: unknown[]; queue?: boolean }) =>
     startTask(
       ctx,
       {
@@ -406,6 +416,7 @@ export const placeBlocks: Tool = {
         // 给了 blockMeta 不给 meta：用哪种物品放由身体挑（能放出这个朝向的那种，比如云杉原木横放 /5 用的是物品 log:1）；否则默认 0
         blocks: i.blocks.map((b) => (b.meta === undefined && b.blockMeta !== undefined ? b : { ...b, meta: b.meta ?? 0 })),
         supply: i.supply,
+        ...safeTravel(i),
       },
       i.queue,
     ),
@@ -481,11 +492,10 @@ export const collectItems: Tool = {
     y: int('y of the center.', { min: 0, max: 255 }),
     z: int('z of the center.'),
     radius: int('Radius in blocks (default 8).', { min: 1, max: 32 }),
-    dig: bool('Allow digging a path (default false).'),
-    climb: bool('Allow stacking blocks (default false).'),
+    ...terrainTravel,
     queue,
   }),
-  async run(ctx, i: { x?: number; y?: number; z?: number; radius?: number; dig?: boolean; climb?: boolean; queue?: boolean }) {
+  async run(ctx, i: TravelOptions & { x?: number; y?: number; z?: number; radius?: number; queue?: boolean }) {
     let center: { x: number; y: number; z: number }
     if (i.x !== undefined && i.y !== undefined && i.z !== undefined) {
       center = { x: i.x, y: i.y, z: i.z }
@@ -495,7 +505,7 @@ export const collectItems: Tool = {
     } else {
       return fail('give all of x, y, z or none of them')
     }
-    return startTask(ctx, { type: 'collect', ...center, radius: i.radius, dig: i.dig ?? false, climb: i.climb ?? false }, i.queue)
+    return startTask(ctx, { type: 'collect', ...center, radius: i.radius, ...safeTravel(i) }, i.queue)
   },
 }
 
@@ -530,6 +540,7 @@ export const useItem: Tool = {
     id: str('Item to hold. Omit for an empty hand (on or entity needed).'),
     meta: int('Its meta. Omit to match any.', { min: 0 }),
     on: pos('Block to click; mutually exclusive with entity. Neither: use in air.'),
+    approach: str('For on: walk (default, at most 60s) or current (no movement; needs reach and sight). No automatic flight or landing.', { enum: ['walk', 'current'] }),
     entity: ENTITY,
     side: str('Which face of the block to click (default: the one facing you). For a horizontal face you first walk in front of it.', { enum: USE_SIDES }),
     hit: obj({ x: num(undefined, { min: 0, max: 1 }), y: num(undefined, { min: 0, max: 1 }), z: num(undefined, { min: 0, max: 1 }) }, ['x', 'y', 'z'], 'The point of the block to click, each 0 to 1 from its lowest corner (default: the middle of the face).'),
@@ -539,13 +550,14 @@ export const useItem: Tool = {
     left: bool('true: attack entity, or tap block on (nothing needing sustained digging is dug). times counts attacks too.'),
     queue,
   }),
-  async run(ctx, i: { id?: string; meta?: number; on?: unknown; entity?: { uuid: string; dim: number }; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; left?: boolean; queue?: boolean }) {
+  async run(ctx, i: { id?: string; meta?: number; on?: unknown; approach?: 'walk' | 'current'; entity?: { uuid: string; dim: number }; side?: string; hit?: unknown; times?: number; every?: number; sneak?: boolean; left?: boolean; queue?: boolean }) {
+    if (i.approach !== undefined && i.on === undefined) return fail('approach is for a block target: give on.')
     if (i.entity !== undefined && i.on !== undefined) return fail('entity and on are mutually exclusive.')
     if (i.left === true && i.on === undefined && i.entity === undefined) return fail('A left click needs on (a block) or entity (a stable identity from list_entities).')
     if (i.id === undefined && i.on === undefined && i.entity === undefined) return fail('Give id (an item to use in air), on (a block), or entity:{uuid,dim}.')
     if (i.on === undefined && (i.side !== undefined || i.hit !== undefined)) return fail('"side" and "hit" say where on a block to click: give the block as "on".')
     const item = i.id === undefined ? undefined : i.meta === undefined ? { id: i.id } : { id: i.id, meta: i.meta }
-    return startTask(ctx, { type: 'use', item, on: i.on, ...(i.entity === undefined ? {} : { entity: i.entity }), side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak, ...(i.left === true ? { left: true } : {}) }, i.queue)
+    return startTask(ctx, { type: 'use', item, on: i.on, approach: i.approach, ...(i.entity === undefined ? {} : { entity: i.entity }), side: i.side, hit: i.hit, times: i.times, every: i.every, sneak: i.sneak, ...(i.left === true ? { left: true } : {}) }, i.queue)
   },
 }
 

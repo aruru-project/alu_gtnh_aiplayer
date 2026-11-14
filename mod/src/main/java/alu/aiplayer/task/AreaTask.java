@@ -73,6 +73,12 @@ abstract class AreaTask extends Task {
     protected NavWorld.BreakRule rule = Rules.NATURAL_ONLY;
     protected int removed;
     protected int placed;
+    private int alreadyMatches;
+    private final boolean travelDig;
+    private final boolean travelClimb;
+    private final int travelMaxDrop;
+    private JsonArray remainingDrops = new JsonArray();
+    private String collectionProblem;
 
     private final Map<String, Integer> skipCounts = new LinkedHashMap<>();
     private final JsonArray skipExamples = new JsonArray();
@@ -101,6 +107,10 @@ abstract class AreaTask extends Task {
 
     AreaTask(String type, JsonObject params) {
         super(type, params);
+        travelDig = J.bool(params, "dig", true);
+        travelClimb = J.bool(params, "climb", true);
+        travelMaxDrop = J.has(params, "maxDrop") ? J.i(params, "maxDrop", 3) : -1;
+        if (J.has(params, "maxDrop") && (travelMaxDrop < 0 || travelMaxDrop > 40)) throw new IllegalArgumentException("maxDrop must be 0..40");
         dropoff = Params.posList(params, "dropoff");
         supply = Params.posList(params, "supply");
         overflow = J.str(params, "overflow", "fail");
@@ -113,6 +123,10 @@ abstract class AreaTask extends Task {
     public void start(Bot bot) {
         super.start(bot);
         nav = new Navigator(bot);
+        nav.terrain(travelDig, travelClimb);
+        nav.explainClimbing(true);
+        if (travelMaxDrop >= 0) nav.maxDrop(travelMaxDrop);
+        nav.interaction(false);
         digger = new Digger(bot);
         scaffoldBefore = new HashSet<>(bot.scaffoldCells());
     }
@@ -130,6 +144,7 @@ abstract class AreaTask extends Task {
     }
 
     protected void skip(int x, int y, int z, String reason) {
+        if ("unreachable".equals(reason)) reason = why(x, y, z, reason);
         gaveUp.add(key(x, y, z));
         skipCounts.merge(reason, 1, Integer::sum);
         if (skipExamples.size() < 12) {
@@ -247,6 +262,7 @@ abstract class AreaTask extends Task {
     }
 
     private Act walkFailed(int x, int y, int z) {
+        cellWhy.put(key(x, y, z), nav.failCode + ": " + nav.failMessage);
         // Running out of blocks to climb with only means this cell is too high; a missing tool stops everything.
         if ("no_tool".equals(nav.failCode) && stopsWithoutTool()) {
             JsonObject detail = J.pos(x, y, z);
@@ -358,8 +374,8 @@ abstract class AreaTask extends Task {
             bot.motion.moveToward(p, bot.blockX() + 0.5, bot.blockZ() + 0.5);
             return Act.BUSY;
         }
-        // Placing while airborne would put the block where the feet are about to be.
-        if (!p.onGround && !p.isInWater() && ++airborne < 100) return Act.BUSY;
+        // An airborne player can place from an intentionally chosen hover, but do not chase a falling body.
+        if (!p.onGround && !p.isInWater() && Math.abs(p.posY - p.prevPosY) > 0.02 && ++airborne < 60) return Act.BUSY;
         airborne = 0;
         // The stack the block is placed from (the first that matches, as the placing itself picks it): which variant.
         int from = Inventories.find(p, item);
@@ -407,8 +423,26 @@ abstract class AreaTask extends Task {
                 cooldown = PLACE_COOLDOWN;
                 if (r == Placer.Result.WRONG) cameOut(x, y, z, want, facing.got, facing.why);
                 return Act.OK;
-            case OCCUPIED:
-                return Act.OK;
+            case OCCUPIED: {
+                World w = p.worldObj;
+                Block there = w.getBlock(x, y, z);
+                int meta = w.getBlockMetadata(x, y, z);
+                // A named placement is satisfied only by the requested block/variant, not any obstruction.
+                // For mod items with unknown placement mapping, report the occupied cell rather than guess.
+                Block requested = alu.aiplayer.act.Orientation.blockOf(item.item);
+                boolean same = requested != null && requested == there;
+                if (same && want >= 0) same = meta == want;
+                else if (same && item.meta >= 0) {
+                    try { same = meta == alu.aiplayer.act.Orientation.placedMeta(item.item, item.meta); }
+                    catch (Throwable t) { same = false; }
+                }
+                if (same) {
+                    alreadyMatches++;
+                    return Act.OK;
+                }
+                skip(x, y, z, "occupied by " + Names.blockId(there) + "/" + meta + "; not replaced");
+                return Act.SKIPPED;
+            }
             case NO_ITEM:
                 return Act.NEED_MATERIAL;
             case NO_WAY:
@@ -429,6 +463,8 @@ abstract class AreaTask extends Task {
                 cooldown = PLACE_COOLDOWN;
                 return Act.BUSY;
             default: // OUT_OF_REACH, IN_THE_WAY, OFF_CENTRE
+                cellWhy.put(key(x, y, z), r == Placer.Result.IN_THE_WAY ? "the bot occupies the target cell; could not find a clear placement position"
+                    : r == Placer.Result.OFF_CENTRE ? "could not align with the required placement position" : "out of reach from the current position");
                 if (bump(x, y, z) > MAX_ATTEMPTS_PER_CELL) return Act.UNREACHABLE;
                 Goal goal = null;
                 if (want >= 0 && using != null) {
@@ -485,6 +521,8 @@ abstract class AreaTask extends Task {
     protected boolean busyWithErrand() {
         if (collector != null) {
             if (collector.tick()) return true;
+            remainingDrops = collector.remaining();
+            collectionProblem = collector.failCode == null ? null : collector.failCode + ": " + collector.failMessage;
             collector = null;
         }
         if (trip == null) return false;
@@ -530,6 +568,7 @@ abstract class AreaTask extends Task {
     private void beginTrip() {
         int[] at = (tripIsDropoff ? dropoff : supply).get(tripIndex);
         trip = new ContainerTrip(bot, at[0], at[1], at[2]);
+        trip.travel(travelDig, travelMaxDrop);
         if (tripIsDropoff) {
             trip.session.deposit(dropPlan(dropKeep));
             return;
@@ -669,13 +708,13 @@ abstract class AreaTask extends Task {
 
     /** Starts picking up the drops lying in and around a box. */
     protected void sweep(int x1, int y1, int z1, int x2, int y2, int z2) {
-        if (inventoryFull()) return;
         collector = new Collector(
             bot,
             AxisAlignedBB.getBoundingBox(x1 - 3, y1 - 2, z1 - 3, x2 + 4, y2 + 3, z2 + 4),
-            rule,
+            travelDig ? rule : Rules.NO_BREAK,
             20 * 90,
-            true);
+            travelClimb);
+        if (travelMaxDrop >= 0) collector.maxDrop(travelMaxDrop);
     }
 
     // ---- tidying up -----------------------------------------------------------------------------------------
@@ -725,6 +764,18 @@ abstract class AreaTask extends Task {
         }
         if (tidyCurrent != null) {
             int[] c = tidyCurrent;
+            // Taking away one's footing is a drop too; cleanup must honour the same limit as approaching.
+            if (!digger.busy() && travelMaxDrop >= 0 && c[1] <= p.posY && c[1] + 1 >= p.posY - 0.1
+                && p.boundingBox.maxX > c[0] && p.boundingBox.minX < c[0] + 1
+                && p.boundingBox.maxZ > c[2] && p.boundingBox.minZ < c[2] + 1) {
+                double below = NavWorld.heightAboveSupport(w, c[0] + 0.5, c[1], c[2] + 0.5, travelMaxDrop + 1);
+                if (below < 0 || below + 1 > travelMaxDrop) {
+                    scaffoldLeft.add(c);
+                    cellWhy.put(key(c[0], c[1], c[2]), "removing this footing would exceed maxDrop=" + travelMaxDrop);
+                    tidyCurrent = null;
+                    return true;
+                }
+            }
             Act a = digCell(c[0], c[1], c[2]);
             if (a == Act.BUSY || a == Act.FAILED) return true;
             if (a == Act.OK) {
@@ -747,13 +798,14 @@ abstract class AreaTask extends Task {
                 // What was taken down dropped where it stood, or rolled off: pick it up again, as a player would.
                 // Climbing to get at a drop would leave a new climbing block, so this walk does not.
                 tidySwept = true;
-                if (!inventoryFull()) {
+                {
                     collector = new Collector(
                         bot,
                         AxisAlignedBB.getBoundingBox(tx1 - 3, ty1 - 6, tz1 - 3, tx2 + 4, ty2 + 3, tz2 + 4),
-                        rule,
+                        travelDig ? rule : Rules.NO_BREAK,
                         20 * 60,
                         false);
+                    if (travelMaxDrop >= 0) collector.maxDrop(travelMaxDrop);
                 }
                 return true;
             }
@@ -818,6 +870,9 @@ abstract class AreaTask extends Task {
         JsonObject o = new JsonObject();
         o.addProperty("removed", removed);
         o.addProperty("placed", placed);
+        if (alreadyMatches > 0) o.addProperty("alreadyMatches", alreadyMatches);
+        if (remainingDrops.size() > 0) o.add("remainingDrops", remainingDrops);
+        if (collectionProblem != null) o.addProperty("collectionProblem", collectionProblem);
         if (!placedItems.isEmpty()) o.add("placedItems", placedItems.toJson());
         if (cameOutCount > 0) {
             o.addProperty("cameOutDifferent", cameOutCount);
@@ -832,7 +887,11 @@ abstract class AreaTask extends Task {
         if (!scaffoldLeft.isEmpty()) {
             o.addProperty("climbingBlocksLeftStanding", scaffoldLeft.size());
             JsonArray a = new JsonArray();
-            for (int[] c : scaffoldLeft) if (a.size() < TerrainLog.LIST_LIMIT) a.add(J.pos(c[0], c[1], c[2]));
+            for (int[] c : scaffoldLeft) {
+                JsonObject at = J.pos(c[0], c[1], c[2]);
+                at.addProperty("reason", why(c[0], c[1], c[2], "could not take down"));
+                a.add(at);
+            }
             o.add("climbingBlocksLeft", a);
         }
         if (bot != null && bot.online()) bot.terrain()

@@ -23,6 +23,8 @@ public final class Navigator {
     /** Replans in a row that got nowhere before giving up. */
     private static final int MAX_FRUITLESS = 6;
     private static final int MAX_PLANS = 200;
+    /** A single approach is bounded even if repeated partial or empty paths appear to succeed. */
+    private static final int MAX_TICKS = 20 * 90;
     /**
      * How much closer (in the search's own measure: ticks of walking, about 4.7 a block) a path that digs or stacks
      * blocks must bring the bot when it does not reach the goal. Changing the terrain only to end up a little nearer
@@ -38,6 +40,12 @@ public final class Navigator {
     private int fruitless;
     private int plans;
     private int airTicks;
+    private int ticks;
+    private int maxDrop = -1;
+    private boolean interaction;
+    private boolean currentOnly;
+    private boolean allowDig = true;
+    private boolean allowPillar = true;
     private boolean mayPillar = true;
     private boolean swim;
     private boolean gentle = true;
@@ -76,17 +84,37 @@ public final class Navigator {
     public void go(Goal goal, NavWorld.BreakRule rule, boolean mayPillar, boolean swim) {
         stop();
         this.swim = swim;
-        this.mayPillar = mayPillar;
+        this.mayPillar = mayPillar && allowPillar;
         this.gentle = true;
         this.probing = false;
         this.goal = goal;
-        this.rule = rule == null ? Rules.NATURAL_ONLY : rule;
+        this.rule = !allowDig ? Rules.NO_BREAK : rule == null ? Rules.NATURAL_ONLY : rule;
         fruitless = 0;
         plans = 0;
+        airTicks = 0;
+        ticks = 0;
         failCode = null;
         failMessage = null;
         failBlock = null;
         climbingBlocksWouldTake = -1;
+    }
+
+    /** Permissions for all subsequent routes owned by this navigator, including replans. */
+    public void terrain(boolean dig, boolean climb) {
+        allowDig = dig;
+        allowPillar = climb;
+    }
+
+    /** Optional per-route drop limit; omission retains the legacy invulnerability-based limit. */
+    public void maxDrop(int blocks) {
+        if (blocks < 0 || blocks > PathSearch.FEARLESS_DROP) throw new IllegalArgumentException("maxDrop must be 0..40");
+        maxDrop = blocks;
+    }
+
+    /** Interactions may use an already reachable airborne position; this never plans a flight. */
+    public void interaction(boolean currentOnly) {
+        this.interaction = true;
+        this.currentOnly = currentOnly;
     }
 
     /**
@@ -121,6 +149,18 @@ public final class Navigator {
     public Status tick() {
         if (goal == null) return Status.ARRIVED;
         EntityPlayerMP p = bot.player();
+        if (interaction && goal.reached(p)) {
+            stop();
+            return Status.ARRIVED;
+        }
+        if (currentOnly) return fail("out_of_reach", "the target is not reachable from the current position (distance, requested face or line of sight); approach=current does not move", null);
+        if (++ticks > MAX_TICKS) return fail("stuck", "walking approach timed out after 90 seconds of game ticks; no flight route was attempted", null);
+        // A walking plan cannot control a hovering body. Allow a normal jump/fall to settle, but do not
+        // repeatedly search from mid-air while a backpack spends fuel. Stopping does not switch equipment off.
+        if (!(p.onGround || p.isInWater() || p.isOnLadder())) {
+            if (++airTicks >= 60) return fail("unreachable", "still airborne after 3 seconds; walking cannot approach from here. Reposition with movement controls or land first; flight equipment is unchanged and may keep consuming fuel", null);
+            if (follower == null) return Status.WORKING;
+        } else airTicks = 0;
 
         if (follower != null) {
             PathFollower.Status st = follower.tick();
@@ -137,7 +177,8 @@ public final class Navigator {
                     return fail("stuck", "kept getting blocked on the way", done.failBlock);
                 }
             } else {
-                fruitless = 0;
+                fruitless = made == 0 ? fruitless + 1 : 0;
+                if (fruitless > MAX_FRUITLESS) return fail("stuck", "planned arrival repeatedly did not reach the target from the actual position", null);
             }
         }
 
@@ -146,10 +187,6 @@ public final class Navigator {
                 goal = null;
                 return Status.ARRIVED;
             }
-            // Plan from solid footing (or from a ladder, which holds the bot where it is); a search started in
-            // mid-air would begin from a cell the bot is leaving.
-            if (!(p.onGround || p.isInWater() || p.isOnLadder()) && ++airTicks < 60) return Status.WORKING;
-            airTicks = 0;
             if (++plans > MAX_PLANS) return fail("stuck", "could not get there after many attempts", null);
             // First look for a way that leaves the terrain as it is. Digging through and stacking blocks to climb
             // are the fallback, for when walking there is impossible.
@@ -161,7 +198,7 @@ public final class Navigator {
                 goal,
                 probing || (!gentle && mayPillar && Rules.scaffold(p) != null),
                 gentle ? MAX_NODES : MAX_NODES_CLIMBING,
-                bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP,
+                maxDrop >= 0 ? maxDrop : bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP,
                 swim);
         }
 
@@ -195,7 +232,7 @@ public final class Navigator {
                 gentle = false;
                 return Status.WORKING;
             }
-            if (explainClimbing && !mayPillar) {
+            if (explainClimbing && (!mayPillar || Rules.scaffold(p) == null)) {
                 probing = true;
                 return Status.WORKING;
             }
@@ -227,6 +264,8 @@ public final class Navigator {
     private Status fail(String code, String message, String block) {
         failCode = code;
         failMessage = message;
+        if ("unreachable".equals(code)) failMessage += " (walking permissions: dig=" + (rule != Rules.NO_BREAK)
+            + ", climb=" + mayPillar + ", maxDrop=" + (maxDrop >= 0 ? maxDrop : bot.invulnerable ? PathSearch.FEARLESS_DROP : PathSearch.SAFE_DROP) + ")";
         failBlock = block;
         stop();
         return Status.FAILED;

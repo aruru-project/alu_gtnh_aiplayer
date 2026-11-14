@@ -8,7 +8,7 @@ import { GridError, gridFromBlocks, isAir, kindKey } from '../render/index.ts'
 import type { BlockKind, GridBox, VoxelGrid } from '../render/index.ts'
 import { compactJson, formatBlueprintCheck, formatBlueprintList, itemKey, nameOf } from './format.ts'
 import { arr, bool, int, obj, pos, str } from './schema.ts'
-import { dropoff, overflow, queue, startTask, supply } from './tasks.ts'
+import { dropoff, overflow, queue, startTask, supply, terrainTravel, safeTravel, type TravelOptions } from './tasks.ts'
 import { fail } from './types.ts'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 
@@ -325,15 +325,16 @@ export const buildBlueprint: Tool = {
     {
       ...placementProps,
       supply: supply('building blocks'),
+      ...terrainTravel,
       dropoff,
       overflow,
       queue,
     },
     placementRequired,
   ),
-  async run(ctx, i: BlueprintPlacement & { supply?: unknown[]; dropoff?: unknown[]; overflow?: string; queue?: boolean }) {
+  async run(ctx, i: BlueprintPlacement & TravelOptions & { supply?: unknown[]; dropoff?: unknown[]; overflow?: string; queue?: boolean }) {
     // 范围成不成对、超没超 64×64 都由身体判断（它才知道图纸多大），它的原话会原样回给模型
     const { queue: q, ...params } = withoutEmptyLists(i)
-    return startTask(ctx, { type: 'blueprint', ...params }, q)
+    return startTask(ctx, { type: 'blueprint', ...params, ...safeTravel(i) }, q)
   },
 }

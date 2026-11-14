@@ -353,7 +353,7 @@ public final class PathSearch {
             }
             // Dig down one, only onto solid ground.
             int floor = nav.breakCost(x, y - 1, z);
-            if (floor >= 0 && nav.cls(x, y - 2, z) == NavWorld.SOLID && !nav.nearHazard(x, y - 1, z)) {
+            if (maxDrop >= 1 && floor >= 0 && nav.cls(x, y - 2, z) == NavWorld.SOLID && !nav.nearHazard(x, y - 1, z)) {
                 relax(n, x, y - 1, z, DIG_DOWN, floor + 4.0);
             }
         }

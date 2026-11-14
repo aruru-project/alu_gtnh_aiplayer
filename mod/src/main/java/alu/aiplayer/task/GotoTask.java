@@ -93,7 +93,7 @@ public final class GotoTask extends MoveTask {
      * the destination cell saying why; null otherwise. Unloaded cells count as possible.
      */
     private JsonObject noFooting(EntityPlayerMP p) {
-        NavWorld nav = new NavWorld(p, Rules.NATURAL_ONLY, false, bot.scaffoldCells(), bot.shutDoors());
+        NavWorld nav = new NavWorld(p, dig ? Rules.NATURAL_ONLY : Rules.NO_BREAK, false, bot.scaffoldCells(), bot.shutDoors());
         for (int dy = -yRange; dy <= yRange; dy++) {
             int cy = y + dy;
             if (cy < 1 || cy > 254) continue;

@@ -13,6 +13,7 @@ public final class CollectTask extends Task {
 
     private final int x, y, z, radius;
     private final boolean dig, climb;
+    private final int maxDrop;
     private Collector collector;
 
     public CollectTask(JsonObject params) {
@@ -23,6 +24,8 @@ public final class CollectTask extends Task {
         radius = Math.max(1, Math.min(32, J.i(params, "radius", 8)));
         dig = J.bool(params, "dig", true);
         climb = J.bool(params, "climb", true);
+        maxDrop = J.has(params, "maxDrop") ? J.i(params, "maxDrop", 3) : -1;
+        if (J.has(params, "maxDrop") && (maxDrop < 0 || maxDrop > 40)) throw new IllegalArgumentException("maxDrop must be 0..40");
     }
 
     @Override
@@ -33,6 +36,7 @@ public final class CollectTask extends Task {
         AxisAlignedBB box = AxisAlignedBB
             .getBoundingBox(x - radius, y - radius, z - radius, x + radius + 1, y + radius + 1, z + radius + 1);
         collector = new Collector(bot, box, dig ? Rules.NATURAL_ONLY : Rules.NO_BREAK, 20 * 60 * 5, climb);
+        if (maxDrop >= 0) collector.maxDrop(maxDrop);
     }
 
     @Override

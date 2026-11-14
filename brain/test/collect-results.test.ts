@@ -5,6 +5,29 @@ import type { TaskInfo } from '../src/bridge/protocol.ts'
 import { formatTask } from '../src/tools/format.ts'
 
 describe('捡物结束后查剩余物品', () => {
+  it('施工结束通知保留清理区域最后一堆掉落的容量、位置和上方方块', () => {
+    const remainingDrops = Array.from({ length: 15 }, (_, i) => ({
+      entityId: 900 + i, id: 'minecraft:cobblestone', meta: 0, count: 1,
+      x: 10 + i, y: 69.125, z: 5.5, capacity: 2304,
+      reason: `unreachable: drop ${i}; no walking route under the chosen permissions`,
+      itemCell: { x: 10 + i, y: 69, z: 5, id: 'minecraft:air', meta: 0 },
+      aboveItemCell: { x: 10 + i, y: 70, z: 5, id: 'minecraft:dirt', meta: 0 },
+    }))
+    const task: TaskInfo = { id: 'cleanup', type: 'place', state: 'done', result: {
+      placed: 18, remainingDrops, collectionProblem: 'unreachable: items remain', climbingBlockDropsNotPickedUp: 4,
+    } }
+    for (const variant of [task, { ...task, type: 'blueprint' }]) for (const text of [formatTask(variant), describeEvent({ type: 'task_ended', time: 1, task: variant })]) {
+      assert.ok(text.includes('drop collection: unreachable: items remain'))
+      for (const item of remainingDrops) {
+        assert.ok(text.includes(item.reason))
+        assert.ok(text.includes(`(${item.x},69.125,5.5)`))
+      }
+      assert.ok(text.includes('inventory can accept 2304 of this exact type now (shared space)'))
+      assert.ok(text.includes('(24,70,5) minecraft:dirt/0'))
+      assert.doesNotMatch(text, /…/)
+    }
+  })
+
   for (const state of ['done', 'failed'] as const) {
     for (const terrain of [false, true]) {
       it(`${state}${terrain ? '且改过地形' : ''}：任务状态和结束通知都列全最后一堆的位置、数量和完整原因`, () => {

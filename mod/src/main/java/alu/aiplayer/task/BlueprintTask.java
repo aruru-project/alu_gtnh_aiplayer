@@ -272,7 +272,7 @@ public final class BlueprintTask extends ClearTask {
 
     private void tooFar(int[] cell) {
         skip(cell[0], cell[1], cell[2], why(cell[0], cell[1], cell[2], "unreachable"));
-        if (Rules.scaffold(bot.player()) == null) needsClimbingBlocks = true;
+        if (nav.climbingBlocksWouldTake > 0 && Rules.scaffold(bot.player()) == null) needsClimbingBlocks = true;
         if (cell[1] != failingLayer) {
             failingLayer = cell[1];
             layerFailures = 0;

@@ -106,6 +106,11 @@ public abstract class Goal {
         return new Goal() {
 
             @Override
+            public boolean reached(net.minecraft.entity.player.EntityPlayerMP p) {
+                return alu.aiplayer.act.Drawers.inFront(p, bx, by, bz, side) && Reach.canReach(p, bx, by, bz);
+            }
+
+            @Override
             public boolean reached(int x, int y, int z) {
                 boolean front;
                 switch (side) {
@@ -146,6 +151,12 @@ public abstract class Goal {
         return new Goal() {
 
             @Override
+            public boolean reached(net.minecraft.entity.player.EntityPlayerMP p) {
+                return p.posY >= by && !alu.aiplayer.act.Placer.bodyIntersects(p, bx, by, bz)
+                    && Reach.canReach(p, bx, by, bz);
+            }
+
+            @Override
             public boolean reached(int x, int y, int z) {
                 if (y < by || (x == bx && z == bz && y == by)) return false;
                 return Reach.canPlanReachFrom(x + 0.5, y, z + 0.5, bx, by, bz);
@@ -168,6 +179,11 @@ public abstract class Goal {
      */
     public static Goal reach(final int bx, final int by, final int bz, final boolean clear) {
         return new Goal() {
+
+            @Override
+            public boolean reached(net.minecraft.entity.player.EntityPlayerMP p) {
+                return (!clear || !alu.aiplayer.act.Placer.bodyIntersects(p, bx, by, bz)) && Reach.canReach(p, bx, by, bz);
+            }
 
             @Override
             public boolean reached(int x, int y, int z) {

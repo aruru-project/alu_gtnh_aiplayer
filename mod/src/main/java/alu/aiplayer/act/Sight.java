@@ -188,7 +188,17 @@ public final class Sight {
 
     /** Somewhere to stand from which a face of the block is seen (its middle), within reach. */
     public static Goal seeing(final World w, final int x, final int y, final int z, final int side, final boolean liquids) {
+        return seeing(w, x, y, z, side, liquids, null);
+    }
+
+    public static Goal seeing(final World w, final int x, final int y, final int z, final int side, final boolean liquids,
+        final float[] hit) {
         return new Goal() {
+
+            @Override
+            public boolean reached(EntityPlayerMP p) {
+                return lookPoint(p, x, y, z, side, hit, liquids) != null;
+            }
 
             @Override
             public boolean reached(int sx, int sy, int sz) {
