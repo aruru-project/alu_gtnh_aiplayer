@@ -42,7 +42,7 @@
 - 以 no_material 失败时，能放的已经先放了，missing 列出每种材料还缺多少：取够了或者请主人补上，再用同样的参数重跑。
 - 结果里有 needsClimbingBlocks 时，找到了需要垫脚的路线而身上没有填料。决定采用这条路线后，准备泥土或圆石并给 climb:true；不想垫就换已有站位。
 - skipped 里的 unreachable 是试过、走不到的格子；not tried: 3 cells of this layer in a row were unreachable 是同一层连着 3 格走不到后、这一层剩下没去试的格子。换个地方站再跑一次（比如先 go_to 到屋顶或那一层旁边），它们多半够得着。
-- 垫脚：任务结束前尝试拆回并捡掉落；拆脚下支撑也遵守 maxDrop。拆掉不等于已入包。remainingDrops 给出清理区域还在的掉落及容量/路径原因，先腾空间或选择安全站位再决定是否继续回收。结果里逐块列着这次垫的（在哪、还在不在、是不是它自己拆的），掉落物没捡回来的块数也写着；拆不掉的个数在 climbingBlocksLeftStanding、坐标在 climbingBlocksLeft。removed 不算拆掉的垫脚。卸货时只留一组垫脚方块，多带的泥土会被卸进 dropoff（结果里的 unloaded），要用再去取。
+- 垫脚：任务结束前尝试拆回并捡掉落；拆脚下支撑也遵守 maxDrop。拆掉不等于已入包。collectionSweeps 保留各次工作掉落/垫脚清理结束时的范围、时点和剩余原因，前次未收不会因后次成功而消失；旧位置是当时观察，不是当前全任务余量。remainingDrops 仅兼容最后一次。先腾空间或选择安全站位，再决定是否继续回收。结果里逐块列着这次垫的（在哪、还在不在、是不是它自己拆的），掉落物没捡回来的块数也写着；拆不掉的个数在 climbingBlocksLeftStanding、坐标在 climbingBlocksLeft。removed 不算拆掉的垫脚。卸货时只留一组垫脚方块，多带的泥土会被卸进 dropoff（结果里的 unloaded），要用再去取。
 
 # 图纸里有什么
 - 一张图纸要哪些材料、每一格是什么，不用知道它放在哪：库函数 read_blueprint（不在工具清单里，run_program 写一行 `return (await tool("read_blueprint", { name: "cabin" })).text`）。结果是整张图纸的材料表：每种方块多少个、哪些得由人放。你自己的草稿也用它，加 draft: true。

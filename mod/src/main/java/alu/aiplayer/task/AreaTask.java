@@ -77,8 +77,11 @@ abstract class AreaTask extends Task {
     private final boolean travelDig;
     private final boolean travelClimb;
     private final int travelMaxDrop;
+    /** Compatibility fields for the last completed sweep only; history below retains earlier observations. */
     private JsonArray remainingDrops = new JsonArray();
     private String collectionProblem;
+    private final JsonArray collectionSweeps = new JsonArray();
+    private JsonObject collecting;
 
     private final Map<String, Integer> skipCounts = new LinkedHashMap<>();
     private final JsonArray skipExamples = new JsonArray();
@@ -523,6 +526,13 @@ abstract class AreaTask extends Task {
             if (collector.tick()) return true;
             remainingDrops = collector.remaining();
             collectionProblem = collector.failCode == null ? null : collector.failCode + ": " + collector.failMessage;
+            collecting.addProperty("observedAt", System.currentTimeMillis());
+            collecting.addProperty("pickedUpStacks", collector.picked);
+            collecting.add("remaining", remainingDrops);
+            if (collectionProblem != null) collecting.addProperty("problem", collectionProblem);
+            if (collector.disappeared > 0) collecting.addProperty("disappearedTargets", collector.disappeared);
+            collectionSweeps.add(collecting);
+            collecting = null;
             collector = null;
         }
         if (trip == null) return false;
@@ -708,12 +718,24 @@ abstract class AreaTask extends Task {
 
     /** Starts picking up the drops lying in and around a box. */
     protected void sweep(int x1, int y1, int z1, int x2, int y2, int z2) {
-        collector = new Collector(
-            bot,
-            AxisAlignedBB.getBoundingBox(x1 - 3, y1 - 2, z1 - 3, x2 + 4, y2 + 3, z2 + 4),
-            travelDig ? rule : Rules.NO_BREAK,
-            20 * 90,
-            travelClimb);
+        beginCollection("work_drops", AxisAlignedBB.getBoundingBox(x1 - 3, y1 - 2, z1 - 3, x2 + 4, y2 + 3, z2 + 4),
+            20 * 90, travelClimb);
+    }
+
+    /** Each sweep observes one box at one time, not the whole task's current remainder. */
+    private void beginCollection(String kind, AxisAlignedBB box, int ticks, boolean climb) {
+        collecting = new JsonObject();
+        collecting.addProperty("kind", kind);
+        collecting.addProperty("dim", bot.player().dimension);
+        JsonObject bounds = new JsonObject();
+        bounds.addProperty("minX", box.minX);
+        bounds.addProperty("minY", box.minY);
+        bounds.addProperty("minZ", box.minZ);
+        bounds.addProperty("maxX", box.maxX);
+        bounds.addProperty("maxY", box.maxY);
+        bounds.addProperty("maxZ", box.maxZ);
+        collecting.add("bounds", bounds);
+        collector = new Collector(bot, box, travelDig ? rule : Rules.NO_BREAK, ticks, climb);
         if (travelMaxDrop >= 0) collector.maxDrop(travelMaxDrop);
     }
 
@@ -798,15 +820,8 @@ abstract class AreaTask extends Task {
                 // What was taken down dropped where it stood, or rolled off: pick it up again, as a player would.
                 // Climbing to get at a drop would leave a new climbing block, so this walk does not.
                 tidySwept = true;
-                {
-                    collector = new Collector(
-                        bot,
-                        AxisAlignedBB.getBoundingBox(tx1 - 3, ty1 - 6, tz1 - 3, tx2 + 4, ty2 + 3, tz2 + 4),
-                        travelDig ? rule : Rules.NO_BREAK,
-                        20 * 60,
-                        false);
-                    if (travelMaxDrop >= 0) collector.maxDrop(travelMaxDrop);
-                }
+                beginCollection("climbing_cleanup",
+                    AxisAlignedBB.getBoundingBox(tx1 - 3, ty1 - 6, tz1 - 3, tx2 + 4, ty2 + 3, tz2 + 4), 20 * 60, false);
                 return true;
             }
             dropsNotPickedUp = Math.max(0, tidiedDown - (Rules.fillerCarried(p) - fillerBeforeTidying));
@@ -873,6 +888,7 @@ abstract class AreaTask extends Task {
         if (alreadyMatches > 0) o.addProperty("alreadyMatches", alreadyMatches);
         if (remainingDrops.size() > 0) o.add("remainingDrops", remainingDrops);
         if (collectionProblem != null) o.addProperty("collectionProblem", collectionProblem);
+        if (collectionSweeps.size() > 0) o.add("collectionSweeps", collectionSweeps);
         if (!placedItems.isEmpty()) o.add("placedItems", placedItems.toJson());
         if (cameOutCount > 0) {
             o.addProperty("cameOutDifferent", cameOutCount);

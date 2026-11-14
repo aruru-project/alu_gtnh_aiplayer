@@ -5,6 +5,32 @@ import type { TaskInfo } from '../src/bridge/protocol.ts'
 import { formatTask } from '../src/tools/format.ts'
 
 describe('捡物结束后查剩余物品', () => {
+  it('后一次清理成功仍保留前次未收快照，并说明各自范围和观察时点', () => {
+    const firstRemaining = Array.from({ length: 15 }, (_, i) => ({
+      entityId: 1200 + i, id: 'minecraft:clay_ball', meta: 0, count: 4,
+      x: 20.5 + i, y: 69.125, z: 5.5, capacity: 64, reason: `unreachable: earlier drop ${i}; no route`,
+    }))
+    const task: TaskInfo = { id: 'two-sweeps', type: 'blueprint', state: 'done', result: {
+      placed: 18, remainingDrops: [], collectionSweeps: [
+        { kind: 'work_drops', dim: 0, observedAt: 1000, bounds: { minX: 17, minY: 67, minZ: 2, maxX: 40, maxY: 74, maxZ: 9 },
+          pickedUpStacks: 2, remaining: firstRemaining, problem: 'unreachable: items remain' },
+        { kind: 'climbing_cleanup', dim: 0, observedAt: 6000, bounds: { minX: 30, minY: 61, minZ: 3, maxX: 37, maxY: 78, maxZ: 10 },
+          pickedUpStacks: 4, remaining: [] },
+      ],
+    } }
+    for (const variant of [task, { ...task, type: 'clear' }]) for (const text of [formatTask(variant), describeEvent({ type: 'task_ended', time: 9, task: variant })]) {
+      assert.ok(text.includes('completed sweep snapshots; positions, capacity and reasons are observations at those times, not a current whole-task remainder'))
+      assert.ok(text.includes('work_drops at 1970-01-01T00:00:01.000Z'))
+      assert.ok(text.includes('(17,67,2)..(40,74,9)'))
+      assert.ok(text.includes('climbing_cleanup at 1970-01-01T00:00:06.000Z'))
+      assert.ok(text.includes('(30,61,3)..(37,78,10)'))
+      assert.ok(text.includes('no items remained in this sweep box at that time'))
+      for (const item of firstRemaining) assert.equal(text.split(item.reason).length - 1, 1)
+      assert.ok(text.includes('(34.5,69.125,5.5)'))
+      assert.doesNotMatch(text, /…|drops still in the work\/cleanup area/)
+    }
+  })
+
   it('施工结束通知保留清理区域最后一堆掉落的容量、位置和上方方块', () => {
     const remainingDrops = Array.from({ length: 15 }, (_, i) => ({
       entityId: 900 + i, id: 'minecraft:cobblestone', meta: 0, count: 1,

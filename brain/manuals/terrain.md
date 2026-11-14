@@ -46,5 +46,6 @@
 - removed / placed 是实际挖掉和放上的数量。placed:0 时看原因：alreadyMatches 是原本已是要的方块；occupied by id/meta 是被别的方块占着而没替换；fill_area 的 no empty/replaceable cells 表示范围没有空位。skipped 按原因列出跳过了多少，skippedExamples 给出几个具体坐标。
 - 跳过带数据的方块（箱子、抽屉、机器）、液体、基岩属于正常，不用管。
 - 原因是 hole deeper than maxFillDepth 的，是坑太深没填：要填就把 maxFillDepth 调大再跑一次。foliage out of reach 是够不着的树叶，一般不用管。
-- 收尾的 remainingDrops 列出工作/清理区域还在的掉落、位置、原因及 capacity（当前还能装多少这种物品；不同堆共用空槽，不是各自预留）。全没容量会写 inventory_full；有容量但没路则写 unreachable，必要时附掉落格及上方方块。区域也可能有原来就在的掉落，不把整张表都当成本次产物。
+- collectionSweeps 保留每次捡物结束时的快照：工作掉落还是垫脚清理、维度、范围、observedAt 时间，以及当时的剩余物品/原因/capacity（当时还能装多少这种物品；不同堆共用空槽）。后一次清理成功不会抹掉前次记录；旧快照里的位置和数量不当作现在的全任务余量。remainingDrops / collectionProblem 是最后一次快照的兼容字段。
+- 全没容量会写 inventory_full；有容量但没路则写 unreachable，必要时附掉落格及上方方块。区域也可能有原来就在的掉落，不把整张表都当成本次产物。
 - 垫过脚的任务，结果里逐块列着这次垫的方块（climbing blocks put down）：在哪、现在还在不在、是不是任务自己拆的（taken down）。还在的就是留在世界里的垫脚；拆了、掉落物却没回到你身上的块数也写着（多半掉在附近地上）。removed 不算拆掉的自己的垫脚。climbingBlocksLeftStanding 是没能拆掉的个数，后面是坐标：在别人的地方干活的话，说一声或者回去拆（dig_blocks）。dug out of the way 是走路途中为了过去挖掉的方块。

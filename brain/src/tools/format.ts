@@ -935,6 +935,7 @@ const TERRAIN_KEYS = [
   'climbingBlockDropsNotPickedUp',
   'remainingDrops',
   'collectionProblem',
+  'collectionSweeps',
   'climbingBlocksLeft',
   'climbingBlocksLeftStanding',
   'dugOnTheWay',
@@ -1069,11 +1070,13 @@ function collectResultLines(result: Record<string, unknown>): string[] {
   return lines
 }
 
-function remainingItemLines(items: unknown, title: string): string[] {
+function remainingItemLines(items: unknown, title: string, snapshot = false): string[] {
   if (!Array.isArray(items) || items.length === 0) return []
   return [title, ...items.filter(isRecord).map((item) => {
     const entity = typeof item.entityId === 'number' ? ` (entity ${item.entityId})` : ''
-    const capacity = typeof item.capacity === 'number' ? `; inventory can accept ${item.capacity} of this exact type now (shared space)` : ''
+    const capacity = typeof item.capacity === 'number'
+      ? snapshot ? `; inventory could accept ${item.capacity} of this exact type at that time (shared space)`
+        : `; inventory can accept ${item.capacity} of this exact type now (shared space)` : ''
     const cells = [item.itemCell, item.aboveItemCell].filter(isRecord).map((c) => `${cellText(c)} ${c.loaded === false ? 'not loaded' : `${String(c.id)}/${String(c.meta)}`}`)
     const nearby = cells.length > 0 ? `; item cell / above: ${cells.join(', ')}` : ''
     return `- ${kindText(item.count, item)} at ${pointText(item)}${entity}: ${String(item.reason ?? 'reason not reported')}${capacity}${nearby}`
@@ -1094,8 +1097,24 @@ function cellsText(v: unknown, describe: (c: Record<string, unknown>) => string 
 
 export function terrainLines(result: Record<string, unknown>): string[] {
   const lines: string[] = []
-  if (typeof result.collectionProblem === 'string') lines.push(`drop collection: ${result.collectionProblem}`)
-  lines.push(...remainingItemLines(result.remainingDrops, 'drops still in the work/cleanup area (not necessarily all from this task):'))
+  const sweeps = Array.isArray(result.collectionSweeps) ? result.collectionSweeps.filter(isRecord) : []
+  if (sweeps.length > 0) {
+    lines.push('completed sweep snapshots; positions, capacity and reasons are observations at those times, not a current whole-task remainder:')
+    for (const [index, sweep] of sweeps.entries()) {
+      const time = typeof sweep.observedAt === 'number' ? new Date(sweep.observedAt).toISOString() : 'time not reported'
+      const b = isRecord(sweep.bounds) ? sweep.bounds : undefined
+      const bounds = b ? `; box (${b.minX},${b.minY},${b.minZ})..(${b.maxX},${b.maxY},${b.maxZ}) (maximum bounds exclusive)` : ''
+      lines.push(`sweep ${index + 1}: ${String(sweep.kind ?? 'collection')} at ${time}; dim ${String(sweep.dim ?? '?')}${bounds}`)
+      if (typeof sweep.pickedUpStacks === 'number') lines.push(`pickedUpStacks in this sweep: ${sweep.pickedUpStacks}`)
+      if (typeof sweep.problem === 'string') lines.push(`drop collection: ${sweep.problem}`)
+      if (typeof sweep.disappearedTargets === 'number') lines.push(`disappearedTargets in this sweep: ${sweep.disappearedTargets}`)
+      if (Array.isArray(sweep.remaining) && sweep.remaining.length === 0) lines.push('no items remained in this sweep box at that time')
+      else lines.push(...remainingItemLines(sweep.remaining, 'remaining in this box at that time (not necessarily all from this task):', true))
+    }
+  } else {
+    if (typeof result.collectionProblem === 'string') lines.push(`drop collection: ${result.collectionProblem}`)
+    lines.push(...remainingItemLines(result.remainingDrops, 'drops still in the work/cleanup area (not necessarily all from this task):'))
+  }
   if (Array.isArray(result.climbingBlocks) && result.climbingBlocks.length > 0) {
     const all = result.climbingBlocks.filter(isRecord)
     const total = all.length + count(result.climbingBlocksNotListed)
