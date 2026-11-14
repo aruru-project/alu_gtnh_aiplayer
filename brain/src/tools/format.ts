@@ -78,6 +78,7 @@ export interface MergedItem {
   name?: string
   /** 同种物品里最低的剩余耐久（仅工具）。 */
   minDurability?: number
+  damageRanges?: { min: number; max: number; limit: number }[]
 }
 
 /** 按物品（id + meta）合并数量。 */
@@ -97,6 +98,12 @@ export function mergeItems(items: readonly (Item | InventoryItem)[]): MergedItem
     m.count += count
     const durability = (it as InventoryItem).durability
     if (typeof durability === 'number') m.minDurability = Math.min(m.minDurability ?? 1, durability)
+    if (typeof it.rawDamage === 'number' && typeof it.maxDamage === 'number') {
+      const ranges = m.damageRanges ??= []
+      const range = ranges.find((r) => r.limit === it.maxDamage)
+      if (range) { range.min = Math.min(range.min, it.rawDamage); range.max = Math.max(range.max, it.rawDamage) }
+      else ranges.push({ min: it.rawDamage, max: it.rawDamage, limit: it.maxDamage })
+    }
   }
   return [...map.values()].sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
 }
@@ -277,6 +284,7 @@ export function formatItem(m: MergedItem): string {
   const name = nameOf(m)
   if (name) s += ` "${name}"`
   if (m.minDurability !== undefined) s += ` (${Math.round(m.minDurability * 100)}% durability)`
+  if (m.damageRanges?.length) s += ` [raw damage ${m.damageRanges.map((r) => `${r.min}${r.max !== r.min ? `–${r.max}` : ''}/${r.limit}`).join(', ')}]`
   if (m.fluidContainer) s += ` {container: ${tankText(m.fluidContainer)}}`
   return s
 }
@@ -1199,6 +1207,9 @@ export function ingredientText(ing: RecipeIngredient | Record<string, unknown>):
   if (ing.tool === true) s += ' [tool: must be carried; may wear out or be consumed]'
   if (ing.containerItem === true) s += ' [a carried item can return a crafting remainder; it may change or break]'
   if (typeof ing.have === 'number') s += `, you carry ${ing.have}`
+  const incompatible = (ing as Record<string, unknown>).carriedIncompatible
+  if (Array.isArray(incompatible) && incompatible.length > 0) s += `; carriedIncompatible (present, but wrong ingredient state): ${JSON.stringify(incompatible)}`
+  if (typeof (ing as Record<string, unknown>).note === 'string') s += `; ${(ing as Record<string, unknown>).note}`
   return s
 }
 
@@ -1727,10 +1738,8 @@ export function formatMachines(
 export function processErrorLines(detail: Record<string, unknown>): string[] {
   const where = typeof detail.x === 'number' ? ` at ${formatPos(detail as { x: number; y: number; z: number })}` : ''
   let line = `machine${quoted(detail)}${where}: ${machineStateText(detail)}`
-  if (detail.storedEU === 0) line += '. It has no power, so it cannot run anything: tell the owner'
-  else if (detail.switchedOff === true) line += '. Someone switched it off: tell the owner'
-  else if (detail.active === true) line += '. It is busy with something else: wait, or use another machine'
-  else line += '. It has power and is idle, so the cause is the recipe: a missing programmed circuit or mold, a missing fluid, inputs that are not a recipe of this machine or need a higher tier, or full output slots'
+  if (detail.switchedOff === true) line += '. It is currently switched off'
+  // An idle snapshot can follow a completed, auto-output recipe. It is not a diagnosis of recipe failure.
   return [line]
 }
 
@@ -1843,13 +1852,16 @@ export function processResultLines(result: Record<string, unknown>, params?: Rec
       ...(result.timedOut === true ? ['wait limit reached; any ongoing recipe remains in the machine'] : []),
     ]
   }
-  const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, notPut, inputSlots, ...rest } = result
+  const { put, outputs, timedOut, freeSlots, fluids, making, rounds, made, elsewhere, autoOutput, attached, notPut, inputSlots, returnedInputs, inputsNotReturned, returnFailure, ...rest } = result
   const got = kindList(outputs)
   const list = (v: unknown): string => kindList(v).map((o) => kindText(o.count, o)).join(', ')
   let line = `put ${count(put)} item(s) into the machine${notPutText(notPut, inputSlots)}`
   // 机器自己记着的：这次看着它做完了几轮、做出了什么（和取回了多少是两件事：产物可能被它自己、覆盖板或管道送走）
   if (count(rounds) > 0) line += `; it finished ${count(rounds)} round(s) of a recipe${kindList(made).length > 0 ? `, making ${list(made)} in all` : ''}`
   line += `; took out: ${got.length > 0 ? list(outputs) : 'nothing'}`
+  if (Array.isArray(returnedInputs)) line += `; inputs actually returned: ${list(returnedInputs) || 'none'}`
+  if (Array.isArray(inputsNotReturned) && inputsNotReturned.length > 0) line += `; inputs NOT returned (consumed, moved on, or still inside): ${list(inputsNotReturned)}`
+  if (typeof returnFailure === 'string') line += `; return attempt stopped: ${returnFailure}`
   line += makingText(making, params)
   const places = (Array.isArray(elsewhere) ? elsewhere : []).filter(isRecord)
   if (places.length > 0 && kindList(made).length > 0) {

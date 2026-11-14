@@ -644,15 +644,16 @@ describe('agent 的一轮决策', () => {
     await h.agent.whenIdle()
     const unpowered = h.llm.lastUserText(1)
     assert.match(unpowered, /任务 t14（process）失败了：invalid — the machine did not start/)
-    assert.match(unpowered, /machine "Basic Assembling Machine" at \(-38,99,-80\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle\. It has no power, so it cannot run anything: tell the owner/)
+    assert.match(unpowered, /machine "Basic Assembling Machine" at \(-38,99,-80\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle/)
     assert.match(unpowered, /已完成的部分：put 7 item\(s\) into the machine; took out: nothing; freeSlots 20/)
 
-    // 有电又空闲却没开工：问题出在配方上（缺电路、缺流体、不是这台机器的配方……）
+    // 有电又空闲只是此刻状态，也可能刚完成高速加工；不再据此断言配方有误。
     h.agent.handleEvent(
       taskEnded('t15', 'failed', { type: 'process', error: { code: 'invalid', message: didNotStart, detail: { ...assembler, storedEU: 6400, inputVoltage: 32 } }, result: { put: 6, outputs: [], freeSlots: 20 } }),
     )
     await h.agent.whenIdle()
-    assert.match(h.llm.lastUserText(2), /has power \(6400 EU stored\), idle\. It has power and is idle, so the cause is the recipe: a missing programmed circuit or mold, a missing fluid/)
+    assert.match(h.llm.lastUserText(2), /has power \(6400 EU stored\), idle/)
+    assert.doesNotMatch(h.llm.lastUserText(2), /so the cause is the recipe/)
 
     // 等到头还没做完：做好的取回来了，还没开始做的原料也取回来了（测试服上实测：54 个钢锭等 5 秒，取回 36 个），机器只把手上那一轮做完
     h.agent.handleEvent(taskEnded('t16', 'done', { type: 'process', result: { put: 64, outputs: [{ id: GT, meta: 23305, name: 'Steel Rod', count: 20 }, { id: GT, meta: 11305, name: 'Steel Ingot', count: 43 }], timedOut: true, freeSlots: 19 } }))

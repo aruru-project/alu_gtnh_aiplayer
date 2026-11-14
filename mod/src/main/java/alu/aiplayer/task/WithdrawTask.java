@@ -54,7 +54,9 @@ public final class WithdrawTask extends Task {
         progressDone = trip.session.moved;
         if (st == ContainerTrip.Status.FAILED) fail(trip);
         else if (st == ContainerTrip.Status.DONE) {
-            if (trip.session.inventoryFull) fail("inventory_full", "the bot's inventory filled up");
+            if (trip.session.inventoryFull) fail("inventory_full", "not enough inventory capacity for the requested items or this slot's native pickup; missing lists what was not collected");
+            else if (trip.session.pickupLimited) fail("invalid", "the output slot cannot accept a surplus back: its smallest native pickup is "
+                + trip.session.smallestPickup + " but only " + trip.session.wantedPickup + " more were requested; that stack was left untouched");
             else done();
         }
     }
@@ -78,7 +80,13 @@ public final class WithdrawTask extends Task {
             m.addProperty("count", n);
             missing.add(m);
         }
-        // What the container did not have enough of.
+        if (trip.session.pickupLimited) {
+            JsonObject limit = new JsonObject();
+            limit.addProperty("minimum", trip.session.smallestPickup);
+            limit.addProperty("wanted", trip.session.wantedPickup);
+            o.add("pickupLimited", limit);
+        }
+        // Requested items not actually received (absence, capacity or native slot limits).
         if (missing.size() > 0) o.add("missing", missing);
         return o;
     }

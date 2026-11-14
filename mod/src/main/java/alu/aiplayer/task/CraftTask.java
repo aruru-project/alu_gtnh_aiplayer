@@ -203,7 +203,18 @@ public final class CraftTask extends Task {
             layout = Layout.fromGrid(gridGiven, book);
             // What the grid gives is the game's to say. If the caller named it, anything else is a failure;
             // if not, whatever comes out the first time is what the rest must be too.
-            expected = itemId == null ? null : new ItemStack(Names.item(itemId), 1, meta);
+            int outputCount = J.has(params, "gives") ? J.i(J.object(params, "gives"), "count", 0) : 0;
+            expected = itemId == null ? null : new ItemStack(Names.item(itemId), Math.max(1, outputCount), meta);
+            // A local NEI export is a display layout, not the server's complete ingredient semantics.
+            // Only reconcile against a native recipe for the exact output/count/state and matching layout.
+            RecipeBook.Entry nativeEntry = expected == null || outputCount <= 0 ? null : book.entry(itemId, meta);
+            if (nativeEntry != null) for (IRecipe nativeRecipe : nativeEntry.crafting) {
+                ItemStack output = nativeRecipe.getRecipeOutput();
+                if (output == null || output.stackSize != outputCount || !output.isItemEqual(expected)
+                    || !ItemStack.areItemStackTagsEqual(output, expected)) continue;
+                Layout restored = layout.withNativeDamageWildcards(Layout.of(nativeRecipe, book));
+                if (restored != layout) { layout = restored; break; }
+            }
             crafts = rounds;
         } else {
             RecipeBook.Entry entry = book.entry(itemId, meta);
@@ -267,7 +278,15 @@ public final class CraftTask extends Task {
             int multiplier = batch && !Layout.carriedReturnsItem(p, kind) ? crafts : 1;
             int need = layout.cellsWanting(kind) * multiplier;
             int have = Layout.carried(p, kind);
-            if (have < need) missing.add(layout.ingredientJson(kind, need - have));
+            if (have < need) {
+                JsonObject absent = layout.ingredientJson(kind, need - have);
+                JsonArray incompatible = layout.incompatibleCarried(p, kind);
+                if (incompatible.size() > 0) {
+                    absent.add("carriedIncompatible", incompatible);
+                    absent.addProperty("note", "these carried stacks do not match the ingredient's required damage/state; the Tools display group does not exclude items from crafting");
+                }
+                missing.add(absent);
+            }
         }
         if (missing.size() == 0) return true;
         failCode = "no_material";

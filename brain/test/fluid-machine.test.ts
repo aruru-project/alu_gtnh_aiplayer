@@ -42,6 +42,16 @@ it('the same large cell name no longer hides another fluid on the cursor or in i
   assert.match(inventory.content, /container: 120 of 64000 mB water/)
 })
 
+it('get_status shows real damage of returned forms even when rounded durability still says 100%', async (t) => {
+  const s = setup(t)
+  s.game.handlers['bot.status'] = () => ({ name: 'Alu', online: true, inventory: [
+    { id: 'dreamcraft:WoodenBrickForm', meta: 0, slot: 0, count: 1, durability: 1, rawDamage: 0, maxDamage: 300 },
+    { id: 'dreamcraft:WoodenBrickForm', meta: 0, slot: 1, count: 1, durability: 1, rawDamage: 1, maxDamage: 300 },
+  ] })
+  const result = await s.run('get_status')
+  assert.match(result.content, /2× dreamcraft:WoodenBrickForm.*100% durability.*raw damage 0–1\/300/)
+})
+
 it('fluid recipe with resident mould sends zero added inputs and exactly the requested collection count', async (t) => {
   const s = setup(t)
   const result = await s.run('process_items', { machine, recipe: 0, rounds: 63, moldInside: true })

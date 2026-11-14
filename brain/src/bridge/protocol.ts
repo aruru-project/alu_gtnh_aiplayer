@@ -19,6 +19,9 @@ export interface Vec3 {
 export interface Item {
   /** This particular stack's fluid contents, read from the item (not its name or recipe sample). */
   fluidContainer?: Tank
+  /** Actual damage state, separate from normalized selector meta and rounded durability. */
+  rawDamage?: number
+  maxDamage?: number
   id: string
   meta?: number
   count: number

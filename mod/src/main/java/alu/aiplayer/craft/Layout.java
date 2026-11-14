@@ -142,6 +142,51 @@ public final class Layout {
         return false;
     }
 
+    /**
+     * NEI expands wildcard stacks into display examples (often damage 0). Restore only damage wildcards
+     * explicitly present in an otherwise matching native layout, never a rule that all tools ignore damage.
+     * The caller has already checked the native output's identity, count and NBT.
+     */
+    public Layout withNativeDamageWildcards(Layout nativeLayout) {
+        if (nativeLayout == null || width != nativeLayout.width || height != nativeLayout.height) return this;
+        Object[] restored = cells.clone();
+        boolean changed = false;
+        for (int i = 0; i < cells.length; i++) {
+            Object given = cells[i], real = nativeLayout.cells[i];
+            if (given == null || real == null) {
+                if (given != real) return this;
+                continue;
+            }
+            if (given instanceof List) {
+                // An ore choice must be the same registered list, not merely overlap a different ingredient.
+                if (given != real) return this;
+                continue;
+            }
+            ItemStack chosen = (ItemStack) given;
+            if (!matches(real, chosen)) return this;
+            if (real instanceof ItemStack && !ItemStack.areItemStackTagsEqual((ItemStack) real, chosen)) return this;
+            if (real instanceof List) continue; // keep the caller's explicit choice
+            ItemStack required = (ItemStack) real;
+            if (chosen.isItemStackDamageable() && chosen.getItemDamage() == 0
+                && required.getItemDamage() == OreDictionary.WILDCARD_VALUE) {
+                restored[i] = required.copy();
+                changed = true;
+            } else if (!same(given, real)) return this;
+        }
+        return changed ? new Layout(width, height, restored, book) : this;
+    }
+
+    /** Actual carried stacks of this item which do not match this ingredient's exact state. */
+    public JsonArray incompatibleCarried(EntityPlayerMP p, Object cell) {
+        JsonArray out = new JsonArray();
+        if (!(cell instanceof ItemStack)) return out;
+        ItemStack wanted = (ItemStack) cell;
+        for (ItemStack s : p.inventory.mainInventory) {
+            if (s != null && s.getItem() == wanted.getItem() && !matches(cell, s)) out.add(Names.describe(s));
+        }
+        return out;
+    }
+
     /** The ore-dictionary name behind a cell's alternatives, or null. */
     public String ore(Object cell) {
         return cell instanceof List ? book.oreName(cell) : null;

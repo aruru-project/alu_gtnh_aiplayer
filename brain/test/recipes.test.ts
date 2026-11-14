@@ -358,7 +358,7 @@ describe('craft_item：照配方册里的配方手工合成', () => {
       type: 'craft',
       // 3×3 一行一行数：柄 螺丝 柄 / 螺丝 齿轮 螺丝 / 柄 螺丝刀 柄
       grid: [shaft, screw, shaft, screw, { id: 'gregtech:gt.metaitem.02', meta: 31305 }, screw, shaft, { ore: 'craftingToolScrewdriver' }, shaft],
-      gives: { id: 'adventurebackpack:backpackComponent', meta: 6 },
+      gives: { id: 'adventurebackpack:backpackComponent', meta: 6, count: 1 },
       rounds: 1,
       // 没指定工作台：用的是动手这一刻离它最近的那个（身体认的四种都找），不是早先查做法时看到的
       table: { x: -503, y: 69, z: 105 },
@@ -376,7 +376,7 @@ describe('craft_item：照配方册里的配方手工合成', () => {
     assert.deepEqual(s.lastTask(), {
       type: 'craft',
       grid: [{ ore: 'craftingToolHardHammer' }, null, null, { ore: 'ingotSteel' }, null, null, { ore: 'ingotSteel' }, null, null],
-      gives: PLATE,
+      gives: { ...PLATE, count: 1 },
       rounds: 3,
       table: { x: 8, y: 64, z: -4 },
     })
@@ -386,7 +386,7 @@ describe('craft_item：照配方册里的配方手工合成', () => {
   it('无序合成从头往后摆；一轮出 2 个时要 5 个就做 3 轮；三四样原料摆成 2×2（身体在随身的合成格里就能做，和查做法时说的一致）', async (t) => {
     const s = setup(t)
     await s.run('craft_item', { recipe: 10, count: 5 })
-    assert.deepEqual(s.lastTask(), { type: 'craft', grid: [PLATE, { ore: 'stickWood' }, null, null, null, null, null, null, null], gives: { id: 'demo:plateOnAStick', meta: 0 }, rounds: 3 })
+    assert.deepEqual(s.lastTask(), { type: 'craft', grid: [PLATE, { ore: 'stickWood' }, null, null, null, null, null, null, null], gives: { id: 'demo:plateOnAStick', meta: 0, count: 2 }, rounds: 3 })
     // 三样粉：占左上角的 2×2（第一行两格，第二行一格），不是横着一排三个
     await s.run('craft_item', { recipe: 28 })
     assert.deepEqual(s.lastTask().grid, [{ id: 'gregtech:gt.metaitem.01', meta: 2365 }, { ore: 'dustCoal' }, null, { ore: 'dustObsidian' }, null, null, null, null, null])

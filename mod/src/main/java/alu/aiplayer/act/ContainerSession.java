@@ -83,18 +83,27 @@ public final class ContainerSession {
     private boolean takeAll;
 
     public int moved;
+    /** Actual kinds received, for callers reporting returns without inventing a variant from a wildcard filter. */
+    public final alu.aiplayer.util.Kinds received = new alu.aiplayer.util.Kinds();
     /** True when some of what was to be deposited did not fit. */
     public boolean containerFull;
     /** True when a withdrawal stopped because the bot's inventory is full. */
     public boolean inventoryFull;
-    private boolean boundedWithdrawal;
     /** No native whole/half pickup fits the requested remaining count. Nothing from that slot was taken. */
     public boolean pickupLimited;
     public int smallestPickup, wantedPickup;
+    /** A drawer clicks the held stack, so a partial stack needs somewhere to put the surplus first. */
+    public boolean splitSpaceRequired;
+    private boolean requireProcessingSlots;
 
-    /** Opt in when over-taking and depositing a surplus elsewhere would be unsafe (existing processing). */
+    /** A bus-less controller may only be loaded through a real input/output screen, not a special-item slot. */
+    public ContainerSession processingSlots() {
+        requireProcessingSlots = true;
+        return this;
+    }
+
+    /** Kept for existing callers; all output withdrawals now respect native pickup/count limits. */
     public ContainerSession boundedWithdrawal() {
-        boundedWithdrawal = true;
         return this;
     }
     public String failCode;
@@ -238,6 +247,8 @@ public final class ContainerSession {
                         // where things may go and what may be taken, so nothing has to be known about the block.
                         viaScreen = true;
                         phase = 2;
+                    } else if (requireProcessingSlots) {
+                        return fail("invalid", "the controller did not expose clickable input/output slots; nothing was put in");
                     } else if (viaFace()) {
                         bot.conn()
                             .closeWindow();
@@ -255,6 +266,7 @@ public final class ContainerSession {
                     wait = 0;
                     cursor = 0;
                 } else if (++wait >= OPEN_WAIT) {
+                    if (requireProcessingSlots) return fail("invalid", "the controller opened no input/output screen; nothing was put in");
                     // No screen opened although nothing refused the click: storage without one (barrels, drawers).
                     TileEntity te = w.getTileEntity(x, y, z);
                     if (!(te instanceof IInventory) || !((IInventory) te).isUseableByPlayer(p)) {
@@ -272,6 +284,7 @@ public final class ContainerSession {
                 if (++wait < CLICK_INTERVAL) return Status.WORKING;
                 wait = 0;
                 if (!screenStep(p)) {
+                    if (failCode != null) return fail(failCode, failMessage);
                     bot.conn()
                         .closeWindow();
                     phase = 4;
@@ -384,7 +397,12 @@ public final class ContainerSession {
                     continue;
                 }
                 // The click puts in the whole held stack, so the part to keep is set aside first.
-                if (want > 0 && want < stack.stackSize) splitOff(p, i, stack.stackSize - want);
+                if (want > 0 && want < stack.stackSize && !splitOff(p, i, stack.stackSize - want)) {
+                    inventoryFull = true;
+                    splitSpaceRequired = true;
+                    unplaceable.add(stack);
+                    continue;
+                }
                 ItemStack type = stack.copy();
                 int offered = stack.stackSize;
                 int before = Inventories.count(p, exact(type));
@@ -449,6 +467,7 @@ public final class ContainerSession {
                     return true;
                 }
                 moved += got;
+                received.add(s.prototype, got);
                 if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] = Math.max(0, withdrawLeft[f] - got);
                 return true;
             }
@@ -629,6 +648,36 @@ public final class ContainerSession {
         return takesNothing(s, probe);
     }
 
+    /** An actual output declaration, not a restricted slot refusing one arbitrary probe item. */
+    private static boolean isOutput(Slot s) {
+        if (s instanceof net.minecraft.inventory.SlotCrafting || s instanceof net.minecraft.inventory.SlotFurnace
+            || s instanceof net.minecraft.inventory.SlotMerchantResult) return true;
+        try {
+            return !(Boolean) s.getClass().getMethod("isCanPut").invoke(s);
+        } catch (Throwable ignored) {}
+        try {
+            // IC2's SlotInvSlot wraps its native inventory slot, which explicitly declares input/output access.
+            Object inv = s.getClass().getField("invSlot").get(s);
+            return !(Boolean) inv.getClass().getMethod("canInput").invoke(inv)
+                && (Boolean) inv.getClass().getMethod("canOutput").invoke(inv);
+        } catch (Throwable ignored) {}
+        // A filled storage/filter slot accepts its own item. Empty restricted slots say nothing about outputs.
+        return s.getStack() != null && takesNothing(s, s.getStack());
+    }
+
+    /** A positive acceptance proves this is not an output-only slot. Failure to find an example is unknown. */
+    private static boolean acceptsExample(Slot slot, Container c) {
+        try {
+            if (slot.isItemValid(new ItemStack(net.minecraft.init.Blocks.cobblestone))) return true;
+        } catch (Throwable ignored) {}
+        for (Object o : c.inventorySlots) {
+            ItemStack s = ((Slot) o).getStack();
+            if (s == null) continue;
+            try { if (slot.isItemValid(s.copy())) return true; } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
     /** Where in the bot's inventory the stack a slot shows is; -1 if it is not there. */
     private static int ownIndex(EntityPlayerMP p, Slot s) {
         ItemStack shown = s.getStack();
@@ -665,11 +714,9 @@ public final class ContainerSession {
         Container c = p.openContainer;
         List<Slot> mine = new ArrayList<>();
         List<Slot> theirs = new ArrayList<>();
-        // A screen with slots nothing can be put into is a machine's: a plain withdrawal takes its products and
-        // leaves what is waiting to be worked on; fromInputSlots turns that round. A screen without such slots
-        // is plain storage and everything in it may be taken.
+        // Only an output declaration (or a filled slot refusing its own contents) identifies products.
+        // Empty pattern/fuel/tool slots refusing cobblestone do not turn storage into a processing machine.
         boolean hasProductSlots = false;
-        ItemStack probe = new ItemStack(net.minecraft.init.Blocks.cobblestone);
         for (Object o : c.inventorySlots) {
             Slot s = (Slot) o;
             if (isOwn(p, s)) {
@@ -678,10 +725,23 @@ public final class ContainerSession {
             }
             if (isGhost(s)) continue;
             theirs.add(s);
-            ItemStack shown = s.getStack();
-            // A bag is storage, whatever slots it has that refuse a stone (a backpack's tool and fluid slots, its
-            // crafting grid's result): everything in it may be taken.
-            if (opener == null && takesNothing(s, shown != null ? shown : probe)) hasProductSlots = true;
+            if (opener == null && isOutput(s)) hasProductSlots = true;
+        }
+        if (!hasProductSlots && opener == null && withdraw != null && !fromInputs) {
+            List<Integer> unknown = new ArrayList<>();
+            for (Slot s : theirs) if (s.getStack() == null && !acceptsExample(s, c)) unknown.add(s.slotNumber);
+            if (!unknown.isEmpty()) {
+                failCode = "invalid";
+                failMessage = "cannot distinguish empty restricted slots from output slots " + unknown
+                    + "; no default withdrawal was made, to preserve pending inputs. Use the screen to select a slot"
+                    + " or fromInputs only when intentionally taking inputs";
+                return false;
+            }
+        }
+        if (requireProcessingSlots && (!hasProductSlots || theirs.stream().noneMatch(s -> !isOutput(s)))) {
+            failCode = "invalid";
+            failMessage = "the controller screen has no usable input/output slots; nothing was put in";
+            return false;
         }
         if (deposit != null) {
             for (; cursor < mine.size(); cursor++) {
@@ -694,17 +754,23 @@ public final class ContainerSession {
                 if (opener != null && index == openerSlot) continue;
                 int want = deposit.wanted(stack);
                 if (want == 0) continue;
-                if (want > 0 && want < stack.stackSize) {
-                    // Set the surplus aside in a free slot first, so the shift-click moves exactly the wanted part.
-                    if (!splitOff(p, index, stack.stackSize - want)) want = stack.stackSize;
-                    stack = s.getStack();
-                }
                 ItemStack type = stack.copy();
-                int offered = stack.stackSize;
+                int offered = want < 0 ? stack.stackSize : Math.min(want, stack.stackSize);
                 // Counted across the whole inventory: some screens answer a shift-click by shuffling the stack
                 // to another of the bot's own slots, which is not a deposit.
                 int before = Inventories.count(p, exact(type));
-                c.slotClick(s.slotNumber, 0, 1, p);
+                if (offered < stack.stackSize) {
+                    // Pick up, place only the requested items, return the rest to the original slot. This uses
+                    // the cursor, not a spare inventory slot, and never relaxes a count into a whole-stack shift.
+                    if (p.inventory.getItemStack() != null) {
+                        failCode = "invalid";
+                        failMessage = "the cursor already holds an item; clear it before transferring";
+                        return false;
+                    }
+                    c.slotClick(s.slotNumber, 0, 0, p);
+                    placeCount(p, c, theirs, offered);
+                    if (p.inventory.getItemStack() != null) c.slotClick(s.slotNumber, 0, 0, p);
+                } else c.slotClick(s.slotNumber, 0, 1, p);
                 c.detectAndSendChanges();
                 int gone = before - Inventories.count(p, exact(type));
                 if (gone > 0) {
@@ -725,35 +791,42 @@ public final class ContainerSession {
                 Slot s = theirs.get(cursor);
                 ItemStack stack = s.getStack();
                 if (stack == null || !s.canTakeStack(p)) continue;
-                if (hasProductSlots && takesNothing(s, stack) == fromInputs) continue;
+                if (hasProductSlots && isOutput(s) == fromInputs) continue;
                 int f = matchingFilter(stack);
                 if (f < 0) continue;
                 ItemStack type = stack.copy();
                 int had = Inventories.count(p, exact(type));
-                if (boundedWithdrawal && withdrawLeft[f] < stack.stackSize) {
+                int room = roomFor(p, stack);
+                int want = Math.min(withdrawLeft[f], Math.min(room, stack.stackSize));
+                if (want <= 0) {
+                    inventoryFull = true;
+                    break;
+                }
+                if (p.inventory.getItemStack() != null) {
+                    failCode = "invalid";
+                    failMessage = "the cursor already holds an item; clear it before transferring";
+                    return false;
+                }
+                boolean returnable = s.isItemValid(stack) && !isOutput(s);
+                if (!returnable && want < stack.stackSize) {
                     int half = (stack.stackSize + 1) / 2;
-                    if (half > withdrawLeft[f]) {
-                        pickupLimited = true;
-                        smallestPickup = half;
-                        wantedPickup = withdrawLeft[f];
+                    if (half > want) {
+                        if (room < Math.min(half, withdrawLeft[f])) inventoryFull = true;
+                        else {
+                            pickupLimited = true;
+                            smallestPickup = half;
+                            wantedPickup = withdrawLeft[f];
+                        }
                         continue;
                     }
-                    if (roomFor(p, stack) < half || p.inventory.getItemStack() != null) {
-                        inventoryFull = true;
-                        break;
-                    }
-                    // A real right-click picks up half; put that cursor stack into the player's slots.
-                    // Never take a whole output stack then try to return its surplus into an INPUT slot.
+                    // Output slots cannot take a surplus back. Only a native whole/half pickup within the
+                    // requested count is safe; never return product surplus into a machine's input slots.
                     c.slotClick(s.slotNumber, 1, 0, p);
-                    for (Slot own : mine) {
-                        ItemStack hand = p.inventory.getItemStack();
-                        if (hand == null) break;
-                        ItemStack there = own.getStack();
-                        if (!own.isItemValid(hand) || (there != null && !sameItem(there, hand))) continue;
-                        c.slotClick(own.slotNumber, 0, 0, p);
-                    }
+                    placeCount(p, c, mine, half);
                 } else {
-                    c.slotClick(s.slotNumber, 0, 1, p);
+                    c.slotClick(s.slotNumber, 0, 0, p);
+                    placeCount(p, c, mine, want);
+                    if (p.inventory.getItemStack() != null && returnable) c.slotClick(s.slotNumber, 0, 0, p);
                 }
                 c.detectAndSendChanges();
                 int got = Inventories.count(p, exact(type)) - had;
@@ -763,15 +836,8 @@ public final class ContainerSession {
                     continue;
                 }
                 moved += got;
-                if (withdrawLeft[f] != Integer.MAX_VALUE) {
-                    withdrawLeft[f] -= got;
-                    if (withdrawLeft[f] < 0) {
-                        // Took a whole stack where less was asked for; hand the surplus back next.
-                        final int surplus = -withdrawLeft[f];
-                        withdrawLeft[f] = 0;
-                        returnSurplus(type, surplus);
-                    }
-                }
+                received.add(type, got);
+                if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] = Math.max(0, withdrawLeft[f] - got);
                 return true;
             }
             withdraw = null;
@@ -779,38 +845,42 @@ public final class ContainerSession {
         return deposit != null;
     }
 
-    /** After an over-large withdrawal, queue a deposit of exactly the surplus. */
-    private void returnSurplus(final ItemStack type, final int surplus) {
-        deposit = new DepositPlan() {
-
-            int left = surplus;
-
-            @Override
-            public int wanted(ItemStack stack) {
-                if (left <= 0 || !sameItem(stack, type)) return 0;
-                return Math.min(left, stack.stackSize);
+    /** Place at most count cursor items through real clicks, matching stacks before empty slots. */
+    private static void placeCount(EntityPlayerMP p, Container c, List<Slot> slots, int count) {
+        for (int pass = 0; pass < 2 && count > 0; pass++) for (Slot target : slots) {
+            ItemStack hand = p.inventory.getItemStack();
+            if (hand == null || count <= 0) return;
+            ItemStack there = target.getStack();
+            if (pass == 0 ? there == null : there != null) continue;
+            if (!target.isItemValid(hand) || (there != null && !sameItem(there, hand))) continue;
+            while (count > 0 && (hand = p.inventory.getItemStack()) != null) {
+                int before = hand.stackSize;
+                // A left click is safe only when the entire cursor is wanted. Otherwise right-click one.
+                c.slotClick(target.slotNumber, before <= count ? 0 : 1, 0, p);
+                ItemStack after = p.inventory.getItemStack();
+                int placed = before - (after == null ? 0 : after.stackSize);
+                if (placed <= 0) break;
+                count -= placed;
             }
-
-            @Override
-            public void moved(ItemStack t, int count) {
-                left -= count;
-                moved -= 2 * count; // it was counted coming out and again going back
-            }
-        };
-        cursor = 0;
+        }
     }
 
     private static boolean splitOff(EntityPlayerMP p, int invSlot, int count) {
-        ItemStack[] inv = p.inventory.mainInventory;
-        if (invSlot < 0 || invSlot >= inv.length || inv[invSlot] == null) return false;
-        for (int i = 9; i < inv.length && i < Inventories.CARRY_SLOTS; i++) {
-            if (inv[i] == null) {
-                inv[i] = inv[invSlot].splitStack(count);
-                p.inventory.markDirty();
-                return true;
-            }
+        if (p.inventory.getItemStack() != null) return false;
+        Container c = p.openContainer;
+        Slot source = null, spare = null;
+        for (Object o : c.inventorySlots) {
+            Slot s = (Slot) o;
+            if (s.inventory != p.inventory || s.getSlotIndex() >= Inventories.CARRY_SLOTS) continue;
+            if (s.getSlotIndex() == invSlot) source = s;
+            else if (s.getStack() == null) spare = s;
         }
-        return false;
+        if (source == null || spare == null || source.getStack() == null) return false;
+        c.slotClick(source.slotNumber, 0, 0, p);
+        placeCount(p, c, Collections.singletonList(spare), count);
+        if (p.inventory.getItemStack() != null) c.slotClick(source.slotNumber, 0, 0, p);
+        c.detectAndSendChanges();
+        return spare.getStack() != null && spare.getStack().stackSize == count;
     }
 
     private int matchingFilter(ItemStack stack) {
@@ -829,7 +899,7 @@ public final class ContainerSession {
     private static boolean sameItem(ItemStack a, ItemStack b) {
         return a != null && b != null
             && a.getItem() == b.getItem()
-            && alu.aiplayer.util.Names.meta(a) == alu.aiplayer.util.Names.meta(b)
+            && a.getItemDamage() == b.getItemDamage()
             && ItemStack.areItemStackTagsEqual(a, b);
     }
 
@@ -890,6 +960,7 @@ public final class ContainerSession {
                 p.inventory.markDirty();
                 if (got > 0) {
                     moved += got;
+                    received.add(type, got);
                     if (withdrawLeft[f] != Integer.MAX_VALUE) withdrawLeft[f] -= got;
                     // Deep storage (barrels and the like) shows one stack at a time in its output slot and fills it
                     // again from what it holds: keep taking from the same slot while it does.

@@ -250,7 +250,7 @@ export const craftItem: Tool = {
     // 要工作台又没指定：现在就动手的，找离它此刻最近的一个交给身体（它查做法和动手合成常常不在同一个地方）；
     // 排队的不知道轮到时它在哪，留给身体到时自己找
     const table = i.table ?? (i.queue || fitsPocketGrid(recipe) ? undefined : await nearestTable(ctx))
-    return startTask(ctx, { type: 'craft', grid, gives: { id: product.id, meta: product.meta }, rounds, table }, i.queue)
+    return startTask(ctx, { type: 'craft', grid, gives: { id: product.id, meta: product.meta, count: product.n }, rounds, table }, i.queue)
   },
 }
 

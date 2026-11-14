@@ -112,7 +112,8 @@ public final class DepositTask extends Task {
         progressDone = trip.session.moved;
         if (st == ContainerTrip.Status.FAILED) fail(trip);
         else if (st == ContainerTrip.Status.DONE) {
-            if (trip.session.containerFull) fail("container_full", "not everything fit into the container");
+            if (trip.session.splitSpaceRequired) fail("inventory_full", "partial drawer deposit needs one empty inventory slot to set aside the surplus before clicking the drawer; no extra items were deposited");
+            else if (trip.session.containerFull) fail("container_full", "not everything fit into the container");
             else done();
         }
     }

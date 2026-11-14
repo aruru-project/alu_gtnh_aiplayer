@@ -54,6 +54,11 @@ public final class Names {
         o.addProperty("name", displayName(stack));
         Double left = durabilityLeft(stack);
         if (left != null) o.addProperty("durability", J.round(left));
+        // meta remains the legacy item selector; raw damage distinguishes real crafting-remainder states.
+        if (stack.isItemStackDamageable()) {
+            o.addProperty("rawDamage", stack.getItemDamage());
+            o.addProperty("maxDamage", stack.getMaxDamage());
+        }
         // Fluid cells keep their contents in NBT, not in their display name or meta. Ask the item's own
         // interface on a copy: a named "Large Fluid Cell" is not necessarily empty.
         try {

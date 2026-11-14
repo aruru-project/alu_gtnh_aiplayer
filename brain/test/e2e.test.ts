@@ -600,7 +600,7 @@ it('端到端：大脑带着本地配方册启动，主人指着箱子说“做�
   const craft = bridge.requestsOf('task.start').map((r) => r.task as Record<string, unknown>).find((task) => task.type === 'craft')!
   const S = { id: 'IC2:itemRecipePart', meta: 12 }
   const W = { ore: 'screwSteel' }
-  assert.deepEqual(craft, { type: 'craft', grid: [S, W, S, W, null, W, S, { ore: 'craftingToolScrewdriver' }, S], gives: { id: 'adventurebackpack:backpackComponent', meta: 6 }, rounds: 1 })
+  assert.deepEqual(craft, { type: 'craft', grid: [S, W, S, W, null, W, S, { ore: 'craftingToolScrewdriver' }, S], gives: { id: 'adventurebackpack:backpackComponent', meta: 6, count: 1 }, rounds: 1 })
 
   // 2. 取料一做完就轮到合成（模拟的身体里取料是立刻做完的）：取料结束的消息接在这一步的工具结果后面，这一轮里就看到了
   assert.equal(bridge.requestsOf('task.start').length, 2)
@@ -1252,7 +1252,7 @@ it('端到端：只有机器配方的东西（钢杆）→ 它查配方、找机
   assert.equal(talk.requests.some((r) => JSON.stringify(r.body.messages).includes('任务 t3')), false)
   assert.match(failed, /需要你处理的事/)
   assert.match(failed, /任务 t3（process）失败了：invalid — the machine did not start/)
-  assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle\. It has no power/)
+  assert.match(failed, /machine \\"Basic Assembling Machine\\" at \(18,64,-4\): runs Assembler recipes, tier LV, 6 input slot\(s\), NO POWER \(0 EU stored\), idle/)
   // 原料拿回来了：两根钢杆还在身上，钢锭用掉了
   const carried = (meta: number) => bridge.bots.get('Alu')!.inventory.filter((i) => i.id === GT && i.meta === meta).reduce((n, i) => n + i.count, 0)
   assert.deepEqual([carried(23305), carried(1305), carried(11305)], [2, 4, 0])

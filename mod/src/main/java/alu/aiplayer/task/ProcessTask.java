@@ -53,6 +53,9 @@ public final class ProcessTask extends Task {
     private final int limitTicks;
 
     private boolean multi;
+    private boolean controllerInputs;
+    private boolean monitoring;
+    private int[] residentInputs;
     /** A machine known only by its screen; whether it is working is told from its contents changing. */
     private boolean plain;
     private long contents;
@@ -144,7 +147,7 @@ public final class ProcessTask extends Task {
             }
             loadAt = at;
             if (multi) for (TileEntity port : Machines.ports(te, "output bus")) unloadAt.add(new int[] { port.xCoord, port.yCoord, port.zCoord });
-            else unloadAt.add(at);
+            if (unloadAt.isEmpty()) unloadAt.add(at);
             trip = new ContainerTrip(bot, at[0], at[1], at[2]);
             trip.session.deposit(plan(inputs)); // approach and open normally; no item or circuit changes
             trip.beforeSession(() -> {
@@ -166,8 +169,9 @@ public final class ProcessTask extends Task {
         } else {
             String why = Machines.idleReason(te);
             List<TileEntity> buses = Machines.ports(te, "input bus");
-            if (buses.isEmpty() || Machines.ports(te, "output bus")
-                .isEmpty() && !inputs.isEmpty()) {
+            controllerInputs = buses.isEmpty() && wantedBus == null;
+            if (!controllerInputs && (buses.isEmpty() || Machines.ports(te, "output bus")
+                .isEmpty() && !inputs.isEmpty())) {
                 fail(
                     "invalid",
                     "the multiblock has no usable " + (buses.isEmpty() ? "input" : "output")
@@ -184,11 +188,12 @@ public final class ProcessTask extends Task {
                     bus = b;
                 }
             }
-            if (bus == null) {
+            if (bus == null && !controllerInputs) {
                 fail("invalid", "bus is not one of this machine's input buses", Machines.describe(te));
                 return;
             }
-            loadAt = new int[] { bus.xCoord, bus.yCoord, bus.zCoord };
+            loadAt = controllerInputs ? at : new int[] { bus.xCoord, bus.yCoord, bus.zCoord };
+            if (controllerInputs && Machines.ports(te, "output bus").isEmpty()) unloadAt.add(at);
             for (TileEntity b : Machines.ports(te, "output bus")) {
                 unloadAt.add(new int[] { b.xCoord, b.yCoord, b.zCoord });
                 for (TileEntity next : alu.aiplayer.world.WorldQueries.passesTo(b.getWorldObj(), b)) {
@@ -216,12 +221,14 @@ public final class ProcessTask extends Task {
             trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
             inputsLeft = new int[inputs.size()];
             trip.session.deposit(plan(inputs, inputsLeft));
+            if (controllerInputs) trip.session.processingSlots();
             // Standing at it, before anything goes in: whether it is already running a recipe of its own, and the
             // moment a player clicks the circuit. Set afterwards, the machine could start on the first inputs with the
             // circuit it had (a bender set to 1 made foil).
             trip.beforeSession(() -> {
                 TileEntity m = machine();
                 busyBefore = !plain && m != null && Machines.working(m);
+                beginMonitoring();
                 if (circuit < 0) return true;
                 TileEntity where = tile(loadAt);
                 oldCircuit = where == null ? -1 : Machines.circuit(where);
@@ -297,6 +304,7 @@ public final class ProcessTask extends Task {
         trip = new ContainerTrip(bot, hatchAt[0], hatchAt[1], hatchAt[2]);
         // A hatch takes one cell at a time and empties it over the next moments; one cell per visit of its slot.
         trip.session.deposit(plan(fluids));
+        trip.beforeSession(() -> { if (!monitoring) beginMonitoring(); return true; }, "could not observe before pouring");
         stage = 5;
     }
 
@@ -318,13 +326,32 @@ public final class ProcessTask extends Task {
     private String fluidsBefore;
     private com.google.gson.JsonElement fluidsAfter;
 
-    private void beginWaiting() {
+    private void beginMonitoring() {
         fluidsBefore = fluidState().toString();
-        // The slots right after loading: a change from this means the machine took the inputs.
         TileEntity te = machine();
-        if (!plain && te instanceof IInventory) contents = fingerprint((IInventory) te);
-        before = carried();
+        if (te instanceof IInventory) contents = fingerprint((IInventory) te);
+        residentInputs = inputCounts();
         lookAround();
+        monitoring = true;
+        observeMachine();
+    }
+
+    /** Start watching before the first deposit click: a fast recipe can finish before loading closes its GUI. */
+    private void observeMachine() {
+        TileEntity te = machine();
+        if (plain || te == null) return;
+        watchRounds(te);
+        if (Machines.working(te)) {
+            sawWorking = true;
+            ran = true;
+            if (making == null || making.size() == 0) making = Machines.making(te);
+        }
+    }
+
+    private void beginWaiting() {
+        // For unreadable machines, loading itself is not evidence that processing started.
+        if (plain && machine() instanceof IInventory) contents = fingerprint((IInventory) machine());
+        before = carried();
         phase = "waiting for the machine";
         stage = 1;
         waited = 0;
@@ -448,6 +475,7 @@ public final class ProcessTask extends Task {
             tickObservation();
             return;
         }
+        if (monitoring) observeMachine();
         switch (stage) {
             case 0: { // loading
                 ContainerTrip.Status st = trip.tick();
@@ -528,7 +556,6 @@ public final class ProcessTask extends Task {
                 boolean active;
                 if (plain) {
                     long now = fingerprint((IInventory) te);
-                    if (waited == 1) contents = now;
                     if (now != contents) {
                         contents = now;
                         unchanged = 0;
@@ -540,13 +567,6 @@ public final class ProcessTask extends Task {
                     active = ran && unchanged < 240;
                 } else {
                     active = Machines.isActive(te);
-                    watchRounds(te);
-                    // What it set out to make, read while it runs a recipe: if something else got into the machine (a
-                    // pipe feeding it, a circuit it still had), this says so.
-                    if (Machines.working(te)) {
-                        sawWorking = true;
-                        if (making == null || making.size() == 0) making = Machines.making(te);
-                    }
                     if (!takenBack && !busyBefore && otherRecipe() != null) {
                         // It is making none of what these inputs are for: what is still in its input slots comes back
                         // out at once, the way a player stops a machine seen making the wrong thing.
@@ -628,16 +648,16 @@ public final class ProcessTask extends Task {
                 if (trip != null) {
                     ContainerTrip.Status st = trip.tick();
                     if (st == ContainerTrip.Status.WORKING) return;
+                    noteReturned(st);
                 }
                 finish();
                 break;
             }
             case 9: { // taking back what has not gone into the other recipe; the machine finishes the round it is on
-                TileEntity te = machine();
-                if (te != null) watchRounds(te);
                 if (trip != null) {
                     ContainerTrip.Status st = trip.tick();
                     if (st == ContainerTrip.Status.WORKING) return;
+                    noteReturned(st);
                 }
                 if (leave) {
                     // Not left running on the wrong thing, and not waited on either: the round it is on is its own.
@@ -658,14 +678,17 @@ public final class ProcessTask extends Task {
                     ContainerTrip.Status st = trip.tick();
                     if (st == ContainerTrip.Status.WORKING) return;
                 }
+                noteReturned(trip == null ? ContainerTrip.Status.DONE : trip.failCode == null ? ContainerTrip.Status.DONE : ContainerTrip.Status.FAILED);
                 restoreCircuit();
+                outputs = gained();
+                elsewhere = foundAround();
                 TileEntity te = machine();
                 fail(
                     "invalid",
-                    "the machine did not start"
+                    "no recipe start was observed"
                         + (notStarted != null ? ": " + notStarted + "."
-                            : ": it may lack power, a programmed circuit or a fluid, or these inputs are not a recipe it runs.")
-                        + (inputs.isEmpty() ? "" : " The inputs are back in the inventory."),
+                            : ": check power, circuit, fluid and recipe compatibility.")
+                        + (inputs.isEmpty() ? "" : " returnedInputs lists only inputs actually taken back; inputsNotReturned may have been consumed, moved on, or remain in the machine."),
                     te == null || plain ? null : Machines.describe(te));
                 break;
             }
@@ -905,7 +928,7 @@ public final class ProcessTask extends Task {
                 + "; what was in it fits that recipe too"
                 + (busyBefore ? " (it was already running a recipe when the inputs went in)" : "")
                 + setting
-                + ". What had not gone in was taken back out"
+                + ". returnedInputs lists what was actually taken back"
                 + (roundStillOn
                     ? "; the round it was on when that was seen finishes in the machine, and what it makes stays in it"
                         + " (or goes where its auto-output sends it)"
@@ -998,16 +1021,49 @@ public final class ProcessTask extends Task {
      * Takes back out of the input slots what the bot put in and the machine has not used, as many of each as it
      * put in. What was in there before (a mould someone keeps there) is theirs and stays.
      */
+    private List<ItemFilter> returnWanted;
+    private final Kinds returnedInputs = new Kinds();
+    private boolean returnAttempted;
+    private String returnFailure;
+
+    private void noteReturned(ContainerTrip.Status status) {
+        if (returnWanted == null || trip == null) return;
+        for (com.google.gson.JsonElement e : trip.session.received.toJson()) returnedInputs.add(e.getAsJsonObject());
+        if (status == ContainerTrip.Status.FAILED) returnFailure = trip.failCode + ": " + trip.failMessage;
+        else if (trip.session.inventoryFull) returnFailure = "inventory_full: no capacity for the remaining input pickup";
+        else if (trip.session.pickupLimited) returnFailure = "pickup_limited: remaining input cannot be taken without extra";
+        returnWanted = null;
+    }
+
+    private int[] inputCounts() {
+        int[] counts = new int[inputs.size()];
+        TileEntity te = tile(loadAt);
+        if (!(te instanceof IInventory)) return counts;
+        IInventory inv = (IInventory) te;
+        int[] slots = Machines.inputSlots(te);
+        // For controllers whose roles are declared by their GUI, conservatively preserve all resident stock.
+        int first = slots == null ? 0 : slots[0], end = slots == null ? inv.getSizeInventory() : first + slots[1];
+        for (int slot = first; slot < end; slot++) for (int i = 0; i < counts.length; i++) {
+            ItemStack s = inv.getStackInSlot(slot);
+            if (s != null && inputs.get(i).matches(s)) counts[i] += s.stackSize;
+        }
+        return counts;
+    }
+
     private void takeBackOwn() {
+        returnAttempted = true;
         List<ItemFilter> own = new ArrayList<>();
+        int[] now = inputCounts();
         for (int i = 0; i < inputs.size(); i++) {
             int n = inputsLeft == null ? inputs.get(i).count : inputs.get(i).count - inputsLeft[i];
+            n = Math.min(n, Math.max(0, now[i] - (residentInputs == null ? 0 : residentInputs[i])));
             if (n > 0) own.add(new ItemFilter(inputs.get(i).id, inputs.get(i).meta, n));
         }
         if (own.isEmpty()) {
             trip = null;
             return;
         }
+        returnWanted = own;
         trip = new ContainerTrip(bot, loadAt[0], loadAt[1], loadAt[2]);
         trip.session.withdraw(own)
             .fromInputSlots();
@@ -1183,6 +1239,21 @@ public final class ProcessTask extends Task {
             return o;
         }
         o.add("outputs", outputs);
+        if (returnAttempted) {
+            o.add("returnedInputs", returnedInputs.toJson());
+            JsonArray notReturned = new JsonArray();
+            for (int i = 0; i < inputs.size(); i++) {
+                ItemFilter f = inputs.get(i);
+                int n = f.count - (inputsLeft == null ? f.count : inputsLeft[i]);
+                for (com.google.gson.JsonElement e : returnedInputs.toJson()) {
+                    JsonObject item = e.getAsJsonObject();
+                    if (f.id.equals(J.str(item, "id", "")) && (f.meta < 0 || f.meta == J.i(item, "meta", 0))) n -= J.i(item, "count", 0);
+                }
+                if (n > 0) { JsonObject item = f.toJson(); item.addProperty("count", n); notReturned.add(item); }
+            }
+            o.add("inputsNotReturned", notReturned);
+            if (returnFailure != null) o.addProperty("returnFailure", returnFailure);
+        }
         loadingFacts(o);
         if (making != null && making.size() > 0) o.add("making", making);
         if (rounds > 0) o.addProperty("rounds", rounds);
