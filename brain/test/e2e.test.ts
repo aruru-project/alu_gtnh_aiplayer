@@ -138,7 +138,7 @@ it('端到端：聊天 → 对话线应一声并交给干活线 → 干活线启
   const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   assert.deepEqual(startReq.params, {
     bot: 'Alu',
-    task: { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, dropoff: [{ x: 20, y: 64, z: 0 }] },
+    task: { type: 'flatten', x1: 0, z1: 0, x2: 15, z2: 15, y: 64, dropoff: [{ x: 20, y: 64, z: 0 }], dig: false, climb: false, maxDrop: 3 },
     mode: 'replace',
   })
   await waitFor('first turns finished', () => llm.requests.length === 3 && talk.requests.length === 2, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
@@ -400,7 +400,7 @@ it('端到端：主人在面板上传图纸 → 叫它照着盖 → 先对比（
   )
   bridge.whisper('Alu', 'Steve', '照 cabin 那张图纸在 30 65 30 盖，石砖在你旁边的箱子里')
   const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'cabin', x: 30, y: 65, z: 30, supply }, mode: 'replace' })
+  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'cabin', x: 30, y: 65, z: 30, supply, dig: false, climb: false, maxDrop: 3 }, mode: 'replace' })
   await waitFor('first turn finished', () => llm.requests.length === 3, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   // 对比的结果：要 40 块石砖、它身上一块都没有；箱子得由人放
   const checked = JSON.stringify(llm.requests[1]!.body.messages.at(-1))
@@ -861,7 +861,7 @@ it('端到端：主人在面板传一张图，叫它做成像素画 → 它写�
   )
   bridge.whisper('Alu', 'Steve', '可以，盖吧')
   const startReq = await bridge.waitForRequest('task.start', () => true, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
-  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'heart-art', x: 40, y: 65, z: 40 }, mode: 'replace' })
+  assert.deepEqual(startReq.params, { bot: 'Alu', task: { type: 'blueprint', name: 'heart-art', x: 40, y: 65, z: 40, dig: false, climb: false, maxDrop: 3 }, mode: 'replace' })
   await waitFor('second turn finished', () => llm.requests.length === 7, 10_000).catch((e) => assert.fail(`${e.message}${diag()}`))
   // 身体收到的图纸，照它的读法就是那个红心
   const blueprint = bridge.blueprints.get('heart-art')
@@ -1511,7 +1511,7 @@ it('端到端：主人说“做一个小背包，做好后把圆石放进去” 
   await waitFor('told the owner', () => bridge.commandLog.some((c) => c.command.includes('小背包做好了')), 15_000).catch((e) => assert.fail(`${e.message}\n${all()}${diag()}`))
   assert.match(all(), /任务 t2（craft）完成了。 结果：crafted 1× Backpack:backpack "小背包", freeSlots \d+/)
   // 右键用了以后看得见的变化：没多没少，打开过一个界面
-  assert.match(all(), /任务 t3（use）完成了。 结果：used "小背包"; gained: nothing; lost: nothing; it opened a screen, which was closed again: to put things in or take them out, use deposit_items \/ withdraw_items with "bag"; health 20; food 20; freeSlots \d+/)
+  assert.match(all(), /任务 t3（use）完成了。 结果：used "小背包"; gained: nothing; lost: nothing; it opened a screen, which was closed again: open_screen with the same item,.*bag opens an item by using it in air only; health 20; food 20; freeSlots \d+/)
   assert.match(all(), /任务 t4（deposit）完成了。 结果：\{"moved":64,"freeSlots":\d+\}/)
   // 交给身体的任务：包是“我身上这件东西右键打开的界面”，不是一个位置
   assert.deepEqual(

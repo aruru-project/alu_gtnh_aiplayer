@@ -637,7 +637,8 @@ describe('agent 跑久了以后的历史', () => {
     assert.ok(historyTokens(one.summary, one.turns) < 2500)
     // 上界 32,000 → 34,000：工具清单和提示词一路长了（工作清单的 todo、基地的做法……），约 32,400；
     // 34,000 → 35,000：看图纸、任务书、朝向、走路的参数又长了一千多字符（tool-list.test.ts 的防回涨记着每一笔），现在约 34,100
-    assert.ok(h.agent.contextTokens('work') > 25_000 && h.agent.contextTokens('work') < 35_000, `context ${h.agent.contextTokens('work')}`)
+    // 第三批通用移动选择及开工自查后约36,222；保留真实token校准检查，不将旧工具清单大小当作业务条件。
+    assert.ok(h.agent.contextTokens('work') > 25_000 && h.agent.contextTokens('work') < 37_000, `context ${h.agent.contextTokens('work')}`)
     for (let i = 2; i <= 12; i++) {
       h.llm.enqueue(respond(i), respond(i))
       h.agent.handleEvent(taskEnded(`t${i}`, 'done'))

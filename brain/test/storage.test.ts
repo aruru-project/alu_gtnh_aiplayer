@@ -478,7 +478,7 @@ describe('通用的界面动作：打开、看格子、点、关', () => {
     assert.deepEqual(s.game.callsOf('screen.open').at(-1), { bot: 'Alu', item: { id: 'Backpack:backpack' } })
   })
 
-  it('开不了时说清下一步：有任务在跑、够不着、右键后没有界面、方块和物品都给或都没给', async (t) => {
+  it('开不了时说清原因；不指定目标查看已有界面，物品可带着点击方块的上下文打开', async (t) => {
     const s = setup(t)
     s.game.handlers['screen.open'] = () => {
       throw new BridgeError('busy', 'a task is running')
@@ -501,9 +501,10 @@ describe('通用的界面动作：打开、看格子、点、关', () => {
     s.game.handlers['screen.look'] = () => ({ open: false })
     assert.equal((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 } })).content, 'No screen opened: after asking for it, it was looked for 8 more times over 1.6 s and none appeared. That block (or item) opens no screen this way.')
     assert.equal((await s.run('open_screen')).content, 'No screen is open right now.')
-    assert.deepEqual(await s.run('open_screen', { at: { x: 1, y: 64, z: 1 }, item: { id: 'Backpack:backpack' } }), { content: 'Give "at" (a block) or "item" (something you carry), not both; neither to look at the screen that is already open.', isError: true })
-    // 方块和物品都给的那一次没有去开
-    assert.equal(s.game.callsOf('screen.open').length, 4)
+    s.game.handlers['screen.open'] = () => ({ open: true, screen: 'ContextualItem', slotCount: 0, slots: [] })
+    assert.match((await s.run('open_screen', { at: { x: 1, y: 64, z: 1 }, item: { id: 'Backpack:backpack' } })).content, /^Screen "ContextualItem" is open/)
+    assert.deepEqual(s.game.callsOf('screen.open').at(-1), { bot: 'Alu', x: 1, y: 64, z: 1, item: { id: 'Backpack:backpack' } })
+    assert.equal(s.game.callsOf('screen.open').length, 5)
     // 例程里可以调这三个（同样的点法要重复很多遍时）；只算不动手的 run_program 不行
     for (const name of ['open_screen', 'click_slot', 'close_screen']) assert.deepEqual([ROUTINE_BLOCKED_TOOLS.includes(name), QUERY_TOOLS.includes(name)], [false, false], name)
   })

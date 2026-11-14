@@ -26,7 +26,7 @@ describe('agent 的一轮决策', () => {
 
     // 游戏那边：任务按参数启动；干活线没有在聊天里说任何话
     assert.deepEqual(h.game.callsOf('task.start'), [
-      { bot: 'Alu', task: { type: 'flatten', x1: 0, z1: 0, x2: 7, z2: 7, y: 64 }, mode: 'replace' },
+      { bot: 'Alu', task: { type: 'flatten', x1: 0, z1: 0, x2: 7, z2: 7, y: 64, dig: false, climb: false, maxDrop: 3 }, mode: 'replace' },
     ])
     assert.deepEqual(h.game.said, [])
     // 模型那边：第一次看到交来的事（连同主人的原话）和状态；第二次看到两个工具的结果

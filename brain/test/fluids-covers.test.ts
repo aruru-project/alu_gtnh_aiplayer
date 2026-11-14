@@ -208,7 +208,7 @@ describe('覆盖板里的东西', () => {
       { bot: 'Alu', ...SOLIDIFIER, side: 'up', hit: { x: 0.5, y: 1, z: 0.25 } },
     ])
     const lost = await modelCalls(h, 'open_screen', { side: 'west', sneak: true })
-    assert.deepEqual([lost.isError, lost.content], [true, '"side", "hit" and "sneak" say how to click a block: give the block as "at".'])
+    assert.deepEqual([lost.isError, lost.content], [true, '"side" and "hit" say how to click a block: give the block as "at".'])
   })
 
   it('看一台机器、看一片容器、看附近的机器：各个面的覆盖板和里面的东西都照实列出来，并写明怎么够得着；仓库总表把覆盖板里的东西算进去', async (t) => {
@@ -446,6 +446,7 @@ describe('一个方块的全部数据（inspect_block 的 detail）', () => {
       '  Stored Fluid: No Fluid',
       '  0 L 16,000 L',
       '  Locked to fluid.gas_gas',
+      'GregTech fluid units: 1 L = 1 mB (millibucket, not millilitre); 1 bucket = 1000 mB = 1000 GT L. Thus 200 L/s means 200 mB/s, not 200,000 mB/s. L/sec and L/s are the same; /t uses a nominal 20 ticks/s. A pipe rating is not measured flow.',
       'Its own saved data, whole (class gregtech.api.metatileentity.BaseMetaTileEntity); the keys are its internal names, the values raw:',
       '  Inventory: []',
       '  lockedFluidName: "gas_gas"',
@@ -459,7 +460,8 @@ describe('一个方块的全部数据（inspect_block 的 detail）', () => {
     assert.deepEqual(h.game.callsOf('world.block').at(-1), { ...HATCH, detail: true })
     // 只看一部分
     const part = await modelCalls(h, 'inspect_block', { ...HATCH, path: 'gt.covers' })
-    assert.deepEqual(part.content.split('\n').slice(7), [
+    const partLines = part.content.split('\n')
+    assert.deepEqual(partLines.slice(partLines.findIndex((line) => line.startsWith('Its saved data under'))), [
       'Its saved data under "gt.covers":',
       '  [0]: {"side":4,"item":{"item":"gregtech:gt.metaitem.01","meta":32380,"count":1,"name":"Basic Item Holder"}}',
       'Names in the above, as the game shows them: fluid.gas_gas = 炼油气; gregtech:gt.metaitem.01/32380 = 基础槽位扩展',
@@ -467,7 +469,8 @@ describe('一个方块的全部数据（inspect_block 的 detail）', () => {
     assert.deepEqual(h.game.callsOf('world.block').at(-1), { ...HATCH, detail: true, path: 'gt.covers' })
     // 路径不存在：说没有，给出顶层
     const wrong = (await modelCalls(h, 'inspect_block', { ...HATCH, path: 'nope' })).content.split('\n')
-    assert.deepEqual(wrong.slice(7, 10), ['There is nothing at "nope" in its saved data. Its top level:', '  Inventory: []', '  lockedFluidName: "gas_gas"'])
+    const wrongStart = wrong.findIndex((line) => line.startsWith('There is nothing at'))
+    assert.deepEqual(wrong.slice(wrongStart, wrongStart + 3), ['There is nothing at "nope" in its saved data. Its top level:', '  Inventory: []', '  lockedFluidName: "gas_gas"'])
     // 没有自己数据的方块
     assert.equal((await modelCalls(h, 'inspect_block', { x: 0, y: 60, z: 0, detail: true })).content, '(0,60,0): minecraft:stone "Stone" [solid] hardness 1.5\nIt keeps no data of its own (this block keeps no data of its own: its id and meta are all there is).')
   })

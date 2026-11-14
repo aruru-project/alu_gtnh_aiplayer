@@ -79,7 +79,7 @@ describe('意见簿：提交', () => {
     h.agent.handleEvent(chat('Steve', 'Alu 你查不到石砖吗'))
     h.agent.handleEvent(told('去仓库'))
     await h.agent.whenIdle()
-    assert.match(h.llm.requests[0]!.system, /工具不够用、结果不对、同一件事反复失败、手册和实际对不上：report_problem 记一条（留给维护的人看，没人回复），记完照常接着干。/)
+    assert.match(h.llm.requests[0]!.system, /普通游戏困难不等于 Bug；处理后仍异常或回执与实际矛盾，再记 report_problem，写清证据与未确定之处。/)
     assert.match(h.talk.requests[0]!.system, /工具不够用、结果不对、手册和实际对不上：report_problem 记一条，留给维护的人看，没人回复。/)
     const [report] = s.book.list()
     assert.match(report!.context.instruction, /Steve 说：Alu 你查不到石砖吗/)

@@ -1921,7 +1921,8 @@ describe('面板：两条线', () => {
     const [talk, work] = (await s.call('GET', '/api/status')).json.agents
     // 历史里只有一轮（按字符估两百来 token），但整份请求两万五千多：工具清单就有四万多字符
     assert.equal(work.history.turns, 1)
-    assert.ok(work.history.estimatedTokens > 25_000 && work.history.estimatedTokens < 32_000, `work ${work.history.estimatedTokens}`)
+    // 通用移动参数和开工自查后约33,222；这里验证面板使用接口校准值，而不是历史正文的字符估算。
+    assert.ok(work.history.estimatedTokens > 25_000 && work.history.estimatedTokens < 35_000, `work ${work.history.estimatedTokens}`)
     // 概览里干活线那一项是同一个数
     assert.equal((await s.call('GET', '/api/overview')).json.histories.work.estimatedTokens, work.history.estimatedTokens)
     // 对话线被干活线留下的话叫醒过一轮，它的假模型报的数离谱（1000），不信它：只按历史的字符估

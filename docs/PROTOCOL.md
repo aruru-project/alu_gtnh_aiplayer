@@ -49,7 +49,7 @@
 - 方块坐标是整数 `x y z`，维度是整数 `dim`（主世界 0）。x、z 超出 ±3000 万或 y 明显不是高度时返回 `bad_request`。`world.*` 方法省略 `dim` 时：带了 `bot` 就用它所在的维度，否则主世界。
 - 实体位置 `pos` 是小数；`block` 是脚所在格子的整数坐标。
 - 方块：`{"id":"minecraft:stone","meta":0}`。物品：`{"id":"minecraft:dirt","meta":0,"count":64,"name":"Dirt"}`。
-  `name` 是服务器语言（英文）下的显示名，只给人和模型看，不用于匹配。工具的 `meta` 一律是 0。物品原生流体接口可读时另带 `fluidContainer:{amount,capacity,fluid?,name?}`：这一只容器真实内容（空的 amount 0），鼠标、背包、界面格子均有；不带不代表空。
+  `name` 是服务器语言（英文）下的显示名，只给人和模型看，不用于匹配。工具的展示 `meta` 继续兼容为0；原生耐久物品另带 `rawDamage`/`maxDamage` 保留真实状态，不从取整后的耐久百分比反推配方匹配。物品原生流体接口可读时另带 `fluidContainer:{amount,capacity,fluid?,name?}`：这一只容器真实内容（空的 amount 0），鼠标、背包、界面格子均有；不带不代表空。
 - 物品筛选 `ItemFilter`：`{"id":"minecraft:dirt"}`（任意 meta）或带 `"meta":0`，可带 `"count":N`。
 
 ## 方法
@@ -60,7 +60,7 @@
 |---|---|---|
 | `server.info` | – | `{tick, tps, tickMs, worldTime, dayTime, isDay, raining, difficulty, players:[{name,uuid,dim,pos,isBot}], bots:[name]}` |
 | `world.player` | `{name}` | 一个在线玩家（真人或 bot）站在哪、朝哪看、指着什么：`{name, isBot}` 加上下面的 PlayerView。不在线返回 `not_found` |
-| `world.block` | `{dim?,x,y,z, detail?=false, path?}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory,covers?,tanks?}`；区块没加载时只有 `{loaded:false}`。`covers`、`tanks` 见下面“覆盖板和流体罐”。**`detail:true` 把这个方块自己知道的全部给出来**，见下面“一个方块的全部数据” |
+| `world.block` | `{dim?,x,y,z, detail?=false, path?}` | `{id,meta,name,air,solid,liquid,replaceable,hardness,tileEntity,inventory,covers?,tanks?,orientation?}`；区块没加载时只有 `{loaded:false}`。`covers`、`tanks` 见下面“覆盖板和流体罐”。**`detail:true` 把这个方块自己知道的全部给出来**，见下面“一个方块的全部数据” |
 | `world.blocks` | `{dim?,x1,y1,z1,x2,y2,z2}`，每边最多 64 格 | 一个范围里的全部方块，画图用，见下 |
 | `world.scan` | `{dim?,x1,z1,x2,z2}`，最多 64×64 列 | 见下 |
 | `world.find` | `{blocks:[id…], radius?(≤48), limit?(≤64)}` + 中心 | `{matches:[{x,y,z,id,meta,dist}], total}`，由近到远 |
@@ -116,6 +116,8 @@ Container：
 - 实测：流体提取机 `screen.press {key:"fluidAutoOutput"}` 之后，它罐里的 288 mB 熔融钢几秒内进了隔壁的固化器；固化器 `screen.press {key:"cover_panel_west"}` 之后格子从 40 个变成 49 个，多出来的 9 个就是西面覆盖板里的东西。
 - 这些改的是机器的设置，和玩家点那个按钮是一回事。
 - **只画在 mod 客户端里的按钮**也在 `controls` 里：有的 mod 的界面是原版那种做法，按钮只存在于它的客户端，点了由客户端给服务器发它自己的消息。身体替 bot 做那个客户端的事（见下面“mod 的客户端”），所以这些按钮同样列出来、同样用 `screen.press` 按：`{"key":"equip","kind":"button","label":"Shoulder Copter Pack"}`，`label` 是鼠标移上去时它写的话（英文）。现在有的：探险背包（Adventure Backpack）三样背在背上的东西的界面——从手里打开的有 `equip`（背到背上），从背上打开的有 `unequip`（卸下来）。按了以后界面关上，和客户端点完就关一样；`unequip` 是这个 mod 自己隔 0.2 秒才把东西放回背包。
+
+`world.block.orientation` 是已识别的原生朝向事实，目前抽屉为 `{front,source,placement}`：front由tile的Dir读取，不把block meta当朝向，也不写Dir绕过正常放置。
 
 **一个方块的全部数据**（`world.block` 带 `detail:true` 或 `path`）。不按方块的种类做任何假设：凡是存着东西的方块（里面有什么、怎么设置的、正在干什么），存档时都把自己的全部状态写成一棵树，这里把那棵树原样给出来；会对扫描器“自报家门”的方块再把那几行话给出来。所以没见过的机器、没人为它写过读取代码的状态（输出仓锁定了哪种流体、机器的各种开关、覆盖板的设置……）都在这里。
 
@@ -337,6 +339,8 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 | `recipe.overclock` | `{eut,ticks,recipeKey,machine?:{x,y,z},tier?,bot?,dim?}`（machine/tier 二选一） | 只读安装 GT 的 NEI 超频预测，见下 |
 | `world.stock` | `{items:[{id,meta?} \| {ore}], radius?=32(≤64)}` + 中心 | 这些东西存在哪：`{items:[{id,meta?\|ore, total, places:[{x,y,z,container,kind?,cover?,side?,count,items?}], morePlaces?}], containersLookedInto}`。查的是半径内已加载区块里的所有箱子、抽屉（真实数量）和其他带物品栏的方块；每样最多列 6 处，数量多的在前。按矿辞名或不带 meta 查时，每处带 `items`：具体是哪几种（id、meta、名字、数量），可以直接拿去 `withdraw` |
 
+新增 `recipe.tradeRules {id,meta?=0}`：从安装的售货机 `TradeDatabase` 只读匹配商品的原生静态规则，返回 `{source,scope,trades:[{group,cooldownSeconds,maxTrades,products,inputs,nonConsumedItems,currency,requirements}],unavailable?}`。冷却是现实秒，maxTrades=-1表示无总次数限制；币值是原生货币单位，不一定是高面额硬币个数。requirements中BQ条件另带精确字符串questId。它不查询当前玩家资格、钱包、剩余额度或当前冷却，也不执行交易。大脑把该handler的NEI other解释为商品，find_uses的机器/catalyst用途独立放在data.performedBy，原料用途筛选/分页不变。
+
 `recipe.overclock`：保留 `{baseEut,baseTicks}`，成功另带 `{eut,ticks,overclocks,scope,source,machine?}`，不能算时带 `unavailable`，不回猜测数值。`machine` 使用已加载 GT 基础电力机器自身的 standard `EUOverclockDescriber`；`recipeKey` 必须与机器配方页相符。`tier` 是显式选用的标准电力单机 1A 模型，不代表任意该等级机器。调用安装的 `EUOverclockDescriber.createCalculator / OverclockCalculator`（与 NEI 路径相同），不改机器。只接受确知不读取配方特殊元数据的标准 describer；特殊 describer、多方块的炉温/并行/电流/速度能耗倍率/超频模式未知时不计算。预测不保证配方实际能运行。`world.machines` 的单机正运行时可另带 `currentEUt`（机器自己的 mEUt）；`maxProgress` 是该轮实际 ticks。
 
 `recipe.find` 的结果：
@@ -405,7 +409,7 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 
 | 方法 | 参数 | 结果 |
 |---|---|---|
-| `screen.open` | `{bot, x,y,z, side?, hit?:{x,y,z}, sneak?=false}` 或 `{bot, item:{id,meta?}}` | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面（那件东西的界面只在客户端里画时，结果带 `clientOnly`，见“只在客户端里画的界面”）。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被拒绝是 `denied`（消息里写着是什么：服务器的出生点保护连范围一起写，领地这类别的 mod 只说被拒绝了），身上没有那件东西是 `no_material` |
+| `screen.open` | `{bot, x?,y?,z?, item?:{id,meta?}, side?, hit?:{x,y,z}, sneak?=false}`（位置或item至少一个，可组合） | 右键打开够得着的方块的界面，或把身上那件东西拿到手里右键打开它的界面（那件东西的界面只在客户端里画时，结果带 `clientOnly`，见“只在客户端里画的界面”）。`side`（点哪个面）、`hit`（点面上的哪一点，各 0–1）、`sneak`（蹲着点）和 `use` 任务的同名参数一个意思：有的方块点不同的面、蹲不蹲，打开的界面不一样（蹲着右键机器上有覆盖板的那个面，打开的是覆盖板的界面）。给了 `side` 时身体必须已经站在那个面的前方。拿着东西右键时，有些 mod 的物品是在客户端里才去要界面的，身体照它的客户端做（见“mod 的客户端”）。结果同 `screen.look`。够不着是 `out_of_reach`（先走过去），被拒绝是 `denied`（消息里写着是什么：服务器的出生点保护连范围一起写，领地这类别的 mod 只说被拒绝了），身上没有那件东西是 `no_material` |
 | `screen.look` | `{bot}` | `{open, screen?, slotCount?, slots?:[Slot…], cursor?:Item}`。有的界面点开后过一小会儿才出现，那时 `open:false`，稍后再看 |
 | `screen.click` | `{bot, slot, button?=0, shift?=false}` | 点一个格子：`button` 0 左键、1 右键，`shift` 是按着 Shift 点。和游戏自己的界面发的点击完全一样。结果是点完之后的 `screen.look` |
 | `screen.press` | `{bot, key, panel?, button?=0, shift?=false}` | 按一下界面上格子以外的东西（见下面“界面上的控件”）：开关翻过来；面板打开（已经开着就关上）；按钮做它的事；流体格照鼠标上拿着的容器装或倒（`button` 0 左键、1 右键）。结果同 `screen.look`。界面没有这个控件、或者它只是显示用的，照实拒绝 |
@@ -413,6 +417,8 @@ Worn：穿在盔甲格以外的一件东西。有的 mod 把玩家穿的东西�
 | `screen.close` | `{bot}` | 关掉；鼠标上还拿着的东西放回背包（放不下就掉在脚边） |
 
 Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?, ghost?, index?, role?}`。界面自己的格子带 `x`、`y`：界面把它画在哪（从界面左上角数的像素），玩家靠位置认格子；自己摆格子的界面（GregTech 的）没有这两项。`class` 是这一格在代码里的种类（类名，如 `SlotPattern`、`SlotOnlyTake`），普通的格子不带。实测（匠魂的部件加工台）：0、1 号 `SlotPattern`（x 40，y 27 / 45），2、3 号材料格（x 58），4–7 号 `SlotOnlyTake`（x 102、120）。GregTech 机器、总线的界面上，机器自己的格子带 `index`（在机器物品栏里是第几格）和 `role`：`input` 原料格、`output` 产物格、`special` 特殊格（有的配方要读的模具、数据棒）、`battery` 电池格、`circuit` 编程电路。实测（测试服进阶组装机）：界面 0 号是特殊格（机器第 3 格）、1 号电池格（第 1 格）、2–10 号原料格（第 5–13 格）、11 号产物格（第 14 格）；编程电路不在格子里，是一个 `circuit` 控件。`slot` 是点击用的编号；`own:true` 是 bot 自己背包里的格子（自己的空格不列）；`takesNothing:true` 是放不进东西的格子，也就是机器出产物的地方；`takes:[{id,meta,name}]` 是只收某些东西的空格子（燃料格、只收装流体的单元和桶的格子、工具格、模具格）收 bot 身上的哪几种（鼠标上拿着的也算；最多 8 种，可能一种都没有）；一种都没有时 `accepts:[{id,meta,name}]` 是游戏的物品表里它收的几样（最多 4 样，各取 meta 0），看得出是哪一类东西；圆石、bot 身上的东西、几样代表（煤、空桶、水桶、铁镐、空单元）和物品表里的每一种都不收的才算 `takesNothing`；`ghost:true` 是只显示、里面没有真东西的格子（编程电路的设置）。
+
+物品与方块位置可同时给：拿着item，按side/hit/sneak点该方块，保留正常打开的界面；只给item时是在空气中使用。原use任务仍自动关屏，不偷换其含义。匠魂模具加工台的原生形状选择作为现有controls暴露，screen.press发送原生StencilTable选择消息，不直接写产物或槽位。
 
 常用的点法：按着 Shift 点自己的一格，东西会进界面里“该去的地方”（机器的原料格、熔炉的燃料格）；按着 Shift 点界面里的一格，东西回到背包；左键点一格是拿起或放下一整组，右键是拿一半或放一个。
 
@@ -586,9 +592,11 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 
 任务类型：
 
+`goto`、`collect`及六种区域施工（dig/place/clear/fill/flatten/blueprint）支持通用 `dig?`、`climb?`、`maxDrop?`：dig只管额外挖路，不取消任务明确指定的挖掘；climb管垫脚；maxDrop为0–40的单次规划落差。身体省略参数保持旧调用的允许挖/垫与无敌40格、非无敌3格落差；大脑明确传false/false/3。施工补料、卸货、拾物及收尾走路也沿用所选约束。共享Navigator单段接近最多90游戏秒，空路径无进展和空中无法步行会如实退出；不规划自动飞行。
+
 | type | 参数 | 行为 |
 |---|---|---|
-| `goto` | `{x,z, y?, range?=1, yRange?, climb?=true, takeBack?=false, dim?}` | 走到离目标水平 range 格以内。给了 `y`（脚的高度）时，脚和 `y` 的高度差不超过 `yRange`；不给 `yRange` 时是 2（range 大于 2 时至多 4）。不给 `y` 则以该处地面为准。`climb:false` 时不垫方块往上爬；`takeBack:true` 时到了以后把这次垫的、站着够得着的方块挖掉。见下“走路的结果” |
+| `goto` | `{x,z, y?, range?=1, yRange?, dig?=true, climb?=true, maxDrop?, takeBack?=false, dim?}` | 走到离目标水平 range 格以内。给了 `y`（脚的高度）时，脚和 `y` 的高度差不超过 `yRange`；不给 `yRange` 时是 2（range 大于 2 时至多 4）。不给 `y` 则以该处地面为准。`climb:false` 时不垫方块往上爬；`takeBack:true` 时到了以后把这次垫的、站着够得着的方块挖掉。见下“走路的结果” |
 | `goto_player` | `{player, range?=2, climb?=true}` | 走到某玩家身边；5 分钟追不上以 `stuck` 失败。`climb` 同 `goto`；`climb:false` 而垫块才走得到时以 `unreachable` 失败，消息和 `detail.climbingBlocksWouldTake` 同 `goto` |
 | `follow` | `{player, distance?=3, climb?=true}` | 一直跟着，直到被取消。对方离线、在别的维度或暂时走不到时原地等，`progress.note` 写着为什么（走不到时是 `cannot reach <名字> right now: ` 加原因；`climb:false` 而垫块才跟得上时原因同 `goto` 的那句） |
 | `home` | `{name}` | 执行 `/home name` 并等传送完成 |
@@ -598,14 +606,14 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
 | `fill` | `{x1,y1,z1,x2,y2,z2, item, meta?, blockMeta?, shape?:"solid"\|"hollow"\|"walls", supply?}` | 在盒子里的空位放方块，由低到高。`hollow` 只放六个面，`walls` 只放四周。`blockMeta` 是每一块放下去以后的 meta，同 `place`（一整排朝向相同的楼梯、横放的原木）；给了它不给 `meta` 时用哪种物品由身体挑（在第一格判断），哪种都放不出这个 meta 时以 `invalid` 失败。实测：一排五格原木 `blockMeta 4`（东西向），西头有一块石头，五格都是 /4；不照 `blockMeta` 放的话五格都是竖着的 /0 |
 | `flatten` | `{x1,z1,x2,z2, y, fill?=true, fillItems?:[id], maxFillDepth?=3, dropoff?, supply?, overflow?}`，≤64×64 | 把区域整成地面顶层在 y 的平地：挖掉 y 以上的一切，再把 y 及以下的坑由低到高填上 |
 | `deposit` | `{container:{x,y,z, side?, sneak?}, items?:[ItemFilter], keep?:[id]}` | 走过去把物品放进箱子。`container` 里带 `side` / `sneak` 时，不是普通地右键它，而是点那个面（蹲着或不蹲）打开界面，打开的是什么界面就往什么界面里放（覆盖板里的格子就这样存取）；`withdraw` 同。不给 items 则放入除工具、食物和 keep 以外的全部 |
-| `withdraw` | `{container:{x,y,z, side?, sneak?}, items:[ItemFilter], fromInputs?=false}` | 走过去取出物品，数量精确。界面里有“放不进东西的格子”的是机器：默认只从这些产物格取；`fromInputs:true` 改成从其余的格子取（把留在里面的模具、模头、没用完的原料拿出来）。没有这种格子的是普通仓储，哪格都取 |
+| `withdraw` | `{container:{x,y,z, side?, sneak?}, items:[ItemFilter], fromInputs?=false}` | 走过去按请求数量取物。默认取已识别产物槽或普通仓储槽；`fromInputs:true`才明确取机器输入。不能因空限制槽拒绝圆石就把它认作输出；读原生槽声明、实际接受情况，角色不明则保守拒绝并说明可用screen选槽，不默默取走待加工输入。不可回填输出槽若原生最小整/半组超过所需数则不取，返回pickupLimited |
 | `haul` | `{from:{x,y,z}, to:{x,y,z}, items?:[ItemFilter]}` | 在两个箱子之间来回搬，直到源箱子里符合条件的搬完或数量够。只搬这一趟取出来的东西，bot 自己的物品不动 |
-| `collect` | `{x,y,z, radius?=8, dig?=true, climb?=true}` | 捡起范围内的掉落物（包括水下）。`dig:false` 不挖任何路，包括旧垫脚；`climb:false` 不垫块。协议旧调用默认仍允许；大脑 `collect_items` 默认两者都是 false，能显式开启 |
+| `collect` | `{x,y,z, radius?=8, dig?=true, climb?=true, maxDrop?}` | 捡起范围内的掉落物（包括水下）。`dig:false` 不挖任何路，包括旧垫脚；`climb:false` 不垫块。协议旧调用默认仍允许；大脑 `collect_items` 默认两者都是 false，能显式开启 |
 | `give` | `{player, items:[ItemFilter]}` | 走到玩家面前，把物品扔给他 |
 | `blueprint` | `{name, x,y,z, 范围和方块选项, supply?, dropoff?, overflow?}`，一次最多 64×64 列 | 照图纸建：先把挡路又允许挖的方块从上往下挖掉，再由低到高放方块。见“图纸” |
-| `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
+| `craft` | `{id, meta?=0, count?=1, recipe?=0, table?:{x,y,z}}`，或 `{grid:[9 格], gives?:{id,meta?,count?}, rounds?=1, table?}` | 手工合成：用身上的材料按配方摆好、取成品。第一种写法按服务器自己知道的配方：`count` 是想要的个数，`recipe` 是 `recipe.find` 里的 `index`。第二种写法由调用方把摆法说出来，见下 |
 | `process` | `{machine:{x,y,z}, inputs:[{id,meta?,count}], circuit?, fluids?:[{id,meta?,count}], expect?:[{id,meta?,count}], bus?:{x,y,z}, wait?=180, leave?=false}` | 用一台 GT 机器加工一批：把原料放进去，等它做完，把产物取回来。`machine` 是单方块机器，或多方块机器的主机。`wait` 是最多等多少秒（5–3600）。其余见下 |
-| `use` | `{item?:{id,meta?}, on?:{x,y,z}, entity?:{uuid,dim}, side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on` 或 `entity`），对着空中（不给目标：吃、喝、穿戴、打开它自己的界面）、方块 `on` 或实体 `entity`（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
+| `use` | `{item?:{id,meta?}, on?:{x,y,z}, entity?:{uuid,dim}, approach?:"walk"\|"current", side?, hit?:{x,y,z}, times?=1(≤64), every?=4(1–40 tick), sneak?=false, left?=false}` | 右键一下，像玩家那样：手里拿着 `item`（不给就是空手，这时必须给 `on` 或 `entity`），对着空中（不给目标：吃、喝、穿戴、打开它自己的界面）、方块 `on` 或实体 `entity`（会先走过去）。可以指定点哪个面、点面上的哪一点、连点几下。见下 |
 | `hold` | `{ticks(1–1200), jump?, sneak?, toward?:{x,z}, range?=1, y?, above?}` | 按住几个键一段时间，像玩家那样：`jump` 跳（空格）、`sneak` 潜行（Shift）、`toward` 朝那一列方块的中心按住前进（边走边转向它）。不找路、不挖不放，前面有什么就撞上什么。按了会怎样由世界和身上穿的东西决定（穿着开着的直升机背包，按住跳是往上升、按住潜行是往下降）。到 `ticks`、脚到 `y`（从下往上升到它，或从上往下降到它）、离地高度到 `above`（同样两个方向；0 是落地）、或者离 `toward` 水平不到 `range` 格时松手结束。见下 |
 | `wait` | `{ticks}` | 原地等待 |
 
@@ -638,7 +646,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   往抽屉里放：已经装着同一种的那格优先，其次是还没指定物品的空格；都没有就算放不下。
 - **`blueprint`**：
   - 不给 `clear` 时一块都不挖；挡着的位置跳过，留在结果的 `blockedBy` 里。带数据的方块、液体、基岩在任何情况下都不挖。
-  - 一格只从“脚不低于它”的位置放，所以楼板和屋顶是站在上面铺的，bot 不会把自己封在底下；做完时它在建筑顶上。
+  - 一格只从“脚不低于它”的位置放，所以楼板和屋顶从同层或更高的站位铺，避免把自己封在底下；收尾可能换站位，最终位置以实际结果为准。
   - 材料不够时去 `supply` 取（一次按接下来要用的顺序尽量多拿）；哪种都取不到的，先跳过继续放别的，最后以 `no_material` 失败，`error.detail.missing` 列出每种缺多少。没给 `supply` 也是这样。
   - 挖出来的东西背包满时送去 `dropoff`，建筑材料留在身上。
   - 结束时（成功或失败）结果里有 `now`：`{cells, done, toPlace, byHand, blocked, extra}`，以及各最多 8 项的 `materials`（还缺的）、`byHandBlocks`、`blockedBy`、`extraBlocks`。
@@ -652,7 +660,7 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 摆好以后出什么由游戏说了算：出来的不是要的东西时把材料收回、以 `invalid` 失败。
   - 结果 `{crafted, rounds, requestedRounds, item:{id,meta,name}, freeSlots}`，`crafted` 是实际取出的成品个数，`rounds` 是已经完成的轮数，`requestedRounds` 是本批要求的轮数；运行中、失败和取消时也保留已完成的部分。`count` 仍是成品数，向上取整成轮数（每轮出 2 个、要 5 个就做 3 轮共 6 个）。
   - **`grid` 写法**：`grid` 是 3×3 格子一行一行数的 9 格，每格是 `null`、`{id, meta?}`（不写 meta 是任何 meta 都行）或 `{ore:"plateSteel"}`（这个矿物辞典名下的任何一种，工具也这样写，如 `{ore:"craftingToolHardHammer"}`）。配方册 `recipes.jsonl` 里有序合成的每格带的 `g` 就是这里的下标；无序合成随便摆。**东西照给的格子原样摆**：右边、下面空着的列和行不算（所以只占左上 2×2 的配方不用工作台），左边、上面空着的列和行是配方的一部分，不会被挪掉。这个包里的黏土铸模全是“空白黏土铸模 + 小刀”，出哪一种只看两样东西各摆在哪一格。
-    只占左上 2×2 的就在随身合成格里做。`rounds` 是做几轮（1–64）。`gives` 是预期的成品：给了，出来的不是它就失败；不给，第一轮出什么就认什么。
+    只占左上2×2的就在随身合成格里做。`rounds`是做几轮（1–64）。`gives`是预期成品；另给count（一轮产量）时，服务器可将NEI显示例子的damage0与同产物身份/数量/NBT、同布局及其余约束的原生配方核对，只恢复原生明确声明的耐久wildcard，不泛化“所有工具忽略damage”。最终仍由游戏实际配方和产物判定。缺料时可有carriedIncompatible，列身上同物品却不符合要求状态的栈。
 - **随身的包当容器**：`deposit` / `withdraw` 的 `container` 除了位置，还可以写 `{item:{id,meta?}}`，意思是“我身上这件东西右键打开的那个界面”（背包一类）。不用走路；包本身不会被放进它自己里面；`deposit` 这样用时必须列出 `items`。身上没有这件东西是 `no_material`；右键后没有界面打开是 `invalid`。
 - **`use` 对实体**（新增，旧的 `on` 方块含义不变）：
   - `entity:{uuid,dim}` 来自实体查询，与 `on/side/hit` 互斥。手持仍由 `item` 指定，不给为空手；默认右键，`left:true` 为攻击。`times/every` 对两种按钮都有效：攻击 `times:2` 就是两次攻击，不是自动战斗。只按明确次数点击，不选敌人、不自动追杀。
@@ -662,6 +670,9 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 结果 `{clicks,entityEvents,left,used,note,entityBefore?,entityNow?,newNearbyDrops:[Entity…],gained?,lost?,heldBefore?,heldNow?,openedScreen?}`。`entityBefore` 是第一次点之前、`entityNow` 是结束时的观察，`newNearbyDrops` 是点击前后附近4格内新出现的物品实体（不是凭空算出的奖励，也不保证还留在原处）；`gained/lost` 为背包变化。`done` 只表示请求的点击尝试结束，**不等于剪毛/喂食/伤害一定发生**：看前后 `state`、消耗、掉落；事件被取消会失败，没变化不捏造原因。最后一下杀死目标可完成，目标在还有下次点击时消失则失败。打开界面时停止余下点击并关掉界面。
   - 实测（GTNH测试服，真大脑＋脚本模型，`brain/test/live-entities.ts`）：50格外观察到红羊，羊又移动约3格后仍追到同一UUID；剪毛 `sheared:false→true`、红色不变、自然掉2个红羊毛（meta14），再剪不再掉；喂小麦消耗1、`inLove:true`；空手攻击牛正常事件1次、生命10→9。不存在目标0点击 `not_found`；同UUID玩家从主世界到地狱后，旧目标0点击 `wrong_dimension`。修攻击距离前，3格准星内的空手攻击被Battlegear2事件拒绝、生命不变，身体如实 `denied`，没有绕掉事件。
 - **`use` 对方块/空中**：
+  - `approach:"current"`只用于on方块：从当前真实眼位检查指定side/hit的距离和视线，够得着才点，否则立即失败、不移动。默认walk累计接近最多60游戏秒；已有悬停站位能触及可见点则直接用，需要走近却持续空中3秒则失败。失败不自动降落或关闭飞行装备，燃料可能继续消耗。
+  - `left`与`clicks`在准备失败时也存在，0次不虚构右键或旧身体版本。空手操作先找空快捷栏；没有则用原生容器数字键交换把手持物挪到空携带格，真无空间才inventory_full。
+  - `fluidContainer.worldFill:"block_click"`表示已确认的IC2空单元原生世界装液入口需要点到实心方块；filledIs只表示注册表有装满形态，不证明空气点击会填充。深水crosshairNone时空单元可无变化、桶可成功；浅水能命中底面时空单元能装水。
   - 这是玩家用东西的通用办法，做了什么由那件物品自己决定，所以结果只报看得见的变化：`{used:"名字", gained:[{id,meta,name,count}], lost:[…], openedScreen?, health, food, freeSlots}`。`gained`/`lost` 是背包里多了、少了什么（吃掉的食物、穿到身上去的装备会出现在 `lost` 里）。
   - 吃喝这类要举着一会儿的，会等到用完（最多 8 秒）。
   - 右键打开了界面的（背包）会被马上关掉并带 `openedScreen:true`；要往里放、往外拿，用上一条说的 `deposit` / `withdraw`。
@@ -674,47 +685,51 @@ Slot：`{slot, own?, item?:Item, x?, y?, class?, takesNothing?, takes?, accepts?
   - 结果里多 `clicks`（实际点了几下）和 `side`（点的是哪个面）；空手时 `used` 是 `"an empty hand"`。
   - **手里是方块时**（以及点完那一格变了时），结果里还有 `placeCell:{x,y,z, before, now, clicked?}`：手里的方块会进的那一格，点之前和现在是什么。游戏放进的是点的那个面外面的一格；点的方块自己一碰就让开（草、薄雪、藤蔓）时是它自己那一格（`clicked:true`）。拿着方块点了、那一格没变时，`notPlaced` 照游戏放方块前自己做的检查依次写明是哪一条没过：点的方块有界面、又没蹲着时点击给了它（它打开了界面，蹲着点才是对着它放）、那一格被什么占着、有什么站在那一格里、方块自己的规矩说它不能立在那里（梯子要贴着实心方块、火把要有地方挂）、服务器或别的 mod 拒绝了，都不是时照实说看不出原因。实测：意见簿 f16 那一下（拿着梯子点墙的西面），梯子其实放进了西边那一格，以前结果只写着“点的那一格还是混凝土”，模型以为放了个空。对着方块点的，还有 `blockBefore`、`blockNow`（`注册名/meta`）：点之前和现在那一格是什么，方块变了、没了都看得出。那一格有方块实体（机器、箱子）时还有 `dataChanged:[{key, was?, now?}]`：它自己存的数据（NBT，摊平成 `mFacing`、`gt.covers[0].d` 这样的路径）里点完以后变了的值，最多 30 个（多的数在 `dataChangedMore`）；点之前两 tick 里就在自己变的（进度、电量）不算，去掉了几个写在 `dataMovingLeftOut`。实测：扳手点输出总线上表面中间 `mFacing` 5 → 1。
   - 实测：凿子左键结构混凝土，凿子界面输入格里放着 /3 时那一格变成 /3；输入格空着时是同组下一种（/7 → /8）。
-  - **`left:true` 是左键**（要给 `on`）：按下马上松开，像玩家点一下。对按下有反应的东西照样反应（拿着凿子左键方块就是在原地凿成凿子里选好的样子；一碰就碎的方块会碎），要挖一会儿的方块不会被挖掉。空手左键要快捷栏里有空格（没有是 `inventory_full`）。结果里带 `left:true`。
+  - **`left:true` 是左键**（要给 `on`）：按下马上松开，像玩家点一下。对按下有反应的东西照样反应（拿着凿子左键方块就是在原地凿成凿子里选好的样子；一碰就碎的方块会碎），要挖一会儿的方块不会被挖掉。空手左键可用快捷栏空格，或通过原生换格把手持物移到背包空格；均没有才是 `inventory_full`。结果始终带 `left`与实际 `clicks`。
 - **`process`**：
-  - `machine` 可以是**任何带界面、能放东西的方块**。GregTech 的单方块机器和多方块主机，身体读得懂它的状态（见 `world.machines`）；别的机器（原版熔炉、其他 mod 的机器）身体不认识，就照玩家的办法用：按着 Shift 把原料点进去，等它里面的东西不再变化，把产物格里的东西取回来。这种机器“没开工”的判断是 10 秒内里面什么都没变。
+  - `machine`可尝试能打开容器并识别输入/输出的方块，不保证任意特殊界面都适用。GT单方块和多方块可读状态；其他机器通过真实槽点击投料、观察内容变化、取产物，未观察到变化时不能断言是哪项条件缺失。
+  - 监测与相邻输出容器基线在第一下投料前建立，投料期间逐tick观察GT运行，避免高速配方在关界面前做完而误报没开工。快照显示有电且idle不是“配方必错”的证据。
+  - 发生回收时结果追加 `returnedInputs`（实际取回）、`inputsNotReturned`（投进去但未取回，可能消耗、外送或仍在机内）、`returnFailure`（回收未完成的具体原因）。结果不再无条件承诺“原料已退回”。
   - **零新增输入**：`inputs:[]` 且无 `fluids` 时，只观察既有加工并限量收货，不会新开一批、不改电路、不拿原料格（模具）。`expect` 有数量时只取对应产物格种类、至多指定数量；没给则只观察。读不到运行配方的机器拒绝此模式。正在制作的物品与 expect 不符会失败，不因机器有活动就当作指定配方完成。机器空闲或到 wait 上限时结束：非 leave 且 expect 非空、尚未取齐时，以 invalid 失败，保留实际取回和缺少数量；expect 空的纯观察仍可 done，leave 只观察快照也不当收货任务。
-    - 结果 `{put:0,observedExisting:true,startedByTask:false,alreadyWorking,existingOutputs,outputs,observedRounds,observedMade,requestedOutputsCollected?,missingOutputs?,stopReason?,timedOut?,making?,machine?,fluids?,note}`。existingOutputs 是到场时已有产物；observedRounds/observedMade 只是观察期间见到的完成，不是任务所属批次或请求轮数的证明；outputs 是实际取回、可能包括已有的成品。界面仅能整组/半组取，最小一次超过尚需数量时不碰那组，以 invalid 失败，带 `pickupLimited:{minimum,wanted}`（例如 5 个要 2 个，最小一次是 3；4 要 2 可以右键取半组）；不把多余放进机器原料格。这个有界点击只在零投料观察模式启用，其他旧存取路径未改。此模式不带原 `rounds/made/left` 字段，不倒推出到场之前做了几轮；外送或漏看不补算。`requestedOutputsCollected` 仅表示期望取回数量够了；`missingOutputs` 列未取齐的种类和数量，`stopReason` 为 `machine_idle`（机器已停）、`wait_limit`（等到上限）或 `pickup_limited`（原生最小取量超过尚需数）。换输出总线前保留 pickupLimited 证据；其他总线仍没补齐就失败，不因为换了 trip 丢证据而继续空转。`leave:true` 是见到既有加工/已有产物就结束观察，不收货、不说本任务启动了机器。
-  - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1），可以带 `stays:true` 说明它不消耗（放下就走的那一批做完时，原料格里剩着它不算没做完；不带的话要等它被取走）；做完后它放进去的东西里没被消耗的会一并取回，机器里原来就有的不动。
+    - 结果 `{put:0,observedExisting:true,startedByTask:false,alreadyWorking,existingOutputs,outputs,observedRounds,observedMade,requestedOutputsCollected?,missingOutputs?,stopReason?,timedOut?,making?,machine?,fluids?,note}`。existingOutputs 是到场时已有产物；observedRounds/observedMade 只是观察期间见到的完成，不是任务所属批次或请求轮数的证明；outputs 是实际取回、可能包括已有的成品。界面仅能整组/半组取，最小一次超过尚需数量时不碰那组，以 invalid 失败，带 `pickupLimited:{minimum,wanted}`（例如 5 个要 2 个，最小一次是 3；4 要 2 可以右键取半组）；不把多余放进机器原料格。所有输出槽取货现都遵守这个原生最小取量边界；普通可回填槽位则用真实鼠标暂存/逐个放置精确取量，不再先多取再把余量退进原料格。此模式不带原 `rounds/made/left` 字段，不倒推出到场之前做了几轮；外送或漏看不补算。`requestedOutputsCollected` 仅表示期望取回数量够了；`missingOutputs` 列未取齐的种类和数量，`stopReason` 为 `machine_idle`（机器已停）、`wait_limit`（等到上限）或 `pickup_limited`（原生最小取量超过尚需数）。换输出总线前保留 pickupLimited 证据；其他总线仍没补齐就失败，不因为换了 trip 丢证据而继续空转。`leave:true` 是见到既有加工/已有产物就结束观察，不收货、不说本任务启动了机器。
+  - 原料必须已经在身上。模具、模头这类“放进去但不消耗”的东西列进 `inputs`（数量 1），可以带 `stays:true` 说明它不消耗（放下就走的那一批做完时，原料格里剩着它不算没做完；不带的话要等它被取走）；做完后尝试取回本批未消耗的部分，实际多少看returnedInputs；机器里原来就有的不动。
   - **取回只取自己的**：不管是做完、没开工还是做了别的，身体从原料格里取回的只是它这次放进去的那几种、每种至多放进去的数；原来就在里面的（别人留着的模具、模头）不动。实测：压模机原料格里先有一个别人的模头（杆），放 1 个圆石没开工，取回的只有圆石，模头（杆）留在机器里（以前是一起拿走了，意见簿 f1）。
   - **没放全**：有的原料放不进去（格子被别的东西占着、身上不够）时，结果里多 `notPut:[{id,meta?,name,count,carried}]`（哪样少放了几个、身上现在还有几个）和 `inputSlots:[{id,meta,name,count}]`（放完那一刻原料格里有什么，挡着的多半就是它们）。机器照样拿放进去的开工的，`making` 写着它开工做的是什么。实测：进阶压模机 II 两个原料格一个被别人的模头（杆）占着，2 个钢锭和自己的模头（板）只放进去 2 个钢锭，`notPut` 是那个模头（板）（`carried:1`），`inputSlots` 是模头（杆）和 1 个钢锭（另一个已经被机器拿去开工了：做的是钢杆）。
   - **产物是流体的配方**（流体提取机把钢板化成熔融钢）：没有物品可取，但机器的罐（多方块是输出仓）里的东西变了，就算做成了；结果带 `note` 和 `fluids`（现在罐里有什么）。流体留在原处，怎么送到下一台机器是另一回事（机器界面上的自动输出开关、管道、单元）。
   - **编程电路**用 `circuit`（1–24，0 是清掉）：像玩家点机器界面上的电路格一样直接设，不需要身上有电路；做完后恢复成原来的设置。单方块机器设在机器上，多方块设在输入总线上。没有电路设置的机器（总线）给 `0` 照常加工（本来就没有电路）；给 1–24 是 `invalid`，什么都不放。走到机器跟前、放原料**之前**先设好（先放再设的话，机器会先拿刚放进去的料按原来的电路开工：实测卷板机原来是电路 1，放 9 块黑曜石板要做致密板（电路 9），先做出了黑曜石箔）。
   - **做的不是要的东西**：给了 `expect` 时（不只是多方块），GregTech 机器被看见在做的东西（`making`、`made`）一样都不是 `expect` 里的，任务就不是 `done`：一看到它在做别的，身体马上把还在原料格里的、它放进去的东西取回来（只取它放进去的那几种、至多放进去的数；原来就在里面的模具这类不动）；不带 `leave` 的再等手上那一轮做完、把产物格里的取走，带 `leave` 的不等；电路恢复原样；以 `invalid` 失败，`error.message` 写着它做了什么、要的是什么、带着几号电路（是不是这个任务设的），`result` 同下（`outputs` 里是取回来的原料和产物，`made`、`elsewhere` 是做了什么、去了哪）。放料前机器已经在跑配方的（别人的料、管道送来的），看见的头一个配方可能是那个，这时不提前取回，只在结束时比：做出来的里面有 `expect` 的就算数。实测（测试服，照正式服那台进阶组装机 II 的设置：电路 1、物品自动输出朝西接着箱子）：2 铁杆 + 4 铁环要做车轮、不清电路，开工的是“铁杆 + 电路 1 → 铁栅栏”；修之前 `done`、取回 4 个铁环、2 根铁杆做成 2 个铁栅栏进了箱子；现在 `invalid`，第一轮的 1 根铁杆做成铁栅栏，4 铁环 1 铁杆取回；电路给 0 时做出 2 个车轮。压模机里先有别人的模头（杆），放 2 个钢锭 + 自己的模头（板）要做钢板：原料格只有两格，模头（板）没放进去，机器拿钢锭做了钢杆——`invalid`，取回 2 根钢杆和没用上的 1 个钢锭，别人的模头（杆）留在机器里。
   - 结果里的 `making`（有就带）：机器开工后正在跑的那个配方要出的东西，身体看见它在跑配方时从机器里读的。别的东西进了机器（管道、覆盖板送来的），或者它带着别的电路，这里会和要的对不上。配方短到两次查看之间就做完的，读不到，不带。`leave` 只在看见机器真的在跑配方、或者放进去的原料已经被拿走时才算开工（机器做完一个配方后“工作中”的标记还会亮一会儿，单看它会误以为开工了）。
-  - **多方块机器**：原料放进输入总线（有几个时挑空格最多的，或用 `bus` 指定），产物从各个输出总线取。
+  - **多方块机器**：优先输入总线（有几个时挑空格最多的，或用bus指定）、输出总线。没有输入总线且未点名bus时，可尝试控制器本身明确的输入/输出GUI（如焦炉）；没有可点击输入/输出的控制器拒绝，不退到直接写IInventory。没有输出总线时读控制器产物槽。
     - `fluids`：身上装着流体的单元，放进第一个输入仓让它倒空，空单元取回；仓装不下的满单元也取回，不算倒了。配方要的流体如果已经由管道接好，就不用给。
     - 输出总线自己不留东西（它会把东西推给旁边的箱子，或被管道抽走）时：给了 `expect` 就去它推往的箱子（`passedTo`）里把 `expect` 列的产物取回来；没给就以 `done` 结束，`outputs` 为空，带 `note` 和 `passedTo` 说明东西去了哪。
     - 流体产物留在输出仓里，不取。
-  - 机器没开工（单方块 3 秒、多方块 10 秒）就把原料取回来，以 `invalid` 失败，`error.message` 里带原因（多方块是它界面上的说法，如 `No valid recipe found`），`error.detail` 是这台机器的状态。可能是没电、缺电路或流体、没有这个配方、炉温或电压不够、输出口被占着。
+  - 没观察到开工（单方块3秒、多方块10秒）会尝试回收后以invalid结束，明确是未观察到，而不是保证机器没发生过任何加工。error.detail给机器状态，回收清单给实际结果；电力、电路、流体、配方、炉温、电压与输出空间是需要核实的条件，不从idle快照定根因。
   - 原料一样都放不进去（输入格、输入总线满了）也以 `invalid` 失败。输入总线带 `attached` 时多半是被自动喂料占满的，这要主人决定怎么办。
   - 结果 `{put, cellsPoured?, outputs:[{id,meta,name,count}], notPut?, inputSlots?, rounds?, made?, elsewhere?, autoOutput?, attached?, timedOut?, note?, passedTo?, freeSlots}`。`outputs` 是取回到身上的（产物，和没被消耗的模具、没用完的原料）。等到 `wait` 还没做完时取走已有的产物和还没开始做的原料并带 `timedOut:true`；机器只把手上那一轮做完，产物留在它里面（实测：54 个钢锭进压缩机、等 5 秒，取回 36 个钢锭，之后机器里多了 2 个钢块）。一个东西都没取到、可看见机器在跑配方的，也是 `done` 带 `timedOut`。
   - **机器做了什么**（GregTech 机器，身体看着它转时读的）：`rounds` 是这次看着它做完了几轮配方，`made` 是这几轮一共做出了什么（机器开始每一轮时自己记着的产物）。和 `outputs` 是两件事：做出来的可能没留在机器里。
-  - **产物被送走了**：机器自己的自动输出、覆盖板、管道可能边做边把产物送走，产物格里什么都不剩。身体在放完料时把机器（多方块是各个输出总线）周围的容器——挨着它各面、有物品栏的方块（机器、总线、管道也算）和它的漏斗通往的箱子——记下里面有什么，做完再看一遍：`elsewhere:[{x,y,z,name,side?,bus?,items}]` 是多了它做的那几种东西的容器、多了多少（`side` 是它挨着机器——多方块是 `bus` 那个输出总线——的哪一面，经过漏斗才到的没有 `side`）；身体读不懂的机器不知道它做什么，是多了的不是原料的东西。这时还带 `autoOutput`（同 `world.machines`）和 `attached`（接在机器上的漏斗、管道）。
+  - **产物被送走了**：机器自己的自动输出、覆盖板、管道可能边做边把产物送走，产物格里什么都不剩。身体在开始投料前把机器（多方块是各个输出总线）周围的容器——挨着它各面、有物品栏的方块（机器、总线、管道也算）和它的漏斗通往的箱子——记下里面有什么，做完再看一遍：`elsewhere:[{x,y,z,name,side?,bus?,items}]` 是多了它做的那几种东西的容器、多了多少（`side` 是它挨着机器——多方块是 `bus` 那个输出总线——的哪一面，经过漏斗才到的没有 `side`）；身体读不懂的机器不知道它做什么，是多了的不是原料的东西。这时还带 `autoOutput`（同 `world.machines`）和 `attached`（接在机器上的漏斗、管道）。
   - 一个产物都没取到，但看到它做完了配方（`rounds` > 0）或者周围的容器里多了它做的东西：做成了、产物被送走了，任务是 `done`，带 `note`。都没有才以 `invalid` 失败（`the machine ran but nothing could be taken out of it, and it was not seen to finish a recipe`）。实测：LV 压缩机物品自动输出开着、输出面朝下、下面是一个输入总线，54 个钢锭 → `done`，`rounds` 6、`made` 6 个钢块、`outputs` 空、`elsewhere` 是那个总线（`side:"down"`）里的 6 个钢块；奇点压缩机（一轮只要一两 tick）同样 7 轮都数到了；原版熔炉下面接漏斗、漏斗通到箱子，3 个圆石烧成的 3 个石头在那个箱子里。
   - **`leave:true`：放进去就走。** 不给它时这个任务从放料一直占着身体到取完产物（机器要转几分钟，身体就站几分钟）。给了它：原料放进去、电路设好、看到机器开工，任务就以 `done` 结束，身体可以去做别的；机器自己接着转。结果是 `{put, cellsPoured?, left:true, note, machine?, circuit?:{now, was, setBack?}, notPut?, inputSlots?, freeSlots}`——`machine` 是结束那一刻这台机器的状态（同 `world.machines` 的一项，带 `progress`/`maxProgress`，单位 tick），身体不认识的机器没有这一项。
     - 产物、没消耗掉的模具都留在机器里，之后像从容器里取东西一样取：`withdraw` 的 `container` 给这台机器（产物格；`fromInputs:true` 是原料格，模具在那里）；多方块取输出总线。
     - 电路在任务结束时不恢复（一次放进去的几轮，每一轮开工都要用它）；结果里 `circuit:{now, was, setBack:true}`：身体在**这一批做完**后把它设回 `was`——机器不在跑配方、原料格里没有这一批放进去的要消耗的东西了（带 `stays` 的不算）。设回去了、或者设不回去（中途有人把它设成了别的，就不动它；机器或总线没了），都发一个 `machine.circuit` 事件。这件事记在 bot 的存档文件里，服务器重启后接着看。身体不走回去：电路是机器自己的一项设置，像玩家点界面那样直接设回去。同一个 bot 在同一处又放了一批、用的是同一个电路的，并进前一批一起等，最后设回最早的原值；这时不带 `leave` 的那一批结束时也不设回，留给前一批的。`was` 和 `now` 一样（没改过）时没有 `setBack`。
-    - 没开工的处理和不带 `leave` 时一样：原料取回、电路恢复、以 `invalid` 失败。
+    - 未观察到开工时同样尝试回收、恢复电路并以invalid失败，实际退料仍按returnedInputs/inputsNotReturned报告。
   - **调用的人自己带的字段**：任务参数里身体不认识的键原样留在任务的 `params` 里，任务信息和结束事件都带着它。大脑用它记“这一批是哪条配方的几轮”（`recipe:{ref, rounds, ticks?}`），身体不读它。
   - 多方块的总线和仓不按名单找：主机名下登记的所有总线和仓都算（蒸汽多方块的蒸汽总线也在内）。
-  - 还不行的：单方块机器的流体格（要它已经接好流体来源）；界面里要点按钮才能开工的机器（用 `screen.*` 自己点）。
+  - process不自动代办单方块装液或额外按钮操作；已支持的流体格、按钮可通过screen.*按玩家方式另做，不是整台机器都不能用。
 - **门和电梯**：走路时会开门（原版木门、栅栏门、以及配置 `doorBlocks` 里的门，如木匠方块的卷帘门），走过去以后随手关上；铁门这类只能用红石开的不行。会走楼梯、爬梯子（见上）。
   会坐 OpenBlocks 电梯（站上去，相当于跳一下上楼、蹲一下下楼）。门打不开或电梯不动时换别的路。
-- **从高处下来**：无敌的 bot 敢从最多 40 格高直接跳下；会受伤的只肯落 3 格。
+- **从高处下来**：直接协议旧调用省略maxDrop时，无敌最多40格、非无敌3格；大脑在支持该参数的入口明确给默认3，模型可显式选择。收尾拆脚下支撑也不能突破所选落差。
   数量按 bot 背包里实际增减的数目计。
 
 结果 `result`：
 
-- 区域任务：`{removed, placed, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], cameOutDifferent?, cameOutExamples?:[{x,y,z,want,got,why?}], freeSlots}`，`cameOutDifferent` 是放下去了、但 meta 和要的不一样的格数（身体预料不到放法的方块，`why` 写着），`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
-  为了够到高处垫的方块，任务结束前会拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的；拆完把附近的掉落物捡回来（这一趟不再垫块）。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标在 `climbingBlocksLeft:[{x,y,z}]`（最多列 64 个），它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
+- 区域任务：`{removed, placed, alreadyMatches?, collectionSweeps?, remainingDrops?, collectionProblem?, placedItems?, skipped?:{原因:数量}, skippedExamples?:[{x,y,z,reason}], cameOutDifferent?, cameOutExamples?:[{x,y,z,want,got,why?}], freeSlots}`，`cameOutDifferent` 是放下去了、但 meta 和要的不一样的格数（身体预料不到放法的方块，`why` 写着），`flatten` 另有 `level`，`clear` 另有 `clearedDownTo`。`placedItems:[{id,meta,name,count}]` 是放下去的方块各是从哪种物品放的（`place`、`fill`、`flatten`、`blueprint` 都有）：同一个 id 的不同 meta 是不同的方块，放混了看得出来。实测：`fill` 不给 meta，身上先放着 10 个钢管道方块（`gregtech:gt.blockcasings2` 13）、20 个坚固钢机械方块（0），放了 18 个是 10 个 13 加 8 个 0；给 `meta:0` 只放 8 个 0，以 `no_material`（`out of gregtech:gt.blockcasings2:0; 10 more needed`）停下。`blueprint` 照图纸里那一格的 meta 放，同样只用这一种（实测：一排 9 格坚固钢机械方块的图纸，身上同样放着两种，放了 8 个 0、缺 1 个以 `no_material` 停下，钢管道方块一个没动）。
+  `alreadyMatches`是原本就符合要求而未新放的格数；其他占用块不能静默当放置成功，要给skipped及实际id/meta。
+  `collectionSweeps`逐轮保留收集快照 `{kind,dim,bounds,observedAt,pickedUpStacks,remaining,problem?,disappearedTargets?}`，包括工作掉落与垫脚清理。observedAt是该轮结束的Unix毫秒时点，remaining里的坐标/容量属于当时，不是假称现在还在。后一次成功不覆盖前一次未收证据；旧remainingDrops/collectionProblem仅表示最后一轮，展示优先用快照，不重复或冒称全任务当前余量。
+  为了够到高处垫的方块，任务结束前会尝试拆掉：这个任务垫的不论多远都拆，以前留下的拆 48 格以内的；拆完把附近的掉落物捡回来（这一趟不再垫块）。拆不掉的个数在 `climbingBlocksLeftStanding`，坐标及原因完整列在 `climbingBlocksLeft:[{x,y,z,reason}]`，它们仍记作这个 bot 自己的垫脚，下一个任务还会试着拆。
   这个任务垫过的每一块都在 `climbingBlocks:[{x,y,z,id,meta?,standing,takenDown?}]`（和走路的结果同一种写法；任务里每一趟路——去干活、去补给箱、去捡掉落物——垫的都算）：`standing` 是现在还在不在，`takenDown:true` 是这个任务自己把它拆了（`standing:false` 又没有 `takenDown` 的，是别的什么拿走了它）。以前留下、这次拆掉的在 `olderClimbingBlocksTakenDown:[{x,y,z,id,meta?}]`。拆了、掉落物却没回到身上的块数在 `climbingBlockDropsNotPickedUp`（拆之前和捡完以后身上垫脚方块的差；没有就不带）。`removed` 不算拆掉的自己的垫脚（原来算：意见簿 f25，放一根铁栏杆的图纸结果是 `removed 6`，这 6 块全是它自己的垫脚）。
   走路途中为了过去挖掉的方块（不是任务本身要挖的）在 `dugOnTheWay:[{x,y,z,id,meta?}]`。去 `dropoff` 卸下的东西在 `unloaded:[{id,meta,name,count}]`（卸货时只给自己留一组垫脚方块，多带的泥土、圆石会被卸掉）。
-- `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}]}`（箱子里不够的部分）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks, remaining?, disappearedTargets?}`。`remaining` 全列仍在范围内的掉落物 `{entityId,id,meta,count,x,y,z,reason}`，有剩余则 `unreachable`，不是全部捡完；超时是 `stuck`。目标消失且没有确认拾取或附近合并去向时带 `disappearedTargets`、以 `interrupted` 结束，不把消失算成捡到。
+- `give`：`{dropped}`；`deposit`：`{moved, freeSlots}`；`withdraw`：`{moved, missing?:[{id,meta?,count}],pickupLimited?}`（尚未实际获得，不只指箱子缺货；也可能空间或槽位限制）；`haul`：`{moved, trips}`；`collect`：`{pickedUpStacks, remaining?, disappearedTargets?}`。`remaining`完整列出仍在范围内的掉落物 `{entityId,id,meta,count,x,y,z,reason,capacity,itemCell?,aboveItemCell?}`；capacity是这一时刻该物品可装数量，不同堆共享槽位、不是各自预留。剩余全无容量为inventory_full，有容量但无路为unreachable，超时为stuck；不是全部捡完。目标消失且没有确认拾取或附近合并去向时带 `disappearedTargets`、以 `interrupted` 结束，不把消失算成捡到。
 - 移动类：`{block:{x,y,z}}`，`home` 另有 `dim`。**走路的结果**（`goto` `goto_player` `follow`）另外照实列出这一趟改了什么地形：`climbingBlocks:[{x,y,z,id,meta?,standing}]` 是垫下的方块（`standing` 是现在还在不在），`climbingBlocksStanding` 是还在的个数；`dugOnTheWay:[{x,y,z,id,meta?}]` 是为了过去挖掉的方块；各最多列 64 个，多的个数在 `climbingBlocksNotListed`、`dugOnTheWayNotListed`。什么都没改时没有这几项。`goto` 给了 `y` 时另有 `dy`：脚的高度减去 `y`（0 就是正好），`takeBack` 时有拆不到的另有 `notTakenBack`（个数；还剩哪些看 `climbingBlocks` 的 `standing`）。别的任务路上（去箱子、机器、液体边、捡东西……）垫了、挖了，结果里也带同样这几项（`climbingBlocks` 等、`dugOnTheWay` 等），加在那个任务自己的结果字段旁边；没有结果的失败任务也有 `result`，里面只有这几项。实测（测试服）：拿空单元去 30 格外的水边，路上挖了 10 泥土、4 沙砾，修以前结果里没有这些，挖了哪几格分不出来。
   `goto` 给了 `y` 的失败：
   - 目标范围里没有一格站得住（目标格里有走路不挖的东西、头顶那格有东西、或者脚下是空的而且 `climb:false`），一开始就以 `unreachable` 失败，不去找路：消息以 `nothing to stand on at the destination:` 开头，说明是哪一格是什么；`error.detail` 是 `{x,y,z, feet, head, below}`，后三个是那三格的 `{id, meta?}`（没加载是 `{loaded:false}`）。原来这种目标会被当成到了：站在低两格的地方报完成，或者垫土把楼梯口填上。

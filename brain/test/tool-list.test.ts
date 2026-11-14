@@ -266,7 +266,10 @@ describe('模型拿到的工具清单', () => {
   // f30 实体：list_entities 库索引 +140（两条线）；use_item 的稳定实体目标/攻击参数净 +138。
   // f27/f29：find_recipes 的可选 machine/tier 原生超频查询 +340（两条线）；process 的零投料观察和 expect 限量说明 +32。
   // 本批合并实际 work 59,110（原58,299，+811），talk 29,519（原29,039，+480）。无新增常驻工具，参数合入已有动作。
-  for (const [line, ceiling] of [['work', 59_200], ['talk', 29_600]] as const) {
+  // dfece7e的能力说明澄清后work为59,151。第三批通用缺口：施工/移动/拾物共享dig/climb/maxDrop及use.approach +2,924，
+  // open_screen原生物品点击上下文说明净-22；合并后work 62,053（+2,902），talk仍29,519。没有新增模型常驻工具。
+  // 这些参数是每次动作的选择，不能只写进手册或由身体替模型决定；槽位/资料/单位事实放在结果，不扩常驻schema。
+  for (const [line, ceiling] of [['work', 62_200], ['talk', 29_600]] as const) {
     it(`防回涨：${line === 'work' ? '干活线' : '对话线'}（不能看图的模型）每一轮收到的工具清单不超过 ${ceiling.toLocaleString('en-US')} 字符`, () => {
       const sizes = modelToolSpecs(LINE_TOOLS[line], { canSee: false, line })
         .map((spec) => ({ name: spec.name, chars: JSON.stringify(spec).length }))
