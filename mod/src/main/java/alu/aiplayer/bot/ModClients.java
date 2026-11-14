@@ -54,6 +54,13 @@ public final class ModClients {
                 AiPlayerMod.LOG.warn("BetterQuesting is here but its client parts cannot be reached; bots cannot use the quest book", t);
             }
         }
+        if (Loader.isModLoaded("TConstruct")) {
+            try {
+                out.add(new TinkersClient());
+            } catch (Throwable t) {
+                AiPlayerMod.LOG.warn("Tinkers Construct is here but its stencil controls cannot be reached", t);
+            }
+        }
         return out;
     }
 

@@ -1352,9 +1352,9 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   const list = (items: Record<string, unknown>[]): string => (items.length > 0 ? items.map((x) => kindText(x.count, x)).join(', ') : 'nothing')
   // 空手点方块时没有“用了什么”；对着方块点的写明点了几下、点的哪个面
   const button = left === true ? 'left-clicked' : 'right-clicked'
-  const parts = [item === undefined && params?.on !== undefined ? `${button} with an empty hand` : left === true ? `left-clicked holding "${what}"` : `used "${what}"`]
-  // 身体比左键旧：参数它不认，点的是右键
-  if (params?.left === true && left !== true) parts.push('this was a RIGHT click: the body on the game server is older than left clicks')
+  const parts = [clicks === 0 ? `no click was made${params?.left === true ? ' (left click requested)' : ''}` : item === undefined && params?.on !== undefined ? `${button} with an empty hand` : left === true ? `left-clicked holding "${what}"` : `used "${what}"`]
+  // A missing result flag says nothing about server version, especially when preparation failed before clicking.
+  if (params?.left === true && left !== true && clicks !== 0) parts.push(left === false ? 'the body reported a RIGHT click although a left click was requested' : 'the body did not report which mouse button was used')
   if (typeof clicks === 'number' && (clicks !== 1 || typeof side === 'string')) parts.push(`${clicks} click(s)${typeof side === 'string' ? ` on the ${side} face` : ''}`)
   // 找不到看得见那个面的地方：点击隔着挡在前面的东西也到了，东西自己沿视线做的事碰到的是挡着的东西
   if (faceUnseen === true) parts.push('you found nowhere to stand with that face in sight, so you clicked it from within reach through what is in front of it (the server takes such a click; what an item does along your look, such as a bucket pouring, meets what is in front)')
@@ -1406,11 +1406,12 @@ export function useResultLines(result: Record<string, unknown>, params?: Record<
   // 对着液体用了、背包没变：游戏的流体登记里这件东西装这种液体是什么样（一个空桶装了水是水桶），照实说
   if (got.length === 0 && gone.length === 0 && isRecord(fluidContainer)) {
     const filled = isRecord(fluidContainer.filledIs) ? fluidContainer.filledIs : undefined
-    if (filled) parts.push(`the game knows a filled form of this item for that liquid, ${kindText(1, filled)}, yet nothing was taken this time`)
+    if (filled) parts.push(`the fluid registry lists ${kindText(1, filled)} as its filled form; that registry does not say which player action fills it; nothing was taken this time`)
     else if (fluidContainer.holdsFluidItself === true) parts.push('this item keeps fluid in itself, yet nothing was taken this time')
-    else parts.push("the game's fluid registry knows no form of this item holding that liquid: it is not a container for it")
+    else parts.push("the fluid registry lists no filled form for this item and liquid; its own click behavior may differ")
+    if (fluidContainer.worldFill === 'block_click') parts.push('this item fills from the world during a block click, not use in air: look through the liquid source at a solid block within reach (for example a shallow bottom or bank)')
   }
-  if (openedScreen === true) parts.push('it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"')
+  if (openedScreen === true) parts.push('it opened a screen, which was closed again: open_screen with the same item, at (the clicked block), side/hit and sneak opens it for click_slot / use_control; bag opens an item by using it in air only')
   else if (got.length === 0 && gone.length === 0) parts.push(blockChanged || dataMoved || placeChanged ? 'nothing changed in your inventory' : 'nothing visible changed in your inventory')
   if (typeof health === 'number') parts.push(`health ${health}`)
   if (typeof food === 'number') parts.push(`food ${food}`)

@@ -67,6 +67,16 @@ public final class WorldQueries {
         o.addProperty("tileEntity", te != null);
         o.addProperty("inventory", te instanceof IInventory);
         if (te != null) Machines.attachments(o, te);
+        if (Drawers.is(te)) {
+            int front = Drawers.front(te);
+            if (front >= 0 && front < SIDE_NAMES.length) {
+                JsonObject orientation = new JsonObject();
+                orientation.addProperty("front", SIDE_NAMES[front]);
+                orientation.addProperty("source", "tile.Dir (not block metadata)");
+                orientation.addProperty("placement", "the drawer faces the player placing it; looking more than 65 degrees up/down makes it face down/up");
+                o.add("orientation", orientation);
+            }
+        }
         return o;
     }
 

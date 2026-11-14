@@ -66,6 +66,7 @@ function describeBlock(pos: BlockPos, b: BlockInfo): string {
   if (tanks) s += `\n${tanks}`
   for (const cover of b.covers ?? []) s += `\n${coverText(cover, 40)}`
   if (holdsCoverItems(b)) s += `\n${COVER_NOTE}`
+  if (b.orientation) s += `\nFront: ${b.orientation.front}; stored in ${b.orientation.source}. Placing: ${b.orientation.placement}.`
   return s
 }
 

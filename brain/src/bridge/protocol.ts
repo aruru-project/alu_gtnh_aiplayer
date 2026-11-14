@@ -63,6 +63,7 @@ export interface TaskInfo {
    * - process：put（放进机器的个数）、outputs（[{id,meta,name,count}]，取回来的东西，含没被消耗的电路、模具和没用完的原料）、
    *   timedOut（等到 wait 还没做完）、freeSlots
    * - use：used（拿在手里用的那件东西的名字）、gained / lost（[{id,meta,name,count}]，背包里多了、少了什么）、
+   *   left（请求的按钮，准备失败也报告）、clicks（实际尝试次数；0表示未点）、
    *   openedScreen（右键打开了界面，已经关掉）、health、food、freeSlots
    * - blueprint：区域任务的那几项，加上 needsClimbingBlocks；任务结束时（成功或失败）另有 now
    *   （{cells,done,toPlace,byHand,blocked,extra,unloaded?}，世界和图纸的对比）和各最多 8 项的
@@ -184,6 +185,8 @@ export interface ServerInfo {
 }
 
 export interface BlockInfo {
+  /** A native orientation stored separately from block meta. */
+  orientation?: { front: string; source: string; placement: string }
   /** 区块没加载时只有 loaded:false（和坐标），其余字段都没有。 */
   loaded?: boolean
   id?: string

@@ -398,15 +398,10 @@ public final class BridgeApi {
             o.add("replaced", strings(replaced));
             return o;
         });
+        bridge.register("recipe.tradeRules", p -> alu.aiplayer.world.VendingRecipes.rules(J.reqStr(p, "id"), J.i(p, "meta", -1)));
         bridge.register("screen.open", p -> {
             Bot b = bots.requireOnline(J.reqStr(p, "bot"));
             JsonObject item = J.object(p, "item");
-            if (item != null) {
-                return alu.aiplayer.act.Screens.open(
-                    b,
-                    null,
-                    new alu.aiplayer.act.ItemFilter(J.reqStr(item, "id"), J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1));
-            }
             int side = -1;
             if (J.has(p, "side")) {
                 String name = J.str(p, "side", "");
@@ -420,8 +415,8 @@ public final class BridgeApi {
                 : new float[] { (float) J.d(h, "x", 0.5), (float) J.d(h, "y", 0.5), (float) J.d(h, "z", 0.5) };
             return alu.aiplayer.act.Screens.open(
                 b,
-                new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") },
-                null,
+                item != null && !J.has(p, "x") ? null : new int[] { J.reqCoord(p, "x"), J.reqHeight(p, "y"), J.reqCoord(p, "z") },
+                item == null ? null : new alu.aiplayer.act.ItemFilter(J.reqStr(item, "id"), J.has(item, "meta") ? J.i(item, "meta", 0) : -1, 1),
                 side,
                 hit,
                 J.bool(p, "sneak", false));

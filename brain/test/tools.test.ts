@@ -577,7 +577,7 @@ describe('观察', () => {
     assert.ok(l2.includes('the click on the block came to nothing, so the item was also used in the air along your look, as a player\'s game does (7 time(s)); its look met [minecraft:ice/0] at (-523,62,30), its west face; the block there was [minecraft:water/0], now [minecraft:water/1]; gained: 1× IC2:itemCellEmpty/1'), l2)
     assert.ok(l3.includes('the Water (flowing, not a source block: buckets and cells take only source blocks (meta 0))'), l3)
     assert.ok(l3.includes('its look met [minecraft:water/0] at (-484,62,79), its west face'), l3)
-    assert.ok(l4.includes("gained: nothing; lost: nothing; the game's fluid registry knows no form of this item holding that liquid: it is not a container for it"), l4)
+    assert.ok(l4.includes("gained: nothing; lost: nothing; the fluid registry lists no filled form for this item and liquid; its own click behavior may differ"), l4)
     assert.ok(l5.includes('1 click(s) on the up face; the click on the block came to nothing, so the item was also used in the air along your look, as a player\'s game does (1 time(s)); its look met [minecraft:grass/0] at (-482,62,81), its up face; the block there is still [minecraft:grass/0]; the cell on that face, (-482,63,81), where a block from the hand goes, was [minecraft:air/0], now [minecraft:flowing_water/0]'), l5)
     // 装上了的不再说流体登记那一句
     assert.equal(l1.includes('filled form'), false)
@@ -886,7 +886,7 @@ describe('任务类工具', () => {
     })
     const lines = (await s.run('task_status')).content.split('\n')
     assert.deepEqual(lines.slice(-3), [
-      '- t3 use [done]; result: used "Backpack"; gained: nothing; lost: nothing; it opened a screen, which was closed again: to put things in or take them out, use deposit_items / withdraw_items with "bag"; health 20; food 20; freeSlots 30',
+      '- t3 use [done]; result: used "Backpack"; gained: nothing; lost: nothing; it opened a screen, which was closed again: open_screen with the same item, at (the clicked block), side/hit and sneak opens it for click_slot / use_control; bag opens an item by using it in air only; health 20; food 20; freeSlots 30',
       '- t2 use [done]; result: used "Stick"; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30',
       '- t1 use [done]; result: used "Mushroom Stew"; gained: 1× minecraft:bowl "Bowl"; lost: 1× minecraft:mushroom_stew "Mushroom Stew"; health 18.5; food 16; freeSlots 30',
     ])
@@ -911,8 +911,8 @@ describe('任务类工具', () => {
     const recent = s.game.handlers['task.list']!({}) as { recent: unknown[] }
     s.game.handlers['task.list'] = () => ({ active: null, queue: [], recent: [...recent.recent, older({ used: 'Chisel', clicks: 1, side: 'up', gained: [], lost: [], health: 20, food: 20, freeSlots: 30 })] })
     const lines = (await s.run('task_status')).content.split('\n')
-    // 游戏服务器上的身体比左键旧：它不认 left，点的是右键
-    assert.equal(lines.at(-1), '- t0 use [done]; result: used "Chisel"; this was a RIGHT click: the body on the game server is older than left clicks; 1 click(s) on the up face; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30')
+    // Missing button metadata is unknown, not evidence of an old server or a right click.
+    assert.equal(lines.at(-1), '- t0 use [done]; result: used "Chisel"; the body did not report which mouse button was used; 1 click(s) on the up face; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30')
     assert.deepEqual(lines.slice(-4, -1), [
       '- t3 use [done]; result: used "Dolly"; 1 click(s) on the west face; the block there was [StorageDrawers:fullDrawers1/0], now [minecraft:air/0]; gained: nothing; lost: nothing; nothing changed in your inventory; health 20; food 20; freeSlots 30',
       '- t2 use [done]; result: left-clicked holding "Chisel"; 1 click(s) on the up face; the block there is still [minecraft:stone/0]; gained: nothing; lost: nothing; nothing visible changed in your inventory; health 20; food 20; freeSlots 30',

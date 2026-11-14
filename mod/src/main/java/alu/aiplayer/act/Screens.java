@@ -50,7 +50,7 @@ public final class Screens {
      * when the face is sneak-clicked).
      */
     public static JsonObject open(Bot bot, int[] at, ItemFilter item, int side, float[] hit, boolean sneak) {
-        if (item != null || (side < 0 && hit == null && !sneak)) return openPlain(bot, at, item);
+        if (at == null || (item == null && side < 0 && hit == null && !sneak)) return openPlain(bot, at, item, sneak);
         EntityPlayerMP p = bot.player();
         if (!bot.tasks.idle()) throw new RpcException("busy", "a task is running; screens are for when the bot is idle");
         if (p.openContainer != p.inventoryContainer) bot.conn()
@@ -67,7 +67,11 @@ public final class Screens {
         boolean was = p.isSneaking();
         if (sneak) p.setSneaking(true);
         try {
-            ContainerSession.clickEmptyHanded(bot, at[0], at[1], at[2], face, where[0], where[1], where[2]);
+            if (item == null) ContainerSession.clickEmptyHanded(bot, at[0], at[1], at[2], face, where[0], where[1], where[2]);
+            else {
+                hold(bot, item);
+                bot.conn().useOnBlock(at[0], at[1], at[2], face, where[0], where[1], where[2]);
+            }
         } finally {
             if (sneak) p.setSneaking(was);
         }
@@ -76,21 +80,31 @@ public final class Screens {
         return look(bot);
     }
 
-    private static JsonObject openPlain(Bot bot, int[] at, ItemFilter item) {
+    private static void hold(Bot bot, ItemFilter item) {
+        for (int i = 0; i < Inventories.CARRY_SLOTS; i++) {
+            ItemStack s = bot.player().inventory.mainInventory[i];
+            if (s != null && item.matches(s)) {
+                Inventories.hold(bot, i);
+                return;
+            }
+        }
+        throw new RpcException("no_material", "the bot carries no such item");
+    }
+
+    private static JsonObject openPlain(Bot bot, int[] at, ItemFilter item, boolean sneak) {
         EntityPlayerMP p = bot.player();
         if (!bot.tasks.idle()) throw new RpcException("busy", "a task is running; screens are for when the bot is idle");
         if (p.openContainer != p.inventoryContainer) bot.conn()
             .closeWindow();
         if (item != null) {
-            int slot = -1;
-            for (int i = 0; i < Inventories.CARRY_SLOTS && slot < 0; i++) {
-                ItemStack s = p.inventory.mainInventory[i];
-                if (s != null && item.matches(s)) slot = i;
+            hold(bot, item);
+            boolean was = p.isSneaking();
+            if (sneak) p.setSneaking(true);
+            try {
+                bot.conn().useItem();
+            } finally {
+                if (sneak) p.setSneaking(was);
             }
-            if (slot < 0) throw new RpcException("no_material", "the bot carries no such item");
-            Inventories.hold(bot, slot);
-            bot.conn()
-                .useItem();
         } else {
             if (!p.worldObj.blockExists(at[0], at[1], at[2]) || !Reach.canReach(p, at[0], at[1], at[2])) {
                 throw new RpcException("out_of_reach", "the block is out of reach; go next to it first");

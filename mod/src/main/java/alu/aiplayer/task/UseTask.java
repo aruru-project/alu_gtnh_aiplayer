@@ -472,7 +472,7 @@ public final class UseTask extends Task {
                     }
                 }
                 if (!click(p)) {
-                    if (item == null) fail("inventory_full", "no empty hotbar slot to click with an empty hand");
+                    if (item == null) fail("inventory_full", "cannot prepare an empty hand: no empty hotbar or backpack slot to move the held stack into");
                     else fail("no_material", "the bot carries no such item");
                     return;
                 }
@@ -602,6 +602,11 @@ public final class UseTask extends Task {
             // a container the registry cannot answer for
         }
         if (heldAtFirst.getItem() instanceof net.minecraftforge.fluids.IFluidContainerItem) o.addProperty("holdsFluidItself", true);
+        // IC2 ItemCell.onItemUse performs its own liquid ray; it has no air-use filling callback.
+        // A registry recipe alone does not imply either callback. Keep this native behavior separate.
+        if (heldAtFirst.getItemDamage() == 0 && heldAtFirst.getItem().getClass().getName().equals("ic2.core.item.resources.ItemCell")) {
+            o.addProperty("worldFill", "block_click");
+        }
         if (o.entrySet()
             .isEmpty()) o.addProperty("none", true);
         return o;
@@ -626,6 +631,8 @@ public final class UseTask extends Task {
     @Override
     protected JsonObject summary() {
         JsonObject o = new JsonObject();
+        o.addProperty("left", left);
+        o.addProperty("clicks", clicks);
         if (bot == null || !bot.online() || before == null) return o;
         EntityPlayerMP p = bot.player();
         Map<String, Integer> now = carried(p);
@@ -654,7 +661,6 @@ public final class UseTask extends Task {
                 o.addProperty("side", SIDES[lookPoint != null && !left ? (int) lookPoint[0] : side >= 0 ? side : Reach.facingSide(p, on[0], on[1], on[2])]);
                 if (faceUnseen && !left) o.addProperty("faceUnseen", true);
             }
-            if (left) o.addProperty("left", true);
             // The block clicked, before and after: a block that changed or went away shows here.
             if (blockBefore != null) {
                 o.addProperty("blockBefore", blockBefore);

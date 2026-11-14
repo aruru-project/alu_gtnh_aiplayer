@@ -96,7 +96,7 @@ public final class Inventories {
         return true;
     }
 
-    /** Holds nothing: selects an empty hotbar slot if there is one. Returns whether the hand is now empty. */
+    /** Holds nothing: select an empty hotbar slot, or swap the held stack into an empty backpack slot. */
     public static boolean holdNothing(Bot bot) {
         EntityPlayerMP p = bot.player();
         if (p.inventory.getCurrentItem() == null) return true;
@@ -106,6 +106,16 @@ public final class Inventories {
                     .selectHotbar(i);
                 return true;
             }
+        }
+        // A player's number-key click in their inventory swaps that slot with the selected hotbar slot.
+        // Use the container's normal click path, not an assignment into the inventory array.
+        for (Object each : p.inventoryContainer.inventorySlots) {
+            net.minecraft.inventory.Slot slot = (net.minecraft.inventory.Slot) each;
+            int index = slot.getSlotIndex();
+            if (slot.inventory != p.inventory || index < 9 || index >= CARRY_SLOTS || slot.getHasStack()) continue;
+            p.inventoryContainer.slotClick(slot.slotNumber, p.inventory.currentItem, 2, p);
+            p.inventoryContainer.detectAndSendChanges();
+            return p.inventory.getCurrentItem() == null;
         }
         return false;
     }

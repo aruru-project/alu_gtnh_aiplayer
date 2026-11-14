@@ -116,7 +116,11 @@ export class BridgeApi {
   }
   // ── 界面（通用）：打开、看格子、点、关。只在 bot 没有任务在跑时可用 ──
   /** 打开一个方块的界面（side / hit / sneak：点哪个面、哪一点、蹲不蹲——有的方块这样打开的是另一个界面），或者身上一件东西的界面。 */
-  screenOpen(bot: string, target: { x: number; y: number; z: number; side?: string; hit?: { x: number; y: number; z: number }; sneak?: boolean } | { item: { id: string; meta?: number } }): Promise<ScreenState> {
+  recipeTradeRules(item: { id: string; meta: number }): Promise<{ source: string; scope: string; trades: Record<string, unknown>[]; unavailable?: string }> {
+    return this.call('recipe.tradeRules', item)
+  }
+
+  screenOpen(bot: string, target: { x?: number; y?: number; z?: number; item?: { id: string; meta?: number }; side?: string; hit?: { x: number; y: number; z: number }; sneak?: boolean }): Promise<ScreenState> {
     return this.call('screen.open', { bot, ...target })
   }
   screenLook(bot: string): Promise<ScreenState> {

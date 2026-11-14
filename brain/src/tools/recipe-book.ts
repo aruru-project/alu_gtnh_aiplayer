@@ -8,6 +8,7 @@
 import { BridgeError } from '../bridge/protocol.ts'
 import type { AttachedBlock, BlockPos, ContainerInfo, FindMatch, InventoryItem, MachineInfo } from '../bridge/protocol.ts'
 import { ANY_META, CIRCUIT_ID } from '../packdata/index.ts'
+import { VENDING_HANDLER } from '../packdata/recipes.ts'
 import type { CarvingBook, FluidInfo, FluidTable, GuideBook, PackData, Recipe, RecipeBook, RecipeHandler, RecipeSlot } from '../packdata/index.ts'
 import type { ItemTable, PackItemInfo } from '../packdata/items.ts'
 import type { ItemTooltip, TooltipHit, TooltipTable } from '../packdata/tooltips.ts'
@@ -503,6 +504,7 @@ export function isHandCraft(recipe: Recipe): boolean {
  */
 export function wayKind(h: RecipeHandler): 'machine' | 'device' | 'craft' | 'other' {
   if (h.grid) return 'craft'
+  if (h.key === VENDING_HANDLER) return 'other' // Exchanging through its own trade interface is not input/wait/output processing.
   if (h.gregtech) return 'machine'
   // 列着合成台的页其实是合成（AE2、ProjectRed 自己的合成页，导出时没标成合成格）：不是“把原料点进去等着”的机器
   return h.machines.length > 0 && !h.machines.some((m) => CRAFTING_TABLES.includes(m.id)) ? 'device' : 'other'
@@ -522,6 +524,7 @@ interface Availability {
 
 export function availability(h: RecipeHandler, recipes: readonly Recipe[], around: Surroundings): Availability {
   const kind = wayKind(h)
+  if (h.key === VENDING_HANDLER) return { rank: 4, text: 'trade through the vending interface, not craft_item/process_items; check the static rules and current player eligibility separately' }
   if (kind === 'other') return { rank: 4, text: 'not directly executable by craft_item or process_items: this page has no supported crafting or machine mapping; it may describe information or a world interaction. Other player actions may apply; their support is not determined here' }
   if (kind === 'craft') {
     const craftable = recipes.filter(isHandCraft)
@@ -601,6 +604,9 @@ export function yieldOf(recipe: Recipe, target: { id: string; meta: number; same
 
 export function recipeLine(recipe: Recipe, nm: Namer, opts: LineOptions = {}): string {
   const slots = mergedSlots(recipe.in)
+  if (recipe.handler.key === VENDING_HANDLER) {
+    return `#${recipe.ref}: ${slots.map((s) => `${quantity(s.n)}× ${slotName(s, nm, true)}`).join(' + ') || 'no NEI inputs'} → ${outputText(recipe, nm)} [NEI trade requirements, including any retained items; native trade rules distinguish consumed inputs from nonConsumedItems]`
+  }
   const consumed = slots.filter((s) => s.n > 0 && !isTool(s))
   const machine = recipe.handler.gregtech
   const have = (s: RecipeSlot): string => (opts.have ? ` (you carry ${opts.have.ofSlot(s, machine)})` : '')
@@ -968,6 +974,41 @@ async function overclockNote(ctx: ToolContext, r: Recipe, input: RecipeQuery): P
 }
 
 export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
+  const result = await findRecipesInBook(ctx, input)
+  if (typeof result !== 'string' && result.isError) return result
+  const { items, recipes, packdata } = requireBook(ctx)
+  const asked = resolveAsked(packdata, recipes, input, namer(items))
+  if ('content' in asked || asked.kind !== 'item') return result
+  const vending = recipes.makesOf(asked.id, asked.meta).some((ref) => recipes.handlerOfRecipe(ref)?.key === VENDING_HANDLER)
+  const way = input.way?.toLowerCase()
+  const h = recipes.handler(VENDING_HANDLER)
+  if (!vending || (way && h && !h.name.toLowerCase().includes(way) && !h.key.toLowerCase().includes(way))) return result
+  return withTradeRules(ctx, result, [{ id: asked.id, meta: asked.meta }])
+}
+
+async function withTradeRules(ctx: ToolContext, result: ToolResult | string, products: { id: string; meta: number }[]): Promise<ToolResult> {
+  const base = typeof result === 'string' ? { content: result } : result
+  const notes: string[] = []
+  const rules: unknown[] = []
+  const seen = new Set<string>()
+  for (const item of products) {
+    const key = itemKey(item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      const response = await ctx.bridge.recipeTradeRules(item)
+      rules.push({ item, ...response })
+      notes.push(`Server trade rules for ${key}: ${response.unavailable ?? response.scope}. Source: ${response.source}.`, ...response.trades.map((trade) => JSON.stringify(trade)))
+    } catch (e) {
+      if (!(e instanceof BridgeError)) throw e
+      notes.push(`Trade rules for ${key} were not read: ${e.message}. The exported NEI ingredient list alone does not establish unlocks, non-consumed requirements or cooldown.`)
+    }
+  }
+  if (notes.length > 0) notes.unshift('Vending exchanges are not processing recipes: use the machine\'s own trade interface. Static rules below do not mean this player can trade now. cooldownSeconds is real-time seconds; maxTrades -1 means no total trade limit. Currency values are the native currency units (not necessarily a count of high-denomination coins).')
+  return { ...base, content: [base.content, ...notes].join('\n'), data: { ...(base.data as Record<string, unknown> | undefined), tradeRules: rules }, keepWhole: true }
+}
+
+async function findRecipesInBook(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
   const asked = resolveAsked(packdata, recipes, input, nm)
@@ -1039,7 +1080,7 @@ export async function findRecipesLocal(ctx: ToolContext, input: RecipeQuery): Pr
     const lines = await Promise.all(paged.shown.map(async (r) => `${chosen.length > 1 ? `[${r.handler.name}] ` : ''}${recipeLine(r, nm, { ...wanted, ...(have ? { have } : {}) })}${await overclockNote(ctx, r, input)}`))
     const range = list.length > paged.shown.length ? `recipes ${paged.first}–${paged.first + paged.shown.length - 1} of ${list.length} (page ${paged.page} of ${paged.pages})` : `${list.length} recipe(s)`
     return {
-      content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, ...(paged.shown.some((r) => r.fake) ? [FAKE_FACT] : []), 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),
+      content: [`${label}${scope}: ${range}${merged}.${twinNote}`, ...lines, ...(paged.shown.some((r) => r.fake) ? [FAKE_FACT] : []), paged.shown.every((r) => r.handler.key === VENDING_HANDLER) ? 'These are vending exchanges, not craft_item/process_items recipes.' : 'Use a recipe by its # number: craft_item (hand crafting) or process_items (machine).'].join('\n'),
       keepWhole: true,
     }
   }
@@ -1097,6 +1138,7 @@ export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
   return {
     recipe: r.ref,
     way: r.handler.name,
+    ...(r.handler.key === VENDING_HANDLER ? { inputSemantics: 'NEI requirements, including retained items; see tradeRules inputs/nonConsumedItems for consumption' } : {}),
     in: mergedSlots(r.in).map(slot),
     out: r.out.map((o) => ({ id: o.id, meta: o.meta, name: o.name ?? nm.name(o.id, o.meta), count: o.n, ...(o.chance !== undefined ? { chance: o.chance } : {}) })),
     ...(r.fin.length > 0 ? { fluidsIn: r.fin.map(fluid) } : {}),
@@ -1113,6 +1155,45 @@ export function recipeData(r: Recipe, nm: Namer): Record<string, unknown> {
  * 只给 id/meta 时 ways 是每种方式各有几条（全部方式，不止文字里列出来的那些）；给了 way / contains / page 时 recipes 是这一页的配方。
  */
 export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
+  const { items, recipes, packdata } = requireBook(ctx)
+  const nm = namer(items)
+  const asked = resolveAsked(packdata, recipes, input, nm)
+  if ('content' in asked || asked.kind !== 'item') return findIngredientUses(ctx, input)
+  const performed = recipes.performedBy(asked.id, asked.meta)
+  if (performed.length === 0) return findIngredientUses(ctx, input)
+  const chosen = input.way ? pickWays(performed, input.way) : performed
+  const detail = input.way !== undefined || input.page !== undefined || input.contains !== undefined || input.circuit !== undefined
+  if (detail && chosen.length === 0) return findIngredientUses(ctx, input)
+  // Preserve the ingredient-use fields; machine/catalyst recipes live in their own additive section.
+  const baseResult = await findIngredientUses(ctx, detail ? { id: asked.id, meta: asked.meta } : input)
+  const base = typeof baseResult === 'string' ? { content: baseResult } : baseResult
+  const lines = ['As a machine / NEI recipe catalyst (not consumed as an ingredient):']
+  const ways = performed.map((w) => ({ way: w.handler.key, name: w.handler.name, recipes: w.refs.length }))
+  let shown: Recipe[] = []
+  let total = performed.reduce((n, w) => n + w.refs.length, 0)
+  let page = 1, pages = 1
+  if (detail) {
+    const contains = input.contains?.trim().toLowerCase()
+    const list = chosen.flatMap((w) => w.refs).filter((ref) => {
+      if (!contains && input.circuit === undefined) return true
+      const r = recipes.get(ref)
+      return r && (input.circuit === undefined || circuitNumber(r) === input.circuit) && (!contains || r.in.some((s) => slotMatches(s, contains, nm)) || r.out.some((o) => slotMatches({ kind: 'item', ...o }, contains, nm)))
+    })
+    const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
+    if (!paged) return fail(`There is no machine-recipe page ${input.page}: ${list.length} recipe(s).`)
+    total = list.length; page = paged.page; pages = paged.pages
+    shown = paged.shown.flatMap((ref) => { const r = recipes.get(ref); return r ? [r] : [] })
+    lines.push(`${total} recipe(s); page ${page} of ${pages}.`, ...shown.map((r) => `[${r.handler.name}] ${recipeLine(r, nm)}`))
+  } else {
+    lines.push(...ways.map((w) => `- ${w.name}: ${w.recipes} recipe(s); way "${w.way}".`), 'Give way, contains (product or ingredient), and page to inspect these machine recipes separately from ingredient uses.')
+  }
+  let result: ToolResult = { ...base, content: [base.content, ...lines].join('\n'), data: { ...(base.data as Record<string, unknown> | undefined), performedBy: { total, ways, page, pages, recipes: shown.map((r) => recipeData(r, nm)) } }, keepWhole: true }
+  const products = shown.filter((r) => r.handler.key === VENDING_HANDLER).flatMap((r) => r.out)
+  if (products.length > 0) result = await withTradeRules(ctx, result, products)
+  return result
+}
+
+async function findIngredientUses(ctx: ToolContext, input: RecipeQuery): Promise<ToolResult | string> {
   const { items, recipes, packdata } = requireBook(ctx)
   const nm = namer(items)
   const asked = resolveAsked(packdata, recipes, input, nm)

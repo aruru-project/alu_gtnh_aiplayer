@@ -35,6 +35,11 @@
 - **要一把工具而仓库里没有。** 做一把最简单的就够用（不用做电动的）；用哪种材质看仓库里什么多。
 - 一种方式下配方很多（工具每种材质一条，几百条）时，用 way 加 contains 缩小：find_recipes 给 way "有序合成"、contains "钢"。结果一页 10 条，要看完就翻页。想知道一样东西能拿来做什么：库函数 find_uses（不在工具清单里，run_program 写一行 `return (await tool('find_uses', { id, meta })).text`；再给 way、contains、circuit 看具体的配方）。
 
+# 机器用途与交易资料
+- `find_uses {id,meta}` 分开列“物品被当原料的用途”和“它作为机器 / NEI catalyst 能做的配方”。后者在 data.performedBy，不混进原料用途的 total/ways；给返回的 way、contains、page 看商品或产物。
+- 自动售货机商品现在也能从 find_recipes 查，或从机器物品 `gregtech:gt.blockmachines/2741` 的 find_uses 查。Server trade rules 来自运行服的原生交易表：currency 是货币种类/面值，inputs 是消耗物品，nonConsumedItems 是保留的要求，requirements 是解锁规则，cooldownSeconds 是现实时间秒，maxTrades:-1 是没有总次数上限。这是静态规则；当前玩家资格、余额和剩余冷却另看实际界面，不能由“有这条交易”推出能马上兑换。
+- 铜矿石交易不等于直接卖铜锭；用准确 id/meta 查商品。交易 # 编号用于查资料，不交给 process_items；兑换需要售货机自己的交易界面。
+
 # 基地的做法
 这个基地怎么做东西的记录：主人教的，和你自己定过的。重启、历史压缩都不丢；一类零件、当现成的、同料时用哪种、总的先后这几种每一轮都列在提示词里。base_methods 看全部，set_base_method 记一条、改一条（同一个键再记一次）、删一条（remove 给它的键）。四种：
 - 一类零件走哪种做法：`{ part: "plate", way: "卷板机", from: "ingot", by: "owner", why: "一锭一板" }`。part 是矿辞前缀（find_item 写着一样东西登记在哪些矿辞名下，plateSteel 的前缀是 plate）；from 是从哪种料来，不写就是那种做法里列在最前的一条；material 只管一种材料（"Steel"）。双层板、小撮粉这些是另一种零件，板和粉的记录管不到它们。

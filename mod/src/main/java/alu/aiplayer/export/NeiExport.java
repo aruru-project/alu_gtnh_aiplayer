@@ -744,7 +744,12 @@ public final class NeiExport {
                 JsonObject j = slot(ps);
                 if (j != null) a.add(j);
             }
-            if (a.size() > 0) o.add("other", a);
+            if (a.size() > 0) {
+                o.add("other", a);
+                // This handler's CachedTradeRecipe.getOtherStacks returns Trade.toItems, not catalysts.
+                // Keep 'other' for old readers; publish the real products for the recipe index as well.
+                if (h.getClass().getName().equals("com.cubefury.vendingmachine.integration.nei.NeiRecipeHandler")) o.add("out", a);
+            }
         }
         if (in.size() == 0 && out.size() == 0 && !o.has("other")) return null;
         return o;

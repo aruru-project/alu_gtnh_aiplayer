@@ -70,6 +70,13 @@ export const ANY_META = 32767
 /** 编程电路：配方里 n 为 0 的这个物品，meta 就是电路号。 */
 export const CIRCUIT_ID = 'gregtech:gt.integrated_circuit'
 
+export const VENDING_HANDLER = 'com.cubefury.vendingmachine.integration.nei.NeiRecipeHandler'
+
+/** This native NEI handler returns its products as other stacks, unlike most handlers. */
+function products(raw: Record<string, unknown>): unknown {
+  return raw.h === VENDING_HANDLER && Array.isArray(raw.out) && raw.out.length === 0 ? raw.other : raw.out
+}
+
 const READ_CHUNK = 8 << 20
 const EMPTY: readonly number[] = []
 
@@ -231,7 +238,8 @@ export class RecipeBook {
       }
       handlerOf.push(h)
       if (r.fake === true) fake++
-      if (Array.isArray(r.out)) for (const o of r.out) if (isRecord(o) && typeof o.id === 'string') add(makes, itemPosting(o.id, typeof o.meta === 'number' ? o.meta : 0), ref)
+      const outputs = products(r)
+      if (Array.isArray(outputs)) for (const o of outputs) if (isRecord(o) && typeof o.id === 'string') add(makes, itemPosting(o.id, typeof o.meta === 'number' ? o.meta : 0), ref)
       if (Array.isArray(r.in)) {
         for (const i of r.in) {
           if (!isRecord(i)) continue
@@ -311,6 +319,21 @@ export class RecipeBook {
     return this.handlers[this.handlerOf[ref] ?? 0xffff]
   }
 
+  /** Recipes shown under this machine/catalyst in NEI, separate from ingredient uses. */
+  performedBy(id: string, meta: number): { handler: RecipeHandler; refs: number[] }[] {
+    const handlers = new Set(this.handlers.filter((h) => h.machines.some((m) => m.id === id && (m.meta === meta || m.meta === ANY_META))))
+    if (handlers.size === 0) return []
+    const groups = new Map<RecipeHandler, number[]>()
+    for (let ref = 0; ref < this.size; ref++) {
+      const handler = this.handlerOfRecipe(ref)
+      if (!handler || !handlers.has(handler)) continue
+      const list = groups.get(handler)
+      if (list) list.push(ref)
+      else groups.set(handler, [ref])
+    }
+    return [...groups].map(([handler, refs]) => ({ handler, refs }))
+  }
+
   /** 产出这个物品的配方的编号，按文件里的顺序。 */
   makesOf(id: string, meta: number): readonly number[] {
     return this.makes.get(itemPosting(id, meta)) ?? EMPTY
@@ -367,7 +390,7 @@ export class RecipeBook {
       return undefined
     }
     if (!isRecord(r)) return undefined
-    const recipe: Recipe = { ref, handler, in: list(r.in, slot), out: list(r.out, stack), fin: fluids(r.fin), fout: fluids(r.fout) }
+    const recipe: Recipe = { ref, handler, in: list(r.in, slot), out: list(products(r), stack), fin: fluids(r.fin), fout: fluids(r.fout) }
     if (typeof r.eut === 'number') recipe.eut = r.eut
     if (typeof r.ticks === 'number') recipe.ticks = r.ticks
     if (typeof r.special === 'number' && r.special !== 0) recipe.special = r.special
