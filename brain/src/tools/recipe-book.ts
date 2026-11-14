@@ -1165,13 +1165,15 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
   const detail = input.way !== undefined || input.page !== undefined || input.contains !== undefined || input.circuit !== undefined
   if (detail && chosen.length === 0) return findIngredientUses(ctx, input)
   // Preserve the ingredient-use fields; machine/catalyst recipes live in their own additive section.
-  const baseResult = await findIngredientUses(ctx, detail ? { id: asked.id, meta: asked.meta } : input)
+  const baseResult = await findIngredientUses(ctx, input)
   const base = typeof baseResult === 'string' ? { content: baseResult } : baseResult
+  const { isError: ingredientFailed, ...ingredientResult } = base
   const lines = ['As a machine / NEI recipe catalyst (not consumed as an ingredient):']
   const ways = performed.map((w) => ({ way: w.handler.key, name: w.handler.name, recipes: w.refs.length }))
   let shown: Recipe[] = []
   let total = performed.reduce((n, w) => n + w.refs.length, 0)
   let page = 1, pages = 1
+  let machineError: string | undefined
   if (detail) {
     const contains = input.contains?.trim().toLowerCase()
     const list = chosen.flatMap((w) => w.refs).filter((ref) => {
@@ -1180,14 +1182,32 @@ export async function findUsesLocal(ctx: ToolContext, input: RecipeQuery): Promi
       return r && (input.circuit === undefined || circuitNumber(r) === input.circuit) && (!contains || r.in.some((s) => slotMatches(s, contains, nm)) || r.out.some((o) => slotMatches({ kind: 'item', ...o }, contains, nm)))
     })
     const paged = pageOf(list, input.page, RECIPES_PER_PAGE)
-    if (!paged) return fail(`There is no machine-recipe page ${input.page}: ${list.length} recipe(s).`)
-    total = list.length; page = paged.page; pages = paged.pages
-    shown = paged.shown.flatMap((ref) => { const r = recipes.get(ref); return r ? [r] : [] })
-    lines.push(`${total} recipe(s); page ${page} of ${pages}.`, ...shown.map((r) => `[${r.handler.name}] ${recipeLine(r, nm)}`))
+    total = list.length
+    if (!paged) {
+      machineError = `There is no machine-recipe page ${input.page}: ${total} recipe(s).`
+      page = input.page ?? 1
+      pages = Math.max(1, Math.ceil(total / RECIPES_PER_PAGE))
+      lines.push(machineError)
+    } else {
+      page = paged.page; pages = paged.pages
+      shown = paged.shown.flatMap((ref) => { const r = recipes.get(ref); return r ? [r] : [] })
+      lines.push(`${total} recipe(s); page ${page} of ${pages}.`, ...shown.map((r) => `[${r.handler.name}] ${recipeLine(r, nm)}`))
+    }
   } else {
     lines.push(...ways.map((w) => `- ${w.name}: ${w.recipes} recipe(s); way "${w.way}".`), 'Give way, contains (product or ingredient), and page to inspect these machine recipes separately from ingredient uses.')
   }
-  let result: ToolResult = { ...base, content: [base.content, ...lines].join('\n'), data: { ...(base.data as Record<string, unknown> | undefined), performedBy: { total, ways, page, pages, recipes: shown.map((r) => recipeData(r, nm)) } }, keepWhole: true }
+  const machineHasResults = machineError === undefined && total > 0
+  let result: ToolResult = {
+    ...ingredientResult,
+    ...(ingredientFailed && !machineHasResults ? { isError: true } : {}),
+    content: [ingredientFailed ? `Ingredient-use section: ${base.content}` : base.content, ...lines].join('\n'),
+    data: {
+      ...(base.data as Record<string, unknown> | undefined),
+      ...(ingredientFailed ? { ingredientError: base.content } : {}),
+      performedBy: { total, ways, page, pages, recipes: shown.map((r) => recipeData(r, nm)), ...(machineError ? { error: machineError } : {}) },
+    },
+    keepWhole: true,
+  }
   const products = shown.filter((r) => r.handler.key === VENDING_HANDLER).flatMap((r) => r.out)
   if (products.length > 0) result = await withTradeRules(ctx, result, products)
   return result

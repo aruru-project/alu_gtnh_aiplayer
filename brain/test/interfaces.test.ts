@@ -15,7 +15,7 @@ const vending = 'com.cubefury.vendingmachine.integration.nei.NeiRecipeHandler'
 const copper = { id: 'IC2:blockOreCopper', meta: 0 }
 const machine = { id: 'gregtech:gt.blockmachines', meta: 2741 }
 
-function setup(t: { after(fn: () => void): void }) {
+function setup(t: { after(fn: () => void): void }, dualUse = false) {
   const tmp = tmpDir()
   t.after(tmp.cleanup)
   fs.writeFileSync(path.join(tmp.dir, 'items.jsonl'), [
@@ -26,11 +26,19 @@ function setup(t: { after(fn: () => void): void }) {
   fs.writeFileSync(path.join(tmp.dir, 'handlers.json'), JSON.stringify([
     { key: vending, name: '自动售货机', machines: [machine] },
     { key: 'demo.other', name: 'Other information' },
+    ...(dualUse ? [{ key: 'demo.shared', name: 'Shared machine', machines: [machine] }, { key: 'demo.extra', name: 'Extra ingredient use' }] : []),
   ]))
   // The installed NEI export's shape: getOtherStacks holds this handler's goods, not its result slot.
   fs.writeFileSync(path.join(tmp.dir, 'recipes.jsonl'), [
     { h: vending, in: [{ id: 'gregtech:gt.metaitem.03', meta: 5035, n: 64 }, { id: 'dreamcraft:CoinSmith', meta: 0, n: 50 }], out: [], other: [{ ...copper, n: 64 }] },
     { h: 'demo.other', in: [], out: [], other: [{ id: 'minecraft:diamond', meta: 0, n: 1 }] },
+    ...(dualUse ? [
+      ...Array.from({ length: 11 }, (_, n) => ({ h: 'demo.shared', in: [{ ...machine, n: 1 }, { id: 'gregtech:gt.integrated_circuit', meta: 2, n: 0 }], out: [{ id: `demo:keep_ingredient_${n}`, meta: 0, n: 1 }] })),
+      { h: 'demo.shared', in: [{ id: 'minecraft:stone', meta: 0, n: 1 }, { id: 'gregtech:gt.integrated_circuit', meta: 2, n: 0 }], out: [{ id: 'demo:keep_machine_only', meta: 0, n: 1 }] },
+      { h: 'demo.shared', in: [{ ...machine, n: 1 }, { id: 'gregtech:gt.integrated_circuit', meta: 2, n: 0 }], out: [{ id: 'demo:discard_product', meta: 0, n: 1 }] },
+      { h: 'demo.shared', in: [{ ...machine, n: 1 }, { id: 'gregtech:gt.integrated_circuit', meta: 3, n: 0 }], out: [{ id: 'demo:keep_wrong_circuit', meta: 0, n: 1 }] },
+      { h: 'demo.extra', in: [{ ...machine, n: 1 }, { id: 'gregtech:gt.integrated_circuit', meta: 2, n: 0 }], out: [{ id: 'demo:keep_other_way', meta: 0, n: 1 }] },
+    ] : []),
   ].map((r) => JSON.stringify(r)).join('\n'))
   const packdata = loadPackData(tmp.dir, () => {})
   t.after(() => packdata.recipes?.close())
@@ -90,4 +98,24 @@ it('查售货机用途把它可做的交易另列，不把机器本身当耗材�
   assert.match(detail.content, /64× 铜矿石/)
   assert.equal((detail.data as any).total, 0)
   assert.equal((detail.data as any).performedBy.recipes[0].out[0].count, 64)
+})
+
+it('机器物品也作原料时，原料与catalyst用途各自保留way/contains/circuit筛选和第二页', async (t) => {
+  const s = setup(t, true)
+  const answer = await s.run('find_uses', { ...machine, way: 'demo.shared', contains: 'keep', circuit: 2, page: 2 })
+  assert.equal(answer.isError, undefined, answer.content)
+  const data = answer.data as any
+  assert.deepEqual([data.total, data.page, data.pages], [11, 2, 2])
+  assert.deepEqual(data.recipes.map((r: any) => r.out[0].id), ['demo:keep_ingredient_10'])
+  assert.deepEqual([data.performedBy.total, data.performedBy.page, data.performedBy.pages], [12, 2, 2])
+  assert.deepEqual(data.performedBy.recipes.map((r: any) => r.out[0].id), ['demo:keep_ingredient_10', 'demo:keep_machine_only'])
+  const ingredientText = answer.content.split('As a machine / NEI recipe catalyst')[0]!
+  assert.match(ingredientText, /page 2 of 2/)
+  assert.doesNotMatch(ingredientText, /keep_machine_only|discard_product|keep_wrong_circuit|keep_other_way/)
+
+  // This way is valid for its machine role, but not for any recipe consuming the machine item.
+  const onlyMachine = await s.run('find_uses', { ...machine, way: '自动售货机', contains: '铜' })
+  assert.equal(onlyMachine.isError, undefined, onlyMachine.content)
+  assert.match((onlyMachine.data as any).ingredientError, /not used by any way matching/)
+  assert.equal((onlyMachine.data as any).performedBy.recipes[0].out[0].count, 64)
 })
