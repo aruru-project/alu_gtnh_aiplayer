@@ -28,6 +28,7 @@ import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { AT, lookFrom } from './where.ts'
 import type { At } from './where.ts'
 import { errorText } from '../util.ts'
+import { gtFluidUnitNote } from './unit-notes.ts'
 
 // 协议里各方法的上限
 export const SCAN_MAX_SIDE = 64
@@ -206,7 +207,11 @@ function glossary(ctx: ToolContext, block: BlockInfo): string[] {
 function describeDetail(ctx: ToolContext, block: BlockInfo, room: number): string[] {
   const lines: string[] = []
   if (typeof block.detail === 'string') return [`It keeps no data of its own (${block.detail}).`]
-  if (block.says && block.says.length > 0) lines.push('What it says of itself (as to a scanner):', ...block.says.map((line) => `  ${line}`))
+  if (block.says && block.says.length > 0) {
+    lines.push('What it says of itself (as to a scanner):', ...block.says.map((line) => `  ${line}`))
+    const unitNote = gtFluidUnitNote(block.id ?? '', block.says)
+    if (unitNote) lines.push(unitNote)
+  }
   if (block.savedError !== undefined) return [...lines, `Its saved data could not be read: ${block.savedError}`]
   if (block.saved === undefined) return lines.length > 0 ? lines : ['Nothing more is known of it.']
   const names = glossary(ctx, block)

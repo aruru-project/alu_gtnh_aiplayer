@@ -16,6 +16,7 @@ import { formatPos, itemKey, nameOf } from './format.ts'
 import { guideNote } from './guide.ts'
 import { fail } from './types.ts'
 import type { ToolContext, ToolResult } from './types.ts'
+import { gtFluidUnitNote } from './unit-notes.ts'
 
 export const RECIPES_PER_PAGE = 10
 export const ITEMS_PER_PAGE = 12
@@ -801,6 +802,11 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
       : `${what} matches ${total} item(s)${tip.length > 0 && query.length === 0 ? '' : ', most alike first'}.`
   const tail: string[] = []
   if (tipsShown) tail.push(TOOLTIP_FACT)
+  const unitNote = hits.map((h) => {
+    const tooltip = tooltips?.get(h.id, h.meta)
+    return gtFluidUnitNote(h.id, TIP_SCREENS.flatMap(([key]) => tooltip?.[key] ?? []))
+  }).find((note) => note !== undefined)
+  if (unitNote) tail.push(unitNote)
   if (!few) {
     const inGuide = guide ? hits.filter((h) => guide.about(h.id, h.meta).length > 0).length : 0
     if (inGuide > 0) tail.push(`${inGuide} of these have a page in the in-game guide: read_guide {id, meta} lists the pages about one.`)
@@ -811,6 +817,7 @@ export function findItemLocal(items: ItemTable, recipes: RecipeBook | undefined,
     total,
     page,
     pages: Math.ceil(total / limit),
+    ...(unitNote ? { unitNotes: [unitNote] } : {}),
     items: hits.map((h) => {
       const tooltip = tooltips?.get(h.id, h.meta)
       return { id: h.id, meta: h.meta, name: h.name, ...(h.en !== undefined ? { en: h.en } : {}), ...(h.ores && h.ores.length > 0 ? { ores: h.ores } : {}), ...(tooltip ? { tooltip } : {}) }
