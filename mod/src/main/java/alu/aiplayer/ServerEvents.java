@@ -63,7 +63,14 @@ public final class ServerEvents {
         data.addProperty("message", event.message);
         data.addProperty("isBot", bots.isBot(event.player));
         // "This chest", "over there": words that only mean something from where the speaker stands.
-        if (!bots.isBot(event.player)) data.add("speaker", alu.aiplayer.world.PlayerView.describe(event.player));
+        if (!bots.isBot(event.player)) {
+            try {
+                data.add("speaker", alu.aiplayer.world.PlayerView.describe(event.player));
+            } catch (RuntimeException | LinkageError e) {
+                // A block that throws when looked at must not cost the speaker their message or their connection.
+                AiPlayerMod.LOG.warn("Cannot describe where {} stands and looks", event.username, e);
+            }
+        }
         bridge.emit("chat", data);
         // The same line is about to be delivered to every player, bots included; they need not hear it twice.
         bots.noteChatBroadcast(event.component == null ? null : event.component.getUnformattedText());

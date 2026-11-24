@@ -225,7 +225,25 @@ public final class BridgeServer {
             res.add("id", id);
             res.addProperty("ok", true);
             res.add("result", result == null ? new JsonObject() : result);
-            conn.send(res.toString());
+            String line = res.toString();
+            // Each char is at most 3 bytes in UTF-8, so only a long line needs counting.
+            long bytes = (long) line.length() * 3 <= MAX_LINE_BYTES ? 0 : utf8Length(line);
+            if (bytes > MAX_LINE_BYTES) {
+                // A client reads lines of at most MAX_LINE_BYTES and drops the connection on a longer one, failing
+                // every request it has open. Saying so for this one request lets the caller ask for less.
+                AiPlayerMod.LOG
+                    .warn("Bridge reply to {} is {} bytes, over the line limit; answering too_large", method, bytes);
+                conn.send(
+                    error(
+                        id,
+                        "too_large",
+                        "the reply would be " + bytes
+                            + " bytes, more than the "
+                            + MAX_LINE_BYTES
+                            + " a line may have; ask for less (a smaller area, limit or page)"));
+                return;
+            }
+            conn.send(line);
         } catch (RpcException e) {
             conn.send(error(id, e.code, e.getMessage()));
         } catch (IllegalArgumentException | IllegalStateException | ClassCastException
@@ -269,6 +287,21 @@ public final class BridgeServer {
             }
         }
         AiPlayerMod.LOG.info("Bridge client connected: {}", conn.client);
+    }
+
+    /** Bytes of the text in UTF-8, counted without encoding it (a lone surrogate counts 3, at most 2 too many). */
+    static long utf8Length(String s) {
+        long n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) n += 1;
+            else if (c < 0x800) n += 2;
+            else if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
+                n += 4;
+                i++;
+            } else n += 3;
+        }
+        return n;
     }
 
     private static String error(JsonElement id, String code, String message) {

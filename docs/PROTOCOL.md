@@ -25,7 +25,9 @@
 {"event": "chat", "seq": 131, "time": 1794300000000, "data": { ... }}
 ```
 
-错误码：`unauthorized` `bad_request` `unknown_method` `not_found` `offline` `denied` `too_large` `internal`。
+错误码：`unauthorized` `bad_request` `unknown_method` `not_found` `offline` `denied` `too_large` `internal`，以及几个动作专用的：`busy`（有任务在跑、或配方索引还没建好，稍后再试）、`invalid`（界面没接受这次操作）、`out_of_reach`（够不着那个方块或那一面，先走过去）、`no_material`（身上没有要用的物品）。
+
+一行（请求或响应）最长 4 MiB。响应超过时 mod 不发它，改回 `too_large`，请求方缩小范围（区域、`limit`、分页）再问；客户端收到超长的行会断开连接。
 
 请求在服务器主线程的下一刻执行，响应通常在 50ms 内返回。耗时的事一律是“任务”（见下），请求只负责启动。
 
