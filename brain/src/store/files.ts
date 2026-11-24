@@ -16,11 +16,21 @@ export function ensureDir(dir: string): void {
   }
 }
 
+/**
+ * 先写临时文件、刷到磁盘再改名。不刷盘的话改名可能先于数据落盘，整机断电或虚拟机被关掉后
+ * 留下一个空文件，readJson 会把它当坏文件挪走、按空处理（配置、密钥就没了）。
+ */
 export function writeFileAtomic(file: string, content: string): void {
   ensureDir(path.dirname(file))
   const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`
   try {
-    fs.writeFileSync(tmp, content, { mode: FILE_MODE })
+    const fd = fs.openSync(tmp, 'w', FILE_MODE)
+    try {
+      fs.writeFileSync(fd, content)
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
     fs.chmodSync(tmp, FILE_MODE)
     fs.renameSync(tmp, file)
   } catch (e) {

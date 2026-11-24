@@ -3,7 +3,6 @@ package alu.aiplayer.world;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -18,6 +17,7 @@ import com.google.gson.JsonObject;
 
 import alu.aiplayer.AiPlayerMod;
 import alu.aiplayer.bridge.RpcException;
+import alu.aiplayer.util.AtomicFile;
 import alu.aiplayer.util.J;
 
 /**
@@ -246,13 +246,8 @@ public final class BlueprintStore {
         if (existing != null && existing.length >= MAX_FILES && !file(name).exists()) {
             throw new IllegalArgumentException("the folder already holds " + MAX_FILES + " files");
         }
-        File tmp = new File(dir, name + SUFFIX + ".tmp");
-        try (FileOutputStream out = new FileOutputStream(tmp)) {
-            out.write(bytes);
-        }
-        File target = file(name);
-        if (target.exists() && !target.delete()) throw new IOException("cannot replace " + target);
-        if (!tmp.renameTo(target)) throw new IOException("cannot write " + target);
+        // Replaced in one step: a crash never leaves the plan missing or cut short.
+        AtomicFile.write(file(name), bytes, false);
         cache.remove(name);
         AiPlayerMod.LOG.info("Stored blueprint {} ({} blocks)", name, b.blocks);
         JsonObject o = new JsonObject();

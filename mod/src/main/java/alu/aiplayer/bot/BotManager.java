@@ -3,13 +3,16 @@ package alu.aiplayer.bot;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -31,6 +34,7 @@ import alu.aiplayer.bridge.BridgeServer;
 import alu.aiplayer.bridge.RpcException;
 import alu.aiplayer.task.Task;
 import alu.aiplayer.task.TaskQueue;
+import alu.aiplayer.util.AtomicFile;
 import alu.aiplayer.util.J;
 
 /** All bots known to this world: who exists, who is online, and the save file that remembers both. */
@@ -44,6 +48,15 @@ public final class BotManager implements TaskQueue.Listener {
     private File saveFile;
     private boolean dirty;
     private int ticksSinceSave;
+    /**
+     * Writes bots.json off the server thread: forcing a file to disk can take a while when the world is being saved
+     * at the same moment. One thread, so the writes land in the order they were made.
+     */
+    private final ExecutorService writer = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "aiplayer-save");
+        t.setDaemon(true);
+        return t;
+    });
     /** Programmed circuits that process tasks with leave set, to be set back once their batch is done. */
     private final List<alu.aiplayer.task.CircuitWatch> circuitWatches = new ArrayList<>();
     private int ticksSinceWatch;
@@ -118,6 +131,7 @@ public final class BotManager implements TaskQueue.Listener {
             if (b.online()) logout(b, "server stopping", true);
         }
         save();
+        finishWrites();
     }
 
     public void tick() {
@@ -237,7 +251,8 @@ public final class BotManager implements TaskQueue.Listener {
             throw e;
         }
         retired.remove(name.toLowerCase());
-        dirty = true;
+        // At once rather than on the next timed save: a crash in between would forget the bot.
+        save();
         if (created) {
             // Not at once: other mods finish setting up a player a moment after the join.
             for (String c : config.newBotCommands) later.add(new Object[] { 60, c.replace("{name}", name) });
@@ -292,7 +307,7 @@ public final class BotManager implements TaskQueue.Listener {
     public void despawn(Bot b) {
         b.wantOnline = false;
         if (b.online()) logout(b, "despawned", false);
-        dirty = true;
+        save();
     }
 
     /** Forgets an offline bot. Its player data (inventory, position) stays in the world save. */
@@ -300,7 +315,7 @@ public final class BotManager implements TaskQueue.Listener {
         if (b.online()) throw RpcException.badRequest("despawn the bot first: " + b.name);
         bots.remove(b.name.toLowerCase());
         retired.add(b.name.toLowerCase());
-        dirty = true;
+        save();
     }
 
     private void login(Bot b, Placement where) {
@@ -455,15 +470,42 @@ public final class BotManager implements TaskQueue.Listener {
 
     private void load() {
         bots.clear();
+        retired.clear();
         circuitWatches.clear();
-        if (saveFile == null || !saveFile.isFile()) return;
+        if (saveFile == null) return;
+        if (saveFile.isFile()) {
+            if (loadFrom(saveFile)) return;
+            // Keep the unreadable file: the next save would otherwise overwrite the only copy.
+            File kept = new File(saveFile.getPath() + ".unreadable-" + System.currentTimeMillis());
+            saveFile.renameTo(kept);
+            AiPlayerMod.LOG.error("Kept the unreadable {} as {}", saveFile, kept);
+        }
+        // Missing (a crash between the two renames of a save) or unreadable: the save before is in the backup.
+        File backup = AtomicFile.backupOf(saveFile);
+        if (backup.isFile()) {
+            if (loadFrom(backup)) AiPlayerMod.LOG.warn("Saved bots restored from {}", backup);
+            else AiPlayerMod.LOG.error("{} is unreadable as well; starting without saved bots", backup);
+        }
+    }
+
+    /** Reads saved bots from a file; false when the file as a whole cannot be read, and then nothing is kept. */
+    private boolean loadFrom(File file) {
+        JsonObject root;
         try {
-            JsonObject root = J.parseObject(new String(Files.readAllBytes(saveFile.toPath()), StandardCharsets.UTF_8));
-            JsonArray gone = J.array(root, "retired");
-            if (gone != null) for (JsonElement e : gone) retired.add(e.getAsString());
-            JsonArray list = J.array(root, "bots");
-            if (list == null) return;
-            for (JsonElement e : list) {
+            root = J.parseObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            AiPlayerMod.LOG.error("Cannot read {}", file, e);
+            return false;
+        }
+        JsonArray gone = J.array(root, "retired");
+        if (gone != null) for (JsonElement e : gone) {
+            if (e.isJsonPrimitive()) retired.add(e.getAsString());
+        }
+        int dropped = 0;
+        JsonArray list = J.array(root, "bots");
+        if (list != null) for (JsonElement e : list) {
+            // One entry that no longer reads must not take the other bots with it.
+            try {
                 JsonObject o = e.getAsJsonObject();
                 String name = J.reqStr(o, "name");
                 Bot b = new Bot(this, name, offlineUuid(name));
@@ -473,24 +515,36 @@ public final class BotManager implements TaskQueue.Listener {
                 b.skin = J.object(o, "skin");
                 b.tasks.load(J.array(o, "tasks"));
                 bots.put(name.toLowerCase(), b);
+            } catch (RuntimeException bad) {
+                dropped++;
+                AiPlayerMod.LOG.error("Dropping a saved bot that does not read: {}", e, bad);
             }
-            JsonArray watches = J.array(root, "circuitWatches");
-            if (watches != null) for (JsonElement e : watches) {
-                try {
-                    circuitWatches.add(alu.aiplayer.task.CircuitWatch.load(e.getAsJsonObject()));
-                } catch (RuntimeException bad) {
-                    AiPlayerMod.LOG.warn("Dropping an unreadable circuit watch: {}", e, bad);
-                }
-            }
-        } catch (Exception e) {
-            // Keep the unreadable file: the next save would otherwise overwrite the only copy.
-            File kept = new File(saveFile.getPath() + ".unreadable-" + System.currentTimeMillis());
-            AiPlayerMod.LOG.error("Cannot read {}; starting without saved bots, old file kept as {}", saveFile, kept, e);
-            saveFile.renameTo(kept);
-            bots.clear();
         }
+        if (dropped > 0) {
+            // The next save leaves the dropped entries out; keep a copy of them.
+            File kept = new File(file.getPath() + ".unreadable-" + System.currentTimeMillis());
+            try {
+                Files.copy(file.toPath(), kept.toPath());
+                AiPlayerMod.LOG.error("{} saved bot(s) dropped; the file as it was is kept as {}", dropped, kept);
+            } catch (Exception copyFailed) {
+                AiPlayerMod.LOG.error("Cannot keep a copy of {}", file, copyFailed);
+            }
+        }
+        JsonArray watches = J.array(root, "circuitWatches");
+        if (watches != null) for (JsonElement e : watches) {
+            try {
+                circuitWatches.add(alu.aiplayer.task.CircuitWatch.load(e.getAsJsonObject()));
+            } catch (RuntimeException bad) {
+                AiPlayerMod.LOG.warn("Dropping an unreadable circuit watch: {}", e, bad);
+            }
+        }
+        return true;
     }
 
+    /**
+     * Saves the bots. The contents are taken here, on the server thread where they change; the writing happens on the
+     * writer thread, so a slow disk never holds up a tick.
+     */
     public void save() {
         ticksSinceSave = 0;
         dirty = false;
@@ -514,17 +568,40 @@ public final class BotManager implements TaskQueue.Listener {
         JsonArray watches = new JsonArray();
         for (alu.aiplayer.task.CircuitWatch w : circuitWatches) watches.add(w.save());
         if (watches.size() > 0) root.add("circuitWatches", watches);
+        File file = saveFile;
+        byte[] bytes = new GsonBuilder().setPrettyPrinting()
+            .create()
+            .toJson(root)
+            .getBytes(StandardCharsets.UTF_8);
+        Runnable write = () -> {
+            try {
+                AtomicFile.write(file, bytes, true);
+            } catch (Throwable e) {
+                AiPlayerMod.LOG.error("Cannot save {}", file, e);
+            }
+        };
         try {
-            saveFile.getParentFile()
-                .mkdirs();
-            File tmp = new File(saveFile.getPath() + ".tmp");
-            String text = new GsonBuilder().setPrettyPrinting()
-                .create()
-                .toJson(root);
-            Files.write(tmp.toPath(), text.getBytes(StandardCharsets.UTF_8));
-            Files.move(tmp.toPath(), saveFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        } catch (Throwable e) {
-            AiPlayerMod.LOG.error("Cannot save {}", saveFile, e);
+            writer.execute(write);
+        } catch (RejectedExecutionException e) {
+            // The writer has finished because the server is stopping; a late save is written here instead.
+            write.run();
+        }
+    }
+
+    /**
+     * Lets the writer finish the saves it has and end its thread, so that stopping the server never cuts the last save
+     * short, and a world opened again in single player does not leave an idle thread behind.
+     */
+    private void finishWrites() {
+        writer.shutdown();
+        try {
+            if (!writer.awaitTermination(30, TimeUnit.SECONDS)) {
+                AiPlayerMod.LOG.error("The last save of {} did not finish", saveFile);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                .interrupt();
+            AiPlayerMod.LOG.error("The last save of {} did not finish", saveFile, e);
         }
     }
 
