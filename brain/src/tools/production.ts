@@ -1,3 +1,4 @@
+import { isRecord } from '../util.ts'
 import { PLANNER_READ_SECTIONS, plannerRecordSummary } from '../planner/workspace.ts'
 import type { PlannerReadSection, PlannerRecordSummaryView, PlannerWorkspace } from '../planner/workspace.ts'
 import { PLANNER_PAGE_MAX } from '../planner/store.ts'
@@ -32,10 +33,25 @@ function facts(label: string, entries: unknown[], section: string): string[] {
     ...(entries.length > 3 ? [`${entries.length - 3} further entries: read section "${section}" with offset/limit, or inspect data.`] : [])]
 }
 
+// Show distinct diagnostic codes before repeated entries at the same severity.
+function mostSevereFirst(issues: unknown[]): unknown[] {
+  const seen = new Map<string, number>()
+  return issues.map(issue => {
+    const fields = isRecord(issue) ? issue : {}
+    const severity = fields.severity === 'error' ? 0 : fields.severity === 'warning' ? 1 : fields.severity === 'info' ? 3 : 2
+    const key = `${severity}:${String(fields.code)}`
+    const repeat = seen.get(key) ?? 0
+    seen.set(key, repeat + 1)
+    return { issue, severity, repeat }
+  }).sort((a, b) => a.severity - b.severity || a.repeat - b.repeat).map(entry => entry.issue)
+}
+
 function summaryText(summary: PlannerRecordSummaryView): string {
   return [
     `Analysis ${summary.id}: ${summary.status} (execution: ${summary.outcome}).`,
     'Static calculation only; no game action was requested. External supply, machine availability and settings are assumptions, not observed world facts.',
+    ...(summary.forcedFlows.length > 0
+      ? ['NOT MET AS DRAWN: the solver added supply or removal at a machine port. Target rates assume the forced boundary flows listed below.'] : []),
     ...(summary.outcome !== 'calculated' || summary.status === 'failed' || summary.status === 'invalid'
       ? ['Goals and external supply have not been reliably assessed. Empty lists below do not mean the plan is satisfied.'] : []),
     ...(summary.error ? [`ERROR ${summary.error.code}: ${summary.error.message}`] : []),
@@ -48,7 +64,7 @@ function summaryText(summary: PlannerRecordSummaryView): string {
     ...facts('Shortfalls', summary.shortfalls, 'shortfalls'),
     ...facts('External input assumptions', summary.externalInputs, 'externalInputs'),
     ...facts('Forced boundary flows', summary.forcedFlows, 'flows'),
-    ...facts('Diagnostics', summary.issues, 'diagnostics'),
+    ...facts('Diagnostics (errors and warnings first)', mostSevereFirst(summary.issues), 'diagnostics'),
     ...facts('Assumptions', summary.assumptions, 'assumptions'),
     'Read nodes/machines for loads and integer build counts, energy for voltage/amps/hatches/steam, flows for material rates, and diagnostics before drawing conclusions. Native report and original project are complete in export.',
   ].join('\n')

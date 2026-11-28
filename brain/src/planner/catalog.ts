@@ -132,5 +132,12 @@ export function validateMachineSettings(recipe: Recipe, node: FactoryNode): Plan
     } else if (!c.tiers.some(t => t.key === key)) add('INVALID_MACHINE_SETTING', `${id}=${key} is not an allowed native key at this recipe's minimum.`)
   }
   if (node.energyHatches !== undefined && (!Number.isInteger(node.energyHatches) || node.energyHatches < 1)) add('INVALID_HATCH_COUNT', 'energyHatches must be a positive integer.')
+  if (issues.length === 0) {
+    const { runTier } = resolvedMachineSettings(copy, node)
+    if (tierIndex(runTier) > tier) issues.push({
+      severity: 'warning', code: 'TIER_RAISED', recipeId: recipe.id, nodeId: node.id,
+      message: `Node ${node.id} is set to ${node.overclockTier}, below what its recipe needs: it is calculated at ${runTier}.`,
+    })
+  }
   return issues
 }

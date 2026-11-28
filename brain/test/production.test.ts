@@ -7,6 +7,7 @@ import { BridgeApi } from '../src/bridge/api.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData, RecipeBook } from '../src/packdata/index.ts'
 import type { PackData } from '../src/packdata/index.ts'
+import { validateMachineSettings } from '../src/planner/catalog.ts'
 import { PlannerEngine } from '../src/planner/engine.ts'
 import type { PlannerCalculateOptions } from '../src/planner/engine.ts'
 import type { DescribedRecipe, FactoryProject, ReportSummary } from '../src/planner/model.ts'
@@ -413,4 +414,87 @@ test('closing the workspace waits for the interrupted analysis to be saved', asy
   assert.equal((await s.planner.list()).total, 1)
   await assert.rejects(s.planner.solve(interrupted.project), { code: 'closed' })
   assert.deepEqual(s.calls, [])
+})
+
+test('solve and read flag targets that depend on forced supply', async (t) => {
+  const s = setup(t)
+  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+
+  const healthy = await s.run({ action: 'solve', project: oneRecipeProject(d) })
+  assert.equal(healthy.isError, undefined, healthy.content)
+  assert.equal(explanation(healthy.data).forcedFlows.length, 0)
+  assert.doesNotMatch(healthy.content, /NOT MET AS DRAWN/)
+
+  const starved = oneRecipeProject(d)
+  starved.storages![0]!.targetPerSecond = -0.25
+  const unmet = await s.run({ action: 'solve', project: starved })
+  assert.equal(explanation(unmet.data).goals.find((goal) => goal.ownerId === 'product')?.met, false)
+  assert.doesNotMatch(unmet.content, /NOT MET AS DRAWN/)
+
+  // The ore cap permits 1 plate/s. The solver supplies the missing dust at the press input.
+  const step = (id: string, machineType: string, input: string, output: string, amount: number) =>
+    ({ id, name: id, machineType, minimumTier: 'LV', eut: 30, durationTicks: 20, inputs: [{ kind: 'item', id: input, amount: 1 }], outputs: [{ kind: 'item', id: output, amount }] })
+  const twoSteps = {
+    schemaVersion: 1, id: 'forced', name: 'Capped ore with forced dust', planMode: true, solveMode: true,
+    recipes: [step('crush', 'Macerator', 'ore', 'dust', 2), step('press', 'Bending Machine', 'dust', 'plate', 1)],
+    nodes: ['crush', 'press'].map((id) => ({ id, recipeId: id, machineCount: 1, parallel: 1, overclockTier: 'LV', enabled: true, position: { x: 0, y: 0 } })),
+    storages: [
+      { id: 'ore-source', kind: 'item', resourceId: 'ore', targetMode: 'at-most', targetPerSecond: -0.5, position: { x: 0, y: 0 } },
+      { id: 'product', kind: 'item', resourceId: 'plate', targetMode: 'exact', targetPerSecond: 3, position: { x: 0, y: 0 } },
+    ],
+    edges: [
+      { id: 'supply', source: 'ore-source', target: 'crush', resourceKind: 'item', resourceId: 'ore' },
+      { id: 'dust', source: 'crush', target: 'press', resourceKind: 'item', resourceId: 'dust' },
+      { id: 'out', source: 'press', target: 'product', resourceKind: 'item', resourceId: 'plate' },
+    ],
+    fuelProfiles: [],
+  }
+  const forced = await s.run({ action: 'solve', project: twoSteps })
+  assert.equal(record(forced.data).outcome, 'calculated')
+  assert.equal(explanation(forced.data).forcedFlows.length, 1, forced.content)
+  assert.ok(explanation(forced.data).goals.every((goal) => goal.met))
+  const warning = 'NOT MET AS DRAWN: the solver added supply or removal at a machine port.'
+  assert.ok(forced.content.includes(warning), forced.content)
+  assert.ok(forced.content.indexOf(warning) < forced.content.indexOf('Unmet goals:'))
+  const read = await s.run({ action: 'read', id: record(forced.data).id, section: 'goals' })
+  assert.ok(read.content.includes(warning), read.content)
+  const shown = forced.content.slice(forced.content.indexOf('Diagnostics (errors and warnings first): ')).split('\n').slice(1, 4)
+  assert.ok(shown.some((line) => line.includes('FORCED_IMPORT')), shown.join('\n'))
+  assert.deepEqual(s.calls, [])
+})
+
+test('diagnostic preview shows the invalid connection before recipe notes', async (t) => {
+  const s = setup(t)
+  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+  const miswired = oneRecipeProject(d)
+  miswired.edges[0].targetHandle = 'input:item:nope%400'
+  const rejected = await s.run({ action: 'solve', project: miswired })
+  assert.equal(rejected.isError, true)
+  const issues = explanation(rejected.data).issues
+  assert.ok(issues.findIndex((issue) => issue.severity === 'error') > 0, 'the fixture is only meaningful when an info entry is stored first')
+  const preview = rejected.content.slice(rejected.content.indexOf('Diagnostics (errors and warnings first): '))
+  const firstEntry = preview.split('\n')[1] ?? ''
+  assert.match(firstEntry, /^- \{"severity":"error","code":"EDGE_HANDLE_MISMATCH"/)
+  assert.match(firstEntry, /input:item:nope%400/)
+})
+
+test('machine settings warn when the native calculation raises the selected voltage tier', async (t) => {
+  const s = setup(t)
+  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+  // The fixture bender has an LV recipe. Raise both the recipe and its packdata snapshot to MV.
+  const needsMv = structuredClone(d.recipe)
+  needsMv.eut = 120
+  const binding = needsMv.metadata!.localBinding as { snapshot: { eut: number } }
+  binding.snapshot.eut = 120
+  const atLv = validateMachineSettings(needsMv, { ...d.nodeTemplate, id: 'bender', overclockTier: 'LV' })
+  assert.deepEqual(atLv.map((issue) => [issue.severity, issue.code, issue.nodeId]), [['warning', 'TIER_RAISED', 'bender']])
+  assert.match(atLv[0]!.message, /set to LV, below what its recipe needs: it is calculated at MV/)
+  assert.deepEqual(validateMachineSettings(needsMv, { ...d.nodeTemplate, id: 'bender', overclockTier: 'MV' }), [])
+  assert.deepEqual(validateMachineSettings(d.recipe, { ...d.nodeTemplate, id: 'bender', overclockTier: 'LV' }), [])
+
+  // The blast furnace can run this 120 EU/t recipe on LV hatches.
+  const furnace = ((await s.run({ action: 'describe', refs: [6] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+  const onLvHatches = await s.run({ action: 'solve', project: oneRecipeProject(furnace) })
+  assert.equal(record(onLvHatches.data).outcome, 'calculated', onLvHatches.content)
+  assert.doesNotMatch(onLvHatches.content, /TIER_RAISED/)
 })
