@@ -7,7 +7,7 @@ import { BridgeApi } from '../src/bridge/api.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData, RecipeBook } from '../src/packdata/index.ts'
 import type { PackData } from '../src/packdata/index.ts'
-import { validateMachineSettings } from '../src/planner/catalog.ts'
+import { NATIVE_PROJECT_EXAMPLE } from '../src/planner/model.ts'
 import { PlannerEngine } from '../src/planner/engine.ts'
 import type { PlannerCalculateOptions } from '../src/planner/engine.ts'
 import type { DescribedRecipe, FactoryProject, ReportSummary } from '../src/planner/model.ts'
@@ -451,6 +451,7 @@ test('solve and read flag targets that depend on forced supply', async (t) => {
   }
   const forced = await s.run({ action: 'solve', project: twoSteps })
   assert.equal(record(forced.data).outcome, 'calculated')
+  assert.equal(explanation(forced.data).status, 'requires-forced-flow')
   assert.equal(explanation(forced.data).forcedFlows.length, 1, forced.content)
   assert.ok(explanation(forced.data).goals.every((goal) => goal.met))
   const warning = 'NOT MET AS DRAWN: the solver added supply or removal at a machine port.'
@@ -478,23 +479,90 @@ test('diagnostic preview shows the invalid connection before recipe notes', asyn
   assert.match(firstEntry, /input:item:nope%400/)
 })
 
-test('machine settings warn when the native calculation raises the selected voltage tier', async (t) => {
-  const s = setup(t)
-  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
-  // The fixture bender has an LV recipe. Raise both the recipe and its packdata snapshot to MV.
-  const needsMv = structuredClone(d.recipe)
-  needsMv.eut = 120
-  const binding = needsMv.metadata!.localBinding as { snapshot: { eut: number } }
-  binding.snapshot.eut = 120
-  const atLv = validateMachineSettings(needsMv, { ...d.nodeTemplate, id: 'bender', overclockTier: 'LV' })
-  assert.deepEqual(atLv.map((issue) => [issue.severity, issue.code, issue.nodeId]), [['warning', 'TIER_RAISED', 'bender']])
-  assert.match(atLv[0]!.message, /set to LV, below what its recipe needs: it is calculated at MV/)
-  assert.deepEqual(validateMachineSettings(needsMv, { ...d.nodeTemplate, id: 'bender', overclockTier: 'MV' }), [])
-  assert.deepEqual(validateMachineSettings(d.recipe, { ...d.nodeTemplate, id: 'bender', overclockTier: 'LV' }), [])
+test('declared recipes report the actual machine tier in solve and read', async (t) => {
+  const s = setup(t, false)
+  const p = structuredClone(NATIVE_PROJECT_EXAMPLE)
+  p.recipes[0].eut = 120
+  const solved = await s.run({ action: 'solve', project: p })
+  assert.equal(solved.isError, undefined, solved.content)
+  const info = explanation(solved.data)
+  assert.equal(info.machines[0].energy?.sections[0].power.tier, 'MV')
+  assert.ok(info.issues.some(i => i.code === 'TIER_RAISED' && i.nodeId === p.nodes[0].id))
+  const read = await s.planner.read(record(solved.data).id, { section: 'diagnostics', limit: 1 })
+  assert.match(JSON.stringify(read.items[0]), /TIER_RAISED/)
+  p.nodes[0].overclockTier = 'MV'
+  const matched = await s.run({ action: 'solve', project: p })
+  assert.equal(matched.isError, undefined, matched.content)
+  assert.ok(!explanation(matched.data).issues.some(i => i.code === 'TIER_RAISED'))
+})
 
-  // The blast furnace can run this 120 EU/t recipe on LV hatches.
+test('blast furnace power follows the hatches or input budget', async (t) => {
+  const s = setup(t)
   const furnace = ((await s.run({ action: 'describe', refs: [6] })).data as { recipes: DescribedRecipe[] }).recipes[0]
-  const onLvHatches = await s.run({ action: 'solve', project: oneRecipeProject(furnace) })
-  assert.equal(record(onLvHatches.data).outcome, 'calculated', onLvHatches.content)
-  assert.doesNotMatch(onLvHatches.content, /TIER_RAISED/)
+  const p = oneRecipeProject(furnace)
+  // 120 EU/t on two LV hatches. The small product target stays within the build capacity.
+  p.storages![1].targetPerSecond = 0.01
+  for (const [supply, expectedTier] of [
+    [{ energyHatches: 2 }, 'LV'],
+    [{ hatchVoltageTier: 'HV', hatchAmps: 2 }, 'HV'],
+    [{ powerEuT: 512 }, 'HV'],
+    [{ powerInputMode: 'eut', powerEuT: 512 }, 'HV'],
+  ] as const) {
+    const solved = await s.run({ action: 'solve', project: { ...p, nodes: [{ ...p.nodes[0], ...supply }] } })
+    assert.equal(solved.isError, undefined, solved.content)
+    const info = explanation(solved.data)
+    const power = info.machines[0].energy?.sections[0].power
+    assert.equal(power?.state, 'ok')
+    assert.equal(power.tier, expectedTier)
+    assert.ok(info.goals.every(goal => goal.met))
+    assert.ok(!info.issues.some(i => i.code === 'TIER_RAISED'))
+  }
+  for (const tier of ['lv', 'hv']) {
+    p.nodes[0].overclockTier = tier
+    const invalid = await s.run({ action: 'solve', project: p })
+    assert.equal(record(invalid.data).outcome, 'rejected')
+    assert.match(invalid.content, /INVALID_MACHINE_TIER/)
+  }
+})
+
+test('forced disposal qualifies solve, read and list even when all numeric goals are met', async (t) => {
+  const s = setup(t, false)
+  const p = structuredClone(NATIVE_PROJECT_EXAMPLE)
+  const [generator] = p.recipes
+  generator.inputs = []
+  generator.outputs.push({ kind: 'item', id: 'byproduct', amount: 1 })
+  p.recipes.push({ ...generator, id: 'recycle', inputs: [{ kind: 'item', id: 'byproduct', amount: 1 }],
+    outputs: [{ kind: 'item', id: 'recycled', amount: 1 }] })
+  delete p.nodes[0].solvePin
+  p.nodes.push({ ...p.nodes[0], id: 'recycler', recipeId: 'recycle' })
+  const product = p.storages![1]
+  product.targetMode = 'exact'
+  product.targetPerSecond = 4
+  p.storages = [product, { ...product, id: 'limited', resourceId: 'recycled', targetMode: 'at-most', targetPerSecond: 1 }]
+  p.edges = [p.edges[1],
+    { id: 'wire', source: 'machine', target: 'recycler', resourceKind: 'item', resourceId: 'byproduct' },
+    { id: 'out', source: 'recycler', target: 'limited', resourceKind: 'item', resourceId: 'recycled' }]
+  const solved = await s.run({ action: 'solve', project: p })
+  assert.equal(solved.isError, undefined, solved.content)
+  const saved = record(solved.data)
+  const info = explanation(saved)
+  assert.ok(info.goals.every(goal => goal.met))
+  assert.equal(info.externalInputs.length, 0)
+  assert.ok(info.issues.some(i => i.code === 'FORCED_EXPORT' && i.nodeId === 'machine'))
+  assert.equal(info.status, 'requires-forced-flow')
+  assert.match(solved.content, /requires-forced-flow/)
+  // Summaries of previously saved analyses must agree with current ones.
+  const recipeNotes = ['DISPLAY_RECIPE', 'EQUIVALENCE_CLASS', 'DECLARED_RECIPE'].map(code => ({ severity: 'warning', code }))
+  const legacy = await s.planner.store.save({ ...saved, explanation: {
+    ...info, status: 'satisfied', issues: [...recipeNotes, ...info.issues],
+  } })
+  const diagnostics = await s.planner.read(legacy.id, { section: 'diagnostics', limit: 1 })
+  assert.deepEqual(diagnostics.items, diagnostics.summary.issues.slice(0, 1))
+  assert.match(JSON.stringify(diagnostics.items[0]), /FORCED_EXPORT/)
+  for (const id of [saved.id, legacy.id]) {
+    const read = await s.run({ action: 'read', id })
+    assert.equal((read.data as PlannerReadResult).summary.status, 'requires-forced-flow')
+  }
+  const listed = await s.planner.list()
+  assert.deepEqual(listed.items.map(row => row.status), ['requires-forced-flow', 'requires-forced-flow'])
 })

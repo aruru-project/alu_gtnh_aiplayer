@@ -6,7 +6,7 @@ import { ANY_META, CIRCUIT_ID } from '../packdata/recipes.ts'
 import type { Recipe as LocalRecipe, RecipeSlot } from '../packdata/recipes.ts'
 import { isRecord } from '../util.ts'
 import { resourceMatchesInput, canonicalizeResourceHandleId, getRecipeMachineHandlers } from '../../vendor/gtnh-planner/dist/catalog.mjs'
-import { CATALOG_VERSION, machineOptionsFor, recipeMapFor, resolvedMachineSettings, validateMachineSettings } from './catalog.ts'
+import { CATALOG_VERSION, machineOptionsFor, overclockTierIndex, recipeMapFor, resolvedMachineSettings, tierIndex, validateMachineSettings } from './catalog.ts'
 import type {
   DescribeOptions, DescribeResult, DescribedRecipe, FactoryProject, FactoryNode, LocalRecipeBinding,
   PlannerIssue, PrepareOptions, PreparedProject, Recipe, RecipeInput, RecipePort, RecipeProvenance, ResourceAmount,
@@ -230,7 +230,16 @@ export function prepareProject(packdata: PackData | undefined, value: unknown, o
     else for (const output of recipe.outputs) if (output.chance !== undefined && (typeof output.chance !== 'number' || output.chance < 0 || output.chance > 1)) error('INVALID_CHANCE', 'Output chance must be between 0 and 1.', `recipes[${i}]`)
   }
   for (const [i, node] of project.nodes.entries()) {
-    if (!isRecord(node) || typeof node.recipeId !== 'string' || typeof node.enabled !== 'boolean' || typeof node.overclockTier !== 'string' || typeof node.machineCount !== 'number' || node.machineCount < 0 || !Number.isInteger(node.parallel) || node.parallel < 1 || !isRecord(node.position) || typeof node.position.x !== 'number' || typeof node.position.y !== 'number' || (node.extraRecipes !== undefined && (!Array.isArray(node.extraRecipes) || node.extraRecipes.some(e => !isRecord(e) || typeof e.recipeId !== 'string')))) error('INVALID_NODE', 'Node requires recipeId, enabled, machineCount >= 0, integer parallel >= 1, overclockTier and position.', `nodes[${i}]`)
+    if (!isRecord(node) || typeof node.recipeId !== 'string' || typeof node.enabled !== 'boolean' || typeof node.overclockTier !== 'string' || typeof node.machineCount !== 'number' || node.machineCount < 0 || !Number.isInteger(node.parallel) || node.parallel < 1 || !isRecord(node.position) || typeof node.position.x !== 'number' || typeof node.position.y !== 'number' || (node.extraRecipes !== undefined && (!Array.isArray(node.extraRecipes) || node.extraRecipes.some(e => !isRecord(e) || typeof e.recipeId !== 'string')))) {
+      error('INVALID_NODE', 'Node requires recipeId, enabled, machineCount >= 0, integer parallel >= 1, overclockTier and position.', `nodes[${i}]`)
+      continue
+    }
+    if (overclockTierIndex(node.overclockTier) < 0 && node.overclockTier !== 'DEMO') {
+      error('INVALID_MACHINE_TIER', `Unknown voltage tier ${node.overclockTier}.`, `nodes[${i}].overclockTier`)
+    }
+    if (node.hatchVoltageTier !== undefined && tierIndex(node.hatchVoltageTier) < 0) {
+      error('INVALID_MACHINE_TIER', `Unknown hatch voltage tier ${node.hatchVoltageTier}.`, `nodes[${i}].hatchVoltageTier`)
+    }
   }
   for (const [i, storage] of (project.storages ?? []).entries()) if (!isRecord(storage) || !kinds.has(String(storage.kind)) || typeof storage.resourceId !== 'string') error('INVALID_STORAGE', 'Storage requires resource kind and resourceId.', `storages[${i}]`)
   for (const [i, edge] of project.edges.entries()) if (!isRecord(edge) || typeof edge.source !== 'string' || typeof edge.target !== 'string' || !kinds.has(String(edge.resourceKind)) || typeof edge.resourceId !== 'string') error('INVALID_EDGE', 'Edge requires source/target and resourceKind/resourceId.', `edges[${i}]`)

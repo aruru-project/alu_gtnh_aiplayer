@@ -228,10 +228,25 @@ test('source caps can produce forced imports without native shortfalls, and the 
     assert.deepEqual(nativeReport.plan?.unmetDrawers, [])
     assert(summary.goals.every(g => g.met))
     assert(nativeReport.plan?.forced.some(f => f.side === 'in' && f.resourceKey === 'item:dust' && Math.abs(f.perSecond - 2) < 1e-6))
-    assert.equal(summary.status, 'needs-external-supply')
+    assert.equal(summary.status, 'requires-forced-flow')
     assert(summary.issues.some(i => i.code === 'FORCED_IMPORT' && i.nodeId === 'press'))
     assert(summary.externalInputs.some(row => (row as { source: string; resourceKey: string }).source === 'forced' && (row as { resourceKey: string }).resourceKey === 'item:dust'))
   } finally { await engine.close() }
+})
+
+test('local pyrolyse oven reports the tier the engine used despite its fallback handler', async (t) => {
+  const key = 'gt.recipe.pyro'
+  const f = fixture([{ ...row, h: key, eut: 60 }], [{ ...handlers[0], key }])
+  t.after(() => f.close())
+  const engine = new PlannerEngine()
+  t.after(() => engine.close())
+  const p = projectFrom(describeRecipes(f.packdata, [0]).recipes[0])
+  p.nodes[0].overclockTier = 'LV'
+  const prepared = prepareProject(f.packdata, p)
+  noErrors(prepared)
+  const summary = summarizeReport(p, await engine.calculate(p), prepared)
+  assert.equal(summary.machines[0].energy?.sections[0].power.tier, 'MV')
+  assert.ok(summary.issues.some(issue => issue.code === 'TIER_RAISED' && issue.recipeId === p.recipes[0].id))
 })
 
 test('shared native extraRecipes round machine time once for the card, not once for every recipe', async () => {

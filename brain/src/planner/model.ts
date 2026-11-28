@@ -1302,7 +1302,7 @@ export interface MachineAssessment {
   energy?: MachineEnergyAssessment;
 }
 export interface ReportSummary {
-  status: 'satisfied' | 'needs-external-supply' | 'unmet' | 'infeasible' | 'unanchored' | 'invalid' | 'failed';
+  status: 'satisfied' | 'needs-external-supply' | 'requires-forced-flow' | 'unmet' | 'infeasible' | 'unanchored' | 'invalid' | 'failed';
   /** Complete native English output, unchanged. */
   nativeReport: unknown;
   goals: GoalAssessment[];

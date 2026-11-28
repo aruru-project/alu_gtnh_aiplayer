@@ -1,4 +1,5 @@
 import { isRecord } from '../util.ts'
+import { overclockTierIndex, tierIndex } from './catalog.ts'
 import { portHandle } from './adapter.ts'
 import type { FactoryProject, GoalAssessment, MachineEnergyAssessment, ReportContext, ReportSummary, ThroughputResult } from './model.ts'
 import { getStorageRoles, storageTargetMode, hasStorageTarget, getNodePowerReport, getNodeSteamReport } from '../../vendor/gtnh-planner/dist/catalog.mjs'
@@ -37,21 +38,25 @@ export function summarizeReport(project: FactoryProject, nativeReport: unknown, 
   summary.averageEuT = 0; summary.buildPeakEuT = 0
   summary.averageSteamMbPerSecond = 0; summary.buildPeakSteamMbPerSecond = 0
   summary.totalEuT = report.totalEuT
-  summary.forcedFlows = [...plan?.forced ?? []]
+  const forcedFlows = (plan?.forced ?? []).filter(flow => flow.perSecond > 0)
+  summary.forcedFlows = forcedFlows
   summary.shortfalls = [...plan?.shortfalls ?? []]
-  for (const forced of plan?.forced ?? []) if (forced.side === 'in' && forced.perSecond > 0) summary.issues.push({
-    severity: 'warning', code: 'FORCED_IMPORT', nodeId: forced.nodeId,
-    message: `The native solve adds ${forced.perSecond}/s of ${forced.resourceKey} at ${forced.portKey}. Targets may be met only with this extra supply, beyond the drawn supply chain; a satisfied source cap does not close this gap.`,
-  })
+  for (const flow of forcedFlows) {
+    const incoming = flow.side === 'in'
+    summary.issues.push({
+      severity: 'warning', code: incoming ? 'FORCED_IMPORT' : 'FORCED_EXPORT', nodeId: flow.nodeId,
+      message: `The solver ${incoming ? 'supplies' : 'removes'} ${flow.perSecond}/s of ${flow.resourceKey} at ${flow.portKey}. The drawn line needs ${incoming ? 'an additional source' : 'an additional outlet'} for this flow.`,
+    })
+  }
   summary.externalInputs = [
     ...(report.externalInputs ?? []).map(row => ({ source: 'native-externalInputs', ...row })),
     ...Object.values(report.resources).filter(row => row.importedPerSecond > 0 && !(report.externalInputs ?? []).some(input => input.key === row.key)).map(row => ({ source: 'native-imported-balance', ...row })),
-    ...(plan?.forced ?? []).filter(row => row.side === 'in' && row.perSecond > 0).map(row => ({ source: 'forced', ...row })),
+    ...forcedFlows.filter(row => row.side === 'in').map(row => ({ source: 'forced', ...row })),
     ...(plan?.terminals ?? []).filter(row => row.side === 'in' && row.perSecond > 0).map(row => ({ source: 'terminal', ...row })),
   ]
   summary.externalOutputs = [
     ...(report.unconsumedOutputs ?? []).map(row => ({ source: 'native-unconsumedOutputs', ...row })),
-    ...(plan?.forced ?? []).filter(row => row.side === 'out' && row.perSecond > 0).map(row => ({ source: 'forced', ...row })),
+    ...forcedFlows.filter(row => row.side === 'out').map(row => ({ source: 'forced', ...row })),
     ...(plan?.terminals ?? []).filter(row => row.side === 'out' && row.perSecond > 0).map(row => ({ source: 'terminal', ...row })),
     ...(plan?.spills ?? []).map(row => ({ source: 'buffer-spill', ...row })),
   ]
@@ -87,6 +92,12 @@ export function summarizeReport(project: FactoryProject, nativeReport: unknown, 
       const row = report.nodes[id]
       if (!recipe || !row) continue
       const power = getNodePowerReport(recipe, node)
+      const requestedTier = overclockTierIndex(node.overclockTier)
+      const usesOverclockTier = !power.isMultiblock || (!power.typedBudget && node.hatchVoltageTier === undefined && node.powerInputMode !== 'eut')
+      if (usesOverclockTier && requestedTier >= 0 && tierIndex(power.tier) > requestedTier) {
+        summary.issues.push({ severity: 'warning', code: 'TIER_RAISED', recipeId: recipe.id, nodeId: id,
+          message: `Node ${id} requests ${node.overclockTier}. The native calculation runs this recipe at ${power.tier}.` })
+      }
       const steam = getNodeSteamReport(recipe, node)
       // The original throughput loop multiplies the machine rule by the card's parallel;
       // energy-hatch and machine-specific maths stay entirely in the native reports.
@@ -145,6 +156,7 @@ export function summarizeReport(project: FactoryProject, nativeReport: unknown, 
   else if (failure === 'NO_PIN' || (plan?.unanchored.length ?? 0) > 0) summary.status = 'unanchored'
   else if (failure) summary.status = failure === 'SOLVER_UNSATISFIABLE' || failure === 'BALANCE_FAILED' || failure === 'PIN_CONFLICT' ? 'infeasible' : 'failed'
   else if (summary.goals.some(goal => !goal.met) || unmet.size || summary.shortfalls.length || summary.machines.some(m => m.capacityExceeded) || Object.values(report.nodes).some(n => n.powerStalled || n.status === 'missing-recipe')) summary.status = 'unmet'
+  else if (forcedFlows.length) summary.status = 'requires-forced-flow'
   else if (summary.externalInputs.length) summary.status = 'needs-external-supply'
   else summary.status = 'satisfied'
   return summary

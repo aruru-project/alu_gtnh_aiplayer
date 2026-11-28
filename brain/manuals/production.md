@@ -79,7 +79,7 @@ return {
 - 负载 0.35 台表示这条工艺用到一台的 35% 产能，不是可以造 0.35 台。整数建造需求是容量建议，不是现场可用台数；多方块成型和供电仍要查。
 - 能耗看清口径：`averageEuT` 是按负载加权的实际平均；`buildPeakEuT` 是建议整数设备满速运行所需的总功率，共享机组取节中最大运行功率，调度可能降低同时峰值。保留的原版 `totalEuT` 在 Build 模式是名牌总值，在 Solve/Plan 模式按原版缩放，不能通当平均值。`energy` 页保留每节原生 voltage/amps/hatches 和蒸汽报告；`averageSteamMbPerSecond/buildPeakSteamMbPerSecond` 是平均/整数设备满速汽耗，蒸汽机 0 EU/t 不表示不用能源。
 - 概率产物是长期期望产量，短批次不会保证收齐。实际有限批次备料用 `total_materials` 等工具；产线计算与有限材料树互补。
-- `satisfied` 是在列出的静态假设下满足目标；`needs-external-supply` 还依赖外部供料；`unmet/infeasible/unanchored/invalid/failed` 按摘要和诊断处理。求解 Promise 正常返回、原生 `solved:true`、保存了 ID，都不足以替代这些条件检查。
+- `satisfied` 是在列出的静态假设下满足目标；`needs-external-supply` 还依赖外部供料；`requires-forced-flow` 表示求解器在机器端口补料或排料，检查 `forcedFlows` 并在图中补上来源或去向；`unmet/infeasible/unanchored/invalid/failed` 按摘要和诊断处理。求解 Promise 正常返回、原生 `solved:true`、保存了 ID，都不足以替代这些条件检查。
 - 本地 ref 是当前配方文件的行号。绑定记录保留完整配方签名和数据版本，再算时会核对；变更后重新 describe 更新绑定，或明确设置 allowStaleBindings 按旧快照假设算。原版/自写配方也能算，但标为 `declared-unverified`，不声称与本服匹配。
 - 超时、引擎忙、取消或错误：看错误码；没有报告就没有计算结论。减少图规模、改约束或合理增大时限后再算，得到的是另一条记录。run_program 也有自己的时限；长计算可直接调 production_plan，不要误把程序超时当引擎成功。
 

@@ -161,18 +161,28 @@ function object(value: unknown): Record<string, unknown> {
 }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : [] }
 
+export function recordStatus(record: PlannerRecord): string {
+  const explanation = object(record.explanation)
+  const status = explanation.status
+  // Older analyses could count a forced flow as ordinary supply or even as satisfied.
+  if ((status === 'satisfied' || status === 'needs-external-supply') && array(explanation.forcedFlows).some(flow => {
+    const row = object(flow)
+    return typeof row.perSecond === 'number' && row.perSecond > 0
+  })) return 'requires-forced-flow'
+  return typeof status === 'string' && ['satisfied', 'needs-external-supply', 'requires-forced-flow', 'unmet', 'infeasible', 'unanchored', 'invalid', 'failed'].includes(status)
+    ? status : record.outcome
+}
+
 export function recordSummary(record: PlannerRecord): PlannerRecordSummary {
   const explanation = object(record.explanation)
   const goals = array(explanation.goals)
   const issues = array(explanation.issues).length ? array(explanation.issues) : record.issues
   const name = object(record.project).name
-  const status = explanation.status
   return {
     id: record.id, createdAt: record.createdAt, durationMs: record.durationMs,
     ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
     projectHash: record.projectHash, outcome: record.outcome,
-    status: typeof status === 'string' && ['satisfied', 'needs-external-supply', 'unmet', 'infeasible', 'unanchored', 'invalid', 'failed'].includes(status)
-      ? status : record.outcome,
+    status: recordStatus(record),
     counts: {
       goals: goals.length,
       unmetGoals: goals.reduce<number>((count, goal) => count + (object(goal).met === true ? 0 : 1), 0),
