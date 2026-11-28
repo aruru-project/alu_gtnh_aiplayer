@@ -7,6 +7,7 @@ import { BridgeApi } from '../src/bridge/api.ts'
 import { DesignWorkspace } from '../src/design/index.ts'
 import { loadPackData, RecipeBook } from '../src/packdata/index.ts'
 import type { PackData } from '../src/packdata/index.ts'
+import { NATIVE_PROJECT_EXAMPLE } from '../src/planner/model.ts'
 import { PlannerEngine } from '../src/planner/engine.ts'
 import type { PlannerCalculateOptions } from '../src/planner/engine.ts'
 import type { DescribedRecipe, FactoryProject, ReportSummary } from '../src/planner/model.ts'
@@ -413,4 +414,155 @@ test('closing the workspace waits for the interrupted analysis to be saved', asy
   assert.equal((await s.planner.list()).total, 1)
   await assert.rejects(s.planner.solve(interrupted.project), { code: 'closed' })
   assert.deepEqual(s.calls, [])
+})
+
+test('solve and read flag targets that depend on forced supply', async (t) => {
+  const s = setup(t)
+  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+
+  const healthy = await s.run({ action: 'solve', project: oneRecipeProject(d) })
+  assert.equal(healthy.isError, undefined, healthy.content)
+  assert.equal(explanation(healthy.data).forcedFlows.length, 0)
+  assert.doesNotMatch(healthy.content, /NOT MET AS DRAWN/)
+
+  const starved = oneRecipeProject(d)
+  starved.storages![0]!.targetPerSecond = -0.25
+  const unmet = await s.run({ action: 'solve', project: starved })
+  assert.equal(explanation(unmet.data).goals.find((goal) => goal.ownerId === 'product')?.met, false)
+  assert.doesNotMatch(unmet.content, /NOT MET AS DRAWN/)
+
+  // The ore cap permits 1 plate/s. The solver supplies the missing dust at the press input.
+  const step = (id: string, machineType: string, input: string, output: string, amount: number) =>
+    ({ id, name: id, machineType, minimumTier: 'LV', eut: 30, durationTicks: 20, inputs: [{ kind: 'item', id: input, amount: 1 }], outputs: [{ kind: 'item', id: output, amount }] })
+  const twoSteps = {
+    schemaVersion: 1, id: 'forced', name: 'Capped ore with forced dust', planMode: true, solveMode: true,
+    recipes: [step('crush', 'Macerator', 'ore', 'dust', 2), step('press', 'Bending Machine', 'dust', 'plate', 1)],
+    nodes: ['crush', 'press'].map((id) => ({ id, recipeId: id, machineCount: 1, parallel: 1, overclockTier: 'LV', enabled: true, position: { x: 0, y: 0 } })),
+    storages: [
+      { id: 'ore-source', kind: 'item', resourceId: 'ore', targetMode: 'at-most', targetPerSecond: -0.5, position: { x: 0, y: 0 } },
+      { id: 'product', kind: 'item', resourceId: 'plate', targetMode: 'exact', targetPerSecond: 3, position: { x: 0, y: 0 } },
+    ],
+    edges: [
+      { id: 'supply', source: 'ore-source', target: 'crush', resourceKind: 'item', resourceId: 'ore' },
+      { id: 'dust', source: 'crush', target: 'press', resourceKind: 'item', resourceId: 'dust' },
+      { id: 'out', source: 'press', target: 'product', resourceKind: 'item', resourceId: 'plate' },
+    ],
+    fuelProfiles: [],
+  }
+  const forced = await s.run({ action: 'solve', project: twoSteps })
+  assert.equal(record(forced.data).outcome, 'calculated')
+  assert.equal(explanation(forced.data).status, 'requires-forced-flow')
+  assert.equal(explanation(forced.data).forcedFlows.length, 1, forced.content)
+  assert.ok(explanation(forced.data).goals.every((goal) => goal.met))
+  const warning = 'NOT MET AS DRAWN: the solver added supply or removal at a machine port.'
+  assert.ok(forced.content.includes(warning), forced.content)
+  assert.ok(forced.content.indexOf(warning) < forced.content.indexOf('Unmet goals:'))
+  const read = await s.run({ action: 'read', id: record(forced.data).id, section: 'goals' })
+  assert.ok(read.content.includes(warning), read.content)
+  const shown = forced.content.slice(forced.content.indexOf('Diagnostics (errors and warnings first): ')).split('\n').slice(1, 4)
+  assert.ok(shown.some((line) => line.includes('FORCED_IMPORT')), shown.join('\n'))
+  assert.deepEqual(s.calls, [])
+})
+
+test('diagnostic preview shows the invalid connection before recipe notes', async (t) => {
+  const s = setup(t)
+  const d = ((await s.run({ action: 'describe', refs: [0] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+  const miswired = oneRecipeProject(d)
+  miswired.edges[0].targetHandle = 'input:item:nope%400'
+  const rejected = await s.run({ action: 'solve', project: miswired })
+  assert.equal(rejected.isError, true)
+  const issues = explanation(rejected.data).issues
+  assert.ok(issues.findIndex((issue) => issue.severity === 'error') > 0, 'the fixture is only meaningful when an info entry is stored first')
+  const preview = rejected.content.slice(rejected.content.indexOf('Diagnostics (errors and warnings first): '))
+  const firstEntry = preview.split('\n')[1] ?? ''
+  assert.match(firstEntry, /^- \{"severity":"error","code":"EDGE_HANDLE_MISMATCH"/)
+  assert.match(firstEntry, /input:item:nope%400/)
+})
+
+test('declared recipes report the actual machine tier in solve and read', async (t) => {
+  const s = setup(t, false)
+  const p = structuredClone(NATIVE_PROJECT_EXAMPLE)
+  p.recipes[0].eut = 120
+  const solved = await s.run({ action: 'solve', project: p })
+  assert.equal(solved.isError, undefined, solved.content)
+  const info = explanation(solved.data)
+  assert.equal(info.machines[0].energy?.sections[0].power.tier, 'MV')
+  assert.ok(info.issues.some(i => i.code === 'TIER_RAISED' && i.nodeId === p.nodes[0].id))
+  const read = await s.planner.read(record(solved.data).id, { section: 'diagnostics', limit: 1 })
+  assert.match(JSON.stringify(read.items[0]), /TIER_RAISED/)
+  p.nodes[0].overclockTier = 'MV'
+  const matched = await s.run({ action: 'solve', project: p })
+  assert.equal(matched.isError, undefined, matched.content)
+  assert.ok(!explanation(matched.data).issues.some(i => i.code === 'TIER_RAISED'))
+})
+
+test('blast furnace power follows the hatches or input budget', async (t) => {
+  const s = setup(t)
+  const furnace = ((await s.run({ action: 'describe', refs: [6] })).data as { recipes: DescribedRecipe[] }).recipes[0]
+  const p = oneRecipeProject(furnace)
+  // 120 EU/t on two LV hatches. The small product target stays within the build capacity.
+  p.storages![1].targetPerSecond = 0.01
+  for (const [supply, expectedTier] of [
+    [{ energyHatches: 2 }, 'LV'],
+    [{ hatchVoltageTier: 'HV', hatchAmps: 2 }, 'HV'],
+    [{ powerEuT: 512 }, 'HV'],
+    [{ powerInputMode: 'eut', powerEuT: 512 }, 'HV'],
+  ] as const) {
+    const solved = await s.run({ action: 'solve', project: { ...p, nodes: [{ ...p.nodes[0], ...supply }] } })
+    assert.equal(solved.isError, undefined, solved.content)
+    const info = explanation(solved.data)
+    const power = info.machines[0].energy?.sections[0].power
+    assert.equal(power?.state, 'ok')
+    assert.equal(power.tier, expectedTier)
+    assert.ok(info.goals.every(goal => goal.met))
+    assert.ok(!info.issues.some(i => i.code === 'TIER_RAISED'))
+  }
+  for (const tier of ['lv', 'hv']) {
+    p.nodes[0].overclockTier = tier
+    const invalid = await s.run({ action: 'solve', project: p })
+    assert.equal(record(invalid.data).outcome, 'rejected')
+    assert.match(invalid.content, /INVALID_MACHINE_TIER/)
+  }
+})
+
+test('forced disposal qualifies solve, read and list even when all numeric goals are met', async (t) => {
+  const s = setup(t, false)
+  const p = structuredClone(NATIVE_PROJECT_EXAMPLE)
+  const [generator] = p.recipes
+  generator.inputs = []
+  generator.outputs.push({ kind: 'item', id: 'byproduct', amount: 1 })
+  p.recipes.push({ ...generator, id: 'recycle', inputs: [{ kind: 'item', id: 'byproduct', amount: 1 }],
+    outputs: [{ kind: 'item', id: 'recycled', amount: 1 }] })
+  delete p.nodes[0].solvePin
+  p.nodes.push({ ...p.nodes[0], id: 'recycler', recipeId: 'recycle' })
+  const product = p.storages![1]
+  product.targetMode = 'exact'
+  product.targetPerSecond = 4
+  p.storages = [product, { ...product, id: 'limited', resourceId: 'recycled', targetMode: 'at-most', targetPerSecond: 1 }]
+  p.edges = [p.edges[1],
+    { id: 'wire', source: 'machine', target: 'recycler', resourceKind: 'item', resourceId: 'byproduct' },
+    { id: 'out', source: 'recycler', target: 'limited', resourceKind: 'item', resourceId: 'recycled' }]
+  const solved = await s.run({ action: 'solve', project: p })
+  assert.equal(solved.isError, undefined, solved.content)
+  const saved = record(solved.data)
+  const info = explanation(saved)
+  assert.ok(info.goals.every(goal => goal.met))
+  assert.equal(info.externalInputs.length, 0)
+  assert.ok(info.issues.some(i => i.code === 'FORCED_EXPORT' && i.nodeId === 'machine'))
+  assert.equal(info.status, 'requires-forced-flow')
+  assert.match(solved.content, /requires-forced-flow/)
+  // Summaries of previously saved analyses must agree with current ones.
+  const recipeNotes = ['DISPLAY_RECIPE', 'EQUIVALENCE_CLASS', 'DECLARED_RECIPE'].map(code => ({ severity: 'warning', code }))
+  const legacy = await s.planner.store.save({ ...saved, explanation: {
+    ...info, status: 'satisfied', issues: [...recipeNotes, ...info.issues],
+  } })
+  const diagnostics = await s.planner.read(legacy.id, { section: 'diagnostics', limit: 1 })
+  assert.deepEqual(diagnostics.items, diagnostics.summary.issues.slice(0, 1))
+  assert.match(JSON.stringify(diagnostics.items[0]), /FORCED_EXPORT/)
+  for (const id of [saved.id, legacy.id]) {
+    const read = await s.run({ action: 'read', id })
+    assert.equal((read.data as PlannerReadResult).summary.status, 'requires-forced-flow')
+  }
+  const listed = await s.planner.list()
+  assert.deepEqual(listed.items.map(row => row.status), ['requires-forced-flow', 'requires-forced-flow'])
 })

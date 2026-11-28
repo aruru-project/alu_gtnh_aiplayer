@@ -7,7 +7,7 @@ import type { DescribeOptions, ReportSummary } from './model.ts'
 import { summarizeReport } from './report.ts'
 import { NATIVE_REFERENCES, readPlannerReference } from './reference.ts'
 import type { NativeReference } from './reference.ts'
-import { copyPlannerJson, plannerPage, PlannerStore, PlannerStoreError, recordSummary } from './store.ts'
+import { copyPlannerJson, plannerPage, PlannerStore, PlannerStoreError, recordStatus, recordSummary } from './store.ts'
 import type { PlannerPage, PlannerRecord, PlannerRecordInput } from './store.ts'
 
 export const PLANNER_READ_SECTIONS = [
@@ -63,17 +63,33 @@ function object(value: unknown): Record<string, unknown> {
 }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : [] }
 
+const operatingWarnings = new Set(['FORCED_IMPORT', 'FORCED_EXPORT', 'TIER_RAISED', 'NATIVE_MACHINE_WARNING', 'NATIVE_BOTTLENECK', 'PIN_DROPPED', 'INCOMPLETE_ALTERNATIVES'])
+
+function sortedDiagnostics(issues: unknown[]): unknown[] {
+  const seen = new Map<string, number>()
+  return issues.map(issue => {
+    const fields = object(issue)
+    let priority = 3
+    if (fields.severity === 'error') priority = 0
+    if (fields.severity === 'warning') priority = operatingWarnings.has(String(fields.code)) ? 1 : 2
+    const key = `${priority}:${String(fields.code)}`
+    const repeat = seen.get(key) ?? 0
+    seen.set(key, repeat + 1)
+    return { issue, priority, repeat }
+  }).sort((a, b) => a.priority - b.priority || a.repeat - b.repeat).map(entry => entry.issue)
+}
+
 /** Safety-critical facts are repeated in every read, even if the requested page is empty. */
 export function plannerRecordSummary(record: PlannerRecord): PlannerRecordSummaryView {
   const explanation = object(record.explanation)
   return {
     id: record.id, createdAt: record.createdAt, outcome: record.outcome,
-    status: typeof explanation.status === 'string' ? explanation.status : record.outcome,
+    status: recordStatus(record),
     staticAnalysis: true,
     unmetGoals: array(explanation.goals).filter((goal) => object(goal).met !== true),
     shortfalls: array(explanation.shortfalls), externalInputs: array(explanation.externalInputs),
     forcedFlows: array(explanation.forcedFlows), assumptions: array(explanation.assumptions),
-    issues: array(explanation.issues).length ? array(explanation.issues) : record.issues,
+    issues: sortedDiagnostics(array(explanation.issues).length ? array(explanation.issues) : record.issues),
     ...(explanation.totalEuT !== undefined ? { totalEuT: explanation.totalEuT } : {}),
     ...(explanation.averageEuT !== undefined ? { averageEuT: explanation.averageEuT } : {}),
     ...(explanation.buildPeakEuT !== undefined ? { buildPeakEuT: explanation.buildPeakEuT } : {}),
@@ -105,11 +121,11 @@ function keyed(value: unknown, kind: string): unknown[] {
   return Object.entries(object(value)).map(([id, data]) => ({ kind, id, data }))
 }
 
-function sectionItems(record: PlannerRecord, section: PlannerReadSection): Iterable<unknown> {
+function sectionItems(record: PlannerRecord, section: PlannerReadSection, summary: PlannerRecordSummaryView): Iterable<unknown> {
   const report = object(record.report)
   const explanation = object(record.explanation)
   switch (section) {
-    case 'summary': return jsonEntries(plannerRecordSummary(record))
+    case 'summary': return jsonEntries(summary)
     case 'project': return jsonEntries(record.project)
     case 'preparedProject': return jsonEntries(record.preparedProject ?? null)
     case 'provenance': return Array.isArray(record.provenance) ? record.provenance : jsonEntries(record.provenance)
@@ -133,7 +149,7 @@ function sectionItems(record: PlannerRecord, section: PlannerReadSection): Itera
     case 'diagnostics': {
       const plan = object(report.plan)
       return [
-        ...(array(explanation.issues).length ? array(explanation.issues) : record.issues),
+        ...summary.issues,
         ...array(report.bottlenecks),
         ...array(plan.notes).map((data) => ({ kind: 'native-plan-note', data })),
         ...(plan.failure ? [{ kind: 'native-plan-failure', data: plan.failure }] : []),
@@ -279,7 +295,8 @@ export class PlannerWorkspace {
     if (!PLANNER_READ_SECTIONS.includes(section)) throw new PlannerStoreError('invalid_section', `section must be one of ${PLANNER_READ_SECTIONS.join(', ')}.`)
     plannerPage([], options)
     const record = await this.store.get(id)
-    return { id, section, summary: plannerRecordSummary(record), ...iterablePage(sectionItems(record, section), options) }
+    const summary = plannerRecordSummary(record)
+    return { id, section, summary, ...iterablePage(sectionItems(record, section, summary), options) }
   }
 
   private engineSnapshot() {

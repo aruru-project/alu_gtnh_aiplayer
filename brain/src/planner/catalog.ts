@@ -24,7 +24,14 @@ export function recipeMapFor(handlerKey: string): MapEntry | undefined {
   return maps.get(handlerKey) ?? (handlerKey === 'gt.recipe.industrialcokeoven' ? maps.get('gtpp.recipe.cokeoven')
     : handlerKey.startsWith('gt.recipe.') ? maps.get(`gtpp.recipe.${handlerKey.slice(10)}`) : undefined)
 }
-function tierIndex(tier: string | undefined): number { return data.tiers.findIndex(t => t.toLowerCase() === tier?.trim().toLowerCase()) }
+export function tierIndex(tier: string | undefined): number {
+  return data.tiers.indexOf(tier ?? '')
+}
+
+// The native reader accepts OpV as the legacy spelling of UXV for overclock settings.
+export function overclockTierIndex(tier: string): number {
+  return tierIndex(tier === 'OpV' ? 'UXV' : tier)
+}
 function recipeMinimumTier(eut: number): string { return data.recipeTiers.find(([, voltage]) => Math.abs(eut) <= voltage)?.[0] ?? 'MAX' }
 function control(ref: string): MachineConfigControl {
   const c = data.controls[ref]
@@ -120,8 +127,8 @@ export function validateMachineSettings(recipe: Recipe, node: FactoryNode): Plan
   const selected = node.machineHandlerId ? options.find(o => o.handler.id === node.machineHandlerId) : options[0]
   if (!selected) { add('UNKNOWN_MACHINE_HANDLER', `Machine handler ${node.machineHandlerId} is not in the original map catalog.`); return issues }
   if (!selected.supported) add('MISSING_MACHINE_METADATA', selected.missing.join('; '))
-  const tier = tierIndex(node.overclockTier)
-  if (tier < 0 || selected.handler.maximumTier && tier > tierIndex(selected.handler.maximumTier) || selected.handler.availableTiers && !selected.handler.availableTiers.includes(node.overclockTier)) add('INVALID_MACHINE_TIER', `Tier ${node.overclockTier} is not a registered tier for ${selected.handler.id}.`)
+  const tier = overclockTierIndex(node.overclockTier)
+  if (tier < 0 || selected.handler.maximumTier && tier > tierIndex(selected.handler.maximumTier) || selected.handler.availableTiers && !selected.handler.availableTiers.some(t => tierIndex(t) === tier)) add('INVALID_MACHINE_TIER', `Tier ${node.overclockTier} is not a registered tier for ${selected.handler.id}.`)
   for (const [id, key] of Object.entries({ ...node.machineConfigTiers, ...(node.coilTier ? { heatingCoil: node.coilTier } : {}) })) {
     const c = selected.controls.find(c => c.id === id)
     if (!c) { add('UNKNOWN_MACHINE_SETTING', `Unknown or hidden setting ${id} for ${selected.handler.id}.`); continue }

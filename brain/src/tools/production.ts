@@ -36,6 +36,8 @@ function summaryText(summary: PlannerRecordSummaryView): string {
   return [
     `Analysis ${summary.id}: ${summary.status} (execution: ${summary.outcome}).`,
     'Static calculation only; no game action was requested. External supply, machine availability and settings are assumptions, not observed world facts.',
+    ...(summary.forcedFlows.length > 0
+      ? ['NOT MET AS DRAWN: the solver added supply or removal at a machine port. Target rates assume the forced boundary flows listed below.'] : []),
     ...(summary.outcome !== 'calculated' || summary.status === 'failed' || summary.status === 'invalid'
       ? ['Goals and external supply have not been reliably assessed. Empty lists below do not mean the plan is satisfied.'] : []),
     ...(summary.error ? [`ERROR ${summary.error.code}: ${summary.error.message}`] : []),
@@ -48,7 +50,7 @@ function summaryText(summary: PlannerRecordSummaryView): string {
     ...facts('Shortfalls', summary.shortfalls, 'shortfalls'),
     ...facts('External input assumptions', summary.externalInputs, 'externalInputs'),
     ...facts('Forced boundary flows', summary.forcedFlows, 'flows'),
-    ...facts('Diagnostics', summary.issues, 'diagnostics'),
+    ...facts('Diagnostics (errors and warnings first)', summary.issues, 'diagnostics'),
     ...facts('Assumptions', summary.assumptions, 'assumptions'),
     'Read nodes/machines for loads and integer build counts, energy for voltage/amps/hatches/steam, flows for material rates, and diagnostics before drawing conclusions. Native report and original project are complete in export.',
   ].join('\n')

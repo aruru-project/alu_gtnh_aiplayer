@@ -2,7 +2,7 @@
 import { api, badge, button, dateTime, empty, h, kv, loadError, put } from './ui.js'
 
 const STATES = {
-  satisfied: '满足计算目标', 'needs-external-supply': '需持续外部供料', unmet: '目标或约束未满足',
+  satisfied: '满足计算目标', 'needs-external-supply': '需持续外部供料', 'requires-forced-flow': '依赖图外补料或排料', unmet: '目标或约束未满足',
   infeasible: '不可行', unanchored: '缺少有效目标', invalid: '输入未通过检查', failed: '计算失败',
   rejected: '输入被拒绝', calculated: '已计算，需看条件',
 }
